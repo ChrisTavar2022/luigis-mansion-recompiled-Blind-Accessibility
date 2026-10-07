@@ -24,3 +24,22 @@ Generated code lives in `build/` and is never committed.
 and indexed forms, lmw/stmw, single/double FP, frsqrte, fctiwz, paired singles:
 psq_l/psq_st, ps_add/sub/mul/madd/msub/nmadd/nmsub/muls0/1/madds0/1/sum0/merge*/
 neg/res/rsqrte/cmpo0, plus supervisor ops only inside SDK code that is HLE'd).
+
+## Status (2026-10-07)
+
+The recompiled build (`lmrecomp`) runs the retail game: boot → title → main menu →
+opening cutscene → gameplay in the mansion, at full speed (30 Hz logic, ~0.26 CPU
+cores in the foyer). Memory card saves work (GCI folders, Dolphin-compatible).
+Audio is silent pending a JAudio DSP replacement.
+
+Playing: build with `tools/build.ps1 -Target lmrecomp` and run
+`build/windows-clang/lmrecomp.exe` with `orig/GLME01.iso` present (or `--disc`).
+A GameCube controller (adapter) or SDL gamepad works through Aurora's PAD.
+
+Runtime lessons:
+- Console timing assumptions matter: disc reads must take time (BootScene's heap
+  switch races its async open callback), the AI DMA interrupt must tick for
+  JAudio's frame work, and interrupts must never be stranded while the CPU idles.
+- Indirect calls reach code the symbol map merged into neighbours; the recompiler
+  adds entry points for every address-taken code location and every branch target
+  inside another function.
