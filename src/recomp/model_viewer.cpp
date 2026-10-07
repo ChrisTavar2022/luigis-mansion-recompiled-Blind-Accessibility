@@ -11,6 +11,7 @@
 // Luigi (fn_800494E4): lighting setup fn_80057F90, calcJoints fn_800589B0, calcView
 // fn_80059710, opaque fn_80059C54 / translucent fn_80059F6C.
 #include "recomp/model_viewer.h"
+#include "recomp/gx_bridge.h"
 
 #include "recomp/guest_util.h"
 #include "recomp/version.h"
@@ -411,6 +412,8 @@ void drawBackdrop(Ctx& c) {
         for (float f : v) mmio_wr(0xCC008000, std::bit_cast<u32>(f), 4);
 }
 
+bool sTextures = std::getenv("LM_DEV_VIEWER_NOTEX") == nullptr;  // "Textures" checkbox (test aid: LM_DEV_VIEWER_NOTEX=1)
+
 void drawModel(Ctx& c) {
     // Perspective camera orbiting the model's bounds centre.
     const float r = sRadius * 3.2f * sCam.zoom;
@@ -448,9 +451,11 @@ void drawModel(Ctx& c) {
     gu::call(c, GU_SYM("fn_800589B0"), {sModel, 0});
     gu::call(c, GU_SYM("fn_80059710"), {sModel, kScratch + 0x140});
     gu::call(c, GU_SYM("fn_8005832C"), {1});
+    gx::setUntextured(!sTextures);
     gu::call(c, GU_SYM("fn_80059C54"), {sModel});
     gu::call(c, GU_SYM("fn_8005832C"), {0});
     gu::call(c, GU_SYM("fn_80059F6C"), {sModel});
+    gx::setUntextured(false);
     wr32(kLightMode, savedMode);
 }
 
@@ -532,6 +537,7 @@ void window() {
             ImGui::EndCombo();
         }
     }
+    ImGui::Checkbox("Textures", &sTextures);
     ImGui::SeparatorText("Camera");
     ImGui::Checkbox("Spin", &sCam.spin);
     ImGui::SliderFloat("Yaw", &sCam.yaw, -6.2832f, 6.2832f);

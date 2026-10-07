@@ -706,14 +706,26 @@ GXHLE(GXSetNumTevStages) {
     sNumTevStages = u8(c.r[3]);
     GXSetNumTevStages(u8(c.r[3]));
 }
-GXHLE(GXSetTevOp) { GXSetTevOp(GXTevStageID(c.r[3]), GXTevMode(c.r[4])); }
+// Model viewer "Textures off": texture colour reads as white and texture blend modes pass
+// the lit vertex colour through, so models show lighting/vertex colours only. Alpha stays
+// textured so cut-out edges survive.
+static bool sUntextured = false;
+void gx::setUntextured(bool on) { sUntextured = on; }
+static GXTevColorArg untex(u32 a) {
+    return GXTevColorArg(sUntextured && (a == GX_CC_TEXC || a == GX_CC_TEXA) ? GX_CC_ONE : a);
+}
+
+GXHLE(GXSetTevOp) {
+    u32 mode = c.r[4];
+    if (sUntextured && (mode == GX_MODULATE || mode == GX_DECAL || mode == GX_REPLACE)) mode = GX_PASSCLR;
+    GXSetTevOp(GXTevStageID(c.r[3]), GXTevMode(mode));
+}
 GXHLE(GXSetTevOrder) {
     if (c.r[3] < 16) sTevMap[c.r[3]] = c.r[5] & 0x100 ? 0xFF : u8(c.r[5]);
     GXSetTevOrder(GXTevStageID(c.r[3]), GXTexCoordID(c.r[4]), GXTexMapID(c.r[5]), GXChannelID(c.r[6]));
 }
 GXHLE(GXSetTevColorIn) {
-    GXSetTevColorIn(GXTevStageID(c.r[3]), GXTevColorArg(c.r[4]), GXTevColorArg(c.r[5]), GXTevColorArg(c.r[6]),
-                    GXTevColorArg(c.r[7]));
+    GXSetTevColorIn(GXTevStageID(c.r[3]), untex(c.r[4]), untex(c.r[5]), untex(c.r[6]), untex(c.r[7]));
 }
 GXHLE(GXSetTevAlphaIn) {
     GXSetTevAlphaIn(GXTevStageID(c.r[3]), GXTevAlphaArg(c.r[4]), GXTevAlphaArg(c.r[5]), GXTevAlphaArg(c.r[6]),
