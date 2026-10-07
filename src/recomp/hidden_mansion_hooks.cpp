@@ -1,6 +1,8 @@
 // PAL Hidden Mansion tuning on the US build: hooks (tools/recomp/hooks.txt) that run the
 // original US function and adjust its inputs or results while hm::palActive().
 // What each change is, and where PAL makes it: docs/HIDDEN_MANSION.md ("Difficulty and tuning").
+#include "recomp/dev_tools.h"
+#include "recomp/gameplay.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
@@ -135,39 +137,26 @@ HLE(fn_8006D1B8) {
     }
 }
 
-// Room ambient colour: PAL multiplies the room's ambient colour by 0.2 in the hidden mansion
-// (both the lit-room x0.6 path and the unlit path). The current room record's RGB bytes are
-// scaled for the duration of the call.
+// Room ambient colour. PAL multiplies the room's ambient colour by 0.2 in the hidden mansion
+// (both the lit-room x0.6 path and the unlit path); the gameplay options add their own factor
+// (gameplay::ambientFactor() combines both). The current room record's RGB bytes are scaled
+// for the duration of the call.
 HLE(fn_800168EC) {
-    if (!hm::palActive()) return callOriginal(c, "fn_800168EC");
-    const u32 roomNo = rd32(0x803A3CA0 + 0xC) >> 24;
+    const float k = gameplay::ambientFactor();
+    if (k == 1.0f) return callOriginal(c, "fn_800168EC");
+    const u32 roomNo = rd32(0x803A3CA0 + 0xC) >> 24;  // US addresses (see gameplay.h)
     const u32 rooms = rd32(0x804D8178);
     const u32 rec = inMem1(rooms) ? rd32(rooms + roomNo * 0x14C + 0x18) : 0;
     if (!inMem1(rec)) return callOriginal(c, "fn_800168EC");
     u8 saved[3];
     for (int i = 0; i < 3; i++) {
         saved[i] = u8(rd8(rec + 0x2C + i));
-        hostp(rec + 0x2C + i)[0] = u8(float(saved[i]) * 0.2f);
+        const float v = float(saved[i]) * k;
+        hostp(rec + 0x2C + i)[0] = u8(v > 255.0f ? 255.0f : v);
     }
-    HM_FIRST("fn_800168EC room ambient x0.2");
+    if (hm::palActive()) HM_FIRST("fn_800168EC room ambient x0.2");
     callOriginal(c, "fn_800168EC");
     for (int i = 0; i < 3; i++) hostp(rec + 0x2C + i)[0] = saved[i];
-}
-
-// Game-scene setup for sCurMapNo. Dev aid for testing the boss changes: LM_START_MAP=<n>
-// loads map n (9 Bowser, 10 Chauncey, 11 Boolossus) the first time the mansion (map 2) loads.
-HLE(fn_8000C188) {
-    static const int sMap = [] {
-        const char* env = std::getenv("LM_START_MAP");
-        return env && *env ? std::atoi(env) : 0;
-    }();
-    static bool sDone = false;
-    if (sMap > 0 && !sDone && rd32(kCurMapNo) == 2) {
-        sDone = true;
-        log("[hm] LM_START_MAP: loading map %d instead of the mansion", sMap);
-        wr32(kCurMapNo, u32(sMap));
-    }
-    callOriginal(c, "fn_8000C188");
 }
 
 // ---- Bosses ------------------------------------------------------------------------------
@@ -179,17 +168,26 @@ HLE(fn_8000C188) {
 // it off everywhere else. The 15-frame counter (PAL Luigi +0x134C) is kept host-side.
 HLE(fn_800B783C) {
     static u32 sLuigi = 0, sFrames = 0;
+    static bool sRideSet = false;  // the "always ride" option turned the mode on
     const u32 self = c.r[3];
-    if (hm::palActive()) {
-        if (rd32(kCurMapNo) == 11) {
-            if (self != sLuigi) sLuigi = self, sFrames = 0;
-            ++sFrames;
-            const bool on = sFrames > 15;
-            if (on) HM_FIRST("fn_800B783C Boolossus movement mode");
-            hostp(self + 0x134C)[0] = on ? 1 : 0;
-        } else {
-            sFrames = 0;
+    dev::noteLuigi(self);  // info overlay position
+    const bool ride = gameplay::current().alwaysRide && gameplay::rideAllowed(self);
+    if (hm::palActive() && rd32(kCurMapNo) == 11) {
+        if (self != sLuigi) sLuigi = self, sFrames = 0;
+        ++sFrames;
+        const bool on = sFrames > 15 || ride;
+        if (on) HM_FIRST("fn_800B783C Boolossus movement mode");
+        hostp(self + 0x134C)[0] = on ? 1 : 0;
+    } else {
+        sFrames = 0;
+        if (ride) {
+            if (!sRideSet) log("[gameplay] always ride the Poltergust: on");
+            hostp(self + 0x134C)[0] = 1;
+            sRideSet = true;
+        } else if (hm::palActive() || sRideSet) {
+            if (sRideSet) log("[gameplay] always ride the Poltergust: suspended/off");
             hostp(self + 0x134C)[0] = 0;
+            sRideSet = false;
         }
     }
     callOriginal(c, "fn_800B783C");

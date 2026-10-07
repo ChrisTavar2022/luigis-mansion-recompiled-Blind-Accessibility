@@ -10,6 +10,8 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <ctime>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -17,11 +19,7 @@
 
 namespace recomp {
 
-extern const FuncEntry kFuncTable[];
-extern const unsigned kFuncTableSize;
-extern const SymEntry kSymTable[];
-extern const unsigned kSymTableSize;
-
+const GameModule* g_module = nullptr;
 u8* g_mem = nullptr;
 bool g_traceOn = false;
 
@@ -169,9 +167,9 @@ void mmio_wr(u32 a, u32 v, int size) {
 // ---------------------------------------------------------------------------
 
 GuestFn lookupFunc(u32 addr) {
-    const FuncEntry* end = kFuncTable + kFuncTableSize;
+    const FuncEntry* end = g_module->funcs + g_module->funcCount;
     const FuncEntry* it =
-        std::lower_bound(kFuncTable, end, addr, [](const FuncEntry& e, u32 a) { return e.addr < a; });
+        std::lower_bound(g_module->funcs, end, addr, [](const FuncEntry& e, u32 a) { return e.addr < a; });
     return it != end && it->addr == addr ? it->fn : nullptr;
 }
 
@@ -180,13 +178,17 @@ void Ctx::call(u32 addr) {
         fn(*this);
         return;
     }
+    callMissing(*this, addr);
+}
+
+void callMissing(Ctx& c, u32 addr) {
     if (addr == 0) {
         // Usually a virtual call: show the object and its vtable.
-        const u32 obj = r[3];
+        const u32 obj = c.r[3];
         const u32 vt = (obj >> 24) == 0x80 || (obj >> 24) == 0x81 ? rd32(obj) : 0;
-        fatal("call to null (lr=%08X) r3=%08X vtable=%08X r12=%08X", lr, obj, vt, r[12]);
+        fatal("call to null (lr=%08X) r3=%08X vtable=%08X r12=%08X", c.lr, obj, vt, c.r[12]);
     }
-    fatal("call to %08X: no function starts there (lr=%08X)", addr, lr);
+    fatal("call to %08X: no function starts there (lr=%08X)", addr, c.lr);
 }
 
 void Ctx::unimplemented(u32 pc, u32 insn) { fatal("unimplemented instruction %08X at %08X", insn, pc); }
@@ -194,7 +196,7 @@ void Ctx::unimplemented(u32 pc, u32 insn) { fatal("unimplemented instruction %08
 u32 guestSymbol(const char* name) {
     static const auto* map = [] {
         auto* m = new std::unordered_map<std::string, u32>;
-        for (unsigned i = 0; i < kSymTableSize; i++) m->emplace(kSymTable[i].name, kSymTable[i].addr);
+        for (u32 i = 0; i < g_module->symCount; i++) m->emplace(g_module->syms[i].name, g_module->syms[i].addr);
         return m;
     }();
     auto it = map->find(name);
@@ -202,14 +204,11 @@ u32 guestSymbol(const char* name) {
     return it->second;
 }
 
-extern const FuncEntry kOrigTable[];
-extern const unsigned kOrigTableSize;
-
 void callOriginal(Ctx& c, const char* name) {
     const u32 addr = guestSymbol(name);
-    for (unsigned i = 0; i < kOrigTableSize; i++) {
-        if (kOrigTable[i].addr == addr) {
-            kOrigTable[i].fn(c);
+    for (u32 i = 0; i < g_module->origCount; i++) {
+        if (g_module->orig[i].addr == addr) {
+            g_module->orig[i].fn(c);
             return;
         }
     }
@@ -262,60 +261,6 @@ u32 hleAlloc(u32 size, u32 align) {
     if (sHleHeap > 0x81800000) fatal("HLE guest heap exhausted");
     std::memset(hostp(p), 0, size);
     return p;
-}
-
-// ---------------------------------------------------------------------------
-// Paired singles
-// ---------------------------------------------------------------------------
-
-namespace {
-double dequant(u32 ea, int type, int scale, u32* size) {
-    const double s = std::ldexp(1.0, -scale);
-    switch (type) {
-    case 4: *size = 1; return double(u8(rd8(ea))) * s;
-    case 5: *size = 2; return double(u16(rd16(ea))) * s;
-    case 6: *size = 1; return double(s8(rd8(ea))) * s;
-    case 7: *size = 2; return double(s16(rd16(ea))) * s;
-    default: *size = 4; return double(rdf32(ea));
-    }
-}
-
-template <typename T>
-u32 saturate(double v) {
-    if (std::isnan(v)) return 0;
-    v = std::clamp(v, double(std::numeric_limits<T>::min()), double(std::numeric_limits<T>::max()));
-    return u32(T(v));
-}
-
-u32 quant(u32 ea, double v, int type, int scale) {
-    const double q = v * std::ldexp(1.0, scale);
-    switch (type) {
-    case 4: wr8(ea, saturate<u8>(q)); return 1;
-    case 5: wr16(ea, saturate<u16>(q)); return 2;
-    case 6: wr8(ea, saturate<s8>(q)); return 1;
-    case 7: wr16(ea, saturate<s16>(q)); return 2;
-    default: wrf32(ea, float(v)); return 4;
-    }
-}
-
-int sext6(u32 v) { return (v & 0x20) ? int(v) - 64 : int(v); }
-}  // namespace
-
-void Ctx::psqLoad(int d, u32 ea, int w, int i) {
-    const u32 g = gqr[i];
-    const int type = (g >> 16) & 7;
-    const int scale = sext6((g >> 24) & 0x3F);
-    u32 size;
-    f[d] = dequant(ea, type, scale, &size);
-    ps1[d] = w ? 1.0 : dequant(ea + size, type, scale, &size);
-}
-
-void Ctx::psqStore(int d, u32 ea, int w, int i) {
-    const u32 g = gqr[i];
-    const int type = g & 7;
-    const int scale = sext6((g >> 8) & 0x3F);
-    const u32 size = quant(ea, f[d], type, scale);
-    if (!w) quant(ea + size, ps1[d], type, scale);
 }
 
 // ---------------------------------------------------------------------------

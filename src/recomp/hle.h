@@ -8,9 +8,7 @@
 
 namespace recomp {
 
-using HleFn = void (*)(Ctx&);
-HleFn hleLookup(const char* name);
-void hleMissing(const char* name, u32 addr, Ctx& c);
+// HleFn, hleLookup and hleMissing are declared in ctx.h (the generated code uses them).
 
 struct HleReg {
     HleReg(const char* name, HleFn fn);

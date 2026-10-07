@@ -6,7 +6,11 @@ namespace recomp {
 
 constexpr double kTimerClock = 40500000.0;  // OS timer: bus clock / 4
 
+// The recompiled game: set once at startup, before any guest code runs (module_loader.cpp).
+extern const GameModule* g_module;
+
 GuestFn lookupFunc(u32 addr);
+[[noreturn]] void callMissing(Ctx& c, u32 addr);  // indirect call to an address with no function
 void initTimeBase();
 void initTrace();
 void initWatch();

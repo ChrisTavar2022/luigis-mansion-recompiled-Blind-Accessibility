@@ -19,6 +19,7 @@ struct VideoSettings {
     bool vsync = true;          // applied at next launch
     int msaa = 1;               // 1, 2, 4, 8; applied at next launch
     bool hudKeep4x3 = true;     // keep 2D/HUD at 4:3 (centered) in widescreen
+    bool pal60 = false;         // PAL game only: 59.94 Hz retrace (PAL60, 20% faster) instead of 50 Hz
 };
 
 // CRT post-process filter (src/recomp/crt.cpp). Beam sigmas are fractions of the
@@ -58,6 +59,7 @@ struct EnhancementSettings {
     bool pauseOnFocusLoss = true;
     bool skipIntroLogos = false;
     bool hiddenMansionPal = true;  // Hidden Mansion uses the PAL release's rules (until the lab menu offers both)
+    int palLanguage = 1;           // PAL game only: 1 English, 2 German, 3 French, 4 Spanish, 5 Italian (next launch)
     bool gbhCamera = false;        // unused Game Boy Horror live camera, toggled in game with D-pad Up (docs/UNUSED_CONTENT.md)
     bool betaSkybox = false;            // unused sky in the game archive (iwamoto/vrbox) on map 2
     bool heartDoor = false;             // unused heart door (type 07) on Chauncey's room
@@ -67,6 +69,23 @@ struct EnhancementSettings {
     bool earlyGhostLighting = false;  // "Ghost shading: Beta" = the known beta-shading cheat (fn_800581E8 channel setup)
     bool skipCutscenes = false;  // START skips cutscenes (src/recomp/skip.cpp)
     bool fastForwardKey = true;  // holding Tab runs the game at high speed (src/recomp/skip.cpp)
+    // Debug: the game's own compiled-in debug switches (src/recomp/dev_tools.cpp)
+    bool dbgParticleReport = false;  // particle manager JUTReport text
+    bool dbgDepthBlur = false;       // unused depth blur screen pass
+};
+
+// Gameplay / difficulty options (F1 > Enhancements > Gameplay). Defaults are neutral: the
+// original game is unchanged until one is moved. They apply in every mansion and variant
+// (docs/GAMEPLAY_OPTIONS.md).
+struct GameplaySettings {
+    bool palDarknessEverywhere = false;  // PAL Hidden Mansion lighting (ambient x0.2) in every mansion
+    float ambientScale = 1.0f;           // room ambient light multiplier, 0.05..1.5 (composes with the above)
+    float damageScale = 1.0f;            // damage Luigi takes, 0..5
+    float healthScale = 1.0f;            // Luigi's starting and maximum health, 0.25..5
+    float ghostHealthScale = 1.0f;       // ghost HP, 0.25..5
+    bool noHeartDrops = false;           // recovery hearts never appear (and any that do heal nothing)
+    float vacuumStrength = 1.0f;         // Poltergust drain rate on ghost HP, 0.25..4
+    bool alwaysRide = false;             // Luigi always uses the Poltergust-riding movement (PAL Boolossus mode)
 };
 
 struct Settings {
@@ -74,6 +93,7 @@ struct Settings {
     CrtSettings crt;
     AudioSettings audio;
     EnhancementSettings enhancements;
+    GameplaySettings gameplay;
 };
 
 Settings& settings();

@@ -18,6 +18,7 @@
 // suspend the skip (the player answers them); it resumes afterwards.
 #include "recomp/skip.h"
 
+#include "port/install.h"
 #include "port/settings.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
@@ -81,7 +82,10 @@ const double sSpeed = [] {
     return s >= 1.0 ? s : 32.0;
 }();
 
-bool enabled() { return sForceOn || port::settings().enhancements.skipCutscenes; }
+// The scene/event addresses above are the USA game's (docs/SETUP.md, feature gating).
+bool enabled() {
+    return port::usCodeFeature() == port::Avail::Yes && (sForceOn || port::settings().enhancements.skipCutscenes);
+}
 
 struct Status {
     u32 scene = 0;

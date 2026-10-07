@@ -6,6 +6,7 @@
 // writes) arrive through the write-gather pipe and are appended to Aurora's
 // FIFO unchanged. The console needs no GXEnd; Aurora does, so an open draw is
 // closed before the next GX call.
+#include "recomp/frame.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
 #include "recomp/interp.h"
@@ -826,6 +827,7 @@ GXHLE(GXSetCopyFilter) {
 }
 GXHLE(GXCopyDisp) {
     if (!dropDraw()) GXCopyDisp(hostp(c.r[3]), GXBool(c.r[4]));
+    if (frame::presentOnCopy()) frame::present(c, c.r[3], frame::viBlack());  // PAL release (frame.h)
 }
 GXHLE(GXSetTexCopySrc) {
     traceNote("copy src (%u,%u %ux%u)", c.r[3], c.r[4], c.r[5], c.r[6]);

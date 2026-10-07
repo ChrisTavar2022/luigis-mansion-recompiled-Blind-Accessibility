@@ -45,6 +45,7 @@ std::vector<Field> fields() {
     auto& a = sSettings.audio;
     auto& e = sSettings.enhancements;
     auto& c = sSettings.crt;
+    auto& g = sSettings.gameplay;
     return {
         enm("video", "frame_rate", v.frameRate),
         enm("video", "aspect", v.aspect),
@@ -54,6 +55,7 @@ std::vector<Field> fields() {
         flag("video", "vsync", v.vsync),
         num("video", "msaa", v.msaa),
         flag("video", "hud_keep_4x3", v.hudKeep4x3),
+        flag("video", "pal60", v.pal60),
         flag("crt", "enabled", c.enabled),
         enm("crt", "preset", c.preset),
         enm("crt", "scanlines", c.scanlines),
@@ -91,6 +93,7 @@ std::vector<Field> fields() {
         flag("enhancements", "pause_on_focus_loss", e.pauseOnFocusLoss),
         flag("enhancements", "skip_intro_logos", e.skipIntroLogos),
         flag("enhancements", "hidden_mansion_pal", e.hiddenMansionPal),
+        num("enhancements", "pal_language", e.palLanguage),
         flag("enhancements", "gbh_camera", e.gbhCamera),
         flag("enhancements", "early_ghost_lighting", e.earlyGhostLighting),
         flag("enhancements", "beta_skybox", e.betaSkybox),
@@ -100,6 +103,16 @@ std::vector<Field> fields() {
         flag("enhancements", "unused_portrait_models", e.unusedPortraitModels),
         flag("enhancements", "skip_cutscenes", e.skipCutscenes),
         flag("enhancements", "fast_forward_key", e.fastForwardKey),
+        flag("gameplay", "pal_darkness_everywhere", g.palDarknessEverywhere),
+        num("gameplay", "ambient_scale", g.ambientScale),
+        num("gameplay", "damage_scale", g.damageScale),
+        num("gameplay", "health_scale", g.healthScale),
+        num("gameplay", "ghost_health_scale", g.ghostHealthScale),
+        flag("gameplay", "no_heart_drops", g.noHeartDrops),
+        num("gameplay", "vacuum_strength", g.vacuumStrength),
+        flag("gameplay", "always_ride", g.alwaysRide),
+        flag("debug", "particle_report", e.dbgParticleReport),
+        flag("debug", "depth_blur", e.dbgDepthBlur),
     };
 }
 

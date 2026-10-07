@@ -1,10 +1,12 @@
-// In-game overlay menu (F1 toggles, Esc closes): Visuals / Sound / Enhancements.
+// In-game overlay menu (F1 toggles, Esc closes): Visuals / Sound / Enhancements / Game.
 // Drawn with Aurora's Dear ImGui on the host thread between the guest's present
 // and aurora_end_frame. While it is open the game receives neutral pad input.
 #include "recomp/menu.h"
 
+#include "port/install.h"
 #include "port/settings.h"
 #include "recomp/crt.h"
+#include "recomp/dev_tools.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/skip.h"
 
@@ -16,13 +18,32 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 
 namespace recomp::menu {
 namespace {
 
-bool sOpen = false;
+// Test aid: LM_MENU_TAB=<Enhancements sub-tab name> starts with the menu open on that tab.
+const char* sEnvTab = std::getenv("LM_MENU_TAB");
+bool sOpen = sEnvTab != nullptr;
+
+// Flags that select a tab once when LM_MENU_TAB names it.
+ImGuiTabItemFlags envTab(const char* name) {
+    if (!sEnvTab || std::strcmp(sEnvTab, name) != 0) return 0;
+    return ImGuiTabItemFlags_SetSelected;
+}
 bool sDirty = false;
+std::string sOpenTab = sEnvTab ? "Enhancements" : "";  // tab to select once (LM_MENU / LM_MENU_TAB)
+
+bool tab(const char* name) {
+    const bool select = sOpenTab == name;
+    if (select) sOpenTab.clear();
+    return ImGui::BeginTabItem(name, nullptr, select ? ImGuiTabItemFlags_SetSelected : 0);
+}
 
 void applyResolution() { VISetFrameBufferScale(float(port::settings().video.resolutionScale)); }
 
@@ -46,14 +67,85 @@ void pending(const char* what) {
     ImGui::TextDisabled("(%s)", what);
 }
 
+// Feature gating (port::Avail, docs/SETUP.md): a feature missing its disc is greyed out
+// with the reason; one that applies to the other installed version stays selectable.
+struct Gate {
+    port::Avail a;
+    explicit Gate(port::Avail avail) : a(avail) { ImGui::BeginDisabled(blocked()); }
+    bool blocked() const {
+        return a == port::Avail::NeedsUsDisc || a == port::Avail::NeedsPalDisc || a == port::Avail::NotYet;
+    }
+    ~Gate() {
+        ImGui::EndDisabled();
+        if (const char* note = port::availNote(a)) pending(note);
+    }
+};
+
+void gameTab() {
+    auto& inst = port::install();
+    if (inst.staticBuild) {
+        ImGui::Text("Developer build: %s, recompiled at build time.", port::versionName(inst.running));
+        ImGui::TextDisabled("LuigisMansionRecomp manages discs and versions (docs/SETUP.md).");
+    } else {
+        auto row = [](const char* label, const std::string& path, bool ready) {
+            ImGui::Text("%s:", label);
+            ImGui::SameLine();
+            if (ready) ImGui::TextWrapped("%s", path.c_str());
+            else ImGui::TextDisabled("not installed");
+        };
+        row("USA disc", inst.usDisc, inst.usReady);
+        row("Europe disc", inst.palDisc, inst.palReady);
+        ImGui::Text("Playing: %s version", inst.running == port::GameVersion::PAL ? "European" : "USA");
+        if (inst.both()) {
+            int base = int(inst.base);
+            ImGui::Text("Version to play:");
+            ImGui::SameLine();
+            bool changed = ImGui::RadioButton("USA", &base, int(port::GameVersion::USA));
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("Europe", &base, int(port::GameVersion::PAL));
+            if (changed) {
+                inst.base = port::GameVersion(base);
+                port::saveInstall();
+            }
+            if (inst.base != inst.running) {
+                pending("restart to switch");
+                if (ImGui::Button("Restart now")) {
+                    port::saveSettings();
+                    port::relaunch();
+                }
+            }
+        }
+        if (ImGui::Button("Add or change discs...")) {
+            port::saveSettings();
+            port::relaunch(true);
+        }
+    }
+    ImGui::Separator();
+    auto& e = port::settings().enhancements;
+    {
+        Gate g(port::palBaseFeature());
+        static const char* kLanguages[] = {"English", "Deutsch", "Francais", "Espanol", "Italiano"};
+        int lang = std::clamp(e.palLanguage, 1, 5) - 1;
+        if (ImGui::Combo("Language (European version)", &lang, kLanguages, 5)) {
+            e.palLanguage = lang + 1;
+            sDirty = true;
+        }
+    }
+    if (port::palBaseFeature() == port::Avail::Yes)
+        ImGui::TextDisabled("Used for a new save; an existing save keeps its language (in-game Options).");
+}
+
 void visualsTab() {
     auto& v = port::settings().video;
     static const char* kFrameRates[] = {"Original (30 fps)", "Interpolated 60 fps", "Interpolated, unlimited"};
     sDirty |= combo("Frame rate", v.frameRate, kFrameRates, 3);
     static const char* kAspects[] = {"Original 4:3", "Match window", "16:9", "16:10", "21:9", "32:9"};
     sDirty |= combo("Aspect ratio", v.aspect, kAspects, 6);
-    sDirty |= ImGui::Checkbox("Keep HUD at 4:3", &v.hudKeep4x3);
-    if (!v.hudKeep4x3) pending("in-game HUD moves to the screen edges");
+    {
+        Gate g(port::usCodeFeature());
+        sDirty |= ImGui::Checkbox("Keep HUD at 4:3", &v.hudKeep4x3);
+        if (!v.hudKeep4x3 && g.a == port::Avail::Yes) pending("in-game HUD moves to the screen edges");
+    }
     sDirty |= ImGui::SliderFloat("Field of view", &v.fovScale, 0.75f, 1.5f, "%.2fx");
     ImGui::Separator();
     {
@@ -86,6 +178,17 @@ void visualsTab() {
         sDirty = true;
     }
     pending("next launch");
+    {
+        // The European game paces its frames with a timer, so 50 Hz does not change its speed;
+        // it is the console's PAL video timing (VI retrace and its callbacks).
+        Gate g(port::palBaseFeature());
+        int hz = v.pal60 ? 1 : 0;
+        static const char* kRates[] = {"50 Hz (original PAL)", "60 Hz (PAL60)"};
+        if (ImGui::Combo("PAL refresh rate", &hz, kRates, 2)) {
+            v.pal60 = hz == 1;
+            sDirty = true;
+        }
+    }
     ImGui::Separator();
     sDirty |= recomp::crt::drawMenu();
 }
@@ -101,6 +204,33 @@ void soundTab() {
     sDirty |= ImGui::Checkbox("Reverb / echo", &a.reverb);
 }
 
+// Gameplay / difficulty (port::GameplaySettings, src/recomp/gameplay_hooks.cpp). All neutral by
+// default (ctrl+click a slider to type a value).
+void gameplaySection() {
+    auto& g = port::settings().gameplay;
+    ImGui::TextDisabled("Neutral by default: the original game is unchanged until you move something.");
+    ImGui::SeparatorText("Lighting");
+    sDirty |= ImGui::Checkbox("Hidden Mansion darkness everywhere", &g.palDarknessEverywhere);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Room ambient light x0.2, as in the PAL Hidden Mansion");
+    sDirty |= ImGui::SliderFloat("Ambient light", &g.ambientScale, 0.05f, 1.5f, "%.2fx");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Multiplies room ambient light (also on top of PAL darkness)");
+    ImGui::SeparatorText("Difficulty");
+    sDirty |= ImGui::SliderFloat("Damage taken", &g.damageScale, 0.0f, 5.0f, "%.2fx");
+    sDirty |= ImGui::SliderFloat("Luigi's health", &g.healthScale, 0.25f, 5.0f, "%.2fx");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Starting and maximum health (applies when Luigi is next created)");
+    sDirty |= ImGui::SliderFloat("Ghost health", &g.ghostHealthScale, 0.25f, 5.0f, "%.2fx");
+    sDirty |= ImGui::SliderFloat("Poltergust strength", &g.vacuumStrength, 0.25f, 4.0f, "%.2fx");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("How fast the vacuum drains a captured ghost's HP");
+    sDirty |= ImGui::Checkbox("Disable recovery hearts", &g.noHeartDrops);
+    ImGui::SeparatorText("Movement");
+    sDirty |= ImGui::Checkbox("Always ride the Poltergust", &g.alwaysRide);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Luigi glides with momentum everywhere (the PAL Boolossus-fight movement)");
+    if (ImGui::Button("Reset gameplay options")) {
+        g = port::GameplaySettings{};
+        sDirty = true;
+    }
+}
+
 void generalEnhancementsTab() {
     auto& e = port::settings().enhancements;
     sDirty |= ImGui::Checkbox("Show FPS", &e.showFps);
@@ -110,28 +240,45 @@ void generalEnhancementsTab() {
     }
     sDirty |= ImGui::Checkbox("Skip intro logos", &e.skipIntroLogos);
     pending("planned");
-    sDirty |= ImGui::Checkbox("Skippable cutscenes", &e.skipCutscenes);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Press START during a cutscene to skip it. The game plays the rest of the\n"
-                          "cutscene at high speed behind a black screen, so everything it sets up\n"
-                          "(items, keys, doors, story progress) is the same as after watching it.\n"
-                          "Choices and the save screen still wait for you.");
+    {
+        Gate g(port::usCodeFeature());
+        sDirty |= ImGui::Checkbox("Skippable cutscenes", &e.skipCutscenes);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Press START during a cutscene to skip it. The game plays the rest of the\n"
+                              "cutscene at high speed behind a black screen, so everything it sets up\n"
+                              "(items, keys, doors, story progress) is the same as after watching it.\n"
+                              "Choices and the save screen still wait for you.");
+    }
     sDirty |= ImGui::Checkbox("Hold Tab to fast-forward", &e.fastForwardKey);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("While Tab is held the game runs as fast as it can, muted.");
     ImGui::Separator();
     {
         // Switching mid-visit would leave PAL data/patches half applied, so only allow it outside.
         const bool inside = recomp::hm::hiddenActive();
+        const port::Avail avail[2] = {port::hiddenMansionUs(), port::hiddenMansionPal()};
+        const bool pal = recomp::hm::variant() == recomp::hm::Variant::Pal;
+        static const char* kVariants[] = {"USA (original)", "European (harder, mirrored)"};
+        auto usable = [&](int i) { return avail[i] == port::Avail::Yes; };
         ImGui::BeginDisabled(inside);
-        int v = e.hiddenMansionPal ? 1 : 0;
-        static const char* kVariants[] = {"USA (original)", "PAL (harder, mirrored)"};
-        if (ImGui::Combo("Hidden Mansion version", &v, kVariants, 2)) {
-            e.hiddenMansionPal = v == 1;
-            recomp::hm::setVariant(e.hiddenMansionPal ? recomp::hm::Variant::Pal : recomp::hm::Variant::Us);
-            sDirty = true;
+        if (ImGui::BeginCombo("Hidden Mansion version", kVariants[pal ? 1 : 0])) {
+            for (int i = 0; i < 2; i++) {
+                if (ImGui::Selectable(kVariants[i], (pal ? 1 : 0) == i,
+                                      usable(i) ? 0 : ImGuiSelectableFlags_Disabled)) {
+                    e.hiddenMansionPal = i == 1;
+                    recomp::hm::setVariant(e.hiddenMansionPal ? recomp::hm::Variant::Pal : recomp::hm::Variant::Us);
+                    sDirty = true;
+                }
+                if (const char* note = port::availNote(avail[i])) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(%s)", note);
+                }
+            }
+            ImGui::EndCombo();
         }
         ImGui::EndDisabled();
         if (inside) pending("leave the Hidden Mansion to change");
+        else if (!usable(0)) pending(avail[0] == port::Avail::NotYet ? "USA option: not on the European game yet" : port::availNote(avail[0]));
+        else if (!usable(1)) pending(port::availNote(avail[1]));
     }
 }
 
@@ -141,48 +288,57 @@ void unusedContentTab() {
     auto& e = port::settings().enhancements;
     ImGui::TextDisabled("Content left unused in the retail game. Everything here is off by default.");
     ImGui::Separator();
-    sDirty |= ImGui::Checkbox("Game Boy Horror camera", &e.gbhCamera);
-    pending("D-pad Up in game");
     {
+        Gate g(port::usCodeFeature());
+        sDirty |= ImGui::Checkbox("Game Boy Horror camera", &e.gbhCamera);
+        if (g.a == port::Avail::Yes) pending("D-pad Up in game");
+    }
+    {
+        Gate g(port::usCodeFeature());
         static const char* kGhost[] = {"Retail", "Beta"};
-        int g = e.earlyGhostLighting ? 1 : 0;
-        if (ImGui::Combo("Ghost shading", &g, kGhost, 2)) {
-            e.earlyGhostLighting = g == 1;
+        int gs = e.earlyGhostLighting ? 1 : 0;
+        if (ImGui::Combo("Ghost shading", &gs, kGhost, 2)) {
+            e.earlyGhostLighting = gs == 1;
             sDirty = true;
         }
     }
-    sDirty |= ImGui::Checkbox("Beta skybox", &e.betaSkybox);
-    pending("next map load");
-    sDirty |= ImGui::Checkbox("Heart door (Chauncey's room)", &e.heartDoor);
-    pending("next map load");
-    sDirty |= ImGui::Checkbox("Star door (Twins' room)", &e.starDoor);
-    pending("next map load");
-    sDirty |= ImGui::Checkbox("Game Boy Horror map: full Luigi model", &e.betaMapLuigi);
-    pending("next map load");
-    sDirty |= ImGui::Checkbox("Portrificationizer: each ghost's own model", &e.unusedPortraitModels);
+    {
+        Gate g(port::usCodeFeature());
+        auto item = [&](const char* label, bool& v, const char* note) {
+            sDirty |= ImGui::Checkbox(label, &v);
+            if (note && g.a == port::Avail::Yes) pending(note);
+        };
+        item("Beta skybox", e.betaSkybox, "next map load");
+        item("Heart door (Chauncey's room)", e.heartDoor, "next map load");
+        item("Star door (Twins' room)", e.starDoor, "next map load");
+        item("Game Boy Horror map: full Luigi model", e.betaMapLuigi, "next map load");
+        item("Portrificationizer: each ghost's own model", e.unusedPortraitModels, nullptr);
+    }
+    ImGui::Separator();
+    recomp::dev::unusedSection();
 }
 
 // Gameplay toggles, difficulty and cheats.
-void gameplayTab() { ImGui::TextDisabled("Difficulty and gameplay options will appear here."); }
+void gameplayTab() { gameplaySection(); }
 
 // Debug features left in the game, warps and viewers.
-void debugTab() { ImGui::TextDisabled("Debug menus, area warps and the model viewer will appear here."); }
+void debugTab() { recomp::dev::debugSection(); }
 
 void enhancementsTab() {
     if (ImGui::BeginTabBar("enhancements")) {
-        if (ImGui::BeginTabItem("General")) {
+        if (ImGui::BeginTabItem("General", nullptr, envTab("General"))) {
             generalEnhancementsTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Gameplay")) {
+        if (ImGui::BeginTabItem("Gameplay", nullptr, envTab("Gameplay"))) {
             gameplayTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Unused content")) {
+        if (ImGui::BeginTabItem("Unused content", nullptr, envTab("Unused content"))) {
             unusedContentTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Debug")) {
+        if (ImGui::BeginTabItem("Debug", nullptr, envTab("Debug"))) {
             debugTab();
             ImGui::EndTabItem();
         }
@@ -217,11 +373,17 @@ void fpsOverlay() {
 void init() {
     port::loadSettings();
     applyWindowSettings();
+    // LM_MENU=<tab> (testing/screenshots): start with the menu open on that tab.
+    if (const char* tab = std::getenv("LM_MENU"); tab && *tab) {
+        sOpen = true;
+        sOpenTab = tab;
+    }
 }
 
-bool isOpen() { return sOpen; }
+bool isOpen() { return sOpen || recomp::dev::capturesInput(); }
 
 void handleEvent(const SDL_Event& ev) {
+    if (recomp::dev::handleKey(ev)) return;
     if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) return;
     if (ev.key.key == SDLK_F1) sOpen = !sOpen;
     else if (ev.key.key == SDLK_ESCAPE && sOpen) sOpen = false;
@@ -235,6 +397,7 @@ void draw() {
     skip::drawOverlay();
     recomp::crt::update();
     if (port::settings().enhancements.showFps) fpsOverlay();
+    recomp::dev::drawOverlays();
     if (!sOpen) return;
     ImGui::SetNextWindowSize(ImVec2(680, 400), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
@@ -242,16 +405,20 @@ void draw() {
     if (ImGui::Begin("Luigi's Mansion PC  (F1)", &open, ImGuiWindowFlags_NoCollapse)) {
         ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.45f);
         if (ImGui::BeginTabBar("tabs")) {
-            if (ImGui::BeginTabItem("Visuals")) {
+            if (tab("Visuals")) {
                 visualsTab();
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Sound")) {
+            if (tab("Sound")) {
                 soundTab();
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Enhancements")) {
+            if (tab("Enhancements")) {
                 enhancementsTab();
+                ImGui::EndTabItem();
+            }
+            if (tab("Game")) {
+                gameTab();
                 ImGui::EndTabItem();
             }
             ImGui::EndTabBar();

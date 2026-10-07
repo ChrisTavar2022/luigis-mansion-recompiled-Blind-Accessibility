@@ -1,14 +1,20 @@
 # Recompiled functions that check for a host replacement (registered with HLE(name))
-# before running their translated body. One symbol name per line.
+# before running their translated body. One symbol name per line, as named in the US
+# (GLME01) symbol map, optionally followed by the versions it applies to:
+#   <symbol>          US build only (default: hooks are written against US code)
+#   <symbol> us pal   also the PAL build, once the hook has been checked against PAL code
+#   <symbol> pal      PAL build only
+# After tagging a hook `pal`, run tools/recomp/gen_version_map.py (maps it to its PAL
+# address). See docs/SETUP.md.
 
 # JAudio's DSP driver: the audio DSP is not emulated. Its boot handshake is skipped
 # and its command mailbox / halt release drive our microcode stand-in
 # (src/recomp/hle_audio.cpp, src/recomp/audio_dsp.cpp).
-DspBoot__Fv
-DSPSendCommands__FPUlUl
-DSPReleaseHalt__Fv
-DSPWaitFinish__Fv
-DiplSec__FUl
+DspBoot__Fv us pal
+DSPSendCommands__FPUlUl us pal
+DSPReleaseHalt__Fv us pal
+DSPWaitFinish__Fv us pal
+DiplSec__FUl us pal
 
 # Camera culling planes: widened for the Hor+ widescreen projection (src/recomp/widescreen.cpp).
 fn_80008D58
@@ -46,12 +52,18 @@ set__7JUTRectFiiii
 fn_8003CFC0
 fn_8000B228
 fn_80060E70
-# Dev: LM_START_MAP=<n> (new game starts in another map; hidden_mansion_hooks.cpp)
-fn_8000C188
+# Gameplay / difficulty options (src/recomp/gameplay_hooks.cpp, docs/GAMEPLAY_OPTIONS.md):
+# damage, Luigi health, ghost HP, vacuum strength, recovery hearts.
+fn_800B9488
+fn_800AD5AC
+fn_800AE1A4
+fn_800C0F08
+fn_80081BCC
+getValue__Q24Koga8ToolDataCFiPCcPPCc
+fn_800D1458
 # J2D screen drawing: the in-game HUD anchored to the screen edges in
 # widescreen (src/recomp/widescreen.cpp).
 draw__9J2DScreenFiiPC14J2DGrafContext
-
 # Early ghost lighting (cheat-equivalent, src/recomp/unused_content.cpp)
 fn_8005A5D4
 
@@ -63,3 +75,11 @@ fn_800122BC
 fn_8002F4DC
 getResource__10JKRArchiveFPCc
 getResSize__10JKRArchiveCFPCv
+
+# Developer tools (src/recomp/dev_tools.cpp, docs/UNUSED_CONTENT.md): map warps through the
+# scene manager (+ LM_START_MAP), the game's JUTReport queue (debug text overlay), and the
+# end-of-frame copy where debug switches are applied and the model viewer draws.
+fn_8000C188
+fn_8000B4A0
+fn_801D7114
+LMChangeFrameBuffer__Fv
