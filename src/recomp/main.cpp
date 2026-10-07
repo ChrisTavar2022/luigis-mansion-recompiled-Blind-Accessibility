@@ -152,6 +152,7 @@ int main(int argc, char* argv[]) {
     const std::string disc = findDisc(wantId);
     {
         auto& inst = port::install();
+        inst.staticBuild = true;
         inst.running = std::strcmp(wantId, "GLMP01") == 0 ? port::GameVersion::PAL : port::GameVersion::USA;
         inst.usReady = inst.running == port::GameVersion::USA;
         inst.palReady = inst.running == port::GameVersion::PAL;

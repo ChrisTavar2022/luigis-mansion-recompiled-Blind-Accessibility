@@ -25,13 +25,42 @@ std::vector<std::string> sArgs;
 const char* gameId(GameVersion v) { return v == GameVersion::PAL ? "GLMP01" : "GLME01"; }
 const char* versionName(GameVersion v) { return v == GameVersion::PAL ? "PAL" : "USA"; }
 
-bool InstallState::hiddenMansionPalAvailable() const {
-    return running == GameVersion::PAL || hmOverlayReady;
+Avail usCodeFeature() {
+    const auto& i = sInstall;
+    if (i.running == GameVersion::USA) return Avail::Yes;
+    return i.usReady ? Avail::OtherBase : Avail::NeedsUsDisc;
 }
 
-bool InstallState::hiddenMansionUsAvailable() const {
-    // On a PAL base the US rules would need the reverse overlay (docs/SETUP.md), not built yet.
-    return running == GameVersion::USA;
+Avail palBaseFeature() {
+    const auto& i = sInstall;
+    if (i.running == GameVersion::PAL) return Avail::Yes;
+    return i.palReady ? Avail::OtherBase : Avail::NeedsPalDisc;
+}
+
+Avail hiddenMansionPal() {
+    const auto& i = sInstall;
+    if (i.running == GameVersion::PAL || i.hmOverlayReady) return Avail::Yes;
+    return Avail::NeedsPalDisc;
+}
+
+Avail hiddenMansionUs() {
+    const auto& i = sInstall;
+    if (i.running == GameVersion::USA) return Avail::Yes;
+    // On the European game the USA rules need the reverse overlay (docs/SETUP.md).
+    return i.usReady ? Avail::NotYet : Avail::NeedsUsDisc;
+}
+
+const char* availNote(Avail a) {
+    switch (a) {
+    case Avail::Yes: return nullptr;
+    case Avail::OtherBase:
+        return sInstall.running == GameVersion::USA ? "applies when playing the European version"
+                                                    : "applies when playing the USA version";
+    case Avail::NeedsUsDisc: return "needs the USA disc: F1 > Game > Add or change discs";
+    case Avail::NeedsPalDisc: return "needs the European disc: F1 > Game > Add or change discs";
+    case Avail::NotYet: return "not available on the European version yet; play the USA version";
+    }
+    return nullptr;
 }
 
 InstallState& install() { return sInstall; }
@@ -75,7 +104,7 @@ void saveInstall() {
 
 void setLaunchArgs(int argc, char** argv) { sArgs.assign(argv, argv + argc); }
 
-void relaunch() {
+void relaunch(bool setup) {
 #ifdef _WIN32
     wchar_t exe[MAX_PATH * 4];
     GetModuleFileNameW(nullptr, exe, DWORD(std::size(exe)));
@@ -85,11 +114,12 @@ void relaunch() {
     if (wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc)) {
         for (int i = 1; i < argc; i++) {
             const std::wstring a = argv[i];
-            if (a == L"--setup") continue;
+            if (a == L"--setup" || a == L"--setup-auto") continue;
             cmd += L" \"" + a + L"\"";
         }
         LocalFree(argv);
     }
+    if (setup) cmd += L" --setup";
     STARTUPINFOW si{sizeof(si)};
     PROCESS_INFORMATION pi{};
     if (CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
@@ -99,6 +129,8 @@ void relaunch() {
 #else
     std::vector<char*> argv;
     for (auto& a : sArgs) argv.push_back(a.data());
+    static char setupArg[] = "--setup";
+    if (setup) argv.push_back(setupArg);
     argv.push_back(nullptr);
     if (fork() == 0) execv("/proc/self/exe", argv.data());
 #endif

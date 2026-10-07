@@ -23,12 +23,26 @@ struct InstallState {
     bool hmOverlayReady = false;  // PAL Hidden Mansion overlay for the US base (needs both discs)
     GameVersion running = GameVersion::USA;  // version of the game that is running
 
+    bool staticBuild = false;  // lmrecomp: one version linked in, no setup
+
     bool both() const { return usReady && palReady; }
-    // Feature availability (single-disc installs grey out what needs the other disc).
-    bool hiddenMansionPalAvailable() const;   // PAL rules in the Hidden Mansion
-    bool hiddenMansionUsAvailable() const;    // US rules in the Hidden Mansion
-    bool palOptionsAvailable() const { return running == GameVersion::PAL; }  // 50/60 Hz, language
 };
+
+// Feature availability for the F1 menu (docs/SETUP.md, "Feature gating"). Only a
+// single-disc install greys features out; with both discs everything stays selectable and
+// options for the other version say where they apply.
+enum class Avail {
+    Yes,           // works in the running game
+    OtherBase,     // works when the other version is the base (both discs installed)
+    NeedsUsDisc,   // single-disc install without the USA disc
+    NeedsPalDisc,  // single-disc install without the European disc
+    NotYet,        // both discs installed, but not implemented for the running base yet
+};
+Avail usCodeFeature();      // enhancements written against the USA game's code/addresses
+Avail palBaseFeature();     // 50/60 Hz, language: options of the European game itself
+Avail hiddenMansionPal();   // the European Hidden Mansion rules
+Avail hiddenMansionUs();    // the USA Hidden Mansion rules
+const char* availNote(Avail a);  // short explanation, nullptr for Yes
 
 InstallState& install();
 
@@ -41,8 +55,9 @@ std::filesystem::path hiddenMansionOverlayDir();
 void loadInstall();
 void saveInstall();
 
-// Restarts the executable with the same arguments (after the user changed the install).
-void relaunch();
+// Restarts the executable with the same arguments (after the user changed the install);
+// `setup` opens the setup screen (add or change discs).
+void relaunch(bool setup = false);
 void setLaunchArgs(int argc, char** argv);
 
 }  // namespace port

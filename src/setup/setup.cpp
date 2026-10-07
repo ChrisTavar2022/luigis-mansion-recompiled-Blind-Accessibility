@@ -260,7 +260,7 @@ bool run(const Options& opts, LaunchInfo& launch) {
                                "The game is translated and compiled for this PC once; that takes a minute or two.");
             ImGui::Dummy(ImVec2(0, 8 * scale));
             const char* labels[2] = {"USA disc (GLME01)", "Europe disc (GLMP01)"};
-            const char* notes[2] = {"", "Optional with a USA disc: adds the European Hidden Mansion."};
+            const char* notes[2] = {"", "Playable on its own; with a USA disc it also adds the European Hidden Mansion."};
             for (int i = 0; i < 2; i++) {
                 ImGui::PushID(i);
                 ImGui::Text("%s", labels[i]);

@@ -141,7 +141,8 @@ Variant initialVariant() {
     std::string v = env && *env ? env : port::options().hiddenMansion;
     if (v.empty()) v = port::settings().enhancements.hiddenMansionPal ? "pal" : "us";
     for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-    const bool pal = v != "us";
+    // Without the European disc's data (single-disc USA install) only the USA rules exist.
+    const bool pal = v != "us" && port::hiddenMansionPal() == port::Avail::Yes;
     const bool have = std::filesystem::exists(overlayDir() + "manifest.txt");
     log("[hm] Hidden Mansion variant: %s (overlay %s%s)", pal ? "PAL" : "USA", overlayDir().c_str(),
         have ? "" : ": missing, run tools/hidden_mansion_data.py; PAL data unavailable");
