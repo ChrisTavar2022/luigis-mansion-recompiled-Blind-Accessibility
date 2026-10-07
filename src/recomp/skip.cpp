@@ -366,21 +366,7 @@ void drawOverlay() {
         text(">> Fast-forward", ImVec2(size.x - 16 * scale, 12 * scale), ImVec2(1, 0), IM_COL32(255, 255, 255, 230),
              20 * scale);
     }
-
-    // "Press START to skip": shown for a few seconds when a cutscene begins.
-    static clock::time_point since;
-    static bool was = false;
-    const bool skippable = sSkippable.load();
-    const auto now = clock::now();
-    if (skippable && !was) since = now;
-    was = skippable;
-    if (!skippable) return;
-    const float t = std::chrono::duration<float>(now - since).count();
-    constexpr float kShow = 4.0f, kFade = 0.75f;
-    if (t > kShow + kFade) return;
-    const float alpha = t < kShow ? 1.0f : 1.0f - (t - kShow) / kFade;
-    text("Press START to skip", ImVec2(size.x - 24 * scale, size.y - 20 * scale), ImVec2(1, 1),
-         IM_COL32(255, 255, 255, int(220 * alpha)), 22 * scale);
+    // No "Press START to skip" prompt: the option is described in the F1 menu instead.
 }
 
 }  // namespace recomp::skip
