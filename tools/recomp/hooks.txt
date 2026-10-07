@@ -1,16 +1,12 @@
 # Recompiled functions that check for a host replacement (registered with HLE(name))
 # before running their translated body. One symbol name per line.
 
-# JAudio's DSP driver: the audio DSP is not emulated yet, so its boot handshake and
-# command mailbox are replaced (src/recomp/hle_audio.cpp).
+# JAudio's DSP driver: the audio DSP is not emulated. Its boot handshake is skipped
+# and its command mailbox / halt release drive our microcode stand-in
+# (src/recomp/hle_audio.cpp, src/recomp/audio_dsp.cpp).
 DspBoot__Fv
 DSPSendCommands__FPUlUl
 DSPReleaseHalt__Fv
 DSPWaitFinish__Fv
-DsyncFrame__FUlUlUl
-DwaitFrame__Fv
 DiplSec__FUl
 
-# Temporary: "is the streamed BGM ready" poll (only caller: a scene init that spins on it).
-# Streamed audio isn't emulated yet, so report ready (src/recomp/hooks_temp.cpp).
-fn_80189054
