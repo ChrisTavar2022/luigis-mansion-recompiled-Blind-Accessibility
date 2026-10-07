@@ -38,6 +38,7 @@ ImGuiTabItemFlags envTab(const char* name) {
     return ImGuiTabItemFlags_SetSelected;
 }
 bool sDirty = false;
+bool sQuit = false;  // "Quit game" confirmed
 std::string sOpenTab = sEnvTab ? "Enhancements" : "";  // tab to select once (LM_MENU / LM_MENU_TAB)
 
 bool tab(const char* name) {
@@ -383,6 +384,7 @@ void init() {
 }
 
 bool isOpen() { return sOpen || recomp::dev::capturesInput(); }
+bool quitRequested() { return sQuit; }
 
 void handleEvent(const SDL_Event& ev) {
     if (recomp::controls::handleEvent(ev)) return;  // binding capture owns the key
@@ -431,6 +433,23 @@ void draw() {
             ImGui::EndTabBar();
         }
         ImGui::PopItemWidth();
+        // Quit (with confirmation): ends the host loop the same way closing the window does.
+        ImGui::Separator();
+        if (ImGui::Button("Quit game")) ImGui::OpenPopup("Quit?");
+        if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Quit Luigi's Mansion? Unsaved progress will be lost.");
+            if (ImGui::Button("Quit")) {
+                if (sDirty) {
+                    port::saveSettings();
+                    sDirty = false;
+                }
+                sQuit = true;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
     }
     ImGui::End();
     if (!open) sOpen = false;

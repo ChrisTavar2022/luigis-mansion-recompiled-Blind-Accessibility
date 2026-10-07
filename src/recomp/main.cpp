@@ -256,7 +256,7 @@ int main(int argc, char* argv[]) {
         menu::draw();
         aurora_end_frame();
         frame::pace();
-        if (!running) break;
+        if (!running || menu::quitRequested()) break;
     }
 
     vi::stopTimer();
