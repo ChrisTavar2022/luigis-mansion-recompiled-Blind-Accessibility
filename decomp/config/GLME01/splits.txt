@@ -1,0 +1,1378 @@
+Sections:
+	.init       type:code align:4
+	extab       type:rodata align:32
+	extabindex  type:rodata align:8
+	.text       type:code align:32
+	.ctors      type:rodata align:16
+	.dtors      type:rodata align:16
+	.rodata     type:rodata align:32
+	.data       type:data align:16
+	.bss        type:bss align:16
+	.sdata      type:data align:8
+	.sbss       type:bss align:16
+	.sdata2     type:rodata align:32
+
+Unsorted/80005EB8.cpp:
+	.text       start:0x80005EB8 end:0x80006258
+	.sdata      start:0x804CFF68 end:0x804CFF70
+	.sbss       start:0x804D8010 end:0x804D8028
+
+Unsorted/LMDvdFile.cpp:
+	.text       start:0x80006258 end:0x80006DF0
+	.data       start:0x80218180 end:0x802181B4
+	.bss        start:0x8039AC38 end:0x8039CE60
+	.sbss       start:0x804D8028 end:0x804D8030
+
+Unsorted/80006DF0.cpp:
+	.text       start:0x80006DF0 end:0x80007018
+	.bss        start:0x8039CE60 end:0x8039F2A0
+
+Unsorted/80007018.cpp:
+	.text       start:0x80007018 end:0x800071C0
+	.bss        start:0x8039F2A0 end:0x803A3600
+
+Unsorted/LMDvdFileBlock.cpp:
+	.text       start:0x800071C0 end:0x80007398
+
+Unsorted/LMDisplayUtil.cpp:
+	.text       start:0x80007398 end:0x80008418
+	.ctors      start:0x8020BAC4 end:0x8020BAC8
+	.data       start:0x802181D0 end:0x8021DA80
+	.bss        start:0x803A3600 end:0x803A3810
+	.sdata      start:0x804CFF70 end:0x804CFF84
+	.sbss       start:0x804D8030 end:0x804D8078
+	.sdata2     start:0x804D9880 end:0x804D98A8
+
+Unsorted/aramStaticData.cpp:
+	.bss        start:0x803D34C8 end:0x803D3540
+
+Unsorted/bootScene.cpp:
+	.text       start:0x8000E46C end:0x8000EC98
+	.data       start:0x8021DFC0 end:0x802FF0A8
+	.sdata      start:0x804CFFB0 end:0x804CFFB8
+	.sbss       start:0x804D8110 end:0x804D8130
+	.sdata2     start:0x804D9A08 end:0x804D9A20
+
+Unsorted/TitleScene.cpp:
+	.text       start:0x8000EC98 end:0x8000EF58
+	.data       start:0x802FF0A8 end:0x802FF0D0
+
+Unsorted/TitleScreenPane.cpp:
+	.text       start:0x8003A430 end:0x8003AF2C
+	.ctors      start:0x8020BAEC end:0x8020BAF0
+
+Unsorted/s3dmodel.cpp:
+	.text       start:0x80058368 end:0x80058850
+
+Unsorted/800627D8.cpp:
+	.text       start:0x800627D0 end:0x800627E8
+	.sbss       start:0x804D872C end:0x804D8730
+
+Unsorted/8006385C.cpp:
+	.text       start:0x8006385C end:0x80065DA4
+
+Unsorted/InGameFlagsUtil.cpp:
+	.text       start:0x80065FA4 end:0x80066D74
+
+Unsorted/MoveObj.cpp:
+	.text       start:0x800677D0 end:0x80068DC8
+	.data       start:0x8033B118 end:0x8033B178
+	.sdata      start:0x804D0868 end:0x804D0880
+
+Unsorted/Character.cpp:
+	.text       start:0x80069628 end:0x8006A34C
+	.data       start:0x8033B178 end:0x8033B218
+
+Unsorted/RailInfoUtil.cpp:
+	.text       start:0x80092568 end:0x8009359C
+
+Koga/GameModeUtil.cpp:
+	.text       start:0x800B9D1C end:0x800B9F7C
+
+Koga/800B9F7C.cpp:
+	.text       start:0x800B9F7C end:0x800BA2D4
+
+Koga/UnkUtil.cpp:
+	.text       start:0x800BA2D4 end:0x800BA57C
+	.sdata2     start:0x804DB600 end:0x804DB628
+
+Koga/Param.cpp:
+	.text       start:0x800BA57C end:0x800BA7E0
+	.data       start:0x80359DCC end:0x80359DFC
+	.sdata      start:0x804D2CD0 end:0x804D2CD8
+
+Koga/GameMode.cpp:
+	.text       start:0x800BA7E0 end:0x800BA8C8
+	.data       start:0x80359E18 end:0x80359E44
+	.sdata      start:0x804D2CD8 end:0x804D2CE0
+	.sbss       start:0x804D8C48 end:0x804D8C50
+
+Koga/MissionMode.cpp:
+	.text       start:0x800BA8C8 end:0x800BB1A4
+	.data       start:0x80359E48 end:0x80359F98
+	.sdata      start:0x804D2CE0 end:0x804D2D10
+	.sdata2     start:0x804DB628 end:0x804DB630
+
+Koga/SimpleModeler.cpp:
+	.text       start:0x800BB54C end:0x800BBA78
+	.data       start:0x80359F98 end:0x80359FD0
+	.sdata      start:0x804D2D10 end:0x804D2D18
+
+Koga/MapCol.cpp:
+	.text       start:0x800BBA78 end:0x800BC9FC
+	.data       start:0x80359FD0 end:0x8035A084
+	.sdata      start:0x804D2D18 end:0x804D2D30
+
+Koga/ToolData.cpp:
+	.text       start:0x800BC9FC end:0x800BCEF8
+	.data       start:0x8035A0A0 end:0x8035A0D8
+	.sdata      start:0x804D2D30 end:0x804D2D40
+
+Koga/CharacterColManager.cpp:
+	.text       start:0x800BE618 end:0x800BEA6C
+	.rodata     start:0x8020C7B8 end:0x8020C7F8
+	.data       start:0x8035A120 end:0x8035A198
+	.sdata      start:0x804D2D48 end:0x804D2D58
+
+Sato/EnThought.cpp:
+	.text       start:0x800BEA6C end:0x800C1E00
+	.data       start:0x8035A198 end:0x8035A390
+	.sdata      start:0x804D2D58 end:0x804D2E18
+	.sdata2     start:0x804DB690 end:0x804DB6B8
+
+Sato/EnZako.cpp:
+	.text       start:0x800C1E00 end:0x800C2180
+	.data       start:0x8035A390 end:0x8035A448
+	.sdata      start:0x804D2E18 end:0x804D2E40
+	.sdata2     start:0x804DB6B8 end:0x804DB6C8
+
+Sato/EnObjThought.cpp:
+	.text       start:0x800C2180 end:0x800C2224
+	.data       start:0x8035A448 end:0x8035A4E0
+	.sdata      start:0x804D2E40 end:0x804D2E60
+
+Sato/EnemyStrategy.cpp:
+	.text       start:0x800C2224 end:0x800C24A4
+	.data       start:0x8035A4E0 end:0x8035A598
+	.sdata      start:0x804D2E60 end:0x804D2E78
+
+Koga/EnemyGenManager.cpp:
+	.text       start:0x800C24A4 end:0x800C32B8
+	.data       start:0x8035A598 end:0x8035A730
+	.sdata      start:0x804D2E78 end:0x804D2F58
+
+Sato/EnemyTypicalStrategy.cpp:
+	.text       start:0x800C6A28 end:0x800C6A98
+	.data       start:0x8035B0D8 end:0x8035B278
+	.sdata      start:0x804D3018 end:0x804D3048
+
+Sato/EnReplace.cpp:
+	.text       start:0x800D4E08 end:0x800D50AC
+	.ctors      start:0x8020BBEC end:0x8020BBF0
+	.data       start:0x8035EF50 end:0x8035F098
+	.sdata      start:0x804D35A8 end:0x804D35D0
+
+Koga/EnTypesManager.cpp:
+	.text       start:0x800DA498 end:0x800DB168
+	.data       start:0x80360D78 end:0x80361080
+	.sdata      start:0x804D3938 end:0x804D3970
+
+Koga/EnAttackBase.cpp:
+	.text       start:0x800DDD54 end:0x800DDF9C
+	.rodata     start:0x8020C8B0 end:0x8020C8C0
+	.data       start:0x80361E40 end:0x80361FA8
+	.sdata      start:0x804D3AF8 end:0x804D3B20
+	.sdata2     start:0x804DB9D0 end:0x804DB9D8
+
+Koga/EnManager.cpp:
+	.text       start:0x800E4514 end:0x800E634C
+	.ctors      start:0x8020BC28 end:0x8020BC2C
+	.data       start:0x80363B08 end:0x80363C78
+	.sdata      start:0x804D3DB8 end:0x804D3E48
+	.sdata2     start:0x804DBA90 end:0x804DBA98
+
+Koga/800E634C.cpp:
+	.text       start:0x800E634C end:0x800E82D8
+	.ctors      start:0x8020BC2C end:0x8020BC30
+	.data       start:0x80363C78 end:0x80363E38
+	.sdata      start:0x804D3E48 end:0x804D3EC0
+	.sdata2     start:0x804DBA98 end:0x804DBAF0
+
+Koga/800E82D8.cpp:
+	.text       start:0x800E82D8 end:0x800E9568
+	.rodata     start:0x8020C950 end:0x8020C980
+	.data       start:0x80363E38 end:0x80363F88
+	.sdata      start:0x804D3EC0 end:0x804D3F28
+	.sdata2     start:0x804DBAF0 end:0x804DBB08
+
+Koga/800E9568.cpp:
+	.text       start:0x800E9568 end:0x800EA1B4
+	.rodata     start:0x8020C980 end:0x8020C9E0
+	.data       start:0x80363F88 end:0x80363FA0
+	.sdata      start:0x804D3F28 end:0x804D3F68
+	.sdata2     start:0x804DBB08 end:0x804DBB18
+
+Koga/CharacterEventObserver.cpp:
+	.text       start:0x800EA1B4 end:0x800EA454
+	.data       start:0x80363FA0 end:0x803640D8
+	.sdata      start:0x804D3F68 end:0x804D3F78
+
+Koga/Message.cpp:
+	.text       start:0x800EA548 end:0x800EA820
+	.data       start:0x803640D8 end:0x80364180
+	.sdata      start:0x804D3F78 end:0x804D3F90
+
+Koga/JmpMessage.cpp:
+	.text       start:0x800EA820 end:0x800EBD50
+	.data       start:0x80364180 end:0x80364258
+	.sdata      start:0x804D3F90 end:0x804D3FD0
+
+Sato/EnemyStrategyInit.cpp:
+	.text       start:0x800EEBF0 end:0x800F140C
+	.data       start:0x80365A28 end:0x80365D4C
+
+Sato/80366260.cpp:
+	.data       start:0x80366260 end:0x80366358
+
+Ajioka/Zako/AEnZakoBase.cpp:
+	.text       start:0x800F5880 end:0x800F61AC
+	.ctors      start:0x8020BC30 end:0x8020BC34
+	.data       start:0x80366358 end:0x80366590
+	.sdata      start:0x804D40E0 end:0x804D4110
+	.sdata2     start:0x804DBC40 end:0x804DBC48
+
+Ajioka/Kagu/AEnKaguBase.cpp:
+	.text       start:0x800F61AC end:0x800F6884
+	.ctors      start:0x8020BC34 end:0x8020BC38
+	.data       start:0x80366590 end:0x803667E0
+	.sdata      start:0x804D4110 end:0x804D415C
+	.sdata2     start:0x804DBC48 end:0x804DBC50
+
+Ajioka/Beam/AEnBeamBase.cpp:
+	.text       start:0x800F6884 end:0x800F71B0
+	.ctors      start:0x8020BC38 end:0x8020BC3C
+	.data       start:0x803667E0 end:0x80366A60
+	.sdata      start:0x804D4160 end:0x804D41A0
+	.sdata2     start:0x804DBC50 end:0x804DBC58
+
+Ajioka/Ki/AEnKiBase.cpp:
+	.text       start:0x800F71B0 end:0x800F7A8C
+	.ctors      start:0x8020BC3C end:0x8020BC40
+	.data       start:0x80366A60 end:0x80366C28
+	.sdata      start:0x804D41A0 end:0x804D41C0
+	.sdata2     start:0x804DBC58 end:0x804DBC68
+
+Ajioka/Ki/AEnKiSentak.cpp:
+	.text       start:0x800F7A8C end:0x800F8100
+	.ctors      start:0x8020BC40 end:0x8020BC44
+	.data       start:0x80366C28 end:0x80366E70
+	.sdata      start:0x804D41C0 end:0x804D41F0
+	.sdata2     start:0x804DBC68 end:0x804DBC70
+
+Ajioka/Ki/AEnKiEtc.cpp:
+	.text       start:0x800F8100 end:0x800F83D4
+	.data       start:0x80366E70 end:0x80366F18
+	.sdata      start:0x804D41F0 end:0x804D4210
+
+Ajioka/Beam/AEnBeam1.cpp:
+	.text       start:0x800F83D4 end:0x800F94F4
+	.ctors      start:0x8020BC44 end:0x8020BC48
+	.data       start:0x80366F18 end:0x803674E0
+	.sdata      start:0x804D4210 end:0x804D42A0
+	.sdata2     start:0x804DBC70 end:0x804DBCA0
+
+Ajioka/Beam/AEnBeam2.cpp:
+	.text       start:0x800F94F4 end:0x800FA614
+	.ctors      start:0x8020BC48 end:0x8020BC4C
+	.data       start:0x803674E0 end:0x80367920
+	.sdata      start:0x804D42A0 end:0x804D42F8
+	.sdata2     start:0x804DBCA0 end:0x804DBCA8
+
+Ajioka/Kagu/AEnNoMove1.cpp:
+	.text       start:0x800FA614 end:0x800FA80C
+	.ctors      start:0x8020BC4C end:0x8020BC50
+	.data       start:0x80367920 end:0x80367B00
+	.sdata      start:0x804D42F8 end:0x804D4328
+	.sdata2     start:0x804DBCA8 end:0x804DBCB0
+
+Ajioka/Kagu/AEnNoMove2.cpp:
+	.text       start:0x800FA80C end:0x800FAC18
+	.ctors      start:0x8020BC50 end:0x8020BC54
+	.data       start:0x80367B00 end:0x80367D10
+	.sdata      start:0x804D4328 end:0x804D4358
+	.sdata2     start:0x804DBCB0 end:0x804DBCB8
+
+Ajioka/Zako/AEnSimple1.cpp:
+	.text       start:0x800FAC18 end:0x800FBE7C
+	.ctors      start:0x8020BC54 end:0x8020BC58
+	.data       start:0x80367D10 end:0x80368060
+	.sdata      start:0x804D4358 end:0x804D43C0
+	.sdata2     start:0x804DBCB8 end:0x804DBD00
+
+Ajioka/Zako/AEnSimple2.cpp:
+	.text       start:0x800FBE7C end:0x800FCDA4
+	.ctors      start:0x8020BC58 end:0x8020BC5C
+	.data       start:0x80368060 end:0x80368310
+	.sdata      start:0x804D43C0 end:0x804D4440
+	.sdata2     start:0x804DBD00 end:0x804DBD40
+
+Ajioka/Attack/AEnAtUpper.cpp:
+	.text       start:0x800FCDA4 end:0x800FDCAC
+	.ctors      start:0x8020BC5C end:0x8020BC60
+	.rodata     start:0x8020C9E0 end:0x8020CA00
+	.data       start:0x80368310 end:0x80368758
+	.sdata      start:0x804D4440 end:0x804D44D8
+	.sdata2     start:0x804DBD40 end:0x804DBD70
+
+Ajioka/Attack/AEnAtThrow.cpp:
+	.text       start:0x800FDCAC end:0x800FEBE0
+	.ctors      start:0x8020BC60 end:0x8020BC64
+	.data       start:0x80368758 end:0x80368B10
+	.sdata      start:0x804D44D8 end:0x804D4560
+	.sdata2     start:0x804DBD70 end:0x804DBDA8
+
+Ajioka/Attack/AEnAtSkull.cpp:
+	.text       start:0x800FEBE0 end:0x800FF79C
+	.ctors      start:0x8020BC64 end:0x8020BC68
+	.data       start:0x80368B10 end:0x80368E90
+	.sdata      start:0x804D4560 end:0x804D45F0
+	.sdata2     start:0x804DBDA8 end:0x804DBDC8
+
+Ajioka/Attack/AEnAtCar.cpp:
+	.text       start:0x800FF79C end:0x80100084
+	.ctors      start:0x8020BC68 end:0x8020BC6C
+	.data       start:0x80368E90 end:0x80369278
+	.sdata      start:0x804D45F0 end:0x804D4680
+
+Ajioka/Attack/AEnAtPlane.cpp:
+	.text       start:0x80100084 end:0x80100FEC
+	.ctors      start:0x8020BC6C end:0x8020BC70
+	.data       start:0x80369278 end:0x80369698
+	.sdata      start:0x804D4680 end:0x804D4728
+	.sdata2     start:0x804DBDC8 end:0x804DBE10
+
+Ajioka/AEnHustler.cpp:
+	.text       start:0x80100FEC end:0x8010302C
+	.ctors      start:0x8020BC70 end:0x8020BC74
+	.data       start:0x80369698 end:0x80369B60
+	.sdata      start:0x804D4728 end:0x804D4808
+	.sdata2     start:0x804DBE10 end:0x804DBE50
+
+Ajioka/AEnFamily.cpp:
+	.text       start:0x8010302C end:0x801062B4
+	.ctors      start:0x8020BC74 end:0x8020BC78
+	.data       start:0x80369B60 end:0x8036A348
+	.sdata      start:0x804D4808 end:0x804D4928
+	.sdata2     start:0x804DBE50 end:0x804DBE90
+
+Sato/SaEnGenUtility.cpp:
+	.text       start:0x80142F88 end:0x801443E8
+	.data       start:0x8037A1D0 end:0x8037A2B0
+	.sdata      start:0x804D5FE8 end:0x804D6030
+
+JSystem/JAudio/JAInterface/JAIBasic.cpp:
+	.text       start:0x8018E680 end:0x80190E68
+	.ctors      start:0x8020BDA0 end:0x8020BDA4
+	.bss        start:0x803F0248 end:0x803F0260
+	.sbss       start:0x804D9270 end:0x804D9280
+	.sdata2     start:0x804DD1A0 end:0x804DD1B8
+
+JSystem/JAudio/JAInterface/JAIAnimation.cpp:
+	.text       start:0x8019B424 end:0x8019BE00
+
+jaudio/dummyprobe.c:
+	.text       start:0x8019BE00 end:0x8019BE40
+
+jaudio/aictrl.c:
+	.text       start:0x8019BE40 end:0x8019C620
+	.rodata     start:0x802174C0 end:0x802174D8
+	.bss        start:0x80431338 end:0x80431358
+	.sbss       start:0x804D9310 end:0x804D9340
+	.sdata2     start:0x804DD2E8 end:0x804DD2F8
+
+jaudio/sample.c:
+	.text       start:0x8019C620 end:0x8019C8C0
+
+jaudio/dummyrom.c:
+	.text       start:0x8019C8C0 end:0x8019CA40
+	.bss        start:0x804CFCFC end:0x804CFD10 align:4 common
+	.sbss       start:0x804D9340 end:0x804D9360
+
+jaudio/audiothread.c:
+	.text       start:0x8019CA40 end:0x8019CEC0
+	.rodata     start:0x802174D8 end:0x802174E8
+	.bss        start:0x80431360 end:0x80434D20
+	.sbss       start:0x804D9360 end:0x804D9380
+	.sdata2     start:0x804DD2F8 end:0x804DD300
+
+jaudio/streamctrl.c:
+	.text       start:0x8019CEC0 end:0x8019D260
+	.data       start:0x8038F250 end:0x8038F320
+	.bss        start:0x80434D20 end:0x80434D90
+	.sdata2     start:0x804DD300 end:0x804DD310
+
+jaudio/dspbuf.c:
+	.text       start:0x8019D260 end:0x8019D5A0
+	.rodata     start:0x802174E8 end:0x80217500
+	.bss        start:0x80434D90 end:0x80434DA0
+	.sbss       start:0x804D9380 end:0x804D9390
+
+jaudio/cpubuf.c:
+	.text       start:0x8019D5A0 end:0x8019D7E0
+	.bss        start:0x80434DA0 end:0x80434DB0
+	.sbss       start:0x804D9390 end:0x804D9398
+
+jaudio/playercall.c:
+	.text       start:0x8019D7E0 end:0x8019DAA0
+	.bss        start:0x80434DB0 end:0x80434E70
+
+jaudio/dvdthread.c:
+	.text       start:0x8019DAA0 end:0x8019E660
+	.data       start:0x8038F320 end:0x8038F340
+	.bss        start:0x80434E70 end:0x8043D260
+	.sbss       start:0x804D9398 end:0x804D93E0
+
+jaudio/dspboot.c:
+	.text       start:0x8019E740 end:0x8019EB00
+	.rodata     start:0x80217500 end:0x80217520
+	.data       start:0x8038F340 end:0x80390B20
+	.sdata2     start:0x804DD310 end:0x804DD318
+
+jaudio/dspproc.c:
+	.text       start:0x8019EB00 end:0x8019EDC0
+	.sdata      start:0x804D7910 end:0x804D7918
+	.sdata2     start:0x804DD318 end:0x804DD320
+
+jaudio/ipldec.c:
+	.text       start:0x8019EDC0 end:0x8019EE40
+	.sbss       start:0x804D93E8 end:0x804D93F8
+
+jaudio/dsp_cardunlock.c:
+	.text       start:0x8019EE40 end:0x8019F660
+	.rodata     start:0x80217520 end:0x80217560
+
+jaudio/driverinterface.c:
+	.text       start:0x8019F660 end:0x801A0E40
+	.data       start:0x80390B20 end:0x80390BC0
+	.bss        start:0x8043D260 end:0x804513E0
+	.sdata      start:0x804D7918 end:0x804D7920
+	.sbss       start:0x804D93F8 end:0x804D9408
+	.sdata2     start:0x804DD320 end:0x804DD340
+
+jaudio/dspdriver.c:
+	.text       start:0x801A0E40 end:0x801A16C0
+	.bss        start:0x804513E0 end:0x80451820
+
+jaudio/dspinterface.c:
+	.text       start:0x801A16C0 end:0x801A1D80
+	.data       start:0x80390BC0 end:0x80391020
+	.bss        start:0x80451820 end:0x804578A0
+	.sdata      start:0x804D7920 end:0x804D7930
+
+jaudio/fxinterface.c:
+	.text       start:0x801A1D80 end:0x801A1EC0
+	.data       start:0x80391220 end:0x80391238
+
+jaudio/bankread.c:
+	.text       start:0x801A1EC0 end:0x801A22C0
+	.bss        start:0x804578A0 end:0x80457CA0
+
+jaudio/waveread.c:
+	.text       start:0x801A22C0 end:0x801A2780
+	.bss        start:0x80457CA0 end:0x804584A0
+	.bss        start:0x804CFD10 end:0x804CFD50 align:4 common
+
+jaudio/connect.c:
+	.text       start:0x801A2780 end:0x801A2E80
+	.bss        start:0x804584A0 end:0x804588A0
+
+jaudio/bankdrv.c:
+	.text       start:0x801A2E80 end:0x801A35E0
+	.data       start:0x80391238 end:0x80391248
+	.sdata2     start:0x804DD350 end:0x804DD378
+
+jaudio/random.c:
+	.text       start:0x801A35E0 end:0x801A3840
+	.sdata      start:0x804D7930 end:0x804D7938
+	.sdata2     start:0x804DD378 end:0x804DD388
+
+jaudio/aramcall.c:
+	.text       start:0x801A3840 end:0x801A3B40
+	.data       start:0x80391248 end:0x80391288
+	.bss        start:0x804CFD50 end:0x804CFD7C align:4 common
+	.sdata      start:0x804D7938 end:0x804D7940
+	.sbss       start:0x804D9410 end:0x804D9418
+
+jaudio/ja_calc.c:
+	.text       start:0x801A3B40 end:0x801A3C40
+	.bss        start:0x804588A0 end:0x80458CA8
+	.sdata2     start:0x804DD388 end:0x804DD3A0
+
+jaudio/fat.c:
+	.text       start:0x801A3C40 end:0x801A4040
+	.bss        start:0x80458CA8 end:0x804598A8
+	.sbss       start:0x804D9418 end:0x804D9420
+
+jaudio/cmdstack.c:
+	.text       start:0x801A4040 end:0x801A42C0
+	.sbss       start:0x804D9420 end:0x804D9430
+
+jaudio/virload.c:
+	.text       start:0x801A42C0 end:0x801A4740
+	.bss        start:0x804598A8 end:0x80459F28
+	.sbss       start:0x804D9430 end:0x804D9440
+	.sdata2     start:0x804DD3A0 end:0x804DD3A8
+
+jaudio/heapctrl.c:
+	.text       start:0x801A4740 end:0x801A4B40
+	.sbss       start:0x804D9440 end:0x804D9448
+
+jaudio/jammain_2.c:
+	.text       start:0x801A4B40 end:0x801A8CA0
+	.data       start:0x80391288 end:0x80391548
+	.bss        start:0x80459F28 end:0x8045A048
+	.sbss       start:0x804D9448 end:0x804D9458
+	.sdata2     start:0x804DD3A8 end:0x804DD3F0
+
+jaudio/noteon.c:
+	.text       start:0x801A8CA0 end:0x801A91E0
+	.sdata2     start:0x804DD3F0 end:0x804DD3F8
+
+jaudio/seqsetup.c:
+	.text       start:0x801A91E0 end:0x801A9E20
+	.bss        start:0x8045A048 end:0x8049E4A0
+	.sdata2     start:0x804DD3F8 end:0x804DD408
+
+jaudio/centcalc.c:
+	.text       start:0x801A9E20 end:0x801A9F00
+	.data       start:0x80391948 end:0x80391A48
+	.sdata2     start:0x804DD408 end:0x804DD428
+
+jaudio/jamosc.c:
+	.text       start:0x801A9F00 end:0x801AA380
+	.data       start:0x80391A48 end:0x80391B30
+	.sdata2     start:0x804DD428 end:0x804DD430
+
+jaudio/oneshot.c:
+	.text       start:0x801AA380 end:0x801ABA80
+	.data       start:0x80391B30 end:0x80391B70
+	.sdata      start:0x804D7940 end:0x804D7948
+	.sdata2     start:0x804DD430 end:0x804DD460
+
+jaudio/syncstream.c:
+	.text       start:0x801ABA80 end:0x801ACDE0
+	.bss        start:0x8049E4A0 end:0x804C87B8
+
+jaudio/interleave.c:
+	.text       start:0x801ACDE0 end:0x801ACFE0
+	.bss        start:0x804C87B8 end:0x804C87D8
+	.sdata      start:0x804D7948 end:0x804D7950
+
+jaudio/hvqm_play.c:
+	.text       start:0x801ACFE0 end:0x801ADEE4
+	.bss        start:0x804C87D8 end:0x804C8880
+	.bss        start:0x804CFD7C end:0x804CFF5C align:4 common
+	.sdata      start:0x804D7950 end:0x804D7958
+	.sbss       start:0x804D9460 end:0x804D94B8
+	.sdata2     start:0x804DD478 end:0x804DD480
+
+JSystem/J2D/J2DGrafContext.cpp:
+	.text       start:0x801ADEE4 end:0x801AE564
+	.data       start:0x80391BD0 end:0x80391C08
+	.sdata      start:0x804D7958 end:0x804D7960
+	.sdata2     start:0x804DD480 end:0x804DD490
+
+JSystem/J2D/J2DOrthoGraph.cpp:
+	.text       start:0x801AE564 end:0x801AEB28
+	.data       start:0x80391C08 end:0x80391C58
+	.sdata      start:0x804D7960 end:0x804D7970
+	.sdata2     start:0x804DD490 end:0x804DD4A8
+
+JSystem/J2D/J2DPrint.cpp:
+	.text       start:0x801AEB28 end:0x801B058C
+	.data       start:0x80391C58 end:0x80391CD0
+	.bss        start:0x804C8880 end:0x804C8898
+	.sdata      start:0x804D7970 end:0x804D7978
+	.sbss       start:0x804D94B8 end:0x804D94C8
+	.sdata2     start:0x804DD4A8 end:0x804DD4D0
+
+JSystem/J2D/J2DPane.cpp:
+	.text       start:0x801B058C end:0x801B13C0
+	.data       start:0x80391CD0 end:0x80391D00
+	.sdata      start:0x804D7978 end:0x804D7988
+	.sdata2     start:0x804DD4D0 end:0x804DD4F0
+
+JSystem/J2D/J2DScreen.cpp:
+	.text       start:0x801B13C0 end:0x801B1EC0
+	.data       start:0x80391D00 end:0x80391E68
+	.sdata      start:0x804D7988 end:0x804D79A8
+
+JSystem/J2D/J2DWindow.cpp:
+	.text       start:0x801B1EC0 end:0x801B37BC
+	.data       start:0x80391E68 end:0x80391EE8
+	.sdata      start:0x804D79A8 end:0x804D79D0
+	.sdata2     start:0x804DD4F0 end:0x804DD508
+
+JSystem/J2D/J2DPicture.cpp:
+	.text       start:0x801B37BC end:0x801B54C4
+	.sdata2     start:0x804DD508 end:0x804DD528
+
+JSystem/J2D/J2DTextBox.cpp:
+	.text       start:0x801B54C4 end:0x801B5D64
+	.data       start:0x80391F30 end:0x80391FA8
+	.sdata      start:0x804D79E8 end:0x804D7A10
+
+JSystem/J3D/J3DGraphBase/J3DSys.cpp:
+	.text       start:0x801B5D64 end:0x801B66C8
+	.ctors      start:0x8020BDA8 end:0x8020BDAC
+	.bss        start:0x804C8898 end:0x804C8A00
+
+JSystem/J3D/J3DGraphBase/J3DVertex.cpp:
+	.text       start:0x801B66C8 end:0x801B679C
+
+JSystem/J3D/J3DGraphBase/J3DTransform.cpp:
+	.text       start:0x801B679C end:0x801B73CC
+
+JSystem/J3D/J3DGraphBase/J3DPacket.cpp:
+	.text       start:0x801B73CC end:0x801B79FC
+	.data       start:0x80392050 end:0x80392168
+	.sdata      start:0x804D7A10 end:0x804D7A38
+	.sbss       start:0x804D94D0 end:0x804D94D8
+
+JSystem/J3D/J3DGraphBase/J3DShape.cpp:
+	.text       start:0x801B79FC end:0x801B8B0C
+	.ctors      start:0x8020BDAC end:0x8020BDB0
+	.data       start:0x80392168 end:0x803922C0
+	.sdata      start:0x804D7A38 end:0x804D7A60
+	.sbss       start:0x804D94D8 end:0x804D94E0
+	.sdata2     start:0x804DD530 end:0x804DD550
+
+JSystem/J3D/J3DGraphBase/J3DMaterial.cpp:
+	.text       start:0x801B8B0C end:0x801BED54
+	.data       start:0x803922D0 end:0x80392CE0
+	.sdata      start:0x804D7A70 end:0x804D7B08
+
+JSystem/J3D/J3DGraphBase/J3DTevs.cpp:
+	.text       start:0x801BED54 end:0x801BFF44
+	.data       start:0x80392CE0 end:0x80392EF8
+	.bss        start:0x804C8A00 end:0x804CAF28
+
+JSystem/J3D/J3DGraphLoader/J3DMaterialFactory.cpp:
+	.text       start:0x801C0660 end:0x801C249C
+	.sdata2     start:0x804DD5B0 end:0x804DD5C0
+
+JSystem/J3D/J3DGraphLoader/J3DMaterialFactory_v21.cpp:
+	.text       start:0x801C249C end:0x801C3C90
+
+JSystem/J3D/J3DGraphLoader/J3DModelLoader.cpp:
+	.text       start:0x801C3CC0 end:0x801C4EA8
+	.data       start:0x80392FA0 end:0x80393080
+	.sdata      start:0x804D7B48 end:0x804D7B70
+
+JSystem/J3D/J3DGraphLoader/J3DJointFactory.cpp:
+	.text       start:0x801C4EA8 end:0x801C50D4
+
+JSystem/J3D/J3DGraphLoader/J3DShapeFactory.cpp:
+	.text       start:0x801C50D4 end:0x801C5574
+
+JSystem/J3D/J3DGraphLoader/J3DAnmLoader.cpp:
+	.text       start:0x801C5574 end:0x801C6A6C
+	.data       start:0x80393080 end:0x80393210
+	.sdata      start:0x804D7B70 end:0x804D7BC0
+	.sdata2     start:0x804DD5D0 end:0x804DD5D8
+
+JSystem/J3D/J3DGraphAnimator/J3DModel.cpp:
+	.text       start:0x801C6A6C end:0x801C7D40
+	.data       start:0x80393210 end:0x80393290
+	.sdata      start:0x804D7BC0 end:0x804D7BD0
+
+JSystem/J3D/J3DGraphAnimator/J3DAnimation.cpp:
+	.text       start:0x801C7D40 end:0x801CA7A4
+	.data       start:0x80393290 end:0x80393478
+	.sdata      start:0x804D7BD0 end:0x804D7C20
+	.sdata2     start:0x804DD5E0 end:0x804DD604
+
+JSystem/J3D/J3DGraphAnimator/J3DCluster.cpp:
+	.text       start:0x801CAB50 end:0x801CBBFC
+
+JSystem/JKernel/JKRHeap.cpp:
+	.text       start:0x801CDFBC end:0x801CE9DC
+	.data       start:0x80393830 end:0x80393898
+	.sdata      start:0x804D7C88 end:0x804D7CA8
+	.sbss       start:0x804D94F0 end:0x804D9500
+
+JSystem/JKernel/JKRExpHeap.cpp:
+	.text       start:0x801CE9DC end:0x801D01D8
+	.data       start:0x80393898 end:0x80393950
+	.sdata      start:0x804D7CA8 end:0x804D7CC8
+	.sbss       start:0x804D9500 end:0x804D9520
+
+JSystem/JKernel/JKRSolidHeap.cpp:
+	.text       start:0x801D01D8 end:0x801D084C
+	.data       start:0x80393950 end:0x803939D0
+	.sdata      start:0x804D7CC8 end:0x804D7CE8
+
+JSystem/JKernel/JKRDisposer.cpp:
+	.text       start:0x801D084C end:0x801D0948
+	.data       start:0x803939D0 end:0x803939E8
+	.sdata      start:0x804D7CE8 end:0x804D7CF0
+
+JSystem/JKernel/JKRThread.cpp:
+	.text       start:0x801D0948 end:0x801D0C30
+	.ctors      start:0x8020BDB4 end:0x8020BDB8
+	.data       start:0x803939E8 end:0x80393A20
+	.bss        start:0x804CAF28 end:0x804CAF40
+	.sdata      start:0x804D7CF0 end:0x804D7D00
+
+JSystem/JKernel/JKRAram.cpp:
+	.text       start:0x801D0C30 end:0x801D1698
+	.ctors      start:0x8020BDB8 end:0x8020BDBC
+	.data       start:0x80393A20 end:0x80393B28
+	.bss        start:0x804CAF40 end:0x804CAF58
+	.sdata      start:0x804D7D00 end:0x804D7D20
+	.sbss       start:0x804D9520 end:0x804D9528
+
+JSystem/JKernel/JKRAramHeap.cpp:
+	.text       start:0x801D1698 end:0x801D1A54
+	.ctors      start:0x8020BDBC end:0x8020BDC0
+	.data       start:0x80393B28 end:0x80393B58
+	.bss        start:0x804CAF58 end:0x804CAF70
+	.sdata      start:0x804D7D20 end:0x804D7D30
+
+JSystem/JKernel/JKRAramBlock.cpp:
+	.text       start:0x801D1A54 end:0x801D1CBC
+	.data       start:0x80393B58 end:0x80393B78
+	.sdata      start:0x804D7D30 end:0x804D7D38
+
+JSystem/JKernel/JKRAramPiece.cpp:
+	.text       start:0x801D1CBC end:0x801D2288
+	.ctors      start:0x8020BDC0 end:0x8020BDC4
+	.bss        start:0x804CAF70 end:0x804CAFA0
+
+JSystem/JKernel/JKRAramStream.cpp:
+	.text       start:0x801D2288 end:0x801D2690
+	.data       start:0x80393B78 end:0x80393C18
+	.sdata      start:0x804D7D38 end:0x804D7D58
+	.sbss       start:0x804D9528 end:0x804D9538
+
+JSystem/JKernel/JKRFileLoader.cpp:
+	.text       start:0x801D2690 end:0x801D2B4C
+	.ctors      start:0x8020BDC4 end:0x8020BDC8
+	.data       start:0x80393C18 end:0x80393C80
+	.bss        start:0x804CAFA0 end:0x804CAFB8
+	.sdata      start:0x804D7D58 end:0x804D7D70
+	.sbss       start:0x804D9538 end:0x804D9540
+
+JSystem/JKernel/JKRFileFinder.cpp:
+	.text       start:0x801D2B4C end:0x801D2E24
+	.data       start:0x80393C80 end:0x80393CF8
+	.sdata      start:0x804D7D70 end:0x804D7D88
+
+JSystem/JKernel/JKRArchivePub.cpp:
+	.text       start:0x801D2E24 end:0x801D3628
+
+JSystem/JKernel/JKRArchivePri.cpp:
+	.text       start:0x801D3628 end:0x801D3DD8
+	.data       start:0x80393CF8 end:0x80393D88
+	.sdata      start:0x804D7D88 end:0x804D7DA0
+	.sbss       start:0x804D9540 end:0x804D9548
+
+JSystem/JKernel/JKRMemArchive.cpp:
+	.text       start:0x801D3DD8 end:0x801D4290
+	.data       start:0x80393D88 end:0x80393E40
+	.sdata      start:0x804D7DA0 end:0x804D7DC0
+
+JSystem/JKernel/JKRDecomp.cpp:
+	.text       start:0x801D4290 end:0x801D4868
+	.data       start:0x80393E40 end:0x80393EC8
+	.sdata      start:0x804D7DC0 end:0x804D7DD8
+	.sbss       start:0x804D9548 end:0x804D9550
+
+JSystem/JSupport/JSUList.cpp:
+	.text       start:0x801D4868 end:0x801D4D9C
+
+JSystem/JSupport/JSUInputStream.cpp:
+	.text       start:0x801D4D9C end:0x801D51E4
+	.data       start:0x80393EC8 end:0x80393F68
+	.sdata      start:0x804D7DD8 end:0x804D7DF0
+
+JSystem/JSupport/JSUOutputStream.cpp:
+	.text       start:0x801D51E4 end:0x801D53D8
+	.data       start:0x80393F68 end:0x80394008
+	.sdata      start:0x804D7DF0 end:0x804D7E08
+
+JSystem/JSupport/JSUMemoryStream.cpp:
+	.text       start:0x801D53D8 end:0x801D5664
+	.data       start:0x80394008 end:0x80394158
+	.sdata      start:0x804D7E08 end:0x804D7E40
+
+JSystem/JUtility/JUTResource.cpp:
+	.text       start:0x801D5664 end:0x801D5794
+
+JSystem/JUtility/JUTTexture.cpp:
+	.text       start:0x801D5794 end:0x801D5C50
+	.sdata2     start:0x804DD668 end:0x804DD680
+
+JSystem/JUtility/JUTPalette.cpp:
+	.text       start:0x801D5C50 end:0x801D5D80
+	.data       start:0x80394158 end:0x80394188
+
+JSystem/JUtility/JUTNameTab.cpp:
+	.text       start:0x801D5D80 end:0x801D5EA4
+
+JSystem/JUtility/JUTRect.cpp:
+	.text       start:0x801D5EA4 end:0x801D6080
+
+JSystem/JUtility/JUTFont.cpp:
+	.text       start:0x801D6080 end:0x801D6138
+
+JSystem/JUtility/JUTResFont.cpp:
+	.text       start:0x801D6138 end:0x801D7114
+	.data       start:0x80394188 end:0x803942C8
+	.sdata      start:0x804D7E40 end:0x804D7E58
+	.sdata2     start:0x804DD680 end:0x804DD698
+
+JSystem/JUtility/JUTGamePad.cpp:
+	.text       start:0x801D7298 end:0x801D833C
+	.ctors      start:0x8020BDC8 end:0x8020BDCC
+	.rodata     start:0x80217600 end:0x80217610
+	.data       start:0x803942C8 end:0x80394308
+	.bss        start:0x804CAFB8 end:0x804CB130
+	.sdata      start:0x804D7E58 end:0x804D7E70
+	.sbss       start:0x804D9558 end:0x804D9570
+	.sdata2     start:0x804DD698 end:0x804DD6D8
+
+JSystem/JUtility/JUTException.cpp:
+	.text       start:0x801D833C end:0x801D9604
+	.data       start:0x80394308 end:0x803945C8
+	.bss        start:0x804CB130 end:0x804CB148
+	.sdata      start:0x804D7E70 end:0x804D7E98
+	.sbss       start:0x804D9570 end:0x804D9588
+	.sdata2     start:0x804DD6D8 end:0x804DD6E0
+
+JSystem/JUtility/JUTDirectPrint.cpp:
+	.text       start:0x801D9604 end:0x801D9F7C
+	.data       start:0x803945C8 end:0x80394880
+	.sbss       start:0x804D9588 end:0x804D9590
+
+base/PPCArch.c:
+	.text       start:0x801D9F7C end:0x801D9FE0
+
+os/OS.c:
+	.text       start:0x801D9FE0 end:0x801DA6F8
+	.data       start:0x80394880 end:0x80394A40
+	.sbss       start:0x804D9590 end:0x804D95A0
+
+os/OSAlarm.c:
+	.text       start:0x801DA6F8 end:0x801DADE4
+	.sbss       start:0x804D95A0 end:0x804D95A8
+
+os/OSAlloc.c:
+	.text       start:0x801DADE4 end:0x801DAF50
+	.sdata      start:0x804D7EA0 end:0x804D7EA8
+	.sbss       start:0x804D95A8 end:0x804D95B8
+
+os/OSArena.c:
+	.text       start:0x801DAF50 end:0x801DAF70
+	.sdata      start:0x804D7EA8 end:0x804D7EB0
+	.sbss       start:0x804D95B8 end:0x804D95C0
+
+os/OSAudioSystem.c:
+	.text       start:0x801DAF70 end:0x801DB1DC
+	.data       start:0x80394A40 end:0x80394AC0
+
+os/OSCache.c:
+	.text       start:0x801DB1DC end:0x801DB7BC
+	.data       start:0x80394AC0 end:0x80394CF0
+
+os/OSContext.c:
+	.text       start:0x801DB7BC end:0x801DC150
+	.data       start:0x80394CF0 end:0x80394EC8
+
+os/OSError.c:
+	.text       start:0x801DC150 end:0x801DC48C
+	.data       start:0x80394EC8 end:0x80395100
+	.bss        start:0x804CB148 end:0x804CB188
+	.sdata      start:0x804D7EB0 end:0x804D7EB8
+
+os/OSExi.c:
+	.text       start:0x801DC48C end:0x801DDAB8
+	.bss        start:0x804CB188 end:0x804CB240
+
+os/OSFont.c:
+	.text       start:0x801DDAB8 end:0x801DDB10
+	.sdata      start:0x804D7EB8 end:0x804D7EC0
+
+os/OSInterrupt.c:
+	.text       start:0x801DDB10 end:0x801DE330
+	.data       start:0x80395100 end:0x80395198
+	.sbss       start:0x804D95C0 end:0x804D95C8
+
+os/OSLink.c:
+	.text       start:0x801DE330 end:0x801DE348
+
+os/OSMessage.c:
+	.text       start:0x801DE348 end:0x801DE54C
+
+os/OSMutex.c:
+	.text       start:0x801DE54C end:0x801DE798
+
+os/OSReboot.c:
+	.text       start:0x801DE798 end:0x801DE994
+	.bss        start:0x804CB240 end:0x804CB260
+	.sbss       start:0x804D95C8 end:0x804D95D0
+
+os/OSReset.c:
+	.text       start:0x801DE994 end:0x801DEC88
+	.sbss       start:0x804D95D0 end:0x804D95D8
+
+os/OSResetSW.c:
+	.text       start:0x801DEC88 end:0x801DEF70
+	.sbss       start:0x804D95D8 end:0x804D95F8
+
+os/OSRtc.c:
+	.text       start:0x801DEF70 end:0x801DF87C
+	.bss        start:0x804CB260 end:0x804CB2B8
+
+os/OSSerial.c:
+	.text       start:0x801DF87C end:0x801E01FC
+	.data       start:0x80395198 end:0x803951B0
+	.bss        start:0x804CB2B8 end:0x804CB3D8
+
+os/OSSync.c:
+	.text       start:0x801E01FC end:0x801E0280
+
+os/OSThread.c:
+	.text       start:0x801E0280 end:0x801E13AC
+	.bss        start:0x804CB3D8 end:0x804CBDC0
+	.sbss       start:0x804D95F8 end:0x804D9608
+
+os/OSTime.c:
+	.text       start:0x801E13AC end:0x801E17D0
+	.data       start:0x803951B0 end:0x80395210
+
+os/OSUartExi.c:
+	.text       start:0x801E17D0 end:0x801E1A20
+	.sbss       start:0x804D9608 end:0x804D9610
+
+os/__start.c:
+	.init       start:0x80003100 end:0x800032CC
+
+os/__ppc_eabi_init.c:
+	.init       start:0x800032CC end:0x80003320
+	.text       start:0x801E1A20 end:0x801E1AB4
+
+db/db.c:
+	.text       start:0x801E1AB4 end:0x801E1BA0
+	.data       start:0x80395210 end:0x80395228
+	.sbss       start:0x804D9610 end:0x804D9618
+
+mtx/mtx.c:
+	.text       start:0x801E1BA0 end:0x801E2400
+	.sdata      start:0x804D7EC0 end:0x804D7EC8
+	.sdata2     start:0x804DD6E0 end:0x804DD6F8
+
+mtx/mtx44.c:
+	.text       start:0x801E2400 end:0x801E2604
+	.sdata2     start:0x804DD6F8 end:0x804DD710
+
+mtx/vec.c:
+	.text       start:0x801E2604 end:0x801E2938
+	.sdata2     start:0x804DD710 end:0x804DD738
+
+mtx/mtxvec.c:
+	.text       start:0x801E2938 end:0x801E2A08
+
+dvd/dvdlow.c:
+	.text       start:0x801E2A08 end:0x801E3968
+	.bss        start:0x804CBDC0 end:0x804CBEA0
+	.sdata      start:0x804D7EC8 end:0x804D7ED0
+	.sbss       start:0x804D9618 end:0x804D9660
+
+dvd/dvdfs.c:
+	.text       start:0x801E3968 end:0x801E4384
+	.data       start:0x80395228 end:0x803955E0
+	.sdata      start:0x804D7ED0 end:0x804D7ED8
+	.sbss       start:0x804D9660 end:0x804D9680
+
+dvd/dvd.c:
+	.text       start:0x801E4384 end:0x801E6970
+	.data       start:0x803955E0 end:0x803956F8
+	.bss        start:0x804CBEA0 end:0x804CBF78
+	.sdata      start:0x804D7ED8 end:0x804D7EE0
+	.sbss       start:0x804D9680 end:0x804D96C8
+
+dvd/dvdqueue.c:
+	.text       start:0x801E6970 end:0x801E6B68
+	.bss        start:0x804CBF78 end:0x804CBF98
+
+dvd/dvderror.c:
+	.text       start:0x801E6B68 end:0x801E6CC0
+	.data       start:0x803956F8 end:0x80395738
+
+dvd/fstload.c:
+	.text       start:0x801E6CC0 end:0x801E6EE8
+	.data       start:0x80395738 end:0x803957A8
+	.bss        start:0x804CBF98 end:0x804CC008
+	.sdata      start:0x804D7EE0 end:0x804D7EF0
+	.sbss       start:0x804D96C8 end:0x804D96D8
+
+vi/vi.c:
+	.text       start:0x801E6EE8 end:0x801E8724
+	.data       start:0x803957A8 end:0x80395910
+	.bss        start:0x804CC008 end:0x804CC150
+	.sbss       start:0x804D96D8 end:0x804D9718
+
+pad/Padclamp.c:
+	.text       start:0x801E8724 end:0x801E895C
+	.sdata      start:0x804D7EF0 end:0x804D7EF8
+
+pad/Pad.c:
+	.text       start:0x801E895C end:0x801EABD4
+	.data       start:0x80395910 end:0x80395978
+	.bss        start:0x804CC150 end:0x804CC1C0
+	.sdata      start:0x804D7EF8 end:0x804D7F20
+	.sbss       start:0x804D9718 end:0x804D9748
+
+ai/ai.c:
+	.text       start:0x801EABD4 end:0x801EB4DC
+	.sbss       start:0x804D9748 end:0x804D9788
+
+ar/ar.c:
+	.text       start:0x801EB4DC end:0x801EC6C0
+	.sbss       start:0x804D9788 end:0x804D97A0
+	.sdata2     start:0x804DD738 end:0x804DD748
+
+ar/arq.c:
+	.text       start:0x801EC6C0 end:0x801ECA54
+	.sbss       start:0x804D97A0 end:0x804D97C8
+
+dsp/dsp.c:
+	.text       start:0x801ECA54 end:0x801ECAA0
+
+card/CARDBios.c:
+	.text       start:0x801ECAA0 end:0x801EDDB8
+	.data       start:0x80395978 end:0x80395988
+	.bss        start:0x804CC1C0 end:0x804CC3F0
+	.sbss       start:0x804D97C8 end:0x804D97D0
+
+card/CARDRdwr.c:
+	.text       start:0x801EDDB8 end:0x801EE038
+
+card/CARDBlock.c:
+	.text       start:0x801EE038 end:0x801EE3A0
+
+card/CARDDir.c:
+	.text       start:0x801EE3A0 end:0x801EE604
+
+card/CARDCheck.c:
+	.text       start:0x801EE604 end:0x801EF56C
+
+card/CARDMount.c:
+	.text       start:0x801EF56C end:0x801EFEC8
+	.data       start:0x80395988 end:0x803959C8
+
+card/CARDFormat.c:
+	.text       start:0x801EFEC8 end:0x801F06AC
+
+card/CARDOpen.c:
+	.text       start:0x801F06AC end:0x801F0998
+
+card/CARDCreate.c:
+	.text       start:0x801F0998 end:0x801F0D28
+
+card/CARDRead.c:
+	.text       start:0x801F0D28 end:0x801F119C
+
+card/CARDWrite.c:
+	.text       start:0x801F119C end:0x801F1514
+
+card/CARDStat.c:
+	.text       start:0x801F1514 end:0x801F19EC
+
+gx/GXInit.c:
+	.text       start:0x801F19EC end:0x801F29CC
+	.bss        start:0x804CC3F0 end:0x804CC968
+	.sdata      start:0x804D7F20 end:0x804D7F28
+	.sbss       start:0x804D97D0 end:0x804D97E0
+	.sdata2     start:0x804DD748 end:0x804DD768
+
+gx/GXFifo.c:
+	.text       start:0x801F29CC end:0x801F30E8
+	.sbss       start:0x804D97E0 end:0x804D9800
+
+gx/GXAttr.c:
+	.text       start:0x801F30E8 end:0x801F4A90
+	.data       start:0x803959C8 end:0x80395C40
+	.sdata      start:0x804D7F28 end:0x804D7F38
+
+gx/GXMisc.c:
+	.text       start:0x801F4A90 end:0x801F4EC0
+	.sbss       start:0x804D9800 end:0x804D9818
+
+gx/GXGeometry.c:
+	.text       start:0x801F4EC0 end:0x801F5278
+
+gx/GXFrameBuf.c:
+	.text       start:0x801F5278 end:0x801F5CF4
+	.data       start:0x80395C40 end:0x80395D30
+	.sdata2     start:0x804DD768 end:0x804DD778
+
+gx/GXLight.c:
+	.text       start:0x801F5CF4 end:0x801F66CC
+	.data       start:0x80395D30 end:0x80395D50
+	.sdata2     start:0x804DD778 end:0x804DD7C8
+
+gx/GXTexture.c:
+	.text       start:0x801F66CC end:0x801F7418
+	.data       start:0x80395D50 end:0x80395F78
+	.sdata      start:0x804D7F38 end:0x804D7F78
+	.sdata2     start:0x804DD7C8 end:0x804DD7F0
+
+gx/GXBump.c:
+	.text       start:0x801F7418 end:0x801F7AE8
+	.sdata2     start:0x804DD7F0 end:0x804DD7F8
+
+gx/GXTev.c:
+	.text       start:0x801F7AE8 end:0x801F84E4
+	.data       start:0x80395F78 end:0x80395FA0
+
+gx/GXPixel.c:
+	.text       start:0x801F84E4 end:0x801F8DF8
+	.data       start:0x80395FA0 end:0x80395FC0
+	.sdata2     start:0x804DD7F8 end:0x804DD850
+
+gx/GXDraw.c:
+	.text       start:0x801F8DF8 end:0x801F9DF4
+	.data       start:0x80395FC0 end:0x803962D0
+	.bss        start:0x804CC968 end:0x804CCBF0
+	.sdata2     start:0x804DD850 end:0x804DD890
+
+gx/GXStubs.c:
+	.text       start:0x801F9DF4 end:0x801F9DF8
+
+gx/GXDisplayList.c:
+	.text       start:0x801F9DF8 end:0x801FA004
+	.bss        start:0x804CCBF0 end:0x804CD108
+	.sbss       start:0x804D9818 end:0x804D9820
+
+gx/GXTransform.c:
+	.text       start:0x801FA004 end:0x801FA5EC
+	.sdata2     start:0x804DD890 end:0x804DD8A0
+
+hvqm4dec/hvqm4dec.c:
+	.text       start:0x801FA5EC end:0x80200094
+	.rodata     start:0x80217610 end:0x80217628
+	.data       start:0x803962D0 end:0x803962E0
+	.bss        start:0x804CD108 end:0x804CDB48
+	.sbss       start:0x804D9820 end:0x804D9828
+
+PowerPC_EABI_Support/Runtime.PPCEABI.H/src/__va_arg.c:
+	.text       start:0x80200094 end:0x80200188
+
+PowerPC_EABI_Support/Runtime.PPCEABI.H/src/global_destructor_chain.c:
+	.text       start:0x80200188 end:0x802001E8
+	.dtors      start:0x8020BDE8 end:0x8020BDEC
+	.sbss       start:0x804D9828 end:0x804D982C
+
+PowerPC_EABI_Support/Runtime.PPCEABI.H/src/NMWException.cpp:
+	extab       start:0x800054C0 end:0x80005550
+	extabindex  start:0x80005640 end:0x800056B8
+	.text       start:0x802001E8 end:0x802008D8
+	.sdata      start:0x804D7F80 end:0x804D7F88
+
+PowerPC_EABI_Support/Runtime.PPCEABI.H/src/MWRTTI.cpp:
+	extab       start:0x80005550 end:0x800055A8
+	extabindex  start:0x800056B8 end:0x800056DC
+	.text       start:0x80200900 end:0x80200C74
+
+PowerPC_EABI_Support/Runtime.PPCEABI.H/src/Gecko_ExceptionPPC.cpp:
+	extab       start:0x800055A8 end:0x8000563C
+	extabindex  start:0x800056DC end:0x80005730
+	.text       start:0x80200C74 end:0x802020E4
+	.bss        start:0x804CDB48 end:0x804CDB58
+
+PowerPC_EABI_Support/Runtime.PPCEABI.H/src/__init_cpp_exceptions.cpp:
+	.text       start:0x8020265C end:0x802026D8
+	.ctors      start:0x8020BAC0 end:0x8020BAC4
+	.dtors      start:0x8020BDE0 end:0x8020BDE8
+	.sdata      start:0x804D7FB0 end:0x804D7FB8
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/abort_exit.c:
+	.text       start:0x802026D8 end:0x80202898
+	.bss        start:0x804CDB58 end:0x804CDD58
+	.sbss       start:0x804D9830 end:0x804D9848
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/ansi_fp.c:
+	.text       start:0x80202898 end:0x80202C4C
+	.rodata     start:0x802177D8 end:0x80217860
+	.sdata2     start:0x804DD8A0 end:0x804DD8C8
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/arith.c:
+	.text       start:0x80202C4C end:0x80202C5C
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/buffer_io.c:
+	.text       start:0x80202C5C end:0x80202D5C
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/ctype.c:
+	.text       start:0x80202D60 end:0x80202DB0
+	.rodata     start:0x80217860 end:0x80217B60
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/direct_io.c:
+	.text       start:0x80202DB0 end:0x8020308C
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/mbstring.c:
+	.text       start:0x8020308C end:0x802030C8
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/mem.c:
+	.text       start:0x802030C8 end:0x80203214
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/mem_funcs.c:
+	.text       start:0x80203214 end:0x802034F0
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/misc_io.c:
+	.text       start:0x802034F0 end:0x802034F4
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/printf.c:
+	.text       start:0x802034F4 end:0x80204FC0
+	.rodata     start:0x80217B60 end:0x80217B70
+	.data       start:0x80396508 end:0x80396728
+	.sdata      start:0x804D7FB8 end:0x804D7FC0
+	.sdata2     start:0x804DD8C8 end:0x804DD8D0
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/rand.c:
+	.text       start:0x80204FC0 end:0x80204FEC
+	.sdata      start:0x804D7FC0 end:0x804D7FC8
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/scanf.c:
+	.text       start:0x80204FEC end:0x8020507C
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/signal.c:
+	.text       start:0x8020507C end:0x80205130
+	.bss        start:0x804CDD58 end:0x804CDD70
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/string.c:
+	.text       start:0x80205130 end:0x802054C8
+	.sdata      start:0x804D7FC8 end:0x804D7FD0
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/strtoul.c:
+	.text       start:0x802054C8 end:0x80205A70
+	.data       start:0x80396728 end:0x80396770
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/float.c:
+	.data       start:0x80396770 end:0x80396778
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/uart_console_io.c:
+	.text       start:0x80205A70 end:0x80205BF0
+	.sbss       start:0x804D9850 end:0x804D9858
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common/src/wchar_io.c:
+	.text       start:0x80205BF0 end:0x80205C70
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common_Embedded/Src/Math/Double_precision/s_frexp.c:
+	.text       start:0x80205C70 end:0x80205D0C
+	.sdata2     start:0x804DD8D0 end:0x804DD8D8
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common_Embedded/Src/Math/Single_precision/trigf.c:
+	.text       start:0x80206204 end:0x802065F0
+	.ctors      start:0x8020BDCC end:0x8020BDD0
+	.rodata     start:0x80217C28 end:0x80217C38
+	.data       start:0x80396778 end:0x80396788
+	.sdata2     start:0x804DD900 end:0x804DD918
+
+PowerPC_EABI_Support/MSL/MSL_C/MSL_Common_Embedded/Src/Math/Single_precision/common_float_tables.c:
+	.rodata     start:0x80217C38 end:0x80218088
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Portable/mainloop.c:
+	.text       start:0x8020675C end:0x802068C4
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Portable/nubevent.c:
+	.text       start:0x802068C4 end:0x80206B20
+	.bss        start:0x804CDD70 end:0x804CDD98
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Portable/nubinit.c:
+	.text       start:0x80206B20 end:0x80206CB4
+	.rodata     start:0x80218088 end:0x802180A8
+	.bss        start:0x804CDD98 end:0x804CDDA0
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Portable/msg.c:
+	.text       start:0x80206CB4 end:0x80206CDC
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Portable/msgbuf.c:
+	.text       start:0x80206CDC end:0x80207524
+	.bss        start:0x804CDDA0 end:0x804CF750
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Portable/serpoll.c:
+	.text       start:0x80207524 end:0x802076EC
+	.bss        start:0x804CF750 end:0x804CF768
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Os/dolphin/usr_put.c:
+	.text       start:0x802076EC end:0x802076F0
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Portable/dispatch.c:
+	.text       start:0x802076F0 end:0x80207788
+	.data       start:0x80396788 end:0x80396810
+	.bss        start:0x804CF768 end:0x804CF770
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Portable/msghndlr.c:
+	.text       start:0x80207788 end:0x80208A2C
+	.data       start:0x80396810 end:0x80396848
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Portable/support.c:
+	.text       start:0x80208A2C end:0x80208EA8
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Portable/mutex_TRK.c:
+	.text       start:0x80208EA8 end:0x80208EC0
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Portable/notify.c:
+	.text       start:0x80208EC0 end:0x80208F98
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Processor/ppc/Generic/flush_cache.c:
+	.text       start:0x80208F98 end:0x80208FD0
+
+PowerPC_EABI_Support/Runtime.PPCEABI.H/src/__mem.c:
+	.init       start:0x80003320 end:0x80003464
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Portable/mem_TRK.c:
+	.init       start:0x80003464 end:0x800034B8
+	.text       start:0x80208FD0 end:0x80209094
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Processor/ppc/Generic/targimpl.c:
+	.text       start:0x80209094 end:0x8020A670
+	.rodata     start:0x802180A8 end:0x802180F4
+	.data       start:0x80396848 end:0x80396878
+	.bss        start:0x804CF770 end:0x804CFCF0
+
+TRK_MINNOW_DOLPHIN/src/__exception.s: comment:0
+	.init       start:0x800034B8 end:0x800053EC
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Os/dolphin/dolphin_trk.c:
+	.init       start:0x800053EC end:0x8000540C
+	.text       start:0x8020A670 end:0x8020A8B0
+	.data       start:0x80396878 end:0x803968B8
+	.bss        start:0x804CFCF0 end:0x804CFCF8
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Processor/ppc/Generic/mpc_7xx_603e.c:
+	.text       start:0x8020A8B0 end:0x8020AC28
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Portable/main_TRK.c:
+	.text       start:0x8020AC28 end:0x8020AC70
+	.bss        start:0x804CFCF8 end:0x804CFCFC
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Os/dolphin/dolphin_trk_glue.c:
+	.text       start:0x8020AC70 end:0x8020AFC8
+	.data       start:0x803968B8 end:0x803968D4
+
+TRK_MINNOW_DOLPHIN/src/debugger/embedded/MetroTRK/Os/dolphin/targcont.c:
+	.text       start:0x8020AFC8 end:0x8020AFFC
+
+amcstubs/AmcExi2Stubs.c:
+	.text       start:0x8020AFFC end:0x8020B02C
+
+OdemuExi2/DebuggerDriver.c:
+	.text       start:0x8020B02C end:0x8020BAAC
+	.sdata      start:0x804D7FD0 end:0x804D7FD1
+	.sbss       start:0x804D9858 end:0x804D986D
+
+odenotstub/odenotstub.c:
+	.text       start:0x8020BAAC end:0x8020BAB4

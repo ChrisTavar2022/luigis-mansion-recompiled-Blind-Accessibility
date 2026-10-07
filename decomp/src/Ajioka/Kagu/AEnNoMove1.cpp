@@ -1,0 +1,31 @@
+#include "Ajioka/Kagu/AEnNoMove1.hpp"
+
+dummy_float_data()
+enemies_float_data()
+
+static EnemyStrategyState enemiesStates[1] = {
+    {
+        0, 
+        (EnemyStrategyStateFn)&AEnNoMove1::state_0_Init, 
+        (EnemyStrategyStateFn)&AEnNoMove1::state_0_Behavior
+    },
+};
+
+
+void AEnNoMove1::doBehavior() {
+
+}
+void AEnNoMove1::doBehaviorInit() {
+
+}
+
+bool AEnNoMove1::state_0_Init() {
+    return true;
+}
+bool AEnNoMove1::state_0_Behavior() {
+    return false;
+}
+
+AEnNoMove1::~AEnNoMove1() {
+    
+}

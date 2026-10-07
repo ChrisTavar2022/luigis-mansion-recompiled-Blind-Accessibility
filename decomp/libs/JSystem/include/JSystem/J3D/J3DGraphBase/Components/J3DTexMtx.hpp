@@ -1,0 +1,33 @@
+#ifndef J3D_GRAPH_BASE_COMPONENTS_TEXMTX
+#define J3D_GRAPH_BASE_COMPONENTS_TEXMTX
+
+#include <JSystem/J3D/J3DGraphBase/J3DStruct.hpp>
+
+extern const J3DTexMtxInfo j3dDefaultTexMtxInfo;
+
+class J3DTexMtx : public J3DTexMtxInfo {
+public:
+	J3DTexMtx() { J3DTexMtxInfo::operator=(j3dDefaultTexMtxInfo); }
+	J3DTexMtx(const J3DTexMtxInfo& info) { J3DTexMtxInfo::operator=(info); }
+
+
+	Mtx& getViewMtx() { return mViewMtx; }
+	void setViewMtx(const Mtx viewMtx) { MTXCopy((MtxPtr)viewMtx, mViewMtx); }
+
+	void setEffectMtx(Mtx effectMtx) { J3DTexMtxInfo::setEffectMtx(effectMtx); }
+	void setInfo(u8 info) { mInfo = info; }
+
+	// Made up
+	u32 getInfo() { return mInfo; }
+
+	/* 0x64 */ Mtx mTotalMtx;
+	/* 0x94 */ Mtx mViewMtx;
+	/* 0xC8 */ s32 unkC8;
+public:
+	virtual ~J3DTexMtx() {};
+	virtual void calc();
+	virtual void load(u8) const;
+	virtual void load2(u8) const;
+};
+
+#endif

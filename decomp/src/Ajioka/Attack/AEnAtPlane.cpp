@@ -1,0 +1,122 @@
+#include "Ajioka/Attack/AEnAtPlane.hpp"
+
+
+dummy_float_data()
+enemies_float_data()
+
+static EnemyStrategyState enemiesStates[7] = {
+    {
+        0, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_0_Init, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_0_Behavior
+    },
+
+    {
+        2, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_2_Init, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_2_Behavior
+    },
+
+    
+    {
+        3, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_3_Init, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_3_Behavior
+    },
+
+    
+    {
+        4, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_4_Init, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_4_Behavior
+    },
+
+    {
+        0x102, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_0x102_Init, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_0x102_Behavior
+    },
+
+    {
+        0x100, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_0x100_Init, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_0x100_Behavior
+    },
+
+    {
+        0x101, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_0x101_Init, 
+        (EnemyStrategyStateFn)&AEnAtPlane::state_0x101_Behavior
+    },
+};
+
+AEnAtPlane::AEnAtPlane() {
+}
+
+
+void AEnAtPlane::doBehavior() {
+
+}
+void AEnAtPlane::doBehaviorInit() {
+
+}
+
+bool AEnAtPlane::state_0_Init() {
+    return false;
+}
+
+bool AEnAtPlane::state_0_Behavior() {
+    return true;
+}
+
+bool AEnAtPlane::state_2_Init() {
+    return false;
+}
+
+bool AEnAtPlane::state_2_Behavior() {
+    return false;
+}
+
+bool AEnAtPlane::state_3_Init() {
+    return false;
+}
+
+bool AEnAtPlane::state_3_Behavior() {
+    return false;
+}
+
+bool AEnAtPlane::state_4_Init() {
+    return false;
+}
+
+bool AEnAtPlane::state_4_Behavior() {
+    return false;
+}
+
+bool AEnAtPlane::state_0x102_Init() {
+    return true;
+}
+
+bool AEnAtPlane::state_0x102_Behavior() {
+    return true;
+}
+
+bool AEnAtPlane::state_0x100_Init() {
+    return true;
+}
+
+bool AEnAtPlane::state_0x100_Behavior() {
+    return true;
+}
+
+bool AEnAtPlane::state_0x101_Init() {
+    return true;
+}
+
+bool AEnAtPlane::state_0x101_Behavior() {
+    return true;
+}
+
+AEnAtPlane::~AEnAtPlane() {
+
+}

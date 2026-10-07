@@ -1,0 +1,33 @@
+#ifndef GAME_MODE_H_
+#define GAME_MODE_H_
+
+#include <types.h>
+
+namespace Koga {
+    class GameMode;
+
+    struct GameModeBase {
+        // Set by fn_800B9D1C, destroyed by fn_800B9DD0 during exit to title screen
+        static GameMode* sCurrentGameMode;
+        // 0 at title screen, 1 when actually playing
+        static int sGameModeCount;
+
+        GameModeBase();
+        inline ~GameModeBase() { sGameModeCount -= 1; }
+
+        inline static int getGameModeCount() { return sGameModeCount; }
+        static void incrementGameModeCount();
+    };
+
+    class GameMode : private GameModeBase {
+    public:
+        GameMode();
+        /* 0x08 */ virtual ~GameMode();
+        /* 0x0C */ virtual void init();
+        /* 0x10 */ virtual void loadEnemyInfo();
+        /* 0x14 */ virtual void vt_14();
+        /* 0x18 */ virtual void draw();
+    };
+}
+
+#endif

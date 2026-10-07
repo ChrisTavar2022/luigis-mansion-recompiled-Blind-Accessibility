@@ -1,0 +1,19 @@
+# Game data must NEVER be committed -- users supply their own dumps.
+/Luigis Mansion US/
+/Lugis Mansion PAL/
+/orig/
+*.iso
+*.gcm
+*.rvz
+*.ciso
+*.wbfs
+*.dol
+*.rel
+*.arc
+*.szp
+
+# Build output
+/build/
+/out/
+/.vs/
+CMakeUserPresets.json
