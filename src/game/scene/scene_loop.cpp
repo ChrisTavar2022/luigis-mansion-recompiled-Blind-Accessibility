@@ -2,11 +2,13 @@
 // the per-frame scratch buffer in auto_03_80009540 (fn_8000AD48..fn_8000ADCC).
 #include "game/scene/scene.h"
 #include "game/scene/boot_scene.h"
+#include "game/scene/title_scene.h"
 #include "game/system/display.h"
 #include "game/system/dvd_file.h"
 #include "game/system/gx_util.h"
 #include "game/system/heap.h"
 #include "game/system/pad.h"
+#include "game/system/reset.h"
 #include "game/unported.h"
 
 #include <dolphin/dvd.h>
@@ -19,7 +21,8 @@ namespace lm {
 
 Scene* gSceneTable[SCENE_MAX] = {
     &BootScene::sScene,
-    // Not ported yet: TITLE, MAIN_GAME, SELECT, OPENING, STAFF_ROLL, ENDING, MOVIE.
+    &TitleScene::sScene,
+    // Not ported yet: MAIN_GAME, SELECT, OPENING, STAFF_ROLL, ENDING, MOVIE.
 };
 Scene* gCurScene = &BootScene::sScene;
 s32 gCurSceneId = SCENE_BOOT;
@@ -44,7 +47,6 @@ struct SceneControl {
 };
 SceneControl sControl;
 
-s32 sResetState;          // lbl_804D7FF0
 s32 sSceneChanging;       // lbl_804D8088
 s32 sExitSceneLoop;       // lbl_804D80A8
 s32 sFrameSkipped;        // lbl_804D80B4
@@ -132,8 +134,8 @@ void checkSceneChange() {
     if (!OSReceiveMessage(&sControl.resetQueue, &requested, OS_MESSAGE_NOBLOCK)) {
         return;
     }
-    if (sResetState == 3) {
-        sResetState = 0;
+    if (gResetState == 3) {
+        gResetState = 0;
         if (DVDCheckDisk() == FALSE) {
             hardReset();
         }
@@ -144,35 +146,6 @@ void checkSceneChange() {
     gCurSceneId = s32(reinterpret_cast<intptr_t>(requested));
     requestWipeOut();
     sExitSceneLoop = 1;
-}
-
-// fn_80005E04: reset-button handling.
-void pollResetButton() {
-    switch (sResetState) {
-    case 0:
-        if (OSGetResetSwitchState()) {
-            sResetState = 1;
-        }
-        unported::fn_80005CF8_pollResetButton();
-        break;
-    case 1:
-        if (unported::fn_80005CF8_pollResetButton() == 0 && OSGetResetSwitchState() != 1) {
-            sResetState = 2;
-        }
-        break;
-    case 2:
-        JUTGamePad::recalibrate(0xF0000000);
-        JUTGamePad::CRumble::stopMotor(gGamePad->getPortNum());
-        setWipeType(2);
-        unported::fn_8018A78C_beginReset(0xF);
-        // fn_8000B334: request the boot scene through the reset queue.
-        sSceneChanging = 1;
-        OSSendMessage(&sControl.resetQueue, reinterpret_cast<OSMessage>(intptr_t(SCENE_BOOT)), OS_MESSAGE_NOBLOCK);
-        sResetState = 3;
-        break;
-    default:
-        break;
-    }
 }
 
 // fn_8000B610: run the current scene until it requests another one.
@@ -241,6 +214,11 @@ void runCurrentScene() {
 }
 
 }  // namespace
+
+void requestScene(s32 scene) {  // fn_8000B334
+    sSceneChanging = 1;
+    OSSendMessage(&sControl.resetQueue, reinterpret_cast<OSMessage>(intptr_t(scene)), OS_MESSAGE_NOBLOCK);
+}
 
 void runScenes() {
     initSceneControl();

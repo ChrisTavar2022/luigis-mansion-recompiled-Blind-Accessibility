@@ -16,6 +16,10 @@ void setDoubleBuffered(bool enable);  // fn_80007E70
 void* getMainFrameBuffer();           // LMGetMainFrameBuffer
 void* getPrevMainFrameBuffer();       // LMGetPrevMainFrameBuffer
 void checkProgressiveModeAtBoot();    // fn_80007F28
+bool isProgressivePromptActive();     // lbl_804D8058 == 1
+void updateProgressiveSelect();       // fn_80007F90: left/right toggles the choice
+void updateProgressiveMode();         // LMUpdateProgressiveMode: apply the choice
+u32 getRetraceInterval();             // LMGetVIMessageQueueUnk4
 
 // --- Screen wipe between scenes (lbl_803A3810 state machine) ---
 enum WipeState : s32 {

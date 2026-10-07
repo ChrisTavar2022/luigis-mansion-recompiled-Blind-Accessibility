@@ -34,13 +34,19 @@ u8 fn_8018A860_resetReady();
 void fn_8018A78C_beginReset(s32);
 void fn_8018A8BC_setResetState(s32);
 void fn_800473F8_setDiscErrorMessage(s16 status);
-s32 fn_80005CF8_pollResetButton();
 
 // --- Screen wipe (class at lbl_803A3668) ---
 void fn_800395BC_wipeStart(void* wipe, s32 type, s16 frames);
 void fn_80039628_wipeReverse(void* wipe);
 bool fn_80039770_wipeUpdate(void* wipe);
 void fn_80039C74_wipeDraw(void* wipe, void* texObj);
+
+// --- Front end ---
+void fn_8018A2A0_playSystemSound(u32 id);            // menu/system sound effect
+void fn_80188760_playStream(u32 id, u32 arg);       // start a music stream
+void fn_80188D0C_stopStream(s32 fadeFrames);
+void fn_80047444_showProgressiveMessage(s32 mode);  // progressive-scan prompt text
+void setLuigiAppearPoint(u32 point);                // game progress: where Luigi spawns
 
 // --- Misc ---
 void fn_80066FAC_setStaticArchive(JKRMemArchive* archive);

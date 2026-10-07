@@ -34,4 +34,7 @@ extern u64 gSceneFrameCounter;  // lbl_804D8098: frames since the current scene 
 
 [[noreturn]] void runScenes();  // fn_8000B7F4
 
+// fn_8000B334: switch to `scene` at the end of this frame (via the scene-control queue).
+void requestScene(s32 scene);
+
 }  // namespace lm

@@ -6,6 +6,7 @@
 #include "game/system/pad.h"
 #include "game/unported.h"
 
+#include <dolphin/pad.h>
 #include <dolphin/gx.h>
 #include <dolphin/os.h>
 #include <dolphin/vi.h>
@@ -250,6 +251,29 @@ void checkProgressiveModeAtBoot() {
     // No component-cable/progressive-scan prompt on PC (VIGetDTVStatus() == 0).
     OSSetProgressiveMode(0);
 }
+
+bool isProgressivePromptActive() { return sProgressiveState == 1; }
+
+void updateProgressiveSelect() {
+    if (sProgressiveState != 1) {
+        return;
+    }
+    if (gGamePad->getRepeat() & (PAD_BUTTON_LEFT | PAD_BUTTON_RIGHT)) {
+        sProgressiveMode ^= 1;
+    }
+    unported::fn_80047444_showProgressiveMessage(sProgressiveMode);
+}
+
+void updateProgressiveMode() {
+    if (sProgressiveState != 1) {
+        return;
+    }
+    sProgressiveState = 0;  // PC: the mode never needs a confirmation countdown
+    OSSetProgressiveMode(sProgressiveMode);
+    sRenderMode = u8(sProgressiveMode);
+}
+
+u32 getRetraceInterval() { return sVIQueue.interval; }
 
 // --- Wipes ---
 WipeControl gWipe;

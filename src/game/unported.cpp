@@ -33,12 +33,17 @@ u8 fn_8018A860_resetReady() { UNPORTED(); return 0; }
 void fn_8018A78C_beginReset(s32) { UNPORTED(); }
 void fn_8018A8BC_setResetState(s32) { UNPORTED(); }
 void fn_800473F8_setDiscErrorMessage(s16) { UNPORTED(); }
-s32 fn_80005CF8_pollResetButton() { UNPORTED(); return 0; }
 
 void fn_800395BC_wipeStart(void*, s32, s16) { UNPORTED(); }
 void fn_80039628_wipeReverse(void*) { UNPORTED(); }
 bool fn_80039770_wipeUpdate(void*) { UNPORTED(); return true; }
 void fn_80039C74_wipeDraw(void*, void*) { UNPORTED(); }
+
+void fn_8018A2A0_playSystemSound(u32) { UNPORTED(); }
+void fn_80188760_playStream(u32, u32) { UNPORTED(); }
+void fn_80188D0C_stopStream(s32) { UNPORTED(); }
+void fn_80047444_showProgressiveMessage(s32) { UNPORTED(); }
+void setLuigiAppearPoint(u32) { UNPORTED(); }
 
 void fn_80066FAC_setStaticArchive(JKRMemArchive*) { UNPORTED(); }
 void fn_8005FD80_fillRandomTable() { UNPORTED(); }

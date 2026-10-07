@@ -3,6 +3,7 @@
 // Shows the Nintendo logo while the loader thread brings up audio and loads
 // the always-resident game archive (/Game/game_usa.szp).
 #include "game/scene/boot_scene.h"
+#include "game/system/aram_data.h"
 #include "game/system/camera.h"
 #include "game/system/display.h"
 #include "game/system/dvd_file.h"
@@ -54,8 +55,21 @@ void loadStaticArchives() {
     dvdFileOpenAsync("/Game/game_usa.szp", onGameArchiveLoaded, nullptr, 0);
     gGameHeap->becomeCurrentHeap();
     setHeapGroup(3);
-    // TODO(port): stage res_titl/gameboy/guidemap/res_paus/res_list into ARAM
-    // (JKRMainRamToAram) for the title and pause screens once those are ported.
+    // Park the compressed screen archives in ARAM until their screens need them.
+    const struct {
+        const char* name;
+        AramData* dst;
+    } kAramResources[] = {
+        {"/res_titl.szp", &gResTitleAramData},
+        {"/gameboy.szp", &gGameboyAramData},
+        {"/guidemap.szp", &gGuidemapAramData},
+        {"/res_paus.szp", &gResPauseAramData},
+        {"/res_list.szp", &gResListAramData},
+    };
+    for (const auto& res : kAramResources) {
+        void* data = sStaticDataArchive->getResource(res.name);
+        res.dst->stage(data, sStaticDataArchive->getResSize(data));
+    }
     while (dvdFilesPending()) {
         OSYieldThread();
     }
