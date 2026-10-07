@@ -35,6 +35,8 @@ struct EnhancementSettings {
     bool pauseOnFocusLoss = true;
     bool skipIntroLogos = false;
     bool hiddenMansionPal = true;  // Hidden Mansion uses the PAL release's rules (until the lab menu offers both)
+    bool gbhCamera = false;        // unused Game Boy Horror live camera, toggled in game with D-pad Up (docs/UNUSED_CONTENT.md)
+    bool earlyGhostShading = false;  // ghosts drawn straight into the scene (pre-release opaque look) instead of the glow layer
 };
 
 struct Settings {
