@@ -27,9 +27,10 @@ public static class Win {
 [Win]::SetProcessDPIAware() | Out-Null
 
 $argList = if ($ExeArgs) { $ExeArgs } else { $null }
-$p = if ($argList) { Start-Process .\build\windows-clang\lmport.exe -ArgumentList $argList -PassThru `
+$exePath = ".\build\windows-clang\$Exe.exe"
+$p = if ($argList) { Start-Process $exePath -ArgumentList $argList -PassThru `
         -RedirectStandardOutput build\run.log -RedirectStandardError build\err.log }
-     else { Start-Process .\build\windows-clang\lmport.exe -PassThru `
+     else { Start-Process $exePath -PassThru `
         -RedirectStandardOutput build\run.log -RedirectStandardError build\err.log }
 Start-Sleep -Seconds $Seconds
 $p.Refresh()

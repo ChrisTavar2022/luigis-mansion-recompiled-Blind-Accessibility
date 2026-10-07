@@ -132,6 +132,19 @@ int main(int argc, char* argv[]) {
             for (;;) {
                 std::this_thread::sleep_for(std::chrono::seconds(3));
                 sched::dumpThreads();
+                if (const char* peek = std::getenv("LM_PEEK")) {  // LM_PEEK=addr,addr,...: guest words
+                    std::string line = "[peek]";
+                    for (const char* p = peek; *p;) {
+                        char* end = nullptr;
+                        const u32 a = u32(std::strtoul(p, &end, 16));
+                        char buf[32];
+                        std::snprintf(buf, sizeof(buf), " %08X=%08X", a, rd32(a));
+                        line += buf;
+                        p = (*end == ',') ? end + 1 : end;
+                        if (end == p && *p) break;
+                    }
+                    log("%s", line.c_str());
+                }
             }
         }).detach();
     }
