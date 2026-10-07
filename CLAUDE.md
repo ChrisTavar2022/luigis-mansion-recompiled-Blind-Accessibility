@@ -7,6 +7,7 @@
 - Every user-facing option lives in the F1 overlay menu (Esc closes): tabs Visuals / Sound / Enhancements (gameplay toggles, cheats, debug viewers). Add new options to `src/port/settings.h` (persisted to %APPDATA%\Luigi's Mansion PC\settings.ini) and `src/recomp/menu.cpp`; CLI flags only override for testing.
 
 ## Release requirements
+- Distribution: ship the recompiler + a bundled clang/lld. `LuigisMansionRecomp.exe` first run asks for US and/or PAL disc images (ISO/RVZ), then does a one-time setup (recompile DOL into a game module, build PAL overlay) into AppData (docs/SETUP.md). Features needing a disc that wasn't provided are greyed out in the F1 menu until it is added.
 - End users never run scripts: the game takes their own disc images (ISO/RVZ via Aurora/nod), US required, PAL optional. Anything derived from them (PAL Hidden Mansion overlay now built by tools/hidden_mansion_data.py, recompiled code) is produced automatically on the user's machine (first launch / setup), cached outside the install, and re-validated by hash.
 
 ## Hard rules
