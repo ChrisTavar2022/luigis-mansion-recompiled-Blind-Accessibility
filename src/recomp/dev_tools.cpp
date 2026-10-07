@@ -7,6 +7,7 @@
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
 #include "recomp/model_viewer.h"
+#include "recomp/room_swap.h"
 
 #include <imgui.h>
 #include <SDL3/SDL.h>
@@ -112,6 +113,7 @@ const AppearPoint* mansionAppearPoints(int* count) {
     return kAppear;
 }
 void requestWarp(int map, int appearPoint) {
+    rooms::cancel();
     sWarpAppear = appearPoint;
     sWarpMap = map;
 }
@@ -265,6 +267,12 @@ HLE(LMChangeFrameBuffer__Fv) {
     ++sFrames;
     for (const auto& w : sEnvWarps)
         if (u32(w[0]) == sFrames) requestWarp(w[1], w[2]);
+    // Test aid: LM_DEV_ROOM=<leftover room index>@<frame> starts a leftover-room visit.
+    static const char* sEnvRoom = std::getenv("LM_DEV_ROOM");
+    if (sEnvRoom) {
+        int idx = 0, frame = 0;
+        if (std::sscanf(sEnvRoom, "%d@%d", &idx, &frame) == 2 && u32(frame) == sFrames) rooms::visit(idx);
+    }
 
     Status s;
     s.scene = rd32(kCurSceneId);
@@ -277,6 +285,7 @@ HLE(LMChangeFrameBuffer__Fv) {
             for (int i = 0; i < 3; i++) s.pos[i] = gu::rdf(luigi + 0x44 + 4 * i);
     }
     sStatus = s;
+    rooms::onFrame(s.inGame, s.map, s.room);
 
     sLuigi = 0;
     sReportShown.swap(sReportBuild);
@@ -387,6 +396,26 @@ void unusedSection() {
                "blurring everything away from the camera.");
     ImGui::SeparatorText("Unused areas");
     mapTable("unusedmaps", true);
+
+    ImGui::SeparatorText("Unused rooms");
+    ImGui::TextDisabled("Leftover room models. Go warps to the retail room and shows the old model for that visit only.");
+    ImGui::BeginDisabled(!sStatus.inGame);
+    int nr = 0;
+    const rooms::LeftoverRoom* lr = rooms::list(&nr);
+    if (ImGui::BeginTable("unusedrooms", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+        for (int i = 0; i < nr; i++) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            char label[32];
+            std::snprintf(label, sizeof(label), "Go##room%d", i);
+            if (ImGui::SmallButton(label)) rooms::visit(i);
+            ImGui::TableNextColumn();
+            ImGui::Text("%s%s", lr[i].name, rooms::active() == i ? "  (showing)" : "");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nmap %d%s", lr[i].note, lr[i].map, lr[i].room >= 0 ? ", room swap" : "");
+        }
+        ImGui::EndTable();
+    }
+    ImGui::EndDisabled();
 }
 
 void debugSection() {

@@ -211,6 +211,27 @@ Interpolated60: maps 0, 2 (appear points 6 and 9), 3, 4, 5, 9, 13.
 Test aids: `LM_START_MAP=<n>` (new game starts in map n; moved here from the Hidden Mansion
 hooks), `LM_START_APPEAR=<p>`, `LM_DEV_WARPS=<map>[:<appear>]@<frame>,...`.
 
+## Unused rooms (work in progress, paused)
+
+Leftover room models on the disc: `/Iwamoto/map1/h_01.bin` (E3 2001 lab, extra robotic-arm
+stand), `/Iwamoto/map1/h_02.bin` (pre-E3 Portrificationizer room; retail is `map4/h_02.bin`),
+`/Iwamoto/map2/room_67.arc` member `b1_c_67.bin` (older breaker room), `room_07.arc` /
+`room_30.arc` member `room..bin` (duplicate 1F / foyer 2F hallways; room_07's differs from the
+retail `room.bin` by 42 bytes), `/Iwamoto/map2/room01A.bin` (no retail counterpart).
+
+`src/recomp/room_swap.cpp` (Unused content tab, "Unused rooms"): Go warps to the retail room's
+map and, for that visit only, `hle_dvd.cpp` serves the retail file rebuilt with the leftover
+model (RARC member replaced, or the whole `.bin`); collision, doors and objects stay retail.
+The swap ends when Luigi leaves the room/map or another warp is made. Test aid
+`LM_DEV_ROOM=<index>@<frame>`.
+
+Status: the lab and Portrificationizer visits load the leftover models (logged and seen).
+The mansion rooms (67, 7, 30) need Luigi to start inside them; the spawn override
+(`findLuigiAppearIndex` + `ToolData::getValue` pos_x/y/z of Luigi's entry while a visit is
+pending) is implemented but not verified, and Luigi still started in the foyer in the last
+test. Not started: a dedicated room slot for room01A (would need a map-2 room table entry,
+JMP roominfo row and collision), and the breaker-room door/collision mismatch check.
+
 ## Model viewer
 
 Debug tab "Model viewer" (F4). Lists the archives under `/model`, `/Game`, `/Kawano` and

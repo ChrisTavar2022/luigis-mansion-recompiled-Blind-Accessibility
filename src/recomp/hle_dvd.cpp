@@ -1,6 +1,7 @@
 // HLE: DVD file system, on top of Aurora's disc reader. Reads complete
 // synchronously; async completions are delivered as interrupts.
 #include "recomp/hidden_mansion.h"
+#include "recomp/room_swap.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
@@ -15,6 +16,17 @@
 
 namespace recomp {
 namespace {
+
+// Host-served files: leftover-room visits (room_swap.cpp), then the PAL Hidden Mansion overlay.
+s32 ovEntry(const char* path) {
+    const s32 e = rooms::overlayEntry(path);
+    return e >= 0 ? e : hm::overlayEntry(path);
+}
+bool ovIs(s32 e) { return rooms::isOverlayEntry(e) || hm::isOverlayEntry(e); }
+u32 ovLength(s32 e) { return rooms::isOverlayEntry(e) ? rooms::overlayLength(e) : hm::overlayLength(e); }
+s32 ovRead(s32 e, void* dst, s32 len, s32 off) {
+    return rooms::isOverlayEntry(e) ? rooms::overlayRead(e, dst, len, off) : hm::overlayRead(e, dst, len, off);
+}
 
 std::unordered_map<u32, DVDFileInfo> sFiles;  // guest DVDFileInfo -> host
 std::unordered_map<u32, u32> sNames;          // FST entry -> guest copy of its name
@@ -50,7 +62,7 @@ bool openOverlay(u32 guest, s32 entry) {
     sOverlay[guest] = entry;
     wr32(guest + 0x0C, 0);
     wr32(guest + 0x30, 0);
-    wr32(guest + 0x34, hm::overlayLength(entry));
+    wr32(guest + 0x34, ovLength(entry));
     return true;
 }
 
@@ -74,7 +86,7 @@ HLE(DVDGetDriveStatus) { c.r[3] = 0; }
 HLE(DVDCheckDisk) { c.r[3] = 1; }
 HLE(DVDGetCommandBlockStatus) { c.r[3] = rd32(c.r[3] + 0x0C); }
 HLE(DVDConvertPathToEntrynum) {
-    if (const s32 e = hm::overlayEntry(gstr(c.r[3])); e >= 0) {
+    if (const s32 e = ovEntry(gstr(c.r[3])); e >= 0) {
         c.r[3] = u32(e);
         return;
     }
@@ -86,7 +98,7 @@ HLE(DVDConvertPathToEntrynum) {
 HLE(DVDOpen) {
     DVDFileInfo fi{};
     const char* path = gstr(c.r[3]);
-    if (const s32 e = hm::overlayEntry(path); e >= 0) {
+    if (const s32 e = ovEntry(path); e >= 0) {
         c.r[3] = openOverlay(c.r[4], e);
         return;
     }
@@ -94,7 +106,7 @@ HLE(DVDOpen) {
     if (!c.r[3]) log("[dvd] open failed: %s", path);
 }
 HLE(DVDFastOpen) {
-    if (hm::isOverlayEntry(s32(c.r[3]))) {
+    if (ovIs(s32(c.r[3]))) {
         c.r[3] = openOverlay(c.r[4], s32(c.r[3]));
         return;
     }
@@ -114,7 +126,7 @@ HLE(DVDReadPrio) {
     DVDFileInfo* fi = hostFile(c.r[3]);
     watchRange(c.r[4], c.r[5], "DVDReadPrio");
     const s32 ov = overlayOf(c.r[3]);
-    const s32 result = ov >= 0 ? hm::overlayRead(ov, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]))
+    const s32 result = ov >= 0 ? ovRead(ov, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]))
                        : fi    ? DVDReadPrio(fi, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]), s32(c.r[7]))
                                : -1;
     // Block this thread until the "drive" finishes.
@@ -139,7 +151,7 @@ HLE(DVDReadAsyncPrio) {
         return;
     }
     watchRange(c.r[4], c.r[5], "DVDReadAsyncPrio");
-    const s32 result = ov >= 0 ? hm::overlayRead(ov, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]))
+    const s32 result = ov >= 0 ? ovRead(ov, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]))
                                : DVDReadPrio(fi, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]), s32(c.r[8]));
     wr32(guest + 0x0C, 1);  // busy until the completion interrupt
     wr32(guest + 0x38, cb);

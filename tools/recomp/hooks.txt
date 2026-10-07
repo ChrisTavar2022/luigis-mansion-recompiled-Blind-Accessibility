@@ -77,3 +77,6 @@ LMChangeFrameBuffer__Fv
 fn_800B172C
 fn_8003BEEC
 fn_8003EBB0
+# Leftover room visits (room_swap.cpp): Luigi's start position for the visited room.
+findLuigiAppearIndex__Q24Koga9EnManagerFPQ24Koga8ToolDataUl
+getValue__Q24Koga8ToolDataCFiPCcPf
