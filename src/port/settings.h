@@ -22,6 +22,29 @@ struct VideoSettings {
     bool pal60 = false;         // PAL game only: 59.94 Hz retrace (PAL60, 20% faster) instead of 50 Hz
 };
 
+// CRT post-process filter (src/recomp/crt.cpp). Beam sigmas are fractions of the
+// scanline spacing, convergence offsets are in game pixels / lines, mask size in
+// output pixels, corner radius a fraction of the screen height.
+enum class CrtPreset { ApertureGrille, SlotMask, ShadowMask, ConsumerTv, Custom };
+enum class CrtScanlines { Progressive480, DoubleStrike240, Interlaced480i };
+enum class CrtMask { ApertureGrille, SlotMask, ShadowMask, None };
+
+struct CrtSettings {
+    bool enabled = false;
+    CrtPreset preset = CrtPreset::ApertureGrille;
+    CrtScanlines scanlines = CrtScanlines::Progressive480;
+    float beamMinSigma = 0.20f, beamMaxSigma = 0.36f, beamSpotPower = 0.6f;
+    float beamMinShape = 2.0f, beamMaxShape = 3.0f, beamShapePower = 0.5f;
+    float horizontalSoftness = 0.45f;
+    CrtMask mask = CrtMask::ApertureGrille;
+    float maskSize = 3.0f, maskStrength = 0.75f;
+    float halation = 0.04f, diffusion = 0.06f, bloom = 0.15f;
+    float convergence[6] = {0, 0, 0, 0, 0, 0};  // R x,y  G x,y  B x,y
+    float gammaIn = 2.4f, gammaOut = 2.2f;
+    float curvature = 0.0f, cornerRadius = 0.02f;
+    float brightness = 1.2f;
+};
+
 struct AudioSettings {
     float masterVolume = 1.0f;  // 0..1
     float musicVolume = 1.0f;   // streamed/sequenced music
@@ -37,10 +60,15 @@ struct EnhancementSettings {
     bool skipIntroLogos = false;
     bool hiddenMansionPal = true;  // Hidden Mansion uses the PAL release's rules (until the lab menu offers both)
     int palLanguage = 1;           // PAL game only: 1 English, 2 German, 3 French, 4 Spanish, 5 Italian (next launch)
+    bool gbhCamera = false;        // unused Game Boy Horror live camera, toggled in game with D-pad Up (docs/UNUSED_CONTENT.md)
+    bool earlyGhostShading = false;  // ghosts drawn straight into the scene (pre-release opaque look) instead of the glow layer
+    bool skipCutscenes = false;  // START skips cutscenes (src/recomp/skip.cpp)
+    bool fastForwardKey = true;  // holding Tab runs the game at high speed (src/recomp/skip.cpp)
 };
 
 struct Settings {
     VideoSettings video;
+    CrtSettings crt;
     AudioSettings audio;
     EnhancementSettings enhancements;
 };

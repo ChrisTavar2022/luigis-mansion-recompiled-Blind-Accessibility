@@ -10,8 +10,9 @@ retail body instead of replacing it).
 | Feature | Status |
 |---------|--------|
 | Arbitrary resolution | Works. Aurora renders at window size; EFB copies scale with it. |
-| Widescreen / ultrawide | Works: Hor+ 3D, 4:3 HUD, culling widened. Limitations below. |
-| High frame rate (interpolation) | Design only (this document, section 3). |
+| Widescreen / ultrawide | Works: Hor+ 3D, 4:3 or edge-anchored HUD, culling widened. Limitations below. |
+| Field of view | Works (F1 > Visuals > Field of view); culling follows. |
+| High frame rate (interpolation) | Works: 60 fps or display rate, game logic stays 30 Hz (section 3). |
 
 ## 1. Arbitrary resolution
 
@@ -98,6 +99,31 @@ markers over ghosts and similar) uses the 4:3 projection and gets a 640-space x.
 Drawing that in the centered 4:3 2D space gives `s * x_ndc`, which is exactly where the
 Hor+ projection put the object.
 
+### Field of view
+
+`settings().video.fovScale` multiplies the vertical FOV of full-screen perspective
+projections. `ws::fovRatio(m11)` turns it into a scale for rows 0 and 1 of the projection
+(`cot(f/2) / cot(k*f/2)`), applied together with Hor+ in the *scaled* variant, so a 4:3
+window with FOV 1.0 is still untouched. The `fn_80008D58` hook scales all four culling
+sides by the inverse, using the camera's `fovY` (`+0x90`).
+
+### HUD anchoring
+
+With "Keep HUD at 4:3" off, the in-game HUD moves to the display edges instead of the 4:3
+safe area. Menus (title, file select, options) are J2DScreens and keep their layout. The
+gameplay HUD is either drawn by two game functions as J2DScreens (`fn_80056F64`,
+`fn_8003E3D0`), or as panes and pictures that game code draws without a screen. The health
+meter and the room name are in the second group. `J2DScreen::draw` is hooked to know which
+case applies (`ws::inHud()`).
+
+For those draws, the held-draw decoder already knows the NDC x extent in the 4:3 frame.
+A draw entirely in the outer 30% on one side gets its centered projection shifted by
+`±(1 - s)`, which moves it to that edge of the display. The scissor moves with it.
+HUD pieces are small and well inside one band, so an icon and its digits stay together.
+
+An earlier per-element approach (anchoring J2D pane subtrees) split menu layouts apart
+and missed the meter, which is not inside a screen. It was dropped.
+
 ### Screenshots
 
 Captured with PrintWindow, so other windows on screen cannot leak into them. Files are
@@ -113,12 +139,9 @@ under `build/` and are not committed:
 
 ### Known limitations and next steps
 
-- **HUD anchoring.** The HUD stays in the 4:3 safe area, centered. Anchoring corner
-  elements (the health heart, room name) to the screen edges needs element identity.
-  Per-draw classification would tear text apart, because glyphs are separate draws.
-  Two ways forward:
-  - hook the HUD's screen setup in game code and offset whole J2D panes;
-  - classify per `J2DScreen::draw` call rather than per GX draw.
+- **HUD anchoring.** This is per draw, so a single HUD text that straddles the 30% band
+  boundary would split. Nothing in the HUD does that so far. The Game Boy Horror and
+  dialogue screens have not been checked yet.
 - **Partial EFB copies computed from 3D positions.** No such copy has been seen so far.
   If one turns up (for example a copy of a rectangle around an object), its source rect
   is in stretched logical space, while the object was drawn Hor+. Fix it by moving the
@@ -136,7 +159,92 @@ under `build/` and are not committed:
 - **Other culling.** Room and portal visibility and per-actor distance culling have not
   been audited. Nothing popped in the foyer or the exterior at 21:9.
 
-## 3. High frame rate: interpolation design
+## 3. High frame rate: frame interpolation
+
+### As built (`src/recomp/interp.*`, `src/recomp/frame.cpp`, Aurora patch 0005)
+
+The setting is F1 > Visuals > Frame rate:
+
+- **Original (30 fps)** is the lockstep path, unchanged.
+- **Interpolated 60 fps** and **Interpolated, unlimited** use the design below, simplified
+  where the measurements allowed it.
+
+**Capture instead of snapshotting.**
+- Aurora patch `0005-capture-and-replay` makes the FIFO's display-list redirection
+  per-thread, and adds `AuroraCaptureBegin/End/Pos` and `AuroraReplay`.
+- While interpolating, the guest thread's GX output goes into a capture buffer, which
+  becomes that frame's tape. A tape is self-contained: Aurora already serializes texture
+  objects by value, and `GXCallDisplayList` inlines display lists. GXDrawDone and
+  AuroraGXSync don't wait on the capturing thread.
+- The host submits a tape with `AuroraReplay` inside its own frame and never touches the
+  guest's `__gx` state.
+- A game-recorded display list (`GXBeginDisplayList`) suspends the capture around itself.
+
+**Decoupled guest.**
+- `frame::hostFrame()` replaces `runUntilPresent()` in the host loop.
+- Once interpolation is on, after the first 60 presents, the guest stops waiting for the
+  host in `present()`. Each present closes a tape (`interp::endTape`, stamped with the VI
+  retrace count) and opens the next one.
+- The guest then runs exactly as on the console, paced only by the VI retrace timer, so
+  game logic, audio and VI timing do not depend on the presentation rate.
+- Switching back to Original hands control back at the next guest present: the host
+  replays that last tape as is, then resumes lockstep.
+- While the window is paused, `frame::setHostPaused()` stops the VI retraces, so a
+  decoupled guest holds as it would in lockstep.
+
+**What gets blended.**
+- Measured before building: every matrix load in a gameplay frame comes through
+  `GXLoadPosMtxImm`, about 150 to 450 loads per frame. There were no raw XF writes and
+  no indexed loads.
+- The GX HLE notes the tape offset of each 3D matrix load (pos, normal, texture) and of
+  each perspective projection. The key is `(source address, slot, occurrence)`, which
+  matched about 100% across frames in the foyer and the intro.
+- The host replays the newest tape. Each noted block is blended toward the previous
+  tape's value at the same key: `alpha = (now - tape done) / (game frame interval)`,
+  which puts the display one game frame behind real time.
+- 2D (anything under an orthographic projection) is not blended. Its matrices come from
+  per-glyph scratch matrices that don't line up between frames, and blending them made
+  file-select text and HUD pieces fly.
+- **Cuts and jumps.** A matrix is shown unblended when it moves more than 400 units or
+  0.35 in rotation in one game frame. Texture matrices use a relative bound, because
+  scrolling coordinates wrap. Camera cuts therefore snap rather than smear.
+
+**Measured** (1280x720, 120 Hz display, vsync on, `LM_INTERP_TRACE=1` logs alpha and
+frame time per present):
+
+| Mode | Presented | Game | Pacing |
+|------|-----------|------|--------|
+| Interpolated 60 | 59.9 to 60.0 fps | 29.6 to 30.0 fps | present interval 16.7 ± 1 ms, alpha alternating about 0.4/0.9, so displayed poses are evenly spaced |
+| Unlimited | 120 fps (the display rate under vsync) | 30 fps | |
+
+Typical figures per present:
+- Tape size: 0.7 to 1.1 MiB per game frame.
+- Matrices: about 1,000 to 2,000 blended per present; about 1 pos/nrm snapped.
+- Texture matrices: about 350 are always snapped. These are projection-style matrices
+  that the game alternates with zero matrices between frames, so blending them would be
+  wrong.
+
+Runtime toggling between Original and Interpolated every 3 s for 60 s ran cleanly.
+Render resolution 2x (`resolution_scale=2`) together with widescreen, HUD anchoring and
+unlimited mode also worked: the EFB copies are replayed with the rest of the tape, so
+copy-based effects (the foyer window, the flashlight, fades) follow the interpolated
+frame.
+
+**Limitations.**
+- **Replay starting state.** Replaying a tape twice starts from the GX state left at
+  the end of that tape, not from its own start. That only matters if a frame relies on
+  state from the previous frame without setting it again. Nothing has shown up.
+- **Not blended.** Lights loaded with `GXLoadLightObjImm` (view-space positions),
+  immediate-mode vertex positions (particles, the flashlight cone mesh if it is built on
+  the CPU) and texture-projection matrices step at 30 Hz.
+- **Guest memory referenced at replay time.** Vertex arrays and textures are read from
+  guest memory when the tape is replayed, up to one game frame after capture. This is
+  the same lag the console's GPU has, and games double-buffer for it. Data that the CPU
+  rewrites within a frame could still show up in the next replay.
+- **Pacing.** Pacing is driven by the host clock. The guest's completion jitters by a
+  few ms, so alpha is computed from the retrace stamps and the wall time of completion.
+
+### Original design notes
 
 ### Constraints in this port
 
@@ -250,3 +358,74 @@ J2D animations step, and `GXSetDrawDone` / `VIWaitForRetrace` pacing is mixed in
 
 The tape design only depends on the GX interface, which the HLE layer already owns. It
 also keeps the guest's simulation bit-identical to the console.
+
+## 4. Skippable cutscenes and fast-forward
+
+Options (F1 > Enhancements): **Skippable cutscenes** (off by default) and **Hold Tab to
+fast-forward** (on). Code: `src/recomp/skip.{h,cpp}` plus small hooks in `frame.cpp`,
+`hle_vi.cpp`, `hle_gx.cpp`, `hle_pad.cpp` and `audio_out.cpp`.
+
+### Approach: run the cutscene, just faster
+
+A skip does not jump over game code. The game keeps executing every logic frame of the
+cutscene, so whatever the event script does (flags, items, keys, doors, warps, actor
+positions, BGM changes, room loads) happens exactly as when watching. While skipping:
+
+- the VI retrace timer runs up to 32x faster (one retrace in flight at a time, so a
+  slow frame never queues a burst of retraces);
+- guest frames are batched: `frame::present` keeps the guest running for ~12 ms of host
+  time per Aurora frame; only the first frame of a batch is drawn, the others send no
+  draws or EFB copies to Aurora (`gx::g_discardDraws`; state calls and display-list
+  recording still go through, so nothing is lost for later frames);
+- the screen is covered (black, "Skipping...") and audio is muted, then faded back in;
+- controller 1 is replaced: the player's input is ignored and A is pressed 4 frames out
+  of 8 while the script waits in `<ANYKEY>`, which dismisses message windows. The pad
+  reads as connected during the skip (the game ignores a disconnected pad's buttons).
+
+Measured: the opening (about 1,450 logic frames, 48 s) skips in 1.6 to 3 s; the mansion
+entrance event (414 frames, 14 s) in 1.6 to 4 s; E. Gadd's Game Boy Horror call with four
+message windows in about 2 s.
+
+### When a cutscene can be skipped
+
+Read from guest memory every frame (addresses in `skip.cpp`):
+
+- the **opening** scene (`sCurScene` = OPENING) when it leads into a new game. The title
+  screen's attract demo uses the same scene and is left alone (START already exits it);
+- an **event script** is running (interpreter object `0x803D2D40`, cursor at +0x0C) and
+  it has taken control away: HUD hidden by `<MENUOFF>` or Luigi stopped by `<LUIGISTOP>`.
+
+The skip ends when the scene changes (opening), the event script ends, or the player
+has had control for 3 frames (an event that frees Luigi and keeps running in the
+background, like the training room). START is hidden from the game while a cutscene
+can be skipped.
+
+The player still decides: a `<CHOICE>` menu (interpreter state 7) or the save screen
+(`<SAVE>`/`<HSAVE>`) suspends the skip with the game visible and the controller live;
+it resumes after the answer. If the script does not advance for 1,800 frames outside a
+`<WAIT>`, the skip assumes it is waiting for the player and gives up for that event.
+
+"Press START to skip" shows for 4 s at the bottom right when a cutscene starts.
+
+### Verification
+
+`LM_SKIP_LOG=1` logs every change of scene/event state and, 60 frames after each event
+ends, a snapshot (all 256 event flags, Luigi's position and flags). Skipped and watched
+runs of the same scripted input (`LM_INPUT_CLOCK=frames`, `--input`) produce identical
+snapshots for the opening + entrance event, the GBH call event (with its save prompt)
+and the library book event (with its yes/no choice). Testing aids: `LM_SKIP_CUTSCENES=1`
+(force the option on), `LM_SKIP_AUTO=<n>[:<count>]` (press START n frames into each
+cutscene), `LM_SKIP_TEST=<frame>:flag:<n>` (set an event flag: flag-triggered events
+from `jmp/eventinfo` start by themselves) or `<frame>:pos:<x>,<y>,<z>`, `LM_FF=1`
+(fast-forward everything), `LM_FF_SPEED=<x>`, `LM_SKIP_LOG=2` (snapshot every 30
+frames). Use `LM_CARD_DIR` for test runs: events save the game.
+
+### Limitations
+
+- Only the opening and event scripts are covered. Sequences played by game code rather
+  than an event script (if any: e.g. room-clear light/chest camera, boss defeat
+  animations, the ending and credits) are not skippable; Tab fast-forward works on them.
+- Timing that depends on wall-clock time (disc reads, audio) does not speed up; the
+  number of frames a loading pause lasts can therefore differ from a watched run.
+- Music keeps playing at normal speed (muted) during a skip, so after a skip a track
+  may be at a different position than after watching.

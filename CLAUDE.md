@@ -7,6 +7,7 @@
 - Every user-facing option lives in the F1 overlay menu (Esc closes): tabs Visuals / Sound / Enhancements (gameplay toggles, cheats, debug viewers). Add new options to `src/port/settings.h` (persisted to %APPDATA%\Luigi's Mansion PC\settings.ini) and `src/recomp/menu.cpp`; CLI flags only override for testing.
 
 ## Release requirements
+- Distribution: ship the recompiler + a bundled clang/lld. `LuigisMansionRecomp.exe` first run asks for US and/or PAL disc images (ISO/RVZ), then does a one-time setup (recompile DOL into a game module, build PAL overlay) into AppData (docs/SETUP.md). Features needing a disc that wasn't provided are greyed out in the F1 menu until it is added.
 - End users never run scripts: the game takes their own disc images (ISO/RVZ via Aurora/nod), US required, PAL optional. Anything derived from them (PAL Hidden Mansion overlay now built by tools/hidden_mansion_data.py, recompiled code) is produced automatically on the user's machine (first launch / setup), cached outside the install, and re-validated by hash.
 
 ## Hard rules
@@ -22,7 +23,7 @@
 - `src/recomp/ctx.h`: guest memory (`hostp`, `rd32/wr32`, BE), MMIO (0xCC008000 WGP → Aurora FIFO), Ctx/paired singles.
 - `src/recomp/sched.*`: one host thread per OSThread, only one runs guest code (priority scheduler); interrupts via `postIrq`/`postIrqAfter`, delivered at loop back-edges/HLE calls or by the idle poster.
 - `frame.*`: guest runs only inside an Aurora frame; handoff at `VISetNextFrameBuffer`. VI retrace timer 59.94 Hz; AI DMA interrupt paced by the SDL3 audio device drives JAudio (docs/AUDIO.md); DVD reads have modelled latency (game depends on it).
-- Aurora local patches: `patches/aurora/*.patch` (auto-applied at configure). 0002 = vertex arrays with size 0 sized from draw indices.
+- Aurora local patches: `patches/aurora/*.patch` (auto-applied at configure). 0002 = vertex arrays with size 0 sized from draw indices. 0005 = post-process hook (`include/aurora/postfx.h`: WGSL pass chain on the game image before ImGui), used by the CRT filter (`src/recomp/crt.cpp`, F1 > Visuals; `LM_CRT=<preset 0-3>[,<scanlines 0-2>]` test override).
 - `src/game/`, `lmport` target: older hand-port prototype + dev viewers (reference only).
 
 ## Build / run
@@ -34,6 +35,7 @@
 - `LM_TRACE=ring` (last 64 calls dumped on fatal) | `LM_TRACE=8000E46C,...` (log entries) | `LM_TRACE=all`
 - `LM_WATCH=<addr>[,<len>]` report guest stores (use with LM_TRACE for function names)
 - `LM_WATCHDOG=1` dump guest threads every 3 s; `LM_TRACE_MQ=1` message-queue log; `LM_DVD_SPEED=1` console-speed disc.
+- Cutscene skip / fast-forward (docs/ENHANCEMENTS.md §4): `LM_SKIP_LOG=1` event-state log + flag snapshots, `LM_FF=1` fast-forward always, `LM_SKIP_AUTO`, `LM_SKIP_TEST`, `LM_INPUT_CLOCK=frames`. Test runs that reach events save the game: set `LM_CARD_DIR`.
 - `python tools/recomp/addr2sym.py <addr>...`; `tools/recomp/hle_refs.py` lists SDK functions game code calls.
 
 ## Gotchas
@@ -46,4 +48,5 @@
 - Memory card emulated (GCI folders in %APPDATA%\Luigi's Mansion PC\USA\Card A).
 - Audio plays (DSP microcode stand-in in audio_dsp.cpp, SDL3 out in audio_out.cpp; docs/AUDIO.md; LM_AUDIO_WAV=, LM_AUDIO_LOG=1, LM_AUDIO=0, LM_AUDIO_FX=0). Reverb routing is a guess.
 - PAL Hidden Mansion variant works (map2u overlay, event scripts, lighting, hearts, boss mechanics, mirror; docs/HIDDEN_MANSION.md). Needs `python tools/hidden_mansion_data.py` once to build orig/hidden_mansion/. Selected in F1 > Enhancements until the lab-menu choice exists. Test aids: LM_HM_FORCE=1, LM_START_MAP=9/10/11.
+- Unused content restored as Enhancements toggles: Game Boy Horror live camera (D-pad Up) and early opaque ghost shading (docs/UNUSED_CONTENT.md; LM_GBH_CAM=1/2, LM_EARLY_GHOSTS=1). Aurora's GXSetZTexture is a TODO (worked around for the GBH sub-view clear).
 - Widescreen/ultrawide + render-resolution slider work. Parallel work streams: interpolation/FOV/HUD anchoring, skippable cutscenes (agent worktree branches).

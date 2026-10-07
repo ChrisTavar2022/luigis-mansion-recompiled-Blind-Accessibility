@@ -242,11 +242,13 @@ int main(int argc, char* argv[]) {
             else if (ev->type == AURORA_PAUSED) paused = true;
             else if (ev->type == AURORA_UNPAUSED) paused = false;
         }
+        frame::setHostPaused(paused);
         if (exiting || paused || !aurora_begin_frame()) continue;
         ws::beginFrame();
-        const bool running = frame::runUntilPresent();
+        const bool running = frame::hostFrame();
         menu::draw();
         aurora_end_frame();
+        frame::pace();
         if (!running) break;
     }
 

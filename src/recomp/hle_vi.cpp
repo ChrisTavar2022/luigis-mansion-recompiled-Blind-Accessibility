@@ -7,7 +7,9 @@
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
+#include "recomp/skip.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -23,8 +25,10 @@ u32 sRetraceQueue = 0;  // guest-address key for VIWaitForRetrace sleepers
 bool sBlack = true;
 std::thread sTimer;
 std::atomic<bool> sTimerRun{false};
+std::atomic<bool> sRetracePending{false};  // fast-forward: one retrace in flight at a time
 
 void retrace(Ctx& c) {
+    sRetracePending = false;
     const u32 count = sRetraceCount.fetch_add(1) + 1;
     if (sPreCallback) guestCall(c, sPreCallback, count);
     if (sPostCallback) guestCall(c, sPostCallback, count);
@@ -52,6 +56,14 @@ void startTimer() {
         auto next = clock::now() + period;
         while (sTimerRun) {
             period = std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(1.0 / retraceHz()));
+            if (const double speed = skip::retraceSpeed(); speed > 1.0) {
+                // Fast-forward (skip.h): retraces as fast as the game takes them, up to `speed` x.
+                const auto fast = std::chrono::duration_cast<clock::duration>(period / speed);
+                while (clock::now() < next && sTimerRun) std::this_thread::yield();
+                next = std::max(next + fast, clock::now());
+                if (!frame::gamePaused() && !sRetracePending.exchange(true)) sched::postIrq(&retrace);
+                continue;
+            }
             std::this_thread::sleep_until(next);
             next += period;
             if (clock::now() > next + period * 4) next = clock::now() + period;  // don't spiral after a stall
