@@ -1,0 +1,26 @@
+# Build-time recompiler (plan)
+
+Our own tool translates the user's own `main.dol` (GLME01) into C++ at build time.
+Generated code lives in `build/` and is never committed.
+
+## Pieces
+1. **Recompiler** (`tools/recomp/`, Python): decode PPC from the DOL; function
+   boundaries and jump tables from `decomp/config/GLME01/symbols.txt` (CC0 metadata).
+   One C++ function per guest function: `void f_XXXXXXXX(Ctx&)`; in-function branches
+   as labels/goto; `bl` = direct call; `bctrl`/`blrl` = lookup in a generated
+   address->function table; `bctr` with a known jump table = `switch`.
+2. **Runtime** (`src/recomp/`): guest MEM1 (addr & 0x01FFFFFF), big-endian load/store
+   helpers, `Ctx` (r0-31, f0-31 + ps1, CR fields, LR, CTR, XER, FPSCR, GQR0-7),
+   paired-single quantized loads/stores, DOL loading, .ctors, boot into `main`.
+3. **HLE SDK**: every function in the Dolphin SDK TUs is not recompiled; a host
+   implementation marshals guest pointers/structs to Aurora (GX, VI, PAD), our
+   existing OS/thread/message/VI/frame-driver layers, DVD reads into guest memory,
+   AR/ARQ, CARD. Audio (DSP/AI) is silent at first.
+4. **Enhancements** as hooks on recompiled functions: frame interpolation,
+   widescreen/resolution, PAL Hidden Mansion behaviour.
+
+## Instruction coverage
+212 distinct mnemonics are used by the game (integer, branch, load/store incl. update
+and indexed forms, lmw/stmw, single/double FP, frsqrte, fctiwz, paired singles:
+psq_l/psq_st, ps_add/sub/mul/madd/msub/nmadd/nmsub/muls0/1/madds0/1/sum0/merge*/
+neg/res/rsqrte/cmpo0, plus supervisor ops only inside SDK code that is HLE'd).
