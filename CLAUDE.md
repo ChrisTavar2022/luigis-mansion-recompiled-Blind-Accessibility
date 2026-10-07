@@ -38,6 +38,7 @@
 - `LM_TRACE=ring` (last 64 calls dumped on fatal) | `LM_TRACE=8000E46C,...` (log entries) | `LM_TRACE=all`
 - `LM_WATCH=<addr>[,<len>]` report guest stores (use with LM_TRACE for function names)
 - `LM_WATCHDOG=1` dump guest threads every 3 s; `LM_TRACE_MQ=1` message-queue log; `LM_DVD_SPEED=1` console-speed disc.
+- Progress/equipment state for tests (src/recomp/test_state.cpp): `LM_TEST_STATE=poltergust|fire|water|ice` (combine with `+`) keeps Luigi equipped every gameplay frame. `poltergust` gives Poltergust + Game Boy Horror (Luigi +0x792 |= 4|8, the <WEAPON> event bits); `fire`/`water`/`ice` also set Luigi +0x1184 (element 2/3/4) and keep the meter full (+0x1188 = 100). Combine with `LM_START_MAP`/`LM_DEV_WARPS` and `LM_SKIP_TEST=<frame>:pos:x,y,z` (or `LM_TELEPORT=x,y,z,frames`), and press A periodically in `--input` (or `LM_SKIP_CUTSCENES=1 LM_SKIP_AUTO=30`) so dialogue does not stall the run. Scripted `L`/`R` also set the analog trigger values. `LM_NOZZLE_DUMP=1` logs the Poltergust controller state (`[actor0+0x7E4]` +0x310/+0x314 and its 0x50-byte input block from Luigi).
 - Cutscene skip / fast-forward (docs/ENHANCEMENTS.md §4): `LM_SKIP_LOG=1` event-state log + flag snapshots, `LM_FF=1` fast-forward always, `LM_SKIP_AUTO`, `LM_SKIP_TEST`, `LM_INPUT_CLOCK=frames`. Test runs that reach events save the game: set `LM_CARD_DIR`.
 - `python tools/recomp/addr2sym.py <addr>...`; `tools/recomp/hle_refs.py` lists SDK functions game code calls.
 

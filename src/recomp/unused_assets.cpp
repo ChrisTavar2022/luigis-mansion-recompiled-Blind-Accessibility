@@ -7,6 +7,8 @@
 
 #include <dolphin/dvd.h>
 
+#include <bit>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -278,6 +280,52 @@ HLE(getResSize__10JKRArchiveCFPCv) {
         return;
     }
     callOriginal(c, "getResSize__10JKRArchiveCFPCv");
+}
+
+
+u16 padButtons();  // hle_pad.cpp
+
+// Called once per gameplay frame (after the GBH HUD update).
+void unusedAssetsFrame(Ctx& c) {
+    static const bool sDump = envFlag("LM_NOZZLE_DUMP");
+    if (!sDump) return;
+    const u32 actor = rd32(0x803D48A0);  // actor slot 0 = Luigi
+    if (actor < 0x80000000u || actor >= 0x81800000u) return;
+    constexpr u32 kSize = 0x1400;
+    static std::vector<u8> idle(kSize), prev(kSize), noisy(kSize);
+    static bool havePrev = false, prevL = false;
+    static int held = 0;
+    const u8* cur = hostp(actor);
+    const bool l = padButtons() & 0x0040;
+    const u32 st = rd32(actor + 0x7E4);
+    if (st >= 0x80000000u && st < 0x81800000u) {
+        static u32 last = ~0u;
+        const u32 v = rd32(st + 0x310) << 16 | rd32(st + 0x314) << 8 | rd32(st + 0x334);
+        static int sN = 0;
+        if (v != last || sN++ % 30 == 0) {
+            std::string in;
+            for (u32 i = 0; i < 0x50; i += 4) {
+                char b[12];
+                std::snprintf(b, sizeof b, " %08X", rd32(st + i));
+                in += b;
+            }
+            log("[nozzle] action %u/%u/%u L=%d timers %.2f %.2f in:%s", rd32(st + 0x310), rd32(st + 0x314), rd32(st + 0x334), l,
+                std::bit_cast<float>(rd32(actor + 0x1114)), std::bit_cast<float>(rd32(actor + 0x110C)), in.c_str());
+        }
+        last = v;
+    }
+    if (havePrev && !l && !prevL)
+        for (u32 i = 0; i < kSize; i++) noisy[i] |= cur[i] != prev[i];
+    if (!l) std::memcpy(idle.data(), cur, kSize), held = 0;
+    else if (++held == 15) {
+        std::string s;
+        for (u32 i = 0; i < kSize; i++)
+            if (!noisy[i] && cur[i] != idle[i]) s += " " + std::to_string(i) + ":" + std::to_string(idle[i]) + ">" + std::to_string(cur[i]);
+        log("[nozzle] L-held diff:%s", s.c_str());
+    }
+    std::memcpy(prev.data(), cur, kSize);
+    havePrev = true;
+    prevL = l;
 }
 
 }  // namespace recomp

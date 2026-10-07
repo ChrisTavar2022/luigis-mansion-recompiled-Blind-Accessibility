@@ -199,10 +199,25 @@ with a model-registry entry. No code ever creates those actors. Luigi's equipmen
 in `fn_80072554` (types 6 `vhead`, 5 `vbody`, 0x0A `gameboy`) and attached to joints by
 `fn_800AE1A4` → `fn_800685DC` (child slots at parent +0x5C8, stride 0x40). Hiding an actor is
 MoveObj flag 0x4000 at +0x40. A reconstruction would create type 8/9 actors, attach them
-like `vhead`, and swap visibility while Luigi sprays. I did not find which Luigi/vacuum state
-means "spraying water/air" in the time available: Luigi's action controller is
-`[actor+0x7E4]` +0x310/+0x314/+0x334, and the element is player record +0x58, 3 = water.
-So no option is offered yet.
+like `vhead`, and swap visibility while Luigi sprays.
+
+What is known about the spray state so far:
+- The Poltergust controller is `[Luigi+0x7E4]` (code in `auto_03_80073A18`, updated by
+  `fn_80073AF8` from `fn_800B5324`). +0x310 is the mode (1 idle, 2 active) and +0x314 the
+  sub-action. Each frame Luigi copies a 0x50-byte input block to its start: +0x04 element
+  index, +0x40 request.
+- `fn_8007528C` starts actions from the request: 2 = vacuum (sub 0xF); 5 = element spray, only
+  when the element index is 1..3 (sub 0x11); 9 and 11 are other actions. Air blowing showed up
+  as mode 2 / sub 0x0A.
+- Luigi's request comes from `fn_800B5324`: 5 while Luigi +0x1114 > 0 (element spray), 6
+  while +0x110C > 0. Luigi's element is +0x1184 (2 fire, 3 water, 4 ice) and the meter amount
+  is +0x1188 (0..100).
+- The scripted runs could not produce a sustained spray. The test Luigi was sitting in event
+  dialogue, so L was ignored. The next step is to rerun with `LM_TEST_STATE=water`, periodic
+  A presses or `LM_SKIP_AUTO`, then hold L and read `LM_NOZZLE_DUMP` to confirm the sub-actions
+  for water and air.
+
+No option is offered until that is confirmed.
 
 ## Other leftovers noticed
 
