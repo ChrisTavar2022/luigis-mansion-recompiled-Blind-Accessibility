@@ -19,12 +19,18 @@ target_include_directories(lm_game_headers INTERFACE
     ${CMAKE_SOURCE_DIR}/extern/aurora/include
     ${CMAKE_SOURCE_DIR}/src)
 target_compile_definitions(lm_game_headers INTERFACE TARGET_PC=1 AVOID_UB=1 VERSION=0 WIDESCREEN_SUPPORT=1)
+# Game and JSystem headers assume global.h is the first include of every translation unit.
+if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    target_compile_options(lm_game_headers INTERFACE "$<$<COMPILE_LANGUAGE:C,CXX>:/FIglobal.h>")
+else ()
+    target_compile_options(lm_game_headers INTERFACE "$<$<COMPILE_LANGUAGE:C,CXX>:-includeglobal.h>")
+endif ()
 set(GAME_LIBS lm_game_headers aurora::core aurora::gx aurora::gd aurora::si aurora::vi aurora::pad
     aurora::mtx aurora::os aurora::dvd aurora::card)
 
 # ---- JSystem (ported base from Dusklight, CC0) ------------------------------
 set(JSYSTEM_LIBRARIES)
-foreach (_jsys JKernel JSupport JMath JUtility)
+foreach (_jsys JKernel JSupport JMath JUtility JGadget J2DGraph)
     file(GLOB _jsys_src CONFIGURE_DEPENDS libs/JSystem/src/${_jsys}/*.cpp)
     add_library(JSystem_${_jsys} STATIC ${_jsys_src})
     target_link_libraries(JSystem_${_jsys} PUBLIC ${GAME_LIBS})
@@ -34,7 +40,7 @@ endforeach ()
 # Platform layer (window, main loop, frame pacing, interpolation, settings).
 # Decompiled game code from decomp/ is added to this target unit-by-unit as
 # each unit is made to compile against Aurora (see docs/ROADMAP.md, Phase 1).
-file(GLOB PORT_SOURCES CONFIGURE_DEPENDS src/port/*.cpp src/port/os/*.cpp)
+file(GLOB PORT_SOURCES CONFIGURE_DEPENDS src/port/*.cpp src/port/os/*.cpp src/helpers/*.cpp)
 file(GLOB_RECURSE GAME_SOURCES CONFIGURE_DEPENDS src/game/*.cpp)
 add_executable(lmport ${PORT_SOURCES} ${GAME_SOURCES})
 target_include_directories(lmport PRIVATE src)
