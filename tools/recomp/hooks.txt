@@ -112,3 +112,10 @@ fn_8003EBB0
 # Leftover room visits (room_swap.cpp): Luigi's start position for the visited room.
 findLuigiAppearIndex__Q24Koga9EnManagerFPQ24Koga8ToolDataUl
 getValue__Q24Koga8ToolDataCFiPCcPf
+
+# Runtime-switchable instruction patches: "patch <id> <address> <instruction word> [us] [pal]".
+# The replacement runs while switch <id> is on (setPatch, src/recomp/runtime.h).
+# Unused Game Boy Horror ghost tracker (TCRF): fn_8004463C loads r0 = 0 at 0x8004472C, which
+# keeps the tracking code from running; 1 = far mode (swaying, smooth), 2 = close mode (accurate).
+patch 1 8004472C 38000001
+patch 2 8004472C 38000002

@@ -16,6 +16,7 @@ u8* g_mem;
 bool* g_irqPending;
 bool g_traceOn;
 bool g_watchOn;
+u8* g_patches;
 
 void watch_store(u32 a, u32 v, int size) { sApi->watchStore(a, v, size); }
 u32 mmio_rd(u32 a, int size) { return sApi->mmioRead(a, size); }
@@ -109,6 +110,7 @@ __declspec(dllexport) const GameModule* lm_module_init(const RuntimeApi* api) {
     g_irqPending = api->irqPending;
     g_traceOn = api->traceOn;
     g_watchOn = api->watchOn;
+    g_patches = api->patches;
     return &kGameModule;
 }
 

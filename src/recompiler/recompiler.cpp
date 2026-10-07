@@ -9,6 +9,7 @@
 #include <set>
 #include <stdexcept>
 #include <string_view>
+#include <cstdlib>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -312,6 +313,8 @@ public:
     std::map<u32, Func> funcs;
     std::unordered_set<u32> hle;
     std::unordered_set<std::string> hooks;
+    // Runtime-switchable instruction patches: address -> (switch id, replacement word).
+    std::unordered_map<u32, std::vector<std::pair<u32, u32>>> patches;
     std::map<std::string, unsigned> unsupported;
     std::unordered_map<u32, std::vector<u32>> jumpTables;
     size_t addressEntries = 0;
@@ -493,11 +496,25 @@ std::vector<std::string> FuncEmitter::translate() {
         const u32 w = rc_.dol.word(pc);
         labelLines.push_back({lines_.size(), pc});
         lines_.push_back("");  // placeholder for the label
-        try {
-            insn(w, pc);
-        } catch (const Unsupported& e) {
-            E(fmt("c.unimplemented(0x%08Xu, 0x%08Xu); // ", pc, w) + e.what);
-            rc_.unsupported[e.what]++;
+        auto one = [&](u32 word) {
+            try {
+                insn(word, pc);
+            } catch (const Unsupported& e) {
+                E(fmt("c.unimplemented(0x%08Xu, 0x%08Xu); // ", pc, word) + e.what);
+                rc_.unsupported[e.what]++;
+            }
+        };
+        if (auto it = rc_.patches.find(pc); it != rc_.patches.end()) {
+            // hooks.txt "patch": the replacement runs while its switch is on.
+            for (size_t i = 0; i < it->second.size(); i++) {
+                E(fmt(i == 0 ? "if (g_patches[%u]) {" : "} else if (g_patches[%u]) {", it->second[i].first));
+                one(it->second[i].second);
+            }
+            E("} else {");
+            one(w);
+            E("}");
+        } else {
+            one(w);
         }
     }
     // Execution that runs off the end continues into the next function.
@@ -1176,12 +1193,22 @@ bool recompile(const Input& in, Output& out, std::string& error) {
                 p = q + 1;
             }
             bool tagUs = false, tagPal = false;
-            for (size_t i = 1; i < words.size(); i++) {
+            const bool isPatch = words[0] == "patch";
+            for (size_t i = isPatch ? 4 : 1; i < words.size(); i++) {
                 if (words[i] == "us") tagUs = true;
                 else if (words[i] == "pal") tagPal = true;
             }
             const bool applies = pal ? tagPal : (tagUs || !tagPal);
-            if (applies) rc.hooks.insert(std::string(words[0]));
+            if (!applies) continue;
+            if (isPatch) {  // "patch <id> <address> <instruction word> [us] [pal]"
+                u32 id = 0, addr = 0, word = 0;
+                if (words.size() >= 4 && parseHex(words[2], addr) && parseHex(words[3], word)) {
+                    id = u32(std::strtoul(std::string(words[1]).c_str(), nullptr, 10));
+                    rc.patches[addr].push_back({id, word});
+                }
+                continue;
+            }
+            rc.hooks.insert(std::string(words[0]));
         }
         rc.run(out, in.version);
         size_t nhle = rc.hle.size();

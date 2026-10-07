@@ -49,6 +49,16 @@ HLE(fn_8003CFC0) {
         sGbhCamOn = !sGbhCamOn;
         log("[unused] Game Boy Horror camera %s", sGbhCamOn ? "on" : "off");
     }
+    // Unused ghost tracker: D-pad Down cycles off -> far mode -> close mode (patch switches 1/2).
+    static u32 sTracker = 0;
+    if (!port::settings().enhancements.gbhTracker) {
+        sTracker = 0;
+    } else if ((buttons & PAD_BUTTON_DOWN) && !(sPrevButtons & PAD_BUTTON_DOWN)) {
+        sTracker = (sTracker + 1) % 3;
+        log("[unused] Game Boy Horror ghost tracker: %s", sTracker == 0 ? "off" : sTracker == 1 ? "far mode" : "close mode");
+    }
+    setPatch(1, sTracker == 1);
+    setPatch(2, sTracker == 2);
     sPrevButtons = buttons;
     static const bool sShowHud = [] {
         const char* v = std::getenv("LM_GBH_CAM");

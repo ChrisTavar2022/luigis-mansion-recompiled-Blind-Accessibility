@@ -12,6 +12,9 @@ extern const GameModule* g_module;
 GuestFn lookupFunc(u32 addr);
 [[noreturn]] void callMissing(Ctx& c, u32 addr);  // indirect call to an address with no function
 void initTimeBase();
+// Runtime-switchable instruction patches declared in tools/recomp/hooks.txt as
+// "patch <id> <address> <instruction word> [us] [pal]" (id < kMaxPatches).
+void setPatch(u32 id, bool on);
 void initTrace();
 void initWatch();
 void watchRange(u32 addr, u32 len, const char* what);  // HLE bulk writes

@@ -23,6 +23,13 @@ const GameModule* g_module = nullptr;
 u8* g_mem = nullptr;
 bool g_traceOn = false;
 
+// Instruction patch switches (hooks.txt "patch <id> ..."); see setPatch().
+u8 g_patchStore[kMaxPatches];
+u8* g_patches = g_patchStore;
+void setPatch(u32 id, bool on) {
+    if (id < kMaxPatches) g_patchStore[id] = on ? 1 : 0;
+}
+
 // ---------------------------------------------------------------------------
 // Tracing (LM_TRACE=all | ring | <hex addr>,<hex addr>...)
 // ---------------------------------------------------------------------------

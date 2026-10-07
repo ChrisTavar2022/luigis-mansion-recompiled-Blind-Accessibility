@@ -33,6 +33,7 @@ inline u16 bswap16(u16 v) { return __builtin_bswap16(v); }
 extern u8* g_mem;
 extern bool* g_irqPending;  // set (atomically) by the runtime when an interrupt is queued
 extern bool g_traceOn;      // LM_TRACE: log/record guest function entries
+extern u8* g_patches;       // runtime-switchable instruction patches ("patch" lines in tools/recomp/hooks.txt)
 extern bool g_watchOn;      // LM_WATCH: report guest stores to an address range
 void watch_store(u32 a, u32 v, int size);
 
@@ -125,7 +126,8 @@ struct SymEntry {
 
 // The recompiled game: tables emitted by the recompiler (func_table.cpp). Linked into
 // lmrecomp directly, or exported by the game module DLL (module_abi.h).
-constexpr u32 kModuleAbiVersion = 1;
+constexpr u32 kModuleAbiVersion = 2;
+constexpr u32 kMaxPatches = 64;
 struct GameModule {
     u32 abiVersion;
     const char* gameId;  // "GLME01" / "GLMP01": the DOL it was recompiled from

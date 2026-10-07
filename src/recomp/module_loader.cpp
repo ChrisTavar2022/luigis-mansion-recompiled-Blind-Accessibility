@@ -29,6 +29,7 @@ RuntimeApi makeApi() {
     api.irqPending = g_irqPending;
     api.traceOn = g_traceOn;
     api.watchOn = g_watchOn;
+    api.patches = g_patches;
     api.watchStore = &watch_store;
     api.mmioRead = &mmio_rd;
     api.mmioWrite = &mmio_wr;

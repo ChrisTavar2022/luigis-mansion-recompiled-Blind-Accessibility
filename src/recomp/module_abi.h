@@ -23,6 +23,7 @@ struct RuntimeApi {
     bool* irqPending;
     bool traceOn;
     bool watchOn;
+    u8* patches;  // kMaxPatches switch bytes owned by the runtime
 
     // Runtime services used by ctx.h / generated code. fatalMessage, callMissing and
     // unimplemented do not return.
