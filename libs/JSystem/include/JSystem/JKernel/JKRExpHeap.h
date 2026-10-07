@@ -73,6 +73,8 @@ protected:
 public:
     BOOL isEmpty();
     s32 getUsedSize(u8 groupId) const;
+    // LM-era JSystem: frees every block allocated under groupId; returns the count freed.
+    s32 freeGroup(u8 groupId);
     s32 getTotalUsedSize(void) const;
     
     CMemBlock* getUsedFirst() { return mHeadUsedList; }

@@ -650,6 +650,26 @@ s32 JKRExpHeap::do_getTotalFreeSize() {
     return size;
 }
 
+// Added for Luigi's Mansion (its older JKRExpHeap has this; retail 0x801CF4E4).
+s32 JKRExpHeap::freeGroup(u8 groupId) {
+    lock();
+    s32 count = 0;
+    CMemBlock* block = mHeadUsedList;
+    while (block != nullptr) {
+        if (block->mGroupId == groupId) {
+            dispose(block->getContent(), (u8*)block->getContent() + block->size);
+            CMemBlock* next = block->mNext;
+            block->free(this);
+            block = next;
+            count++;
+        } else {
+            block = block->mNext;
+        }
+    }
+    unlock();
+    return count;
+}
+
 s32 JKRExpHeap::getUsedSize(u8 groupId) const {
     lock();
     u32 size = 0;

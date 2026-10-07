@@ -7,12 +7,24 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 
 extern "C" {
 
 u32 __OSFpscrEnableBits;  // FP exception enables; host FP exceptions stay masked
 
 OSErrorHandler OSSetErrorHandler(OSError, OSErrorHandler) { return nullptr; }
+
+// Console reset / power-off (reset button combo, disc errors): exit the process.
+void OSResetSystem(int reset, u32 resetCode, BOOL forceMenu) {
+    std::fprintf(stderr, "OSResetSystem(%d, %u, %d): exiting\n", reset, resetCode, forceMenu);
+    std::fflush(stderr);
+    std::exit(0);
+}
+
+void OSSetProgressiveMode(u32) {}  // output mode is the host window's concern
+
+void GXSetCopyClamp(GXFBClamp) {}  // EFB copies on PC never read outside the source rect
 BOOL OSGetResetSwitchState() { return FALSE; }
 
 // Values for a 1:1 EFB-to-XFB copy (NTSC 640x480 render modes used by LM).

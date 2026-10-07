@@ -47,7 +47,11 @@ DUSK_GAME_DATA JKRHeap* JKRHeap::sSystemHeap;
 #else
 #define TLS_GLOBAL_DYNAMIC
 #endif
-static thread_local TLS_GLOBAL_DYNAMIC JKRHeap* sCurrentHeap;
+// LM PORT: Luigi's Mansion shares the current heap across its plain OS threads
+// (the loader thread selects a heap, the DVD reader thread allocates from it).
+// On console the thread-switch callback only swaps heaps for JKRThreads, so for
+// LM the current heap behaves as a single global; keep it that way.
+static JKRHeap* sCurrentHeap;
 #else
 JKRHeap* JKRHeap::sCurrentHeap;
 #endif
