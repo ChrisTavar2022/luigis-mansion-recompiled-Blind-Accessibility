@@ -40,7 +40,7 @@ struct Room {
 void computeBounds(Room& room) {
     Vec lo = {1e30f, 1e30f, 1e30f}, hi = {-1e30f, -1e30f, -1e30f};
     const u8* p = static_cast<const u8*>(room.data.positions);
-    const u8* end = static_cast<const u8*>(room.data.normals ? room.data.normals : room.data.texCoords[0]);
+    const u8* end = p ? p + room.data.positionsSize : nullptr;
     const u32 stride = room.data.floatPositions ? 12 : 6;
     for (; p && end && p + stride <= end; p += stride) {
         f32 v[3];
@@ -54,6 +54,11 @@ void computeBounds(Room& room) {
         }
         lo = {std::min(lo.x, v[0]), std::min(lo.y, v[1]), std::min(lo.z, v[2])};
         hi = {std::max(hi.x, v[0]), std::max(hi.y, v[1]), std::max(hi.z, v[2])};
+    }
+    if (lo.x > hi.x) {  // no positions: never the nearest room
+        room.center = {0.0f, 0.0f, 0.0f};
+        room.radius = -1e30f;
+        return;
     }
     room.center = {(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
     room.radius = 0.5f * std::sqrt((hi.x - lo.x) * (hi.x - lo.x) + (hi.y - lo.y) * (hi.y - lo.y) +
@@ -83,8 +88,16 @@ static void init() {
         computeBounds(*room);
         sRooms.push_back(std::move(room));
     }
-    if (sRooms.size() > 1) {
-        sEye = sRooms[1]->center;  // start inside the first real room
+    // Start inside an ordinary room (some "rooms" are huge exterior shells).
+    const Room* start = nullptr;
+    for (const auto& room : sRooms) {
+        if (room->radius > 300.0f && room->radius < 1500.0f && (start == nullptr || room->radius < start->radius)) {
+            start = room.get();
+        }
+    }
+    if (start != nullptr) {
+        // Begin just outside the room, looking at it (+Z), then fly in.
+        sEye = {start->center.x, start->center.y, start->center.z - start->radius * 1.3f};
     }
     OSReport("[mapviewer] %s: loaded %u rooms, starting at (%.0f, %.0f, %.0f)\n", map.c_str(), u32(sRooms.size()),
              sEye.x, sEye.y, sEye.z);
@@ -129,7 +142,10 @@ static void draw() {
     std::vector<std::pair<f32, Room*>> nearest;
     for (auto& room : sRooms) {
         const f32 dx = room->center.x - sEye.x, dy = room->center.y - sEye.y, dz = room->center.z - sEye.z;
-        nearest.push_back({std::sqrt(dx * dx + dy * dy + dz * dz) - room->radius, room.get()});
+        if (room->radius < 0.0f) {
+            continue;  // no geometry
+        }
+        nearest.push_back({std::sqrt(dx * dx + dy * dy + dz * dz), room.get()});
     }
     std::sort(nearest.begin(), nearest.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     nearest.resize(std::min(nearest.size(), kMaxRooms));
