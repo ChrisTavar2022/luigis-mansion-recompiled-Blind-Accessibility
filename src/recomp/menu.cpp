@@ -4,6 +4,7 @@
 #include "recomp/menu.h"
 
 #include "port/settings.h"
+#include "recomp/dev_tools.h"
 #include "recomp/hidden_mansion.h"
 
 #include <aurora/aurora.h>
@@ -124,7 +125,7 @@ void enhancementsTab() {
         if (inside) pending("leave the Hidden Mansion to change");
     }
     ImGui::Separator();
-    ImGui::TextDisabled("Gameplay toggles, cheats and debug viewers will appear here.");
+    recomp::dev::menuSection();
 }
 
 void fpsOverlay() {
@@ -156,9 +157,10 @@ void init() {
     applyWindowSettings();
 }
 
-bool isOpen() { return sOpen; }
+bool isOpen() { return sOpen || recomp::dev::capturesInput(); }
 
 void handleEvent(const SDL_Event& ev) {
+    if (recomp::dev::handleKey(ev)) return;
     if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) return;
     if (ev.key.key == SDLK_F1) sOpen = !sOpen;
     else if (ev.key.key == SDLK_ESCAPE && sOpen) sOpen = false;
@@ -170,6 +172,7 @@ void handleEvent(const SDL_Event& ev) {
 
 void draw() {
     if (port::settings().enhancements.showFps) fpsOverlay();
+    recomp::dev::drawOverlays();
     if (!sOpen) return;
     ImGui::SetNextWindowSize(ImVec2(680, 400), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));

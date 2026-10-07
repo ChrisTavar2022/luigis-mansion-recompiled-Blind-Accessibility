@@ -154,22 +154,6 @@ HLE(fn_800168EC) {
     for (int i = 0; i < 3; i++) hostp(rec + 0x2C + i)[0] = saved[i];
 }
 
-// Game-scene setup for sCurMapNo. Dev aid for testing the boss changes: LM_START_MAP=<n>
-// loads map n (9 Bowser, 10 Chauncey, 11 Boolossus) the first time the mansion (map 2) loads.
-HLE(fn_8000C188) {
-    static const int sMap = [] {
-        const char* env = std::getenv("LM_START_MAP");
-        return env && *env ? std::atoi(env) : 0;
-    }();
-    static bool sDone = false;
-    if (sMap > 0 && !sDone && rd32(kCurMapNo) == 2) {
-        sDone = true;
-        log("[hm] LM_START_MAP: loading map %d instead of the mansion", sMap);
-        wr32(kCurMapNo, u32(sMap));
-    }
-    callOriginal(c, "fn_8000C188");
-}
-
 // ---- Bosses ------------------------------------------------------------------------------
 
 // Luigi's per-frame update. The US Luigi already has a "Boolossus" movement mode behind byte

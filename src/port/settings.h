@@ -35,6 +35,9 @@ struct EnhancementSettings {
     bool pauseOnFocusLoss = true;
     bool skipIntroLogos = false;
     bool hiddenMansionPal = true;  // Hidden Mansion uses the PAL release's rules (until the lab menu offers both)
+    // Debug: the game's own compiled-in debug switches (src/recomp/dev_tools.cpp)
+    bool dbgParticleReport = false;  // particle manager JUTReport text
+    bool dbgDepthBlur = false;       // unused depth blur screen pass
 };
 
 struct Settings {
