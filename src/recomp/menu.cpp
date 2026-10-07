@@ -1,10 +1,11 @@
-// In-game overlay menu (F1 toggles, Esc closes): Visuals / Sound / Enhancements / Game.
+// In-game overlay menu (F1 toggles, Esc closes): Visuals / Sound / Controls / Enhancements / Game.
 // Drawn with Aurora's Dear ImGui on the host thread between the guest's present
 // and aurora_end_frame. While it is open the game receives neutral pad input.
 #include "recomp/menu.h"
 
 #include "port/install.h"
 #include "port/settings.h"
+#include "recomp/controls.h"
 #include "recomp/crt.h"
 #include "recomp/dev_tools.h"
 #include "recomp/hidden_mansion.h"
@@ -383,6 +384,7 @@ void init() {
 bool isOpen() { return sOpen || recomp::dev::capturesInput(); }
 
 void handleEvent(const SDL_Event& ev) {
+    if (recomp::controls::handleEvent(ev)) return;  // binding capture owns the key
     if (recomp::dev::handleKey(ev)) return;
     if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) return;
     if (ev.key.key == SDLK_F1) sOpen = !sOpen;
@@ -411,6 +413,10 @@ void draw() {
             }
             if (tab("Sound")) {
                 soundTab();
+                ImGui::EndTabItem();
+            }
+            if (tab("Controls")) {
+                sDirty |= recomp::controls::drawTab();
                 ImGui::EndTabItem();
             }
             if (tab("Enhancements")) {

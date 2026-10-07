@@ -3,6 +3,7 @@
 #include "recomp/hle.h"
 
 #include "port/options.h"
+#include "recomp/controls.h"
 #include "recomp/menu.h"
 #include "recomp/skip.h"
 
@@ -83,6 +84,28 @@ void applyScript(PADStatus& st) {
 
 u16 sLastButtons = 0;  // port 1, as last handed to the game
 
+// LM_PAD_LOG=1: log every change of a connected port's status (after bindings and shaping,
+// before the menu's input suppression), for checking controller configuration.
+void logPad(const PADStatus* st) {
+    static const bool enabled = [] {
+        const char* v = std::getenv("LM_PAD_LOG");
+        return v && *v && *v != '0';
+    }();
+    if (!enabled) return;
+    static PADStatus last[PAD_MAX_CONTROLLERS] = {};
+    for (int i = 0; i < PAD_MAX_CONTROLLERS; i++) {
+        const PADStatus& s = st[i];
+        const PADStatus& l = last[i];
+        if (s.button == l.button && s.stickX == l.stickX && s.stickY == l.stickY && s.substickX == l.substickX &&
+            s.substickY == l.substickY && s.triggerLeft == l.triggerLeft && s.triggerRight == l.triggerRight &&
+            s.err == l.err)
+            continue;
+        last[i] = s;
+        log("[pad] port %d retrace %u: err %d buttons %04X stick %d,%d C %d,%d L %u R %u", i + 1, viRetraceCount(),
+            s.err, s.button, s.stickX, s.stickY, s.substickX, s.substickY, s.triggerLeft, s.triggerRight);
+    }
+}
+
 }  // namespace
 
 u16 padButtons() { return sLastButtons; }
@@ -92,13 +115,16 @@ HLE(PADReset) { c.r[3] = PADReset(c.r[3]); }
 HLE(PADRecalibrate) { c.r[3] = PADRecalibrate(c.r[3]); }
 HLE(PADSetSpec) { PADSetSpec(c.r[3]); }
 HLE(PADSetAnalogMode) { PADSetAnalogMode(c.r[3]); }
-HLE(PADControlMotor) { PADControlMotor(c.r[3], c.r[4]); }
+HLE(PADControlMotor) { controls::controlMotor(c.r[3], c.r[4]); }  // F1 > Controls rumble setting
 HLE(PADSetSamplingRate) {}  // PAL release; sampling is the host's business
 
 // PADStatus (12 bytes): button, stickX/Y, substickX/Y, triggerL/R, analogA/B, err.
 HLE(PADRead) {
     PADStatus st[PAD_MAX_CONTROLLERS] = {};
+    controls::beforeRead();  // port devices (hot-plug) and bindings from F1 > Controls
     const u32 motor = PADRead(st);
+    controls::afterRead(st);  // dead zones, sensitivity; input test values
+    logPad(st);
     if (menu::isOpen()) {  // the overlay menu owns input while open
         for (auto& s : st) {
             const s8 err = s.err;
