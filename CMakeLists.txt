@@ -79,62 +79,133 @@ if (WIN32)
     endif ()
 endif ()
 
-# ---- Recompiled build (docs/RECOMPILER.md) -----------------------------------
-# tools/recomp/recomp.py translates the user's own main.dol into C++ under the
-# build directory at configure time. Nothing generated is ever committed.
-set(LM_DOL "${CMAKE_SOURCE_DIR}/Luigis Mansion US/sys/main.dol" CACHE FILEPATH
-    "Path to your Luigi's Mansion (USA) main.dol, extracted from your own disc")
-set(LM_RECOMP_DIR ${CMAKE_BINARY_DIR}/recomp_gen)
-set(_recomp_inputs ${CMAKE_SOURCE_DIR}/tools/recomp/recomp.py ${CMAKE_SOURCE_DIR}/tools/recomp/hooks.txt ${LM_DOL}
-    ${CMAKE_SOURCE_DIR}/decomp/config/GLME01/symbols.txt ${CMAKE_SOURCE_DIR}/decomp/config/GLME01/splits.txt)
-if (EXISTS ${LM_DOL})
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_recomp_inputs})
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
-    set(_stamp ${LM_RECOMP_DIR}/files.txt)
-    set(_regen FALSE)
-    if (NOT EXISTS ${_stamp})
-        set(_regen TRUE)
-    else ()
-        foreach (_in ${_recomp_inputs})
-            if (${_in} IS_NEWER_THAN ${_stamp})
-                set(_regen TRUE)
-            endif ()
-        endforeach ()
-    endif ()
-    if (_regen)
-        file(REMOVE_RECURSE ${LM_RECOMP_DIR})
-        execute_process(
-            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/recomp/recomp.py
-                --dol ${LM_DOL}
-                --symbols ${CMAKE_SOURCE_DIR}/decomp/config/GLME01/symbols.txt
-                --splits ${CMAKE_SOURCE_DIR}/decomp/config/GLME01/splits.txt
-                --out ${LM_RECOMP_DIR}
-            RESULT_VARIABLE _recomp_result)
-        if (NOT _recomp_result EQUAL 0)
-            message(FATAL_ERROR "Recompiling main.dol failed")
+# ---- Recompiled build (docs/RECOMPILER.md, docs/SETUP.md) ---------------------
+# The recompiler (src/recompiler) translates the user's own main.dol into C++. It is
+# linked into the shipped executable (first-run setup) and into the lmrecompile tool the
+# dev build uses. Nothing generated is ever committed.
+add_library(lm_recompiler STATIC src/recompiler/recompiler.cpp src/recompiler/recompiler.h)
+target_include_directories(lm_recompiler PUBLIC src)
+add_executable(lmrecompile tools/recomp/lmrecompile.cpp)
+target_link_libraries(lmrecompile PRIVATE lm_recompiler)
+
+# Runtime shared by both executables: memory/CPU helpers, scheduler, HLE SDK, frame
+# driver, audio, menu. module_rt.cpp belongs to the game module, not the runtime.
+file(GLOB RECOMP_RUNTIME_SOURCES CONFIGURE_DEPENDS src/recomp/*.cpp)
+list(REMOVE_ITEM RECOMP_RUNTIME_SOURCES ${CMAKE_SOURCE_DIR}/src/recomp/module_rt.cpp)
+list(APPEND RECOMP_RUNTIME_SOURCES src/port/crash_handler.cpp src/port/options.cpp src/port/dol.cpp
+    src/port/settings.cpp src/port/install.cpp)
+
+function(lm_runtime_target tgt)
+    target_include_directories(${tgt} PRIVATE src
+        ${CMAKE_SOURCE_DIR}/extern/aurora/include/dolphin ${CMAKE_SOURCE_DIR}/extern/aurora/include)
+    target_compile_definitions(${tgt} PRIVATE TARGET_PC=1)
+    target_link_libraries(${tgt} PRIVATE aurora::main aurora::core aurora::gx aurora::vi aurora::pad
+        aurora::si aurora::os aurora::dvd aurora::card)
+    if (WIN32)
+        target_link_libraries(${tgt} PRIVATE dbghelp)
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:${tgt}> $<TARGET_FILE_DIR:${tgt}>
+            COMMAND_EXPAND_LISTS)
+        if (_dawn_extra_dlls)
+            add_custom_command(TARGET ${tgt} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_dawn_extra_dlls} $<TARGET_FILE_DIR:${tgt}>)
         endif ()
     endif ()
-    file(STRINGS ${_stamp} _recomp_files)
-    list(TRANSFORM _recomp_files PREPEND ${LM_RECOMP_DIR}/)
+endfunction()
 
-    file(GLOB RECOMP_RUNTIME_SOURCES CONFIGURE_DEPENDS src/recomp/*.cpp)
-    add_executable(lmrecomp ${RECOMP_RUNTIME_SOURCES} ${_recomp_files}
-        src/port/crash_handler.cpp src/port/options.cpp src/port/dol.cpp src/port/settings.cpp)
-    target_include_directories(lmrecomp PRIVATE src ${LM_RECOMP_DIR}
-        ${CMAKE_SOURCE_DIR}/extern/aurora/include/dolphin ${CMAKE_SOURCE_DIR}/extern/aurora/include)
-    target_compile_definitions(lmrecomp PRIVATE TARGET_PC=1)
-    target_link_libraries(lmrecomp PRIVATE aurora::main aurora::core aurora::gx aurora::vi aurora::pad
-        aurora::si aurora::os aurora::dvd aurora::card)
+# LuigisMansionRecomp: what end users run. It contains the runtime, the recompiler and
+# the setup UI; the game itself is a module DLL that setup compiles from the user's disc
+# with the bundled clang + lld (docs/SETUP.md).
+file(GLOB SETUP_SOURCES CONFIGURE_DEPENDS src/setup/*.cpp src/setup/*.h)
+add_executable(LuigisMansionRecomp ${RECOMP_RUNTIME_SOURCES} ${SETUP_SOURCES})
+lm_runtime_target(LuigisMansionRecomp)
+target_link_libraries(LuigisMansionRecomp PRIVATE lm_recompiler)  # nod comes with aurora::dvd
+# Setup's inputs are embedded in the executable (src/setup/embedded.cpp): symbol maps,
+# hooks, and the game module's freestanding sources.
+add_executable(lmembed tools/recomp/lmembed.cpp)
+set(LM_EMBEDDED_FILES
+    kSymbolsUs=decomp/config/GLME01/symbols.txt kSplitsUs=decomp/config/GLME01/splits.txt
+    kSymbolsPal=decomp/config/GLMP01_00/symbols.txt kVersionMapPal=tools/recomp/GLMP01_map.txt
+    kHooks=tools/recomp/hooks.txt kCtxHeader=src/recomp/ctx.h kModuleAbiHeader=src/recomp/module_abi.h
+    kModuleRt=src/recomp/module_rt.cpp kRecompilerSource=src/recompiler/recompiler.cpp)
+set(_embed_deps)
+foreach (_e ${LM_EMBEDDED_FILES})
+    string(REGEX REPLACE "^[^=]*=" "${CMAKE_SOURCE_DIR}/" _f ${_e})
+    list(APPEND _embed_deps ${_f})
+endforeach ()
+add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/embedded_data.cpp
+    COMMAND lmembed ${CMAKE_BINARY_DIR}/embedded_data.cpp setup::embedded::data ${LM_EMBEDDED_FILES}
+    DEPENDS lmembed ${_embed_deps}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Embedding setup data"
+    VERBATIM)
+target_sources(LuigisMansionRecomp PRIVATE ${CMAKE_BINARY_DIR}/embedded_data.cpp)
+# Dev builds use the LLVM that built them when no bundled llvm/ is next to the exe.
+get_filename_component(_cxx_dir ${CMAKE_CXX_COMPILER} DIRECTORY)
+if (EXISTS ${_cxx_dir}/clang${CMAKE_EXECUTABLE_SUFFIX} AND EXISTS ${_cxx_dir}/lld-link${CMAKE_EXECUTABLE_SUFFIX})
+    target_compile_definitions(LuigisMansionRecomp PRIVATE "LM_DEV_LLVM_DIR=\"${_cxx_dir}\"")
+endif ()
+
+# Packaging: `cmake --install build/<preset> --prefix <dir>` lays out a release folder.
+# LM_LLVM_DIR (an LLVM bin directory) supplies the bundled clang.exe and lld-link.exe.
+set(LM_LLVM_DIR "${_cxx_dir}" CACHE PATH "LLVM bin directory whose clang and lld-link are bundled on install")
+install(TARGETS LuigisMansionRecomp RUNTIME DESTINATION .)
+install(CODE "
+    file(GLOB _dlls \"$<TARGET_FILE_DIR:LuigisMansionRecomp>/*.dll\")
+    file(INSTALL \${_dlls} DESTINATION \"\${CMAKE_INSTALL_PREFIX}\")")
+install(PROGRAMS ${LM_LLVM_DIR}/clang${CMAKE_EXECUTABLE_SUFFIX} ${LM_LLVM_DIR}/lld-link${CMAKE_EXECUTABLE_SUFFIX}
+    DESTINATION llvm/bin OPTIONAL)
+install(FILES NOTICE.md DESTINATION .)
+install(FILES packaging/LLVM-LICENSE.TXT DESTINATION llvm)
+
+# lmrecomp: developer build with the game recompiled at build time and linked in
+# statically (debuggable, no setup). LM_DOL is the user's own main.dol; LM_DOL_VERSION
+# selects the symbol map (GLME01, or GLMP01 for the European release).
+set(LM_DOL "${CMAKE_SOURCE_DIR}/Luigis Mansion US/sys/main.dol" CACHE FILEPATH
+    "Path to your Luigi's Mansion main.dol, extracted from your own disc")
+set(LM_DOL_VERSION "GLME01" CACHE STRING "Release of LM_DOL: GLME01 (USA) or GLMP01 (Europe)")
+if (EXISTS ${LM_DOL})
+    set(LM_RECOMP_DIR ${CMAKE_BINARY_DIR}/recomp_gen)
+    if (LM_DOL_VERSION STREQUAL "GLMP01")
+        set(_recomp_cfg --symbols ${CMAKE_SOURCE_DIR}/decomp/config/GLMP01_00/symbols.txt
+            --version-map ${CMAKE_SOURCE_DIR}/tools/recomp/GLMP01_map.txt)
+        set(_recomp_deps ${CMAKE_SOURCE_DIR}/decomp/config/GLMP01_00/symbols.txt
+            ${CMAKE_SOURCE_DIR}/tools/recomp/GLMP01_map.txt)
+    else ()
+        set(_recomp_cfg --symbols ${CMAKE_SOURCE_DIR}/decomp/config/GLME01/symbols.txt
+            --splits ${CMAKE_SOURCE_DIR}/decomp/config/GLME01/splits.txt)
+        set(_recomp_deps ${CMAKE_SOURCE_DIR}/decomp/config/GLME01/symbols.txt
+            ${CMAKE_SOURCE_DIR}/decomp/config/GLME01/splits.txt)
+    endif ()
+    # Fixed set of outputs (lmrc::kChunks = 32 in src/recompiler/recompiler.h).
+    set(_recomp_files ${LM_RECOMP_DIR}/func_table.cpp)
+    foreach (_i RANGE 31)
+        string(LENGTH "${_i}" _len)
+        if (_len EQUAL 1)
+            set(_i "00${_i}")
+        else ()
+            set(_i "0${_i}")
+        endif ()
+        list(APPEND _recomp_files ${LM_RECOMP_DIR}/funcs_${_i}.cpp)
+    endforeach ()
+    add_custom_command(
+        OUTPUT ${_recomp_files} ${LM_RECOMP_DIR}/funcs.h ${LM_RECOMP_DIR}/summary.txt
+        COMMAND lmrecompile --dol ${LM_DOL} --version ${LM_DOL_VERSION} ${_recomp_cfg}
+            --hooks ${CMAKE_SOURCE_DIR}/tools/recomp/hooks.txt --out ${LM_RECOMP_DIR}
+        DEPENDS lmrecompile ${LM_DOL} ${_recomp_deps} ${CMAKE_SOURCE_DIR}/tools/recomp/hooks.txt
+        COMMENT "Recompiling ${LM_DOL}"
+        VERBATIM)
+
+    add_executable(lmrecomp ${RECOMP_RUNTIME_SOURCES} ${_recomp_files})
+    lm_runtime_target(lmrecomp)
+    target_include_directories(lmrecomp PRIVATE ${LM_RECOMP_DIR})
+    target_compile_definitions(lmrecomp PRIVATE LM_STATIC_MODULE=1)
     # Generated code: one huge function per guest function, lots of gotos.
     if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
         set_source_files_properties(${_recomp_files} PROPERTIES COMPILE_OPTIONS "/clang:-Wno-unused-label;/clang:-Wno-unused-variable")
-    endif ()
-    if (WIN32)
-        target_link_libraries(lmrecomp PRIVATE dbghelp)
-        add_custom_command(TARGET lmrecomp POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:lmrecomp> $<TARGET_FILE_DIR:lmrecomp>
-            COMMAND_EXPAND_LISTS)
+    else ()
+        set_source_files_properties(${_recomp_files} PROPERTIES COMPILE_OPTIONS "-Wno-unused-label;-Wno-unused-variable")
     endif ()
 else ()
-    message(STATUS "LM_DOL not found (${LM_DOL}); skipping the recompiled build")
+    message(STATUS "LM_DOL not found (${LM_DOL}); skipping the lmrecomp developer build")
 endif ()

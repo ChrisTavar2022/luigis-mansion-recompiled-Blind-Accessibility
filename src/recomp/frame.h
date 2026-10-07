@@ -22,4 +22,10 @@ void setHostPaused(bool paused);  // host: window paused (no frames)
 
 void present(Ctx& c, u32 xfb, bool black);  // guest side
 
+// The US game hands each finished frame to VISetNextFrameBuffer. The PAL release
+// re-submits the framebuffer from its post-retrace callback every retrace and paces its
+// frames with an alarm instead, so there a frame is finished at GXCopyDisp.
+bool presentOnCopy();
+bool viBlack();  // last VISetBlack
+
 }  // namespace recomp::frame

@@ -1,5 +1,6 @@
 #include "recomp/widescreen.h"
 
+#include "port/install.h"
 #include "port/options.h"
 #include "port/settings.h"
 #include "recomp/hle.h"
@@ -126,6 +127,8 @@ bool sInHudScreen = false;
 }  // namespace
 
 bool inHud() {
+    // Needs the J2DScreen::draw hook and the USA HUD functions above (docs/SETUP.md).
+    if (port::usCodeFeature() != port::Avail::Yes) return false;
     return sAnchorHud.load(std::memory_order_relaxed) && active() && (sScreenDepth == 0 || sInHudScreen);
 }
 
