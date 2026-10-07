@@ -74,6 +74,9 @@ void applyScript(PADStatus& st) {
     for (const auto& p : script) {
         if (now >= p.start && now < p.start + p.frames) {
             st.button |= p.buttons;
+            // The game reads the analog trigger values (vacuum/blow strength), not just the bits.
+            if (p.buttons & PAD_TRIGGER_L) st.triggerLeft = 0xFF;
+            if (p.buttons & PAD_TRIGGER_R) st.triggerRight = 0xFF;
             if (p.stickX) st.stickX = p.stickX;
             if (p.stickY) st.stickY = p.stickY;
             st.err = PAD_ERR_NONE;

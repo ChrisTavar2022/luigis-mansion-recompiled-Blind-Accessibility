@@ -13,6 +13,8 @@
 
 namespace recomp {
 u16 padButtons();  // hle_pad.cpp: port 1 buttons as last handed to the game
+void unusedAssetsFrame(Ctx& c);  // unused_assets.cpp: per-frame work (nozzles)
+void testStateFrame(Ctx& c);     // test_state.cpp: LM_TEST_STATE presets
 
 namespace {
 
@@ -65,6 +67,8 @@ HLE(fn_8003CFC0) {
         wr32(kGbhScreenMode, kGbhModeNormal);
     }
     callOriginal(c, "fn_8003CFC0");
+    testStateFrame(c);
+    unusedAssetsFrame(c);
     // Test aid: LM_TELEPORT=x,y,z,frames moves Luigi (actor slot 0, position +0x44) there once,
     // `frames` HUD updates into gameplay (used to reach the 2F doors for screenshots).
     static const char* sTp = std::getenv("LM_TELEPORT");
