@@ -1,5 +1,6 @@
 // Port of the .bin renderer in auto_03_8001461C.
 #include "game/gfx/bin_model.h"
+#include "game/gfx/room_light.h"
 #include "game/system/gx_util.h"
 #include "game/unported.h"
 
@@ -41,8 +42,6 @@ constexpr GXTexGenSrc kTexGenSrc[8] = {GX_TG_TEX0, GX_TG_TEX1, GX_TG_TEX2, GX_TG
 u32 sFaceCounter;     // lbl_804D81B0
 bool sSilhouette;     // lbl_804D8230: flat silhouette pass (e.g. the "dark room" outline)
 u8 sChanFlags;        // lbl_804D81B5
-u32 sLightMask = GX_LIGHT0;   // lbl_804D0044
-u32 sAttnFn = GX_AF_SPOT;     // lbl_804D0040
 
 }  // namespace
 
@@ -284,8 +283,8 @@ void BinModel::drawPart(const BinPart& part, u8 alpha, const Mtx&) {
     const GXColorSrc src = shader.lightMode == 1 ? GX_SRC_REG : GX_SRC_VTX;
     const GXBool lit = (batch.tevMode != 0 && !sChanFlags) ? GX_TRUE : GX_FALSE;
     GXSetNumChans(1);
-    GXSetChanCtrl(GX_COLOR0, lit, src, src, sLightMask, GX_DF_CLAMP, GXAttnFn(sAttnFn));
-    GXSetChanCtrl(GX_ALPHA0, GX_FALSE, src, src, sLightMask, GX_DF_CLAMP, GXAttnFn(sAttnFn));
+    GXSetChanCtrl(GX_COLOR0, lit, src, src, roomLightMask(), GX_DF_CLAMP, roomLightAttn());
+    GXSetChanCtrl(GX_ALPHA0, GX_FALSE, src, src, roomLightMask(), GX_DF_CLAMP, roomLightAttn());
     GXColor color = shader.tint;
     if (color.a > alpha) {
         color.a = alpha;

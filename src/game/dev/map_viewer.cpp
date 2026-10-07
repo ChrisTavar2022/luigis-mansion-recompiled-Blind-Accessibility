@@ -3,6 +3,7 @@
 // L/R triggers (or X/Y): down/up, B held: faster.
 #include "game/dev/map_viewer.h"
 #include "game/gfx/bin_model.h"
+#include "game/gfx/room_light.h"
 #include "game/system/camera.h"
 #include "game/system/display.h"
 #include "game/system/gx_util.h"
@@ -127,15 +128,10 @@ static void draw() {
     Vec up = {0.0f, 1.0f, 0.0f};
     MTXLookAt(gCamera.viewMtx, &sEye, &up, &at);
 
-    GXLightObj light;
-    GXInitLightPos(&light, 0.0f, 0.0f, 0.0f);  // a lamp at the camera
-    GXInitLightColor(&light, GXColor{0xFF, 0xF0, 0xD0, 0xFF});
-    GXInitLightAttn(&light, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f);
-    GXLoadLightObjImm(&light, GX_LIGHT0);
-    GXSetChanAmbColor(GX_COLOR0A0, GXColor{0x70, 0x70, 0x70, 0xFF});
+    // Ported room lighting: default light plus the camera light (slot 7).
+    gfx::beginRoomLighting(gCamera.viewMtx, GXColor{0x70, 0x70, 0x70, 0xFF});
+    gfx::setCameraLight(sEye, at, gCamera.viewMtx, nullptr);
     GXSetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
-    GXSetBlendMode(GX_BM_BLEND, GX_BL_SRCALPHA, GX_BL_INVSRCALPHA, GX_LO_SET);
-    GXSetAlphaCompare(GX_GREATER, 0, GX_AOP_AND, GX_GREATER, 0);
     // Like the game, draw only the rooms around the viewer (the game draws the current
     // room and its neighbours; the renderer's per-frame vertex budget is sized for that).
     constexpr size_t kMaxRooms = 6;
