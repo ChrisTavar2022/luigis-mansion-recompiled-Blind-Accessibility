@@ -291,6 +291,15 @@ with the alternation applied; US variant logs no PAL rule.
   `fn_8006E414`: early exit below 130, colour words, extra parameters).
 * PAL's deferred `URALUIGI` (only matters for scene-change edge cases).
 
+## The reverse: USA rules on the European game
+
+With both discs, the European game can run the USA Hidden Mansion (F1 > Enhancements >
+*Hidden Mansion version*): the USA `map2.szp` and event scripts are served from
+`hidden_mansion/usa/`, and every European function in the tables above whose flag use is
+PAL-only runs with the flag hidden; the USA heart threshold (400), room ambient (1.0) and no
+Boolossus movement mode are restored. Details: docs/SETUP.md, *USA Hidden Mansion on the
+European game*.
+
 ## E. Gadd's lab menu (both Hidden Mansions)
 
 **Where it is.** The destination menu is event script `text/event08.txt` in

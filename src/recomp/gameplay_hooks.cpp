@@ -5,6 +5,7 @@
 
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
+#include "recomp/version.h"
 
 #include <algorithm>
 #include <cmath>
@@ -89,14 +90,16 @@ bool rideAllowed(u32 luigi) {
     // Only in the mansion (map 2) and the boss arenas (9 Bowser, 10 Chauncey, 11 Boolossus):
     // E. Gadd's lab, the training room, the gallery and the ending maps position Luigi by
     // script and are left alone. Off while Luigi has no health (death sequence).
-    const u32 map = rd32(0x804D80C8);  // sCurMapNo (US)
+    const u32 map = rd32(VA(0x804D80C8));  // sCurMapNo
     if (map != 2 && map != 9 && map != 10 && map != 11) return false;
     return s16(rd16(luigi + 0xFC)) > 0;
 }
 
 float ambientFactor() {
     const port::GameplaySettings g = current();
-    const float base = (hm::palActive() || g.palDarknessEverywhere) ? 0.2f : 1.0f;
+    float base = (hm::palRulesActive() || g.palDarknessEverywhere) ? 0.2f : 1.0f;
+    // The European game applies the PAL hidden-mansion 0.2 itself (fn_800179F8).
+    if (ver::pal() && hm::palRulesActive()) base = 1.0f;
     return base * g.ambientScale;
 }
 
@@ -196,9 +199,9 @@ HLE(fn_80081BCC) {
     const float k = current().vacuumStrength;
     const u32 cap = c.r[3];
     const u32 ghost = inMem1(cap) ? rd32(cap + 0x18) : 0;
-    if (k == 1.0f || !inMem1(ghost)) return callOriginal(c, "fn_80081BCC");
+    if (k == 1.0f || !inMem1(ghost)) return hm::callWithFlag(c, "fn_80081BCC");
     const s32 before = rds16(ghost + 0xFC);
-    callOriginal(c, "fn_80081BCC");
+    hm::callWithFlag(c, "fn_80081BCC");
     const s32 after = rds16(cap + 0x98);
     if (before <= 0 || after != before - 1) return;  // no drain tick this frame
     static float sCarry = 0.0f;

@@ -26,7 +26,7 @@ namespace {
 
 using port::GameVersion;
 
-constexpr const char* kOverlayFormat = "hidden-mansion-overlay 1";
+constexpr const char* kOverlayFormat = "hidden-mansion-overlay 2";  // 2: + usa/ (reverse)
 
 struct Slot {
     std::string path;     // UTF-8
@@ -337,7 +337,8 @@ bool run(const Options& opts, LaunchInfo& launch) {
     inst.usReady = slots[0].valid;
     inst.palReady = slots[1].valid;
     inst.hmOverlayReady = slots[0].valid && slots[1].valid &&
-                          std::filesystem::exists(port::hiddenMansionOverlayDir() / "manifest.txt");
+                          std::filesystem::exists(port::hiddenMansionOverlayDir() / "manifest.txt") &&
+                          std::filesystem::exists(port::hiddenMansionOverlayDir() / "usa" / "manifest.txt");
     inst.running = base;
     launch.version = base;
     launch.disc = slots[base == GameVersion::PAL ? 1 : 0].path;

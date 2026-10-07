@@ -3,9 +3,10 @@
 // Implemented as hooks on game functions, keyed by symbol name (tools/recomp/hooks.txt), in
 // src/recomp/gameplay_hooks.cpp. Description and verification: docs/GAMEPLAY_OPTIONS.md.
 //
-// Version note: the hooks name US (GLME01) symbols, and a few use US data addresses (room
-// table, struct offsets) that are marked "US" where used. A PAL-base install needs the PAL
-// equivalents (tools/pal_diff.py var/field map them).
+// Version note: the hooks name US (GLME01) symbols and apply to both releases (tagged `us pal`
+// in hooks.txt); data addresses go through VA() and the few struct offsets that differ through
+// VOFF() (recomp/version.h). The struct offsets used here are the same in both releases unless
+// marked.
 #include "port/settings.h"
 #include "recomp/ctx.h"
 

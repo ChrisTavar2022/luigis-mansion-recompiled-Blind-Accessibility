@@ -142,11 +142,8 @@ void visualsTab() {
     sDirty |= combo("Frame rate", v.frameRate, kFrameRates, 3);
     static const char* kAspects[] = {"Original 4:3", "Match window", "16:9", "16:10", "21:9", "32:9"};
     sDirty |= combo("Aspect ratio", v.aspect, kAspects, 6);
-    {
-        Gate g(port::usCodeFeature());
-        sDirty |= ImGui::Checkbox("Keep HUD at 4:3", &v.hudKeep4x3);
-        if (!v.hudKeep4x3 && g.a == port::Avail::Yes) pending("in-game HUD moves to the screen edges");
-    }
+    sDirty |= ImGui::Checkbox("Keep HUD at 4:3", &v.hudKeep4x3);
+    if (!v.hudKeep4x3) pending("in-game HUD moves to the screen edges");
     sDirty |= ImGui::SliderFloat("Field of view", &v.fovScale, 0.75f, 1.5f, "%.2fx");
     ImGui::Separator();
     {
@@ -242,7 +239,6 @@ void generalEnhancementsTab() {
     sDirty |= ImGui::Checkbox("Skip intro logos", &e.skipIntroLogos);
     pending("planned");
     {
-        Gate g(port::usCodeFeature());
         sDirty |= ImGui::Checkbox("Skippable cutscenes", &e.skipCutscenes);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Press START during a cutscene to skip it. The game plays the rest of the\n"
@@ -258,7 +254,10 @@ void generalEnhancementsTab() {
         const bool inside = recomp::hm::hiddenActive();
         const port::Avail avail[2] = {port::hiddenMansionUs(), port::hiddenMansionPal()};
         const bool pal = recomp::hm::variant() == recomp::hm::Variant::Pal;
-        static const char* kVariants[] = {"USA (original)", "European (harder, mirrored)"};
+        // Either release's rules on either game (the other one's needs both discs; docs/SETUP.md).
+        const bool usGame = port::install().running == port::GameVersion::USA;
+        const char* kVariants[] = {usGame ? "USA (original)" : "USA (easier, not mirrored)",
+                                   usGame ? "European (harder, mirrored)" : "European (original)"};
         auto usable = [&](int i) { return avail[i] == port::Avail::Yes; };
         ImGui::BeginDisabled(inside);
         if (ImGui::BeginCombo("Hidden Mansion version", kVariants[pal ? 1 : 0])) {
@@ -278,7 +277,7 @@ void generalEnhancementsTab() {
         }
         ImGui::EndDisabled();
         if (inside) pending("leave the Hidden Mansion to change");
-        else if (!usable(0)) pending(avail[0] == port::Avail::NotYet ? "USA option: not on the European game yet" : port::availNote(avail[0]));
+        else if (!usable(0)) pending(port::availNote(avail[0]));
         else if (!usable(1)) pending(port::availNote(avail[1]));
     }
 }
@@ -289,13 +288,9 @@ void unusedContentTab() {
     auto& e = port::settings().enhancements;
     ImGui::TextDisabled("Content left unused in the retail game. Everything here is off by default.");
     ImGui::Separator();
+    sDirty |= ImGui::Checkbox("Game Boy Horror camera", &e.gbhCamera);
+    pending("D-pad Up in game");
     {
-        Gate g(port::usCodeFeature());
-        sDirty |= ImGui::Checkbox("Game Boy Horror camera", &e.gbhCamera);
-        if (g.a == port::Avail::Yes) pending("D-pad Up in game");
-    }
-    {
-        Gate g(port::usCodeFeature());
         static const char* kGhost[] = {"Retail", "Beta"};
         int gs = e.earlyGhostLighting ? 1 : 0;
         if (ImGui::Combo("Ghost shading", &gs, kGhost, 2)) {

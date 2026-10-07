@@ -39,9 +39,10 @@ The LLVM binaries are copied at install time, never committed. Toolchain lookup 
      compile them in parallel (one clang per core, largest first), link with lld-link,
      then delete the generated sources (set `LM_KEEP_BUILD=1` to keep them).
      A full build takes about 15-25 s on an 8+ core machine.
-   - With both discs: build the European Hidden Mansion overlay for the USA game
-     (`setup/hm_overlay.cpp`, the C++ version of `tools/hidden_mansion_data.py`; files are
-     read straight from the discs).
+   - With both discs: build the Hidden Mansion overlays (`setup/hm_overlay.cpp`, the C++
+     version of `tools/hidden_mansion_data.py`; files are read straight from the discs):
+     the European rules' data for the USA game and the USA rules' data for the European
+     game (`usa/`).
 3. **Launch** the chosen version: open its disc in Aurora's DVD layer, check the DOL
    again, load the module, boot.
 
@@ -58,7 +59,7 @@ Game > *Add or change discs...*) opens the screen again.
 | `game/GLME01/module.dll`, `game/GLMP01/module.dll` | game modules |
 | `game/<id>/module.key` | cache key (below) |
 | `game/<id>/recompiler.log` | recompiler summary |
-| `hidden_mansion/` | European Hidden Mansion overlay + `overlay.key` |
+| `hidden_mansion/` | European Hidden Mansion overlay for the USA game, `usa/`: USA Hidden Mansion overlay for the European game; `overlay.key` |
 | `USA/Card A`, ... | memory cards (unchanged) |
 
 A module's key is the SHA-1 of: the module ABI version, the game ID and DOL SHA-1, the
@@ -145,16 +146,113 @@ Differences the runtime handles for the European game:
   (0x804BD658) is also initialised from the setting.
 - **Boot values.** Disc ID, `.ctors` start, arena start (from `__init_registers`),
   `VI_PAL` TV format.
-- **Hidden Mansion.** The European game has its own; the USA-game overlay and hooks are
-  not used (`hidden_mansion.cpp` only reports the flag at the European address).
+- **Hidden Mansion.** The European game has its own; with both discs the USA rules can be
+  chosen instead (below, *USA Hidden Mansion on the European game*).
 
-### Version-aware hooks
+### Version-aware code
 
-`tools/recomp/hooks.txt` lines are USA symbols, optionally followed by versions:
-`<symbol>` (USA only, the default), `<symbol> us pal` (both), `<symbol> pal`. A hook
-tagged `pal` must have been checked against the European code (struct layouts differ in
-places, e.g. the camera); `gen_version_map.py` then maps it to its European address and
-fails if it cannot. Currently the JAudio DSP hooks apply to both versions.
+Host code (hooks, HLE, menu features) is written once, against the USA game, and runs on
+both releases:
+
+- **Hooks.** `tools/recomp/hooks.txt` lines are USA symbols, optionally followed by
+  versions: `<symbol>` (USA only, the default), `<symbol> us pal` (both), `<symbol> pal`
+  (European only). A function only the European build has is written `palfn_<PAL address>`.
+  `gen_version_map.py` maps each `pal`-tagged hook to its European address (the matched
+  function, given the USA name in `GLMP01_map.txt`) and fails if it cannot. Tag a hook
+  `pal` only after checking the European function (`tools/pal_diff.py show <fn>`): a
+  `layout` or `modified` pair can move struct fields the handler uses.
+- **Functions the runtime calls by name** (`guestSymbol`, `GU_SYM`, `callOriginal`) get the
+  same USA name in the European module: `gen_version_map.py` scans `src/recomp` and
+  `src/port` for those names and writes a `<PAL address> <USA name> -` line for each.
+  The recompiler renames an unrelated European function that happens to carry the same
+  name (`pal_fn_...`), so names stay unique.
+- **Addresses.** Wrap every USA data or code address in `VA(0x...)`
+  (`src/recomp/version.h`). On the USA game it is the address itself; on the European game
+  it is looked up in `src/recomp/version_addrs.inc`, which `gen_version_map.py` generates
+  by scanning the sources for `VA(...)`: a data address is mapped through the matched
+  functions that reference it (or another address of the same object, a literal with the
+  same value in the matched function, or the pointer table that points at it); a code
+  address (e.g. a return address checked in a hook, or a function's last instruction) is
+  the same instruction in the matched European function. The script fails on an address it
+  cannot map. Each row says how it was mapped.
+- **Struct offsets** are not generated: `VOFF(usa, european)` after checking the field with
+  `tools/pal_diff.py field` / `show` (e.g. the camera's viewport fields moved by +0xC,
+  Luigi's fields from +0x134C on by +4).
+- `ver::pal()` tells which game runs. Code that still uses raw USA addresses must check
+  `port::usCodeFeature()` and stay inert on the European game; F1 greys such options with
+  "applies when playing the USA version" (or "needs the USA disc").
+
+Workflow after adding a hook or a `VA()`: `python tools/recomp/gen_version_map.py`
+(needs both dumps; about 10 s), commit `GLMP01_map.txt` and `version_addrs.inc` (address
+metadata only, like the decomp symbol maps). The module cache key covers the map and
+hooks.txt, so users' European modules rebuild on the next launch.
+
+**For new features (cheat-code ports, debug modes, unused content):** use `VA()` for every
+address from the cheat/AR code and `VOFF()` for offsets, tag the hooks `us pal`, re-run the
+script, and test on the European build (`-DLM_DOL_VERSION=GLMP01`, below). A feature that
+cannot be mapped yet stays USA-only: gate its menu entry with `port::usCodeFeature()`.
+
+### Enhancements on the European game
+
+All enhancements now work on both releases. Checked in the European static build
+(`lmrecomp` with `LM_DOL_VERSION=GLMP01`, scratch `APPDATA`/`LM_CARD_DIR`):
+
+| Feature | European specifics | Verified |
+|---------|-------------------|----------|
+| Skippable cutscenes | scene table has a 9th (language select) scene; ids and event interpreter layout unchanged | opening + mansion entrance skipped; snapshot matches a watched run |
+| HUD at the screen edges | the two HUD functions are larger (end address mapped by `VA()` of their last instruction) | 21:9 foyer: meter at the left edge |
+| Widescreen culling (`fn_80008D58`) | camera viewport x/width at +0x1F8/+0x200 (USA +0x1EC/+0x1F4) | hook runs for every 3D projection |
+| Game Boy Horror camera | the European view-1 clear is `fn_8000B7CC` (the matcher pairs the USA `fn_8000B228` with an unrelated full-screen clear, so the hook is `palfn_8000B7CC`); its ortho far plane is 4096 (USA 1000), so the clear quad goes to z = -4095.9 | live view on the GBH screen in the foyer |
+| Ghost shading Beta | `fn_800581E8` identical; call site mapped | lighting visibly changes (Boolossus balcony); check in an ordinary room pending |
+| Gameplay options | Luigi's riding byte +0x1350; the European Luigi update writes it every frame, so it is set in `fn_800B84E4` (state update) instead; darkness: the game's own hidden-mansion 0.2 is not applied twice | health x2 HUD 200, darkness, hearts, riding |
+| Debug: info overlay, particle report, depth blur, warps, model viewer | `LMChangeFrameBuffer` is the European `fn_80007940` (alarm-paced variant) | overlays, warps to maps 5 and 13, viewer (Chauncey) |
+
+### PAL parity status (paused)
+
+Done and checked on the European static build: version mapping (`VA`/`VOFF`, generated
+`version_addrs.inc`, USA names for European functions, `palfn_` hooks), skippable cutscenes
+(snapshot identical to a watched run), HUD edge anchoring + culling hook at 21:9, GBH camera,
+gameplay options (health x2, darkness, no hearts, always ride), debug overlays / warps / model
+viewer, and the USA Hidden Mansion on the European game in the foyer (USA map data served, no
+mirror, USA lighting; the European variant still mirrored and dark).
+
+Pending: ghost shading Beta re-check in an ordinary room (the Boolossus check shows the
+change); the reverse Hidden Mansion's boss rules (Chauncey, Bowser, Boolossus), hearts and
+enemy timers are implemented but not yet exercised in play; `LuigisMansionRecomp` with both
+discs (setup building `hidden_mansion/usa/` and both modules) not yet run end to end; a
+warp queued very early (`LM_DEV_WARPS` during the opening) broke the European game once;
+European runs sometimes print `crash: abort()` when the test harness stops them (seen before
+this work too).
+
+### USA Hidden Mansion on the European game
+
+With both discs installed, F1 > Enhancements > *Hidden Mansion version* offers both rules
+on either base. On the European base, "USA (easier, not mirrored)" works like the forward
+direction in reverse:
+
+- **Data** (built by setup next to the forward overlay, `hidden_mansion/usa/`; dev builds:
+  `tools/hidden_mansion_data.py`): the USA `/Map/map2.szp`, served when the European
+  `MissionMode::init` loads `/Map/map2u.szp`; the European `event08/16/73.szp` with only
+  the script (`text/eventNN.txt`) swapped for the USA one (the message tables of every
+  language stay).
+- **Code.** The European game reads the hidden-mansion flag in 36 functions. Those whose
+  only flag use is a PAL change are hooked (`pal` tag) and run with the flag reading 0
+  for the duration (`hm::callWithoutFlag`): the screen mirror, stick and HUD mirroring, the
+  iris wipe, the GBH map mirror, the enemy strategy timers, Chauncey's balls / rocking
+  horses / approach, Bowser's volley flip, the damaging-floor pattern and the JAudio
+  stereo swap. Functions where the USA game reads the flag too (damage x2 `fn_800B9680`,
+  vacuum `fn_80081BCC`, the GBH screen `fn_8003DF88`, `fn_800DBE8C`) and the heart hooks
+  run with the real value even when reached from inside a hidden call
+  (`hm::callWithFlag`). The heart thresholds go back to the USA 400 (European 1000), the
+  room-ambient factor (European `.sdata` 0x804BD728, 0.2) is set to 1.0, and Luigi's
+  Boolossus movement mode is kept off in his state update.
+- The scene-start / event-interpreter / new-game code (which sets or clears the flag) and
+  the map loader are left alone.
+
+Limitation: the hiding is a write to the flag word, so a guest thread switch inside a
+hidden call (an interrupt waking a higher-priority thread) lets that thread see the USA
+value too; only flag readers with USA hidden-mansion behaviour could be affected, and the
+ones found are all on the main game thread.
 
 ## Feature gating (F1 menu)
 
@@ -162,35 +260,22 @@ fails if it cannot. Currently the JAudio DSP hooks apply to both versions.
 
 | Feature | USA base | European base |
 |---------|----------|---------------|
-| Skippable cutscenes, HUD at screen edges, GBH camera, early ghost shading | yes | *USA version only* (greyed on a European-only install) |
-| Widescreen culling hook | yes | not applied (may pop in at the edges in widescreen) |
-| Hidden Mansion: European rules | with the European disc installed | native |
-| Hidden Mansion: USA rules | native | not yet (see below) |
+| Skippable cutscenes, HUD at screen edges, widescreen culling, GBH camera, ghost shading, gameplay options, debug tools | yes | yes |
+| Hidden Mansion: European rules | with both discs (overlay) | native |
+| Hidden Mansion: USA rules | native | with both discs (reverse overlay) |
 | PAL refresh rate, language | *European version only* (greyed on a USA-only install) | yes |
 
 Rules: a single-disc install greys out what needs the other disc, with the reason
 ("needs the European disc: F1 > Game > Add or change discs"). With both discs nothing is
-greyed out for lack of a disc: options of the other version stay selectable and say
-"applies when playing the USA/European version"; switch with F1 > Game > *Version to
-play* (restarts the game). The only exception is the USA Hidden Mansion on the European
-base, which is shown with an explicit "not on the European game yet" note.
+greyed out: options of the other version stay selectable and say "applies when playing
+the USA/European version"; switch with F1 > Game > *Version to play* (restarts the game).
 
-Runtime safety: code written against USA addresses (`skip.cpp`, the HUD anchoring in
-`widescreen.cpp`, `hidden_mansion*.cpp`) checks `port::usCodeFeature()` and stays inert on
-the European game; hooks without a `pal` tag are not compiled into the European module.
+Runtime safety: hooks without a `pal` tag are not compiled into the European module, and
+code with raw USA addresses checks `port::usCodeFeature()`.
 
 ## Not done yet / design notes
 
-- **USA Hidden Mansion on the European base** (the reverse of the current overlay). Data:
-  serve the USA `/Map/map2.szp` for `map2u.szp` loads and the USA `eventNN.txt` scripts
-  in the European event archives (the European archives also carry other languages, so
-  only the script member is swapped, like the forward overlay). Code: wrap each European
-  function in docs/HIDDEN_MANSION.md's tables with a hook that, while the variant is USA,
-  forces the USA branch (e.g. hide the flag from the mirror/stick/HUD functions, restore
-  the 400 heart threshold, the room ambient, Chauncey/Boolossus/Bowser behaviour). The
-  hook list needs per-function checking against European code, so it is not in this pass.
-- European ports of the USA-only enhancements: tag their hooks `pal` after checking the
-  European code, and give `skip.cpp` / `unused_content.cpp` / `widescreen.cpp` their
-  European addresses (`tools/pal_diff.py var us <addr>`).
+- The E. Gadd's lab menu entries for both Hidden Mansions (docs/HIDDEN_MANSION.md); until
+  then the variant is the F1 setting, on either base.
 - Linux/macOS: the module build is Windows-only (`CreateProcess`, `.dll`); the module
   boundary itself is portable (`dlopen` is wired up).

@@ -283,12 +283,20 @@ public:
         : dol(dol), funcs(std::move(funcs)) {
         if (vmap) {
             // Version map: SDK membership and canonical names come from the map.
+            std::unordered_set<std::string> mapped;
             for (auto& [addr, f] : this->funcs) {
                 auto it = vmap->find(addr);
                 if (it == vmap->end()) continue;
                 f.name = it->second.first;
+                mapped.insert(f.name);
                 if (isHleTu(it->second.second)) hle.insert(addr);
             }
+            // The map gives some functions their USA names (e.g. fn_80008D58 for the PAL
+            // function at 0x8000935C). A PAL function that the map leaves alone but that happens
+            // to be named the same (the unrelated PAL fn_80008D58) is renamed, so that names
+            // (hooks, HLE, guestSymbol) stay unique.
+            for (auto& [addr, f] : this->funcs)
+                if (!vmap->count(addr) && mapped.count(f.name)) f.name = "pal_" + f.name;
         } else {
             for (auto& [addr, f] : this->funcs)
                 for (const auto& r : hleRanges)

@@ -37,7 +37,20 @@ void onFrame();
 // URALUIGI event command, cleared by OMOTELUIGI and on new game. PAL keeps the same variable
 // (0x804C5784) and only adds a deferred "set at next scene" request (0x804C5780).
 bool hiddenActive();
-bool palActive();  // variant() == Pal && hiddenActive()
+bool palActive();       // USA game with the PAL rules: variant() == Pal && hiddenActive()
+bool usaOnPalActive();  // European game with the USA rules: variant() == Us && hiddenActive()
+bool palRulesActive();  // the PAL rules apply (either game): variant() == Pal && hiddenActive()
+
+// ---- USA rules on the European game ---------------------------------------------------
+// The European game reads its hidden-mansion flag in 36 functions; most of them only for its
+// PAL-specific changes (mirror, darker rooms, Chauncey/Boolossus/Bowser, enemy timers, the
+// stereo swap). Their hooks call the original with the flag reading 0 for the duration
+// (callWithoutFlag), which gives the USA behaviour. The few functions where the USA game
+// reads the flag too (damage x2, hearts, vacuum, the GBH screen, ...) run with the real value
+// even when reached from inside such a call (callWithFlag). Outside usaOnPalActive() both are
+// plain callOriginal. Flag readers and their reachability: docs/SETUP.md.
+void callWithoutFlag(Ctx& c, const char* name);
+void callWithFlag(Ctx& c, const char* name);
 
 // ---- Disc overlay ---------------------------------------------------------------------
 // Host file that should be served instead of a guest disc path, if any. Map archives are

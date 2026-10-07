@@ -13,6 +13,12 @@ Hidden Mansion mode is selected (see docs/HIDDEN_MANSION.md):
                        so no PAL text (and no PAL language layout) is involved.
   manifest.txt         one "guest path -> overlay file [condition]" line per redirect.
 
+and the reverse, the USA Hidden Mansion for the European (PAL) game (docs/SETUP.md):
+
+  usa/Map/map2.szp     the US /Map/map2.szp; replaces /Map/map2u.szp.
+  usa/Event/eventNN.szp the PAL archive (every language) with the US script.
+  usa/manifest.txt
+
 Everything is derived from your own discs at setup time and written under orig/ (git-ignored).
 """
 import argparse
@@ -113,25 +119,39 @@ def main():
     shutil.copyfile(src, out / "Map" / "map2u.szp")
     manifest.append("/Map/map2.szp -> Map/map2u.szp [hidden]")
 
-    for ev in [e.strip() for e in a.events.split(",") if e.strip()]:
-        name = f"event{ev}.szp"
-        member = f"text/event{ev}.txt"
-        u = rarc.decompress((us / "Event" / name).read_bytes())
-        p = dict(rarc.rarc_files(rarc.decompress((pal / "Event" / name).read_bytes())))
-        cur = dict(rarc.rarc_files(u))
-        if cur.get(member) == p[member]:
-            print(f"{name}: script identical, skipped")
-            continue
-        patched = rarc_replace(u, member, p[member])
-        check = dict(rarc.rarc_files(patched))
-        assert check[member] == p[member] and all(check[k] == v for k, v in cur.items() if k != member)
-        packed = yay0_store(patched)
-        assert rarc.decompress(packed) == patched
-        (out / "Event" / name).write_bytes(packed)
-        manifest.append(f"/Event/{name} -> Event/{name}")
-        print(f"{name}: {len(cur[member])} -> {len(p[member])} byte script")
+    events = [e.strip() for e in a.events.split(",") if e.strip()]
 
+    def swap_scripts(base_dir, from_dir, dest, prefix, manifest):
+        for ev in events:
+            name = f"event{ev}.szp"
+            member = f"text/event{ev}.txt"
+            u = rarc.decompress((base_dir / "Event" / name).read_bytes())
+            p = dict(rarc.rarc_files(rarc.decompress((from_dir / "Event" / name).read_bytes())))
+            cur = dict(rarc.rarc_files(u))
+            if cur.get(member) == p[member]:
+                print(f"{prefix}{name}: script identical, skipped")
+                continue
+            patched = rarc_replace(u, member, p[member])
+            check = dict(rarc.rarc_files(patched))
+            assert check[member] == p[member] and all(check[k] == v for k, v in cur.items() if k != member)
+            packed = yay0_store(patched)
+            assert rarc.decompress(packed) == patched
+            (dest / "Event" / name).write_bytes(packed)
+            manifest.append(f"/Event/{name} -> {prefix}Event/{name}")
+            print(f"{prefix}{name}: {len(cur[member])} -> {len(p[member])} byte script")
+
+    swap_scripts(us, pal, out, "", manifest)
     (out / "manifest.txt").write_text("\n".join(manifest) + "\n", encoding="utf-8")
+
+    # Reverse: the USA Hidden Mansion on the European game.
+    rev = out / "usa"
+    (rev / "Map").mkdir(parents=True, exist_ok=True)
+    (rev / "Event").mkdir(parents=True, exist_ok=True)
+    reverse = []
+    shutil.copyfile(us / "Map" / "map2.szp", rev / "Map" / "map2.szp")
+    reverse.append("/Map/map2u.szp -> usa/Map/map2.szp [hidden]")
+    swap_scripts(pal, us, rev, "usa/", reverse)
+    (rev / "manifest.txt").write_text("\n".join(reverse) + "\n", encoding="utf-8")
     print(f"overlay written to {out}")
 
 

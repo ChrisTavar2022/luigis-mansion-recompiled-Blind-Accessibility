@@ -13,6 +13,7 @@
 #include "recomp/model_viewer.h"
 
 #include "recomp/guest_util.h"
+#include "recomp/version.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 
@@ -306,7 +307,7 @@ u32 heapAlloc(Ctx& c, u32 size) { return gu::call(c, GU_SYM("alloc__7JKRHeapFUli
 
 bool ensureHeap(Ctx& c) {
     if (sHeap) return true;
-    constexpr u32 kSystem = 0x804D94F0, kCurrent = 0x804D94F4, kRoot = 0x804D94F8;
+    const u32 kSystem = VA(0x804D94F0), kCurrent = VA(0x804D94F4), kRoot = VA(0x804D94F8);
     const u32 sys = rd32(kSystem), cur = rd32(kCurrent), root = rd32(kRoot);
     if (!gu::inMem1(root)) return false;
     std::memset(hostp(kHeapObj), 0, kHeapMem - kHeapObj);
@@ -353,7 +354,7 @@ void loadPending(Ctx& c) {
     gu::call(c, GU_SYM("fn_80061B40"), {mdl});
     gu::call(c, GU_SYM("fn_80061A24"), {k});
     // S3DModel allocates its matrix arrays with operator new: from the viewer heap.
-    constexpr u32 kCurrent = 0x804D94F4;
+    const u32 kCurrent = VA(0x804D94F4);
     const u32 cur = rd32(kCurrent);
     wr32(kCurrent, sHeap);
     gu::call(c, GU_SYM("__ct__8S3DModelFll"), {obj, mdl, 0});
@@ -438,7 +439,7 @@ void drawModel(Ctx& c) {
     gu::call(c, GU_SYM("GXSetZMode"), {1, 3, 1});
 
     // Lighting as on the file-select screen (mode 0 of fn_80057F90), then the S3DModel passes.
-    constexpr u32 kLightMode = 0x804D07C8;
+    const u32 kLightMode = VA(0x804D07C8);
     const u32 savedMode = rd32(kLightMode);
     wr32(kLightMode, 0);
     gu::call(c, GU_SYM("fn_80057F90"), {0});

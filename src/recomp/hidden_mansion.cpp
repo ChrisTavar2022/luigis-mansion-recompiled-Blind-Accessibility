@@ -7,6 +7,7 @@
 #include "port/options.h"
 #include "port/settings.h"
 #include "recomp/hle.h"
+#include "recomp/version.h"
 
 #include <algorithm>
 #include <atomic>
@@ -18,19 +19,21 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <span>
 #include <vector>
 
 namespace recomp::hm {
 namespace {
 
-// US (GLME01) guest addresses, found with tools/pal_diff.py (`var pal 804C5784`).
-constexpr u32 kUraFlag = 0x804D80C0;  // PAL 0x804C5784
-constexpr u32 kUraFlagPal = 0x804C5784;  // the same flag when the PAL game itself runs
+// The game's hidden-mansion flag and sCurMapNo (USA addresses, found with tools/pal_diff.py
+// `var pal 804C5784`; VA() gives the running game's: PAL 0x804C5784 / 0x804C578C).
+#define kUraFlag VA(0x804D80C0)
+#define kCurMapNo VA(0x804D80C8)
 
-// Everything here patches the US game. On a PAL base install the PAL game runs its own
-// Hidden Mansion and this module only reports the flag (docs/SETUP.md).
+// On the USA game the PAL rules are added by the overlay and the hooks below; on the European
+// game they are its own, and the USA rules are restored by the reverse overlay and hooks
+// (docs/SETUP.md, "USA Hidden Mansion on the European game").
 bool usBase() { return port::install().running == port::GameVersion::USA; }
-constexpr u32 kCurMapNo = 0x804D80C8;  // sCurMapNo; PAL 0x804C578C
 
 // LM_HM_OVERLAY, else the overlay setup built in the data directory, else the first
 // orig/hidden_mansion (tools/hidden_mansion_data.py) found walking up from the working
@@ -66,12 +69,21 @@ struct Redirect {
     bool onlyWhileHidden;  // map data: only while the ura flag is set
 };
 
-// Mirrors the manifest written by tools/hidden_mansion_data.py.
+// Mirrors the manifest written by tools/hidden_mansion_data.py / setup (hm_overlay.cpp).
+// PAL rules on the USA game:
 constexpr Redirect kRedirects[] = {
     {"/Map/map2.szp", "Map/map2u.szp", true},  // PAL MissionMode::init: "%s%du.szp" when ura && map 2
     {"/Event/event08.szp", "Event/event08.szp", false},
     {"/Event/event16.szp", "Event/event16.szp", false},
     {"/Event/event73.szp", "Event/event73.szp", false},
+};
+// USA rules on the European game (the reverse): the USA map data for the hidden mansion and
+// the European event archives with the USA scripts.
+constexpr Redirect kRedirectsUsa[] = {
+    {"/Map/map2u.szp", "usa/Map/map2.szp", true},
+    {"/Event/event08.szp", "usa/Event/event08.szp", false},
+    {"/Event/event16.szp", "usa/Event/event16.szp", false},
+    {"/Event/event73.szp", "usa/Event/event73.szp", false},
 };
 
 bool samePath(const char* a, const char* b) {
@@ -141,18 +153,19 @@ Variant initialVariant() {
     std::string v = env && *env ? env : port::options().hiddenMansion;
     if (v.empty()) v = port::settings().enhancements.hiddenMansionPal ? "pal" : "us";
     for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-    // Without the European disc's data (single-disc USA install) only the USA rules exist.
-    const bool pal = v != "us" && port::hiddenMansionPal() == port::Avail::Yes;
-    const bool have = std::filesystem::exists(overlayDir() + "manifest.txt");
-    log("[hm] Hidden Mansion variant: %s (overlay %s%s)", pal ? "PAL" : "USA", overlayDir().c_str(),
-        have ? "" : ": missing, run tools/hidden_mansion_data.py; PAL data unavailable");
+    // A single-disc install only has its own release's rules (port::hiddenMansionPal/Us).
+    bool pal = v != "us";
+    if (pal && port::hiddenMansionPal() != port::Avail::Yes) pal = false;
+    if (!pal && port::hiddenMansionUs() != port::Avail::Yes) pal = true;
+    const bool have = std::filesystem::exists(overlayDir() + (usBase() ? "manifest.txt" : "usa/manifest.txt"));
+    log("[hm] Hidden Mansion variant: %s on the %s game (overlay %s%s)", pal ? "PAL" : "USA", usBase() ? "USA" : "European",
+        overlayDir().c_str(), have || pal != usBase() ? "" : ": missing, run tools/hidden_mansion_data.py");
     return pal ? Variant::Pal : Variant::Us;
 }
 std::atomic<int> sVariant{-1};
 }  // namespace
 
 Variant variant() {
-    if (!usBase()) return Variant::Pal;
     int v = sVariant.load();
     if (v < 0) {
         int want = int(initialVariant());
@@ -166,7 +179,40 @@ void setVariant(Variant v) {
     if (sVariant.exchange(int(v)) != int(v)) log("[hm] Hidden Mansion variant -> %s", v == Variant::Pal ? "PAL" : "USA");
 }
 
-bool hiddenActive() { return rd32(usBase() ? kUraFlag : kUraFlagPal) != 0; }
+namespace {
+// See hidden_mansion.h, "USA rules on the European game". While sHidden, the flag in guest
+// memory reads 0 and its real value is sHiddenSaved.
+bool sHidden = false;
+u32 sHiddenSaved = 0;
+}  // namespace
+
+void callWithoutFlag(Ctx& c, const char* name) {
+    if (!sHidden && !usaOnPalActive()) return callOriginal(c, name);
+    const bool outer = !sHidden;
+    if (outer) {
+        sHiddenSaved = rd32(kUraFlag);
+        wr32(kUraFlag, 0);
+        sHidden = true;
+    }
+    callOriginal(c, name);
+    if (outer && sHidden) {
+        // (Nothing inside sets the flag; if something did, keep its value.)
+        if (rd32(kUraFlag) == 0) wr32(kUraFlag, sHiddenSaved);
+        sHidden = false;
+    }
+}
+
+void callWithFlag(Ctx& c, const char* name) {
+    if (!sHidden) return callOriginal(c, name);
+    wr32(kUraFlag, sHiddenSaved);
+    sHidden = false;
+    callOriginal(c, name);
+    sHiddenSaved = rd32(kUraFlag);
+    wr32(kUraFlag, 0);
+    sHidden = true;
+}
+
+bool hiddenActive() { return sHidden ? sHiddenSaved != 0 : rd32(kUraFlag) != 0; }
 
 void onFrame() {
     // LM_HM_FORCE=1: keep the hidden-mansion flag set (testing without a cleared save).
@@ -176,20 +222,25 @@ void onFrame() {
     }();
     if (sForce && !hiddenActive()) {
         log("[hm] LM_HM_FORCE: setting the hidden-mansion flag");
-        wr32(usBase() ? kUraFlag : kUraFlagPal, 1);
+        wr32(kUraFlag, 1);
     }
     static bool sWas = false;
     if (hiddenActive() != sWas) {
         sWas = hiddenActive();
         log("[hm] hidden-mansion flag %s (%s variant)", sWas ? "set" : "cleared", variant() == Variant::Pal ? "PAL" : "USA");
     }
-    if (usBase()) syncConstants();
+    syncConstants();
 }
 bool palActive() { return usBase() && variant() == Variant::Pal && hiddenActive(); }
+bool usaOnPalActive() { return !usBase() && variant() == Variant::Us && hiddenActive(); }
+bool palRulesActive() { return variant() == Variant::Pal && hiddenActive(); }
 
 std::optional<std::string> redirect(const char* guestPath) {
-    if (!usBase() || variant() != Variant::Pal || !guestPath) return std::nullopt;
-    for (const Redirect& r : kRedirects) {
+    if (!guestPath) return std::nullopt;
+    // Only the variant that is not the running game's own needs data from the other disc.
+    const bool reverse = !usBase();
+    if (variant() == (reverse ? Variant::Pal : Variant::Us)) return std::nullopt;
+    for (const Redirect& r : reverse ? std::span<const Redirect>(kRedirectsUsa) : std::span<const Redirect>(kRedirects)) {
         if (!samePath(guestPath, r.guestPath)) continue;
         if (r.onlyWhileHidden && !(hiddenActive() && rd32(kCurMapNo) == 2)) return std::nullopt;
         return overlayDir() + r.overlayFile;
@@ -235,6 +286,15 @@ s32 overlayRead(s32 entry, void* dst, s32 length, s32 offset) {
 }
 
 void syncConstants() {
+    if (!usBase()) {
+        // European game: the hidden mansion's room ambient factor is a .sdata float (PAL-only
+        // 0x804BD728, 0.2, read by the PAL-only fn_800179F8 when the flag is set). 1.0 = USA.
+        constexpr u32 kPalAmbient = 0x804BD728;
+        const u32 want = fbits(variant() == Variant::Us ? 1.0f : 0.2f);
+        const u32 cur = rd32(kPalAmbient);
+        if (cur != want && (cur == fbits(1.0f) || cur == fbits(0.2f))) wr32(kPalAmbient, want);
+        return;
+    }
     static bool sApplied = false;
     static bool sChecked = false, sOk = true;
     if (!sChecked) {  // refuse to touch memory that does not hold the expected US literal

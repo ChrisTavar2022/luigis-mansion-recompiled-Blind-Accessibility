@@ -6,6 +6,13 @@
 //   Event/eventNN.szp  the US archive with only text/eventNN.txt (the language-neutral event
 //                      script) swapped for the PAL one, stored as literal-only Yay0.
 //   manifest.txt       one "guest path -> overlay file [condition]" line per redirect.
+//
+// and the reverse, the USA Hidden Mansion for the European base (usa/, docs/SETUP.md):
+//
+//   usa/Map/map2.szp      the US /Map/map2.szp (served for /Map/map2u.szp).
+//   usa/Event/eventNN.szp the PAL archive (all languages) with text/eventNN.txt swapped for
+//                         the US script.
+//   usa/manifest.txt
 #include "setup/hm_overlay.h"
 
 #include <cstring>
@@ -209,30 +216,47 @@ bool buildHiddenMansionOverlay(const Disc& us, const Disc& pal, const std::files
         if (!pal.readFile("/Map/map2u.szp", map)) throw std::runtime_error("the PAL disc has no /Map/map2u.szp");
         if (!writeFile(out / "Map" / "map2u.szp", map)) throw std::runtime_error("could not write the overlay");
         manifest += "/Map/map2.szp -> Map/map2u.szp [hidden]\n";
-        for (const char* ev : kEvents) {
-            const std::string file = std::string("event") + ev + ".szp";
-            const std::string path = "/Event/" + file, script = std::string("text/event") + ev + ".txt";
-            Bytes usRaw, palRaw;
-            if (!us.readFile(path.c_str(), usRaw) || !pal.readFile(path.c_str(), palRaw))
-                throw std::runtime_error("missing " + path);
-            const Bytes u = decompress(usRaw), p = decompress(palRaw);
-            const auto uf = rarcFiles(u), pf = rarcFiles(p);
-            const auto ui = uf.find(script), pi = pf.find(script);
-            if (ui == uf.end() || pi == pf.end()) throw std::runtime_error(path + " has no " + script);
-            const Bytes palScript = member(p, pi->second);
-            if (member(u, ui->second) == palScript) continue;  // identical: nothing to serve
-            const Bytes patched = rarcReplace(u, ui->second, palScript);
-            // Same checks as the Python tool: the swapped member, and nothing else changed.
-            const auto cf = rarcFiles(patched);
-            if (member(patched, cf.at(script)) != palScript) throw std::runtime_error("archive rewrite failed");
-            for (auto& [k, e] : uf)
-                if (k != script && member(patched, cf.at(k)) != member(u, e)) throw std::runtime_error("archive rewrite failed");
-            const Bytes packed = yay0Store(patched);
-            if (decompress(packed) != patched) throw std::runtime_error("Yay0 packing failed");
-            if (!writeFile(out / "Event" / file, packed)) throw std::runtime_error("could not write the overlay");
-            manifest += path + " -> Event/" + file + "\n";
-        }
+        // Event archives: `into` with its script replaced by the one from `from`.
+        auto events = [&](const Disc& into, const Disc& from, const std::filesystem::path& dir, const std::string& prefix,
+                          std::string& list) {
+            for (const char* ev : kEvents) {
+                const std::string file = std::string("event") + ev + ".szp";
+                const std::string path = "/Event/" + file, script = std::string("text/event") + ev + ".txt";
+                Bytes baseRaw, fromRaw;
+                if (!into.readFile(path.c_str(), baseRaw) || !from.readFile(path.c_str(), fromRaw))
+                    throw std::runtime_error("missing " + path);
+                const Bytes u = decompress(baseRaw), p = decompress(fromRaw);
+                const auto uf = rarcFiles(u), pf = rarcFiles(p);
+                const auto ui = uf.find(script), pi = pf.find(script);
+                if (ui == uf.end() || pi == pf.end()) throw std::runtime_error(path + " has no " + script);
+                const Bytes newScript = member(p, pi->second);
+                if (member(u, ui->second) == newScript) continue;  // identical: nothing to serve
+                const Bytes patched = rarcReplace(u, ui->second, newScript);
+                // Same checks as the Python tool: the swapped member, and nothing else changed.
+                const auto cf = rarcFiles(patched);
+                if (member(patched, cf.at(script)) != newScript) throw std::runtime_error("archive rewrite failed");
+                for (auto& [k, e] : uf)
+                    if (k != script && member(patched, cf.at(k)) != member(u, e)) throw std::runtime_error("archive rewrite failed");
+                const Bytes packed = yay0Store(patched);
+                if (decompress(packed) != patched) throw std::runtime_error("Yay0 packing failed");
+                if (!writeFile(dir / "Event" / file, packed)) throw std::runtime_error("could not write the overlay");
+                list += path + " -> " + prefix + "Event/" + file + "\n";
+            }
+        };
+        events(us, pal, out, "", manifest);
         std::ofstream(out / "manifest.txt", std::ios::binary) << manifest;
+
+        // The reverse: USA Hidden Mansion data for the European game.
+        const auto usa = out / "usa";
+        std::filesystem::create_directories(usa / "Map");
+        std::filesystem::create_directories(usa / "Event");
+        std::string reverse;
+        Bytes usMap;
+        if (!us.readFile("/Map/map2.szp", usMap)) throw std::runtime_error("the USA disc has no /Map/map2.szp");
+        if (!writeFile(usa / "Map" / "map2.szp", usMap)) throw std::runtime_error("could not write the overlay");
+        reverse += "/Map/map2u.szp -> usa/Map/map2.szp [hidden]\n";
+        events(pal, us, usa, "usa/", reverse);
+        std::ofstream(usa / "manifest.txt", std::ios::binary) << reverse;
         return true;
     } catch (const std::exception& e) {
         error = std::string("Building the Hidden Mansion data failed: ") + e.what();
