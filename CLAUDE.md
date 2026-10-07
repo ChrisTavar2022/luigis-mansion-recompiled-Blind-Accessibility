@@ -62,3 +62,10 @@
 - Unused content restored as Enhancements toggles: Game Boy Horror live camera (D-pad Up) and early opaque ghost shading (docs/UNUSED_CONTENT.md; LM_GBH_CAM=1/2, LM_EARLY_GHOSTS=1). Aurora's GXSetZTexture is a TODO (worked around for the GBH sub-view clear).
 - Debug tab (src/recomp/dev_tools.cpp, model_viewer.cpp; docs/UNUSED_CONTENT.md): game's particle JUTReport switch, unused depth blur pass, map warps via the game's WARP path (unused maps 0/5 load, 7/8 crash), info overlay (F3), model viewer drawing .mdl/.key with the game's S3DModel code (F4). Test aids: LM_START_MAP, LM_DEV_WARPS, LM_DEV_VIEWER, LM_MENU_TAB.
 - Widescreen/ultrawide + render-resolution slider work. Parallel work streams: interpolation/FOV/HUD anchoring, skippable cutscenes (agent worktree branches).
+
+## Next steps (paused 2026-10-07)
+- Unused air/water nozzles: LM_TEST_STATE presets give the Poltergust visually, but L/R do nothing in the foyer (Luigi never raises a vacuum request; some story/control-lock state still blocks it). Find that condition (or test after the lab sequence), confirm the spray state (docs/UNUSED_CONTENT.md has the controller fields), then attach wpair/wpwater like the hose nozzle.
+- Model viewer room viewing: room loads and its draw runs but nothing shows (not merged).
+- Leftover-room warps (room_swap.cpp, WIP): Luigi placement for breaker room / hallways; room01A's own room slot.
+- PAL-base parity (paused): Beta ghost shading check in a normal room, reverse-HM rules in play, end-to-end LuigisMansionRecomp.exe setup with both discs (docs/SETUP.md).
+- Lab menu "Hidden Mansion (USA)/(PAL)" choice (design in docs/HIDDEN_MANSION.md).
