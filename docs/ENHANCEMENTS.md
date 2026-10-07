@@ -250,3 +250,74 @@ J2D animations step, and `GXSetDrawDone` / `VIWaitForRetrace` pacing is mixed in
 
 The tape design only depends on the GX interface, which the HLE layer already owns. It
 also keeps the guest's simulation bit-identical to the console.
+
+## 4. Skippable cutscenes and fast-forward
+
+Options (F1 > Enhancements): **Skippable cutscenes** (off by default) and **Hold Tab to
+fast-forward** (on). Code: `src/recomp/skip.{h,cpp}` plus small hooks in `frame.cpp`,
+`hle_vi.cpp`, `hle_gx.cpp`, `hle_pad.cpp` and `audio_out.cpp`.
+
+### Approach: run the cutscene, just faster
+
+A skip does not jump over game code. The game keeps executing every logic frame of the
+cutscene, so whatever the event script does (flags, items, keys, doors, warps, actor
+positions, BGM changes, room loads) happens exactly as when watching. While skipping:
+
+- the VI retrace timer runs up to 32x faster (one retrace in flight at a time, so a
+  slow frame never queues a burst of retraces);
+- guest frames are batched: `frame::present` keeps the guest running for ~12 ms of host
+  time per Aurora frame; only the first frame of a batch is drawn, the others send no
+  draws or EFB copies to Aurora (`gx::g_discardDraws`; state calls and display-list
+  recording still go through, so nothing is lost for later frames);
+- the screen is covered (black, "Skipping...") and audio is muted, then faded back in;
+- controller 1 is replaced: the player's input is ignored and A is pressed 4 frames out
+  of 8 while the script waits in `<ANYKEY>`, which dismisses message windows. The pad
+  reads as connected during the skip (the game ignores a disconnected pad's buttons).
+
+Measured: the opening (about 1,450 logic frames, 48 s) skips in 1.6 to 3 s; the mansion
+entrance event (414 frames, 14 s) in 1.6 to 4 s; E. Gadd's Game Boy Horror call with four
+message windows in about 2 s.
+
+### When a cutscene can be skipped
+
+Read from guest memory every frame (addresses in `skip.cpp`):
+
+- the **opening** scene (`sCurScene` = OPENING) when it leads into a new game. The title
+  screen's attract demo uses the same scene and is left alone (START already exits it);
+- an **event script** is running (interpreter object `0x803D2D40`, cursor at +0x0C) and
+  it has taken control away: HUD hidden by `<MENUOFF>` or Luigi stopped by `<LUIGISTOP>`.
+
+The skip ends when the scene changes (opening), the event script ends, or the player
+has had control for 3 frames (an event that frees Luigi and keeps running in the
+background, like the training room). START is hidden from the game while a cutscene
+can be skipped.
+
+The player still decides: a `<CHOICE>` menu (interpreter state 7) or the save screen
+(`<SAVE>`/`<HSAVE>`) suspends the skip with the game visible and the controller live;
+it resumes after the answer. If the script does not advance for 1,800 frames outside a
+`<WAIT>`, the skip assumes it is waiting for the player and gives up for that event.
+
+"Press START to skip" shows for 4 s at the bottom right when a cutscene starts.
+
+### Verification
+
+`LM_SKIP_LOG=1` logs every change of scene/event state and, 60 frames after each event
+ends, a snapshot (all 256 event flags, Luigi's position and flags). Skipped and watched
+runs of the same scripted input (`LM_INPUT_CLOCK=frames`, `--input`) produce identical
+snapshots for the opening + entrance event, the GBH call event (with its save prompt)
+and the library book event (with its yes/no choice). Testing aids: `LM_SKIP_CUTSCENES=1`
+(force the option on), `LM_SKIP_AUTO=<n>[:<count>]` (press START n frames into each
+cutscene), `LM_SKIP_TEST=<frame>:flag:<n>` (set an event flag: flag-triggered events
+from `jmp/eventinfo` start by themselves) or `<frame>:pos:<x>,<y>,<z>`, `LM_FF=1`
+(fast-forward everything), `LM_FF_SPEED=<x>`, `LM_SKIP_LOG=2` (snapshot every 30
+frames). Use `LM_CARD_DIR` for test runs: events save the game.
+
+### Limitations
+
+- Only the opening and event scripts are covered. Sequences played by game code rather
+  than an event script (if any: e.g. room-clear light/chest camera, boss defeat
+  animations, the ending and credits) are not skippable; Tab fast-forward works on them.
+- Timing that depends on wall-clock time (disc reads, audio) does not speed up; the
+  number of frames a loading pause lasts can therefore differ from a watched run.
+- Music keeps playing at normal speed (muted) during a skip, so after a skip a track
+  may be at a different position than after watching.

@@ -62,6 +62,8 @@ std::vector<Field> fields() {
         flag("enhancements", "show_fps", e.showFps),
         flag("enhancements", "pause_on_focus_loss", e.pauseOnFocusLoss),
         flag("enhancements", "skip_intro_logos", e.skipIntroLogos),
+        flag("enhancements", "skip_cutscenes", e.skipCutscenes),
+        flag("enhancements", "fast_forward_key", e.fastForwardKey),
     };
 }
 

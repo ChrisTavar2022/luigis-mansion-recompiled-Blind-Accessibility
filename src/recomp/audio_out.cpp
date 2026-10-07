@@ -5,6 +5,7 @@
 #include "port/settings.h"
 #include "recomp/audio.h"
 #include "recomp/hle.h"
+#include "recomp/skip.h"
 
 #include <SDL3/SDL.h>
 
@@ -95,7 +96,7 @@ void outPushGuestBlock(u32 addr, u32 bytes) {
     static thread_local std::vector<s16> buf;
     buf.resize(frames * 2);
     const auto& as = port::settings().audio;
-    const s32 gain = s32(std::clamp(as.masterVolume, 0.0f, 1.0f) * 32768.0f);
+    const s32 gain = s32(std::clamp(as.masterVolume, 0.0f, 1.0f) * skip::audioGain() * 32768.0f);
     const bool mono = as.output == port::AudioOutput::Mono;
     const bool swap = as.swapChannels != kRightFirst;
     for (u32 i = 0; i < frames; i++) {

@@ -31,6 +31,7 @@
 - `LM_TRACE=ring` (last 64 calls dumped on fatal) | `LM_TRACE=8000E46C,...` (log entries) | `LM_TRACE=all`
 - `LM_WATCH=<addr>[,<len>]` report guest stores (use with LM_TRACE for function names)
 - `LM_WATCHDOG=1` dump guest threads every 3 s; `LM_TRACE_MQ=1` message-queue log; `LM_DVD_SPEED=1` console-speed disc.
+- Cutscene skip / fast-forward (docs/ENHANCEMENTS.md §4): `LM_SKIP_LOG=1` event-state log + flag snapshots, `LM_FF=1` fast-forward always, `LM_SKIP_AUTO`, `LM_SKIP_TEST`, `LM_INPUT_CLOCK=frames`. Test runs that reach events save the game: set `LM_CARD_DIR`.
 - `python tools/recomp/addr2sym.py <addr>...`; `tools/recomp/hle_refs.py` lists SDK functions game code calls.
 
 ## Gotchas

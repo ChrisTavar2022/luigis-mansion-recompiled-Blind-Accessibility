@@ -34,6 +34,8 @@ struct EnhancementSettings {
     bool showFps = false;
     bool pauseOnFocusLoss = true;
     bool skipIntroLogos = false;
+    bool skipCutscenes = false;  // START skips cutscenes (src/recomp/skip.cpp)
+    bool fastForwardKey = true;  // holding Tab runs the game at high speed (src/recomp/skip.cpp)
 };
 
 struct Settings {

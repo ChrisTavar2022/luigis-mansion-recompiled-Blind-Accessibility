@@ -28,6 +28,10 @@ namespace recomp {
 namespace {
 
 bool sInBegin = false;
+bool sInDisplayList = false;  // GXBeginDisplayList..GXEndDisplayList: everything is recorded
+
+// Fast-forward (skip.cpp): a frame that is not shown sends no draws or copies.
+bool dropDraw() { return gx::g_discardDraws && !sInDisplayList; }
 
 GXColor color(u32 p) { return GXColor{u8(rd8(p)), u8(rd8(p + 1)), u8(rd8(p + 2)), u8(rd8(p + 3))}; }
 f32 farg(const Ctx& c, int n) { return f32(c.f[n]); }
@@ -354,6 +358,7 @@ void gx::endPendingDraw() {
 }
 
 void hw::fifoWrite(u32 v, int size) {
+    if (dropDraw()) [[unlikely]] return;
     if (sHeld.active) [[unlikely]] {
         const u32 off = u32(sHeld.bytes.size());
         for (int b = size - 1; b >= 0; b--) sHeld.bytes.push_back(u8(v >> (8 * b)));
@@ -446,6 +451,7 @@ GXHLE(GXSetArray) {
 }
 
 GXHLE(GXBegin) {
+    if (dropDraw()) return;
     sInBegin = true;
     if (ws::active() && sProj.type == GX_ORTHOGRAPHIC && viewportFull()) {
         sHeld.active = true;
@@ -461,21 +467,31 @@ GXHLE(GXBegin) {
 }
 
 GXHLE(GXCallDisplayList) {
+    if (dropDraw()) return;
     prepareDraw(drawMode(ProjMode::Scaled), "dlist");
     GXCallDisplayList(hostp(c.r[3]), c.r[4]);
 }
-GXHLE(GXBeginDisplayList) { GXBeginDisplayList(hostp(c.r[3]), c.r[4]); }
-GXHLE(GXEndDisplayList) { c.r[3] = GXEndDisplayList(); }
+GXHLE(GXBeginDisplayList) {
+    sInDisplayList = true;
+    GXBeginDisplayList(hostp(c.r[3]), c.r[4]);
+}
+GXHLE(GXEndDisplayList) {
+    sInDisplayList = false;
+    c.r[3] = GXEndDisplayList();
+}
 
 GXHLE(GXDrawSphere1) {
+    if (dropDraw()) return;
     prepareDraw(drawMode(ProjMode::Scaled));
     GXDrawSphere1(u8(c.r[3]));
 }
 GXHLE(GXDrawCube) {
+    if (dropDraw()) return;
     prepareDraw(drawMode(ProjMode::Scaled));
     GXDrawCube();
 }
 GXHLE(GXDrawCylinder) {
+    if (dropDraw()) return;
     prepareDraw(drawMode(ProjMode::Scaled));
     GXDrawCylinder(u8(c.r[3]));
 }
@@ -748,13 +764,16 @@ GXHLE(GXSetCopyFilter) {
     if (c.r[6]) std::memcpy(vfilter, hostp(c.r[6]), sizeof(vfilter));
     GXSetCopyFilter(GXBool(c.r[3]), pattern, GXBool(c.r[5]), vfilter);
 }
-GXHLE(GXCopyDisp) { GXCopyDisp(hostp(c.r[3]), GXBool(c.r[4])); }
+GXHLE(GXCopyDisp) {
+    if (!dropDraw()) GXCopyDisp(hostp(c.r[3]), GXBool(c.r[4]));
+}
 GXHLE(GXSetTexCopySrc) {
     traceNote("copy src (%u,%u %ux%u)", c.r[3], c.r[4], c.r[5], c.r[6]);
     GXSetTexCopySrc(u16(c.r[3]), u16(c.r[4]), u16(c.r[5]), u16(c.r[6]));
 }
 GXHLE(GXSetTexCopyDst) { GXSetTexCopyDst(u16(c.r[3]), u16(c.r[4]), GXTexFmt(c.r[5]), GXBool(c.r[6])); }
 GXHLE(GXCopyTex) {
+    if (dropDraw()) return;
     if (!isCopyDest(phys(c.r[3]))) {
         if (sCopyDests.size() >= 64) sCopyDests.erase(sCopyDests.begin());
         sCopyDests.push_back(phys(c.r[3]));
