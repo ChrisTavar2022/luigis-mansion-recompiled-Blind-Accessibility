@@ -27,7 +27,7 @@ The screen-content mode is `lbl_804D846C`:
 | mode | set by | effect |
 |---|---|---|
 | 0 | never | renderer viewport hook only (`fn_80010EBC`), no extra 2D |
-| 1 | never | `back.bti` + an orange 16-segment gauge with two numbers (`fn_80044C4C` on `lbl_804D8560`); probably the early money readout the GBH showed before the camera |
+| 1 | never | The cut E3 clock + radar border (`fn_80044C4C`: 16-segment minutes/seconds, border segments animated by the ghost tracker). The mode switch at 0x8003D53C sends modes 0/1 to the same viewport code as the camera, so the 3D view covers it unless instruction patch 3 (0x8003D544) skips that; exposed as "Game Boy Horror E3 clock" (D-pad Left) |
 | **2** | **never** | **live camera**: see below |
 | 3 | `fn_8003EA78` (E. Gadd's call starts) | call portrait at the screen rect (`fn_80115474`, 110x84) |
 | 4 | init `fn_8003CEB4`, `fn_8003EA84` (call ends) | the retail screen (`fn_800571B8`) |
@@ -226,8 +226,7 @@ No option is offered until that is confirmed.
 
 ## Other leftovers noticed
 
-- GBH screen mode 1 (gauge + two numbers, `fn_80044C4C`) is never selected. It could be
-  exposed the same way.
+- GBH screen mode 1 is the E3 clock (exposed as a toggle); there is no separate gauge screen.
 - `fn_80011150` / `fn_800204B4`'s second branch: a complete two-player split-screen
   (`sAppearPointSlotIndex__Q24Koga9EnManager == 1`; view 0 top half, view 1 bottom half, each
   following its own player record in `lbl_803A3CA0`).
