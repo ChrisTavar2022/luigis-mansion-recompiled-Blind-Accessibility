@@ -4,7 +4,8 @@ Our own tool translates the user's own `main.dol` (GLME01) into C++ at build tim
 Generated code lives in `build/` and is never committed.
 
 ## Pieces
-1. **Recompiler** (`tools/recomp/`, Python): decode PPC from the DOL; function
+1. **Recompiler** (`src/recompiler/`, C++; `tools/recomp/lmrecompile` at build time,
+   in-process at first-run setup, docs/SETUP.md): decode PPC from the DOL; function
    boundaries and jump tables from `decomp/config/GLME01/symbols.txt` (CC0 metadata).
    One C++ function per guest function: `void f_XXXXXXXX(Ctx&)`; in-function branches
    as labels/goto; `bl` = direct call; `bctrl`/`blrl` = lookup in a generated

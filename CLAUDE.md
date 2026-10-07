@@ -8,7 +8,7 @@
 
 ## Release requirements
 - Distribution: ship the recompiler + a bundled clang/lld. `LuigisMansionRecomp.exe` first run asks for US and/or PAL disc images (ISO/RVZ), then does a one-time setup (recompile DOL into a game module, build PAL overlay) into AppData (docs/SETUP.md). Features needing a disc that wasn't provided are greyed out in the F1 menu until it is added.
-- End users never run scripts: the game takes their own disc images (ISO/RVZ via Aurora/nod), US required, PAL optional. Anything derived from them (PAL Hidden Mansion overlay now built by tools/hidden_mansion_data.py, recompiled code) is produced automatically on the user's machine (first launch / setup), cached outside the install, and re-validated by hash.
+- End users never run scripts: the game takes their own disc images (ISO/RVZ via Aurora/nod), US and/or PAL (either alone is playable; with both the user picks the base). Anything derived from them (PAL Hidden Mansion overlay now built by tools/hidden_mansion_data.py, recompiled code) is produced automatically on the user's machine (first launch / setup), cached outside the install, and re-validated by hash.
 
 ## Hard rules
 - Never commit game data (ISO/DOL/extracted files/saves) or `build/`. Dumps live in `Luigis Mansion US/`, `Lugis Mansion PAL/`, `orig/` (gitignored).
@@ -16,8 +16,10 @@
 - Never submit anything to lm-decomp (bans AI contributions). Don't copy GPL code (e.g. Dolphin).
 - Commits: `git -c user.name=rmelv -c user.email=rmelville7@gmail.com commit`, message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 
-## Architecture (see docs/RECOMPILER.md)
-- `tools/recomp/recomp.py`: DOL + `decomp/config/GLME01/{symbols,splits}.txt` → one `void f_XXXXXXXX(Ctx&)` per function (gotos, jump-table switches, interior/address-taken entry points). Runs at CMake configure time (target `lmrecomp`, cache var `LM_DOL`).
+## Architecture (see docs/RECOMPILER.md, docs/SETUP.md)
+- `src/recompiler/recompiler.cpp` (C++): DOL + `decomp/config/<ver>/symbols.txt` (+ GLME01 splits / `tools/recomp/GLMP01_map.txt` for PAL) → one `void f_XXXXXXXX(Ctx&)` per function (gotos, jump-table switches, interior/address-taken entry points), 32 files. Used by `lmrecompile` at build time (target `lmrecomp`, cache vars `LM_DOL`, `LM_DOL_VERSION`) and in-process by `LuigisMansionRecomp.exe` setup.
+- `LuigisMansionRecomp.exe` (what users run): setup screen picks US/PAL discs, recompiles + compiles the game module DLL with bundled clang/lld into %APPDATA%\Luigi's Mansion PC\game\<id>, builds the PAL HM overlay, then runs. Module boundary: `recomp/module_abi.h` (RuntimeApi), `module_rt.cpp`; `ctx.h` must stay freestanding (builtins only, no system headers). Bump `kModuleAbiVersion` when Ctx/GameModule/RuntimeApi change.
+- PAL base: SDK/hook names come from `tools/recomp/GLMP01_map.txt` (`gen_version_map.py`). hooks.txt entries are US-only unless tagged `us pal`/`pal`. Code using US addresses must check `port::usCodeFeature()`; F1 gating via `port::Avail` (docs/SETUP.md).
 - SDK translation units (os/gx/vi/pad/dvd/ar/card/ai/dsp/...) are **HLE**'d by name: `HLE(Name) { ... }` in `src/recomp/hle_*.cpp`. Args r3–r10/f1–f8, extra ints at `stackArg(c,n)`, structs by pointer, results in r3 (r3:r4 for 64-bit).
 - Any game function can be replaced: add its symbol to `tools/recomp/hooks.txt` + `HLE(symbol)`.
 - `src/recomp/ctx.h`: guest memory (`hostp`, `rd32/wr32`, BE), MMIO (0xCC008000 WGP → Aurora FIFO), Ctx/paired singles.
@@ -29,6 +31,7 @@
 ## Build / run
 - `powershell -ExecutionPolicy Bypass -File tools/build.ps1 [-Configure] -Target lmrecomp`
 - Run: `build/windows-clang/lmrecomp.exe [--disc orig/GLME01.iso] [--input "600:START*10,900:A"]`
+- Shipped program: `build/windows-clang/LuigisMansionRecomp.exe [--setup] [--us-disc X] [--pal-disc Y] [--setup-auto]`; test with `APPDATA=<empty dir>` for a fresh install, `LM_MENU=<tab>` opens F1 on a tab. Package: `cmake --install build/windows-clang --prefix <dir>` (copies clang/lld-link into llvm/bin).
 - Screenshot: `powershell -File tools/capture_window.ps1 -Exe lmrecomp -Seconds 15 -Out build/x.png -ExeArgs '...'`
 
 ## Debugging
@@ -44,9 +47,10 @@
 - Timing matters: instantaneous HW completion can break game assumptions (BootScene heap race).
 
 ## Status (keep updated)
-- Boots → title → main menu → opening cutscene → in-game foyer with HUD (`--input "600:START*10,1000:A*6"`, foyer ~70 s).
+- Boots → title → main menu → opening cutscene → in-game foyer with HUD (`--input "600:START*10,1000:A*6"`, foyer ~70 s). Same for the PAL game as base (LuigisMansionRecomp with a PAL disc; ~29 fps logic measured vs 30 target).
+- First-run setup works end to end (fresh AppData → US and/or PAL disc → module build ~20 s → game). docs/SETUP.md.
 - Memory card emulated (GCI folders in %APPDATA%\Luigi's Mansion PC\USA\Card A).
 - Audio plays (DSP microcode stand-in in audio_dsp.cpp, SDL3 out in audio_out.cpp; docs/AUDIO.md; LM_AUDIO_WAV=, LM_AUDIO_LOG=1, LM_AUDIO=0, LM_AUDIO_FX=0). Reverb routing is a guess.
-- PAL Hidden Mansion variant works (map2u overlay, event scripts, lighting, hearts, boss mechanics, mirror; docs/HIDDEN_MANSION.md). Needs `python tools/hidden_mansion_data.py` once to build orig/hidden_mansion/. Selected in F1 > Enhancements until the lab-menu choice exists. Test aids: LM_HM_FORCE=1, LM_START_MAP=9/10/11.
+- PAL Hidden Mansion variant works (map2u overlay, event scripts, lighting, hearts, boss mechanics, mirror; docs/HIDDEN_MANSION.md). LuigisMansionRecomp setup builds the overlay from both discs; the dev build (lmrecomp) still uses orig/hidden_mansion/ from `python tools/hidden_mansion_data.py`. Selected in F1 > Enhancements until the lab-menu choice exists. Test aids: LM_HM_FORCE=1, LM_START_MAP=9/10/11.
 - Unused content restored as Enhancements toggles: Game Boy Horror live camera (D-pad Up) and early opaque ghost shading (docs/UNUSED_CONTENT.md; LM_GBH_CAM=1/2, LM_EARLY_GHOSTS=1). Aurora's GXSetZTexture is a TODO (worked around for the GBH sub-view clear).
 - Widescreen/ultrawide + render-resolution slider work. Parallel work streams: interpolation/FOV/HUD anchoring, skippable cutscenes (agent worktree branches).
