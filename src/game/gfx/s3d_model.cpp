@@ -729,7 +729,7 @@ void S3DModel::setupVtxDesc(const MdlShape& shape) {
     }
     if (shape.flags & 0x02000000) {
         GXSetVtxDesc(GX_VA_NBT, GX_INDEX16);
-        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NBT, GX_NRM_NBT, GX_F32, 0);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NBT, GX_NRM_NBT3, GX_F32, 0);  // retail: count 2 = NBT3
         return;
     }
     if (mMdl->numNormals != 0) {

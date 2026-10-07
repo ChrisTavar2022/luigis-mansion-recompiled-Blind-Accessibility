@@ -3,6 +3,7 @@
 #include "game/scene/scene.h"
 #include "game/scene/boot_scene.h"
 #include "game/scene/title_scene.h"
+#include "game/dev/map_viewer.h"
 #include "game/dev/model_viewer.h"
 #include "port/options.h"
 #include "game/system/display.h"
@@ -241,8 +242,9 @@ void runScenes() {
         freeFrameScratch();
 
         Scene* next = gCurSceneId >= 0 && gCurSceneId < SCENE_MAX ? gSceneTable[gCurSceneId] : nullptr;
+        // Developer viewers (--model-viewer / --room-viewer / --map-viewer) replace the title.
         if (gCurSceneId == SCENE_TITLE && !port::options().modelViewer.empty()) {
-            next = &dev::ModelViewer::sScene;
+            next = port::options().mapViewer.empty() ? &dev::ModelViewer::sScene : &dev::MapViewer::sScene;
         }
         if (next == nullptr) {
             // PORT: the remaining scenes are not ported yet; stop here rather than crash.
@@ -251,9 +253,6 @@ void runScenes() {
                 beginFrame();
                 presentFrame();
             }
-        }
-        if (gCurSceneId == SCENE_TITLE && !port::options().modelViewer.empty()) {
-            next = &dev::ModelViewer::sScene;  // developer model viewer replaces the title
         }
         gCurScene = next;
         freeSceneGroups(0x1A);

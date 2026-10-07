@@ -5,6 +5,7 @@
 #include <aurora/event.h>
 #include <aurora/main.h>
 
+#include "port/crash_handler.h"
 #include "port/dol.h"
 #include "port/frame_driver.h"
 #include "port/options.h"
@@ -49,6 +50,7 @@ static std::string find_disc(int argc, char* argv[]) {
 }
 
 int main(int argc, char* argv[]) {
+    port::installCrashHandler();
     port::parseOptions(argc, argv);
     AuroraConfig config{};
     config.appName = "Luigi's Mansion PC";

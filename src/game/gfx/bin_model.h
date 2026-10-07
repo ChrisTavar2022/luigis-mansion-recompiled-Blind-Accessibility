@@ -77,6 +77,7 @@ struct BinData {
     const void* normals = nullptr;
     const void* colors = nullptr;
     const void* texCoords[4] = {};
+    u32 positionsSize = 0, normalsSize = 0, colorsSize = 0, texCoordsSize[4] = {};  // bytes
     std::vector<BinTexture> textures;
     std::vector<BinMaterial> materials;
     std::vector<BinShader> shaders;

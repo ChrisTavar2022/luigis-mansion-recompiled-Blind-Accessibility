@@ -5,7 +5,9 @@
 
 #include <dolphin/os.h>
 
+#include <algorithm>
 #include <bit>
+#include <cstdlib>
 #include <cstring>
 
 namespace lm::gfx {
@@ -62,32 +64,56 @@ bool parseBin(const void* file, u32 size, BinData& out) {
     };
     const u32 offTextures = f.u32at(0x0C), offMaterials = f.u32at(0x10), offShaders = f.u32at(0x34);
     const u32 offBatches = f.u32at(0x38), offNodes = f.u32at(0x3C);
-    out.positions = section(0x14);
-    out.normals = section(0x18);
-    out.colors = section(0x1C);
-    for (int t = 0; t < 4; t++) {
-        out.texCoords[t] = section(0x24 + t * 4);
-    }
 
     // Section sizes come from the next section's offset (tables are contiguous).
-    auto countBetween = [](u32 start, u32 end, u32 stride) { return end > start ? (end - start) / stride : 0u; };
-    const u32 numTextures = countBetween(offTextures, offMaterials, 0xC);
-    // Textures: stop at the first entry whose data overlaps the table itself.
-    for (u32 i = 0; i < numTextures; i++) {
-        const u32 o = offTextures + i * 0xC;
-        const u32 dataOff = f.u32at(o + 8);
-        if (dataOff == 0 || offTextures + dataOff < o + 0xC) {
-            break;
+    // Sections are laid out in header order, but any of them may be absent (offset 0):
+    // a table runs to the next section that is present.
+    auto nextSection = [&](u32 start) {
+        u32 next = size;
+        for (u32 h = 0x0C; h <= 0x44; h += 4) {
+            const u32 o = f.u32at(h);
+            if (o > start && o < next) {
+                next = o;
+            }
         }
-        out.textures.push_back({f.u16at(o), f.u16at(o + 2), f.u8at(o + 4), f.base + offTextures + dataOff});
+        return next;
+    };
+    auto countBetween = [&](u32 start, u32 stride) { return start != 0 ? (nextSection(start) - start) / stride : 0u; };
+    auto sectionSize = [&](u32 headerOffset) {
+        const u32 off = f.u32at(headerOffset);
+        return off != 0 ? nextSection(off) - off : 0u;
+    };
+    out.positions = section(0x14);
+    out.positionsSize = sectionSize(0x14);
+    out.normals = section(0x18);
+    out.normalsSize = sectionSize(0x18);
+    out.colors = section(0x1C);
+    out.colorsSize = sectionSize(0x1C);
+    for (int t = 0; t < 4; t++) {
+        out.texCoords[t] = section(0x24 + t * 4);
+        out.texCoordsSize[t] = sectionSize(0x24 + t * 4);
     }
-    const u32 numMaterials = countBetween(offMaterials, f.u32at(0x14), 0x14);
+    // Textures: the table ends where the first texture's pixel data begins.
+    if (offTextures != 0) {
+        u32 tableEnd = countBetween(offTextures, 0xC) * 0xC;
+        for (u32 o = 0; o < tableEnd; o += 0xC) {
+            const u32 dataOff = f.u32at(offTextures + o + 8);
+            if (dataOff != 0 && dataOff < tableEnd) {  // 0 = empty slot
+                tableEnd = dataOff;
+            }
+            const u32 e = offTextures + o;
+            out.textures.push_back({f.u16at(e), f.u16at(e + 2), f.u8at(e + 4),
+                                    dataOff != 0 ? f.base + offTextures + dataOff : nullptr});
+        }
+        out.textures.resize(tableEnd / 0xC);
+    }
+    const u32 numMaterials = countBetween(offMaterials, 0x14);
     for (u32 i = 0; i < numMaterials; i++) {
         const u32 o = offMaterials + i * 0x14;
         out.materials.push_back({f.u16at(o), s8(f.u8at(o + 4)), s8(f.u8at(o + 5)), f.u8at(o + 6), f.u8at(o + 7),
                                  f32(f.u8at(o + 8)), f.u8at(o + 0xA)});
     }
-    const u32 numShaders = countBetween(offShaders, offBatches, 0x28);
+    const u32 numShaders = countBetween(offShaders, 0x28);
     for (u32 i = 0; i < numShaders; i++) {
         const u32 o = offShaders + i * 0x28;
         BinShader s{};
@@ -187,20 +213,16 @@ void BinModel::setupArrays() {
     for (const auto& fmt : kFormats) {
         GXSetVtxAttrFmt(GX_VTXFMT0, fmt.attr, fmt.cnt, fmt.type, 0);
     }
-    const u32 remaining = mData->size;
-    auto bytesLeft = [&](const void* p) {
-        return p ? remaining - u32(static_cast<const u8*>(p) - mData->raw) : 0u;
-    };
     if (mData->floatPositions) {
         GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
-        GXSetArray(GX_VA_POS, mData->positions, bytesLeft(mData->positions), 12, false);
+        GXSetArray(GX_VA_POS, mData->positions, mData->positionsSize, 12, false);
     } else {
-        GXSetArray(GX_VA_POS, mData->positions, bytesLeft(mData->positions), 6, false);
+        GXSetArray(GX_VA_POS, mData->positions, mData->positionsSize, 6, false);
     }
-    GXSetArray(GX_VA_NRM, mData->normals, bytesLeft(mData->normals), 12, false);
-    GXSetArray(GX_VA_CLR0, mData->colors, bytesLeft(mData->colors), 4, false);
+    GXSetArray(GX_VA_NRM, mData->normals, mData->normalsSize, 12, false);
+    GXSetArray(GX_VA_CLR0, mData->colors, mData->colorsSize, 4, false);
     for (int t = 0; t < 4; t++) {
-        GXSetArray(GXAttr(GX_VA_TEX0 + t), mData->texCoords[t], bytesLeft(mData->texCoords[t]), 8, false);
+        GXSetArray(GXAttr(GX_VA_TEX0 + t), mData->texCoords[t], mData->texCoordsSize[t], 8, false);
     }
 }
 
@@ -209,7 +231,7 @@ void BinModel::setupVtxDesc(const BinBatch& batch) {
     GXSetVtxDesc(GX_VA_POS, GX_INDEX16);
     if (batch.nbt != 0) {
         GXSetVtxDesc(GX_VA_NBT, GX_INDEX16);
-        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NBT, GX_NRM_NBT, GX_F32, 0);
+        GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_NBT, GX_NRM_NBT3, GX_F32, 0);  // retail: count 2 = NBT3
     } else {
         if (batch.attributes & 0x400) {
             GXSetVtxDesc(GX_VA_NRM, GX_INDEX16);
@@ -230,7 +252,7 @@ u8 BinModel::partCategory(const BinShader& shader) const {
     if (shader.alphaCategory != 0) {
         return shader.alphaCategory;
     }
-    if (shader.materials[0] == -1) {
+    if (shader.materials[0] < 0 || u32(shader.materials[0]) >= mData->materials.size()) {
         return 0;
     }
     return mData->materials[shader.materials[0]].alphaCategory;
@@ -250,6 +272,9 @@ void BinModel::initTexObj(GXTexObj* obj, const BinShader& shader, u32 slot) cons
 
 // fn_8001566C: material/TEV setup for one part, then its display list.
 void BinModel::drawPart(const BinPart& part, u8 alpha, const Mtx&) {
+    if (part.shader >= mData->shaders.size() || part.batch >= mData->batches.size()) {
+        return;
+    }
     const BinShader& shader = mData->shaders[part.shader];
     const BinBatch& batch = mData->batches[part.batch];
     u8 numTexGens = 0, numStages = 0;
@@ -271,7 +296,14 @@ void BinModel::drawPart(const BinPart& part, u8 alpha, const Mtx&) {
     GXSetChanCtrl(GX_ALPHA1, GX_TRUE, GX_SRC_REG, GX_SRC_REG, GX_LIGHT7, GX_DF_CLAMP, GX_AF_SPOT);
 
     // fn_80015350 / fn_80014E68: one stage per texture.
-    if (batch.numTextures == 0) {
+    bool anyTexture = false;
+    for (u32 t = 0; t < std::min<u32>(batch.numTextures, 8); t++) {
+        anyTexture |= shader.materials[t] >= 0 && u32(shader.materials[t]) < mData->materials.size() &&
+                      mData->materials[shader.materials[t]].texture < mData->textures.size() &&
+                      mData->textures[mData->materials[shader.materials[t]].texture].pixels != nullptr;
+    }
+    if (!anyTexture) {
+        // Untextured (or textures missing from this model): lit vertex/material color only.
         const auto stage = GXTevStageID(numStages++);
         GXSetTevSwapMode(stage, GX_TEV_SWAP0, GX_TEV_SWAP0);
         GXSetTevOrder(stage, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
@@ -280,8 +312,19 @@ void BinModel::drawPart(const BinPart& part, u8 alpha, const Mtx&) {
         GXSetTevColorOp(stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
         GXSetTevAlphaOp(stage, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
     } else {
-        for (u32 t = 0; t < batch.numTextures; t++) {
-            if (shader.materials[t] == -1) {
+        const u32 numTextures = std::min<u32>(batch.numTextures, 8);
+        if (batch.numTextures > 8) {
+            static bool sWarned;
+            if (!sWarned) {
+                sWarned = true;
+                OSReport("[bin] %s: batch with %u texture slots (max 8); clamping\n", mData->name,
+                         batch.numTextures);
+            }
+        }
+        for (u32 t = 0; t < numTextures; t++) {
+            if (shader.materials[t] < 0 || u32(shader.materials[t]) >= mData->materials.size() ||
+                mData->materials[shader.materials[t]].texture >= mData->textures.size() ||
+                mData->textures[mData->materials[shader.materials[t]].texture].pixels == nullptr) {
                 continue;
             }
             const auto stage = GXTevStageID(numStages);
@@ -302,6 +345,10 @@ void BinModel::drawPart(const BinPart& part, u8 alpha, const Mtx&) {
             numStages++;
             numTexGens++;
         }
+    }
+    if (std::getenv("LM_TRACE_BIN") != nullptr) {
+        OSReport("[trace] %s shader %u batch %u: texSlots %u stages %u texgens %u attr %08x\n", mData->name,
+                 part.shader, part.batch, batch.numTextures, numStages, numTexGens, batch.attributes);
     }
     GXSetNumTexGens(numTexGens);
     GXSetNumTevStages(numStages);
@@ -338,7 +385,7 @@ void BinModel::drawNode(bool siblingsDone, u8 pass, u8 alpha, s16 node) {
         }
         for (const BinPart& part : n.parts) {
             if (alpha == 0xFF) {
-                if (pass == partCategory(mData->shaders[part.shader])) {
+                if (part.shader < mData->shaders.size() && pass == partCategory(mData->shaders[part.shader])) {
                     drawPart(part, alpha, mNodeMtx[node].m);
                 }
             } else if (pass == 2) {

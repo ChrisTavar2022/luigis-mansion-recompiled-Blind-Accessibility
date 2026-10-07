@@ -7,6 +7,22 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(AURORA_ENABLE_DVD ON CACHE BOOL "" FORCE)
 set(AURORA_ENABLE_CARD ON CACHE BOOL "" FORCE)
+# Local fixes to Aurora, kept as patches so the submodule stays pristine.
+file(GLOB AURORA_PATCHES ${CMAKE_SOURCE_DIR}/patches/aurora/*.patch)
+foreach (_patch ${AURORA_PATCHES})
+    execute_process(COMMAND git apply --reverse --check ${_patch}
+                    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/extern/aurora
+                    RESULT_VARIABLE _already OUTPUT_QUIET ERROR_QUIET)
+    if (NOT _already EQUAL 0)
+        execute_process(COMMAND git apply ${_patch}
+                        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/extern/aurora
+                        RESULT_VARIABLE _applied)
+        if (NOT _applied EQUAL 0)
+            message(FATAL_ERROR "Failed to apply Aurora patch ${_patch}")
+        endif ()
+        message(STATUS "Applied Aurora patch ${_patch}")
+    endif ()
+endforeach ()
 add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
 
 
@@ -45,6 +61,9 @@ file(GLOB_RECURSE GAME_SOURCES CONFIGURE_DEPENDS src/game/*.cpp)
 add_executable(lmport ${PORT_SOURCES} ${GAME_SOURCES})
 target_include_directories(lmport PRIVATE src)
 target_link_libraries(lmport PRIVATE aurora::main ${GAME_LIBS} ${JSYSTEM_LIBRARIES})
+if (WIN32)
+    target_link_libraries(lmport PRIVATE dbghelp)
+endif ()
 
 if (WIN32)
     # Ship runtime DLLs (SDL3, Dawn, nod, libpng, zlib) next to the executable.
