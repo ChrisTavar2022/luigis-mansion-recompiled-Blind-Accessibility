@@ -65,6 +65,8 @@ std::vector<Field> fields() {
         flag("enhancements", "hidden_mansion_pal", e.hiddenMansionPal),
         flag("enhancements", "gbh_camera", e.gbhCamera),
         flag("enhancements", "early_ghost_shading", e.earlyGhostShading),
+        flag("enhancements", "skip_cutscenes", e.skipCutscenes),
+        flag("enhancements", "fast_forward_key", e.fastForwardKey),
     };
 }
 

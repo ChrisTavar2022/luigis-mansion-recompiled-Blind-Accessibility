@@ -5,6 +5,7 @@
 
 #include "port/settings.h"
 #include "recomp/hidden_mansion.h"
+#include "recomp/skip.h"
 
 #include <aurora/aurora.h>
 #include <imgui.h>
@@ -108,6 +109,14 @@ void enhancementsTab() {
     }
     sDirty |= ImGui::Checkbox("Skip intro logos", &e.skipIntroLogos);
     pending("planned");
+    sDirty |= ImGui::Checkbox("Skippable cutscenes", &e.skipCutscenes);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Press START during a cutscene to skip it. The game plays the rest of the\n"
+                          "cutscene at high speed behind a black screen, so everything it sets up\n"
+                          "(items, keys, doors, story progress) is the same as after watching it.\n"
+                          "Choices and the save screen still wait for you.");
+    sDirty |= ImGui::Checkbox("Hold Tab to fast-forward", &e.fastForwardKey);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("While Tab is held the game runs as fast as it can, muted.");
     ImGui::Separator();
     {
         // Switching mid-visit would leave PAL data/patches half applied, so only allow it outside.
@@ -174,6 +183,7 @@ void handleEvent(const SDL_Event& ev) {
 }
 
 void draw() {
+    skip::drawOverlay();
     if (port::settings().enhancements.showFps) fpsOverlay();
     if (!sOpen) return;
     ImGui::SetNextWindowSize(ImVec2(680, 400), ImGuiCond_FirstUseEver);
