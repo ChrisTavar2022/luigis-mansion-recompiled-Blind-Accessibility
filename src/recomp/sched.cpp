@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <chrono>
 #include <map>
+#include <string>
+#include <cstdio>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -350,9 +352,19 @@ void dumpThreads() {
     std::lock_guard lk(sM);
     log("[sched] running=%08X irqPending=%d", sRunning == &sIrqMarker ? 0xFFFFFFFF : sRunning ? sRunning->guest : 0,
         int(g_irqPending.load()));
-    for (auto* t : sThreads)
+    for (auto* t : sThreads) {
         log("[sched]   %08X prio %d suspend %d state %d wait %08X lr %08X fn %08X", t->guest, t->priority,
             t->suspendCount, int(t->st), t->waitQueue, t->ctx.lr, t->ctx.lastFn);
+        if (t->st == GuestThread::St::Ready && t->ctx.ringPos) {
+            std::string line = "[sched]     recent:";
+            for (u32 i = t->ctx.ringPos > 32 ? t->ctx.ringPos - 32 : 0; i < t->ctx.ringPos; i++) {
+                char buf[12];
+                std::snprintf(buf, sizeof(buf), " %08X", t->ctx.ring[i & 31]);
+                line += buf;
+            }
+            log("%s", line.c_str());
+        }
+        }
     log("[sched]   mq 803A3608: used %u base %u interval %u retrace %u", rd32(0x803A3608 + 0x1C), rd32(0x803A3600),
         rd32(0x803A3604), viRetraceCount());
     log("[sched]   irq ctx: lr %08X fn %08X, queued %zu", sIrqCtx.lr, sIrqCtx.lastFn, sIrqs.size());
