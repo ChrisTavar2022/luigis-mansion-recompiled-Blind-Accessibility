@@ -14,7 +14,7 @@ struct MapInfo {
     int no;
     const char* name;
     bool used;        // reachable in normal play
-    bool loads;       // the game can set it up (maps 7 and 8 crash while loading)
+    bool loads;       // the game can set it up (maps 7 and 8 only with unused_maps.cpp's rebuilt archives)
     const char* note;
 };
 const MapInfo* maps(int* count);

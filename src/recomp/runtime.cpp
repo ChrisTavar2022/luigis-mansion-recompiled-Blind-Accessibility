@@ -17,6 +17,12 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 namespace recomp {
 
 const GameModule* g_module = nullptr;
@@ -69,6 +75,24 @@ void trace_enter(u32 addr, Ctx& c) {
     tRing[tRingPos % kRingSize] = addr;
     tRingLr[tRingPos % kRingSize] = c.lr;
     tRingPos++;
+#ifdef _WIN32
+    // Runaway guest recursion (e.g. a cycle in corrupted game data) would otherwise exhaust
+    // this host thread's stack and end the process without a word; with tracing on it is
+    // reported, with the call ring, while there is still stack left to do so.
+    {
+        static thread_local uintptr_t tStackLo = 0, tStackHi = 0;
+        if (!tStackLo) {
+            ULONG_PTR lo = 0, hi = 0;
+            GetCurrentThreadStackLimits(&lo, &hi);
+            tStackLo = lo;
+            tStackHi = hi;
+        }
+        volatile char probe = 0;
+        if (uintptr_t(&probe) - tStackLo < 128 * 1024)
+            fatal("host stack exhausted (%zu KiB used; runaway guest recursion?) guest r1=%08X",
+                  size_t(tStackHi - uintptr_t(&probe)) / 1024, c.r[1]);
+    }
+#endif
     if (sTraceMode == TraceMode::All || (sTraceMode == TraceMode::Set && sTraceSet.count(addr)))
         log("[trace] %08X lr %08X r3 %08X r4 %08X r5 %08X", addr, c.lr, c.r[3], c.r[4], c.r[5]);
 }
@@ -142,7 +166,7 @@ std::unordered_set<u32> sMmioLogged;
 
 void logMmio(const char* what, u32 a, u32 v) {
     std::lock_guard lk(sMmioLogM);
-    if (sMmioLogged.insert(a).second) log("[mmio] unhandled %s %08X (%08X)", what, a, v);
+    if (sMmioLogged.insert(a).second) log("[mmio] unhandled %s %08X (%08X) in %08X from %08X thread %08X", what, a, v, tRingPos ? tRing[(tRingPos - 1) % kRingSize] : 0, tRingPos ? tRingLr[(tRingPos - 1) % kRingSize] : 0, sched::currentGuest());
 }
 }  // namespace
 
