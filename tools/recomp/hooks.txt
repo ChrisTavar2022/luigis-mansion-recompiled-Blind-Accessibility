@@ -51,3 +51,6 @@ fn_8000C188
 # J2D screen drawing: the in-game HUD anchored to the screen edges in
 # widescreen (src/recomp/widescreen.cpp).
 draw__9J2DScreenFiiPC14J2DGrafContext
+
+# Early ghost lighting (cheat-equivalent, src/recomp/unused_content.cpp)
+fn_8005A5D4

@@ -137,7 +137,14 @@ void enhancementsTab() {
     // Unused content restored from the retail code (docs/UNUSED_CONTENT.md).
     sDirty |= ImGui::Checkbox("Game Boy Horror camera", &e.gbhCamera);
     pending("D-pad Up in game");
-    sDirty |= ImGui::Checkbox("Early (opaque) ghost shading", &e.earlyGhostShading);
+    {
+        static const char* kGhost[] = {"Retail", "Beta"};
+        int g = e.earlyGhostLighting ? 1 : 0;
+        if (ImGui::Combo("Ghost shading", &g, kGhost, 2)) {
+            e.earlyGhostLighting = g == 1;
+            sDirty = true;
+        }
+    }
     ImGui::Separator();
     ImGui::TextDisabled("Gameplay toggles, cheats and debug viewers will appear here.");
 }

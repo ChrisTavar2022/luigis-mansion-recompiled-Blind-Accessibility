@@ -92,7 +92,7 @@ std::vector<Field> fields() {
         flag("enhancements", "skip_intro_logos", e.skipIntroLogos),
         flag("enhancements", "hidden_mansion_pal", e.hiddenMansionPal),
         flag("enhancements", "gbh_camera", e.gbhCamera),
-        flag("enhancements", "early_ghost_shading", e.earlyGhostShading),
+        flag("enhancements", "early_ghost_lighting", e.earlyGhostLighting),
         flag("enhancements", "skip_cutscenes", e.skipCutscenes),
         flag("enhancements", "fast_forward_key", e.fastForwardKey),
     };
