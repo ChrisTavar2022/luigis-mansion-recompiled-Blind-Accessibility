@@ -59,7 +59,7 @@ struct EnhancementSettings {
     bool skipIntroLogos = false;
     bool hiddenMansionPal = true;  // Hidden Mansion uses the PAL release's rules (until the lab menu offers both)
     bool gbhCamera = false;        // unused Game Boy Horror live camera, toggled in game with D-pad Up (docs/UNUSED_CONTENT.md)
-    bool earlyGhostShading = false;  // ghosts drawn straight into the scene (pre-release opaque look) instead of the glow layer
+    bool earlyGhostLighting = false;  // "Ghost shading: Beta" = the known beta-shading cheat (fn_800581E8 channel setup)
     bool skipCutscenes = false;  // START skips cutscenes (src/recomp/skip.cpp)
     bool fastForwardKey = true;  // holding Tab runs the game at high speed (src/recomp/skip.cpp)
     // Debug: the game's own compiled-in debug switches (src/recomp/dev_tools.cpp)

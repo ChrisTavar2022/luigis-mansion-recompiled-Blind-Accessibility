@@ -4,7 +4,7 @@
 // docs/UNUSED_CONTENT.md ("Debug features", "Unused areas", "Model viewer").
 //
 // Wiring: hooks in dev_tools.cpp (tools/recomp/hooks.txt) run on the guest thread;
-// menuSection()/drawOverlays()/handleKey() are called from menu.cpp on the host thread,
+// unusedSection()/debugSection()/drawOverlays()/handleKey() are called from menu.cpp on the host thread,
 // while the guest is parked at its present (frame.cpp), so the two never run at once.
 union SDL_Event;
 
@@ -34,7 +34,8 @@ void requestWarp(int map, int appearPoint = 0);
 bool inGameScene();  // the game scene is running (warps possible)
 int currentMap();
 
-void menuSection();             // Enhancements tab: debug toggles, Visit area, Model viewer
+void unusedSection();           // Enhancements > Unused content: depth blur, unused areas
+void debugSection();            // Enhancements > Debug: debug switches, Visit area, model viewer
 void drawOverlays();            // every frame: game debug report text, info overlay, viewer window
 bool handleKey(const SDL_Event& ev);  // F3 info overlay, F4 model viewer; true if consumed
 bool capturesInput();           // a dev window wants the pad neutralized (model viewer)

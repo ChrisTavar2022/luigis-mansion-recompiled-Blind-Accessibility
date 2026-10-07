@@ -87,7 +87,8 @@ HLE(fn_8000B228) {
 // straight into the scene with their ghost lighting and alpha: the early, more solid look.
 HLE(fn_80060E70) {
     static const bool sForce = envFlag("LM_EARLY_GHOSTS");
-    if (!sForce && !port::settings().enhancements.earlyGhostShading) return callOriginal(c, "fn_80060E70");
+    if (!sForce) return  // dev-only experiment (LM_EARLY_GHOSTS=1); the menu option is the beta lighting below
+        callOriginal(c, "fn_80060E70");
     const u32 pass = c.r[3] & 0x30;
     if (pass == 0x10) {
         c.r[3] &= ~0x30u;  // normal actors + ghosts, drawn directly
@@ -95,6 +96,19 @@ HLE(fn_80060E70) {
         c.r[3] = (c.r[3] & ~0x30u) | 0x20;  // no case for 0x20: the ghost layer stays empty
     }
     callOriginal(c, "fn_80060E70");
+}
+
+// Early ghost lighting: the known cheat for the pre-release ghost look patches the channel
+// setup call at 0x80058290 in fn_800581E8 (the ghost lighting function): light mask 0x80
+// (light 7) -> 0x40 (light 6) and attenuation function 0 -> 2. fn_8005A5D4 takes the
+// GXSetChanCtrl-style arguments (r7 = light mask, r9 = attenuation), so adjust them only
+// for that call site.
+HLE(fn_8005A5D4) {
+    if (c.lr == 0x80058294u && port::settings().enhancements.earlyGhostLighting) {
+        c.r[7] = 0x40;
+        c.r[9] = 2;
+    }
+    callOriginal(c, "fn_8005A5D4");
 }
 
 }  // namespace recomp

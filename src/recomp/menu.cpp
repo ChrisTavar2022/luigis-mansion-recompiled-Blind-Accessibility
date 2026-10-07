@@ -102,7 +102,7 @@ void soundTab() {
     sDirty |= ImGui::Checkbox("Reverb / echo", &a.reverb);
 }
 
-void enhancementsTab() {
+void generalEnhancementsTab() {
     auto& e = port::settings().enhancements;
     sDirty |= ImGui::Checkbox("Show FPS", &e.showFps);
     if (ImGui::Checkbox("Pause when window loses focus", &e.pauseOnFocusLoss)) {
@@ -134,13 +134,54 @@ void enhancementsTab() {
         ImGui::EndDisabled();
         if (inside) pending("leave the Hidden Mansion to change");
     }
+}
+
+// Restored unused/beta content (docs/UNUSED_CONTENT.md). Every entry is off by default:
+// the retail game is unchanged unless the player turns something on here.
+void unusedContentTab() {
+    auto& e = port::settings().enhancements;
+    ImGui::TextDisabled("Content left unused in the retail game. Everything here is off by default.");
     ImGui::Separator();
-    // Unused content restored from the retail code (docs/UNUSED_CONTENT.md).
     sDirty |= ImGui::Checkbox("Game Boy Horror camera", &e.gbhCamera);
     pending("D-pad Up in game");
-    sDirty |= ImGui::Checkbox("Early (opaque) ghost shading", &e.earlyGhostShading);
+    {
+        static const char* kGhost[] = {"Retail", "Beta"};
+        int g = e.earlyGhostLighting ? 1 : 0;
+        if (ImGui::Combo("Ghost shading", &g, kGhost, 2)) {
+            e.earlyGhostLighting = g == 1;
+            sDirty = true;
+        }
+    }
     ImGui::Separator();
-    recomp::dev::menuSection();
+    recomp::dev::unusedSection();
+}
+
+// Gameplay toggles, difficulty and cheats.
+void gameplayTab() { ImGui::TextDisabled("Difficulty and gameplay options will appear here."); }
+
+// Debug features left in the game, warps and viewers.
+void debugTab() { recomp::dev::debugSection(); }
+
+void enhancementsTab() {
+    if (ImGui::BeginTabBar("enhancements")) {
+        if (ImGui::BeginTabItem("General")) {
+            generalEnhancementsTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Gameplay")) {
+            gameplayTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Unused content")) {
+            unusedContentTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Debug")) {
+            debugTab();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
 }
 
 void fpsOverlay() {

@@ -22,6 +22,7 @@ public static class Win {
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
 }
 "@
@@ -50,7 +51,11 @@ $pt = New-Object Win+POINT
 $w = $r.R - $r.L; $hgt = $r.B - $r.T
 $bmp = New-Object System.Drawing.Bitmap $w, $hgt
 $g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.CopyFromScreen($pt.X, $pt.Y, 0, 0, $bmp.Size)
+# PrintWindow (client area, full DWM content) captures this window even when other
+# windows overlap it, unlike a screen copy.
+$hdc = $g.GetHdc()
+[Win]::PrintWindow($h, $hdc, 3) | Out-Null
+$g.ReleaseHdc($hdc)
 $bmp.Save((Join-Path $root $Out), [System.Drawing.Imaging.ImageFormat]::Png)
 "saved $Out (${w}x$hgt)"
 if (-not $KeepRunning) { Stop-Process $p -Force }

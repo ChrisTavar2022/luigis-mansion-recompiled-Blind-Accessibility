@@ -252,38 +252,28 @@ void drawOverlays() {
     viewer::window();
 }
 
-void menuSection() {
-    auto& e = port::settings().enhancements;
-    bool dirty = false;
-    if (!ImGui::CollapsingHeader("Debug")) return;
-    ImGui::TextDisabled("Leftover debug switches (compiled into the retail game, never enabled)");
-    dirty |= ImGui::Checkbox("Particle manager report (JUTReport)", &e.dbgParticleReport);
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Emitter/particle/child counts and per-group usage drawn by the game's\n"
-                          "particle manager (flag 0x804D8E04).");
-    dirty |= ImGui::Checkbox("Unused depth blur pass", &e.dbgDepthBlur);
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("A screen pass in the game-scene draw (fn_8005E9EC) gated by a flag nothing\n"
-                          "sets (0x804D86B0): blends a blurred quarter-size copy of the frame by depth.");
-    ImGui::Checkbox("Info overlay (F3)", &sInfoOverlay);
-    if (ImGui::Button("Model viewer (F4)")) viewer::setOpen(!viewer::isOpen());
+namespace {
 
-    ImGui::SeparatorText("Visit area");
+void helpMarker(const char* text) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", text);
+}
+
+// One table of maps with "Go" buttons; `unusedOnly` limits it to the maps normal play never loads.
+void mapTable(const char* id, bool unusedOnly) {
     const bool inGame = sStatus.inGame;
-    if (!inGame) ImGui::TextDisabled("Available while playing (load a save or start a new game).");
+    if (!inGame) ImGui::TextDisabled("Warps are available while playing (load a save or start a new game).");
     ImGui::BeginDisabled(!inGame);
     int n = 0;
     const MapInfo* m = maps(&n);
-    if (ImGui::BeginTable("maps", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+    if (ImGui::BeginTable(id, 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
         for (int i = 0; i < n; i++) {
+            if (unusedOnly && m[i].used) continue;
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             char label[32];
-            std::snprintf(label, sizeof(label), "Go##map%d", m[i].no);
+            std::snprintf(label, sizeof(label), "Go##%s%d", id, m[i].no);
             ImGui::BeginDisabled(!m[i].loads);
             if (ImGui::SmallButton(label)) requestWarp(m[i].no, 0);
             ImGui::EndDisabled();
@@ -298,7 +288,36 @@ void menuSection() {
         }
         ImGui::EndTable();
     }
+    ImGui::EndDisabled();
+    if (sWarpMap.load() >= 0) ImGui::TextDisabled("Warp queued (applied when no transition, event or menu is active)...");
+}
+
+}  // namespace
+
+void unusedSection() {
+    auto& e = port::settings().enhancements;
+    if (ImGui::Checkbox("Unused depth blur pass", &e.dbgDepthBlur)) port::saveSettings();
+    helpMarker("A screen pass in the game-scene draw (fn_8005E9EC) behind a flag nothing sets\n"
+               "(0x804D86B0): the frame is copied at quarter size and blended back by depth,\n"
+               "blurring everything away from the camera.");
+    ImGui::SeparatorText("Unused areas");
+    mapTable("unusedmaps", true);
+}
+
+void debugSection() {
+    auto& e = port::settings().enhancements;
+    ImGui::TextDisabled("Debug features left in the retail game, plus port-side viewers. All off by default.");
+    if (ImGui::Checkbox("Particle manager report (JUTReport)", &e.dbgParticleReport)) port::saveSettings();
+    helpMarker("Emitter / particle / child counts and per-group usage printed by the game's particle\n"
+               "manager with JUTReport (flag 0x804D8E04; retail never sets it nor creates the print queue).");
+    ImGui::Checkbox("Info overlay (F3)", &sInfoOverlay);
+    helpMarker("Port-side: current map, room and Luigi's position.");
+    if (ImGui::Button(viewer::isOpen() ? "Close model viewer (F4)" : "Model viewer (F4)")) viewer::setOpen(!viewer::isOpen());
+
+    ImGui::SeparatorText("Visit area");
+    mapTable("allmaps", false);
     if (ImGui::TreeNode("Mansion entry points")) {
+        ImGui::BeginDisabled(!sStatus.inGame);
         int na = 0;
         const AppearPoint* a = mansionAppearPoints(&na);
         for (int i = 0; i < na; i++) {
@@ -308,11 +327,9 @@ void menuSection() {
             ImGui::SameLine();
             ImGui::Text("%s  (room %d, point %d)", a[i].where, a[i].room, a[i].point);
         }
+        ImGui::EndDisabled();
         ImGui::TreePop();
     }
-    ImGui::EndDisabled();
-    if (sWarpMap.load() >= 0) ImGui::TextDisabled("Warp queued...");
-    if (dirty) port::saveSettings();
 }
 
 }  // namespace recomp::dev
