@@ -42,3 +42,6 @@ fn_80055C54
 set__7JUTRectFiiii
 # Dev: LM_START_MAP=<n> (new game starts in another map; hidden_mansion_hooks.cpp)
 fn_8000C188
+# J2D screen drawing: the in-game HUD anchored to the screen edges in
+# widescreen (src/recomp/widescreen.cpp).
+draw__9J2DScreenFiiPC14J2DGrafContext

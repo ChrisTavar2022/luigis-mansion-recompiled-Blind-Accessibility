@@ -60,8 +60,8 @@ recordings, and diff per-frame game-state dumps (actor positions, RNG, flags).
 
 ## Phase 2: PC features
 Status for the recompiled build: [ENHANCEMENTS.md](ENHANCEMENTS.md). Resolution and
-widescreen (Hor+, centered 4:3 HUD, widened camera culling) work. Interpolation is designed
-there but not implemented yet.
+widescreen (Hor+, 4:3 or edge-anchored HUD, widened camera culling), field of view and
+frame interpolation (60 fps / display rate, game logic at 30 Hz) work.
 
 - **High frame rate.** Keep the simulation at a fixed 30 Hz tick. Record matrices, camera,
   particles and UI each tick, and draw intermediate frames by interpolating between the last

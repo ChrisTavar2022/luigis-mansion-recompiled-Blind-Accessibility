@@ -48,13 +48,11 @@ void visualsTab() {
     auto& v = port::settings().video;
     static const char* kFrameRates[] = {"Original (30 fps)", "Interpolated 60 fps", "Interpolated, unlimited"};
     sDirty |= combo("Frame rate", v.frameRate, kFrameRates, 3);
-    pending("in progress");
     static const char* kAspects[] = {"Original 4:3", "Match window", "16:9", "16:10", "21:9", "32:9"};
     sDirty |= combo("Aspect ratio", v.aspect, kAspects, 6);
     sDirty |= ImGui::Checkbox("Keep HUD at 4:3", &v.hudKeep4x3);
-    pending("edge anchoring planned");
+    if (!v.hudKeep4x3) pending("in-game HUD moves to the screen edges");
     sDirty |= ImGui::SliderFloat("Field of view", &v.fovScale, 0.75f, 1.5f, "%.2fx");
-    pending("in progress");
     ImGui::Separator();
     {
         int& rs = v.resolutionScale;
