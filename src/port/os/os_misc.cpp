@@ -5,11 +5,14 @@
 #include <dolphin/vi.h>
 
 #include "port/frame_driver.h"
+#include "port/vi.h"
 #include "port/main.h"
 
+#include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 
 namespace port {
@@ -114,44 +117,103 @@ int OSReceiveMessage(OSMessageQueue* mq, OSMessage* msg, s32 flags) {
 // ---------------------------------------------------------------------------
 // VI retrace emulation
 // ---------------------------------------------------------------------------
-static u32 sRetraceCount;
-static VIRetraceCallback sPreRetrace;
-static VIRetraceCallback sPostRetrace;
-static void* sNextFrameBuffer;
-static void* sCurFrameBuffer;
+}  // extern "C"
 
-u32 VIGetRetraceCount() { return sRetraceCount; }
+namespace {
+
+std::mutex sViMutex;
+std::condition_variable sViCv;
+u32 sRetraceCount;
+VIRetraceCallback sPreRetrace;
+VIRetraceCallback sPostRetrace;
+void* sNextFrameBuffer;
+void* sCurFrameBuffer;
+std::thread sViThread;
+std::atomic_bool sViRunning{false};
+
+void retrace_thread() {
+    using clock = std::chrono::steady_clock;
+    constexpr auto kPeriod = std::chrono::nanoseconds(16'683'350);  // 59.94 Hz
+    auto next = clock::now();
+    while (sViRunning) {
+        next += kPeriod;
+        std::this_thread::sleep_until(next);
+        if (clock::now() - next > std::chrono::milliseconds(100)) {
+            next = clock::now();  // debugger pause etc.: don't burst-fire missed retraces
+        }
+        u32 count;
+        VIRetraceCallback pre, post;
+        {
+            std::lock_guard lock(sViMutex);
+            count = ++sRetraceCount;
+            sCurFrameBuffer = sNextFrameBuffer;
+            pre = sPreRetrace;
+            post = sPostRetrace;
+        }
+        // Like the hardware interrupt, callbacks run asynchronously to the game
+        // thread. LM's callbacks only post to message queues (thread-safe here).
+        if (pre) pre(count);
+        if (post) post(count);
+        sViCv.notify_all();
+    }
+}
+
+}  // namespace
+
+namespace port::vi {
+
+void start_retrace_timer() {
+    if (!sViRunning.exchange(true)) {
+        sViThread = std::thread(retrace_thread);
+    }
+}
+
+void stop_retrace_timer() {
+    if (sViRunning.exchange(false) && sViThread.joinable()) {
+        sViThread.join();
+    }
+    sViCv.notify_all();
+}
+
+}  // namespace port::vi
+
+extern "C" {
+
+u32 VIGetRetraceCount() {
+    std::lock_guard lock(sViMutex);
+    return sRetraceCount;
+}
 u32 VIGetNextField() { return 0; }
 u32 VIGetDTVStatus() { return 0; }
 void VISetBlack(BOOL) {}
 
 void VISetNextFrameBuffer(void* fb) {
-    sNextFrameBuffer = fb;
-    port::frame_driver::notify_frame_presented();
+    {
+        std::lock_guard lock(sViMutex);
+        sNextFrameBuffer = fb;
+    }
+    // The game has finished a frame (GXCopyDisp precedes this); hand it to the host.
+    port::frame_driver::present();
 }
 
 void* VIGetNextFrameBuffer() { return sNextFrameBuffer; }
 void* VIGetCurrentFrameBuffer() { return sCurFrameBuffer; }
 
 void VIWaitForRetrace() {
-    ++sRetraceCount;
-    sCurFrameBuffer = sNextFrameBuffer;
-    if (sPreRetrace) {
-        sPreRetrace(sRetraceCount);
-    }
-    if (sPostRetrace) {
-        sPostRetrace(sRetraceCount);
-    }
-    port::frame_driver::on_retrace();
+    std::unique_lock lock(sViMutex);
+    const u32 start = sRetraceCount;
+    sViCv.wait(lock, [start] { return sRetraceCount != start || port::g_shuttingDown || !sViRunning; });
 }
 
 VIRetraceCallback VISetPreRetraceCallback(VIRetraceCallback cb) {
+    std::lock_guard lock(sViMutex);
     VIRetraceCallback old = sPreRetrace;
     sPreRetrace = cb;
     return old;
 }
 
 VIRetraceCallback VISetPostRetraceCallback(VIRetraceCallback cb) {
+    std::lock_guard lock(sViMutex);
     VIRetraceCallback old = sPostRetrace;
     sPostRetrace = cb;
     return old;

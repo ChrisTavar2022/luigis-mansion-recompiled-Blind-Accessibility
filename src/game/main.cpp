@@ -34,7 +34,6 @@ static void smoke_test_disc() {
         OSReport("[smoke] FAILED to mount /Game/game_usa.szp\n");
     }
 
-    // Embedded DOL data: the decomp extracts staticdata_usa.arc from .data; check its RARC magic.
     OSReport("[smoke] DOL version %d, word at 0x80003100 = %08x\n", int(port::dol::version()),
              port::dol::be32(0x80003100));
 }
@@ -43,7 +42,12 @@ void game_main() {
     smoke_test_disc();
 
     static u8 sFakeXfb[1];
+    const OSTime start = OSGetTime();
     for (u32 frame = 0;; ++frame) {
+        if (frame % 90 == 0 && frame != 0) {
+            const f64 secs = f64(OSGetTime() - start) / OS_TIMER_CLOCK;
+            OSReport("[timing] tick %u at %.2fs (%.2f ticks/s)\n", frame, secs, frame / secs);
+        }
         const u8 pulse = static_cast<u8>((frame * 4) & 0xFF);
         GXSetCopyClear(GXColor{0, pulse, 40, 255}, GX_MAX_Z24);
         VISetNextFrameBuffer(sFakeXfb);

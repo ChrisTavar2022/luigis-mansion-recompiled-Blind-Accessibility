@@ -72,13 +72,8 @@ int main(int argc, char* argv[]) {
     }
     std::printf("Opened %s\n", disc.c_str());
 
-    using host_clock = std::chrono::steady_clock;
-    // The GameCube VI runs at 59.94 Hz; the game counts retraces to pace itself.
-    constexpr auto kRetracePeriod = std::chrono::nanoseconds(16'683'350);
-
     port::frame_driver::start(&lm::game_main);
 
-    auto nextDeadline = host_clock::time_point{};
     bool exiting = false;
     bool paused = false;
     while (!exiting) {
@@ -94,19 +89,6 @@ int main(int argc, char* argv[]) {
         aurora_end_frame();
         if (!running) {
             break;
-        }
-
-        // Pace to the original speed: one host frame covers however many retraces
-        // the game waited for. (Replaced by the interpolating game clock later.)
-        if (nextDeadline == host_clock::time_point{}) {
-            nextDeadline = host_clock::now();  // anchor pacing at the first presented frame
-        }
-        nextDeadline += kRetracePeriod * std::max<uint32_t>(port::frame_driver::last_retrace_count(), 1);
-        const auto now = host_clock::now();
-        if (nextDeadline > now) {
-            std::this_thread::sleep_until(nextDeadline);
-        } else if (now - nextDeadline > std::chrono::milliseconds(250)) {
-            nextDeadline = now;  // fell far behind (e.g. loading hitch); don't fast-forward
         }
     }
 
