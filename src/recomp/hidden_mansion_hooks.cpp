@@ -3,6 +3,7 @@
 // What each change is, and where PAL makes it: docs/HIDDEN_MANSION.md ("Difficulty and tuning").
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
+#include "recomp/runtime.h"
 
 #include <bit>
 #include <cstdlib>
@@ -329,6 +330,99 @@ HLE(fn_800A926C) {  // bomb: enter "thrown" state
     } else {
         wrf(self + 0x1D4, 90.0f);
     }
+}
+
+// ---- Mirror ------------------------------------------------------------------------------
+// PAL mirrors the hidden mansion by redrawing the EFB copy of the 3D scene (the full-screen
+// quad in US fn_8005F8B8 / PAL fn_80062388) with its S texture coordinates flipped; the HUD,
+// drawn afterwards, is not mirrored. The fix-ups that keep the game consistent with the
+// flipped picture (stick X, projected HUD positions, the iris wipe centre) follow below.
+
+namespace {
+// The quad's vertices are written to the GX pipe as f32 x, f32 y, u32 colour, u16 s, u16 t:
+// the first 16-bit write after a 32-bit write is S (u16, 15 fractional bits: 0x8000 = 1.0).
+int sLastFifoSize = 0;
+u32 flipQuadS(u32 v, int size) {
+    if (size == 2 && sLastFifoSize == 4) v = (v <= 0x8000) ? 0x8000 - v : v;
+    sLastFifoSize = size;
+    return v;
+}
+}  // namespace
+
+HLE(fn_8005F8B8) {
+    if (!hm::mirrorActive()) return callOriginal(c, "fn_8005F8B8");
+    HM_FIRST("fn_8005F8B8 mirrored screen copy");
+    sLastFifoSize = 0;
+    hw::fifoFilter = &flipQuadS;
+    callOriginal(c, "fn_8005F8B8");
+    hw::fifoFilter = nullptr;
+}
+
+namespace {
+// Luigi's input readers see the main and C stick X negated (PAL negates the values it reads
+// from the pad at +0x44 / +0x54). Done by negating them in the pad for the call's duration.
+std::unordered_set<u32> sNegatedPads;
+struct ScopedStickFlip {
+    u32 pad = 0;
+    explicit ScopedStickFlip(u32 p) {
+        if (!hm::mirrorActive() || !inMem1(p) || !sNegatedPads.insert(p).second) return;
+        pad = p;
+        wrf(pad + 0x44, -rdf(pad + 0x44));
+        wrf(pad + 0x54, -rdf(pad + 0x54));
+    }
+    ~ScopedStickFlip() {
+        if (!pad) return;
+        wrf(pad + 0x44, -rdf(pad + 0x44));
+        wrf(pad + 0x54, -rdf(pad + 0x54));
+        sNegatedPads.erase(pad);
+    }
+};
+}  // namespace
+
+HLE(fn_8007F9B8) {  // Luigi movement input (r4 -> {pad, ...})
+    ScopedStickFlip flip(rd32(c.r[4]));
+    callOriginal(c, "fn_8007F9B8");
+}
+HLE(fn_800807EC) {  // pad axis reader (r3 = pad)
+    ScopedStickFlip flip(c.r[3]);
+    callOriginal(c, "fn_800807EC");
+}
+HLE(fn_800809CC) {  // pad stick-pair reader (r4 = pad)
+    ScopedStickFlip flip(c.r[4]);
+    callOriginal(c, "fn_800809CC");
+}
+
+namespace {
+bool sInHud = false;    // inside fn_80041214 (HUD markers placed at projected positions)
+bool sInWipe = false;   // inside fn_80055C54 (iris wipe)
+}  // namespace
+
+HLE(fn_80041214) {
+    sInHud = hm::mirrorActive();
+    callOriginal(c, "fn_80041214");
+    sInHud = false;
+}
+
+// World -> screen projection (r5/r6 -> s16 x/y). Within the HUD function, x = 640 - x.
+HLE(fn_80009148) {
+    const u32 px = c.r[5];
+    callOriginal(c, "fn_80009148");
+    if (sInHud && inMem1(px)) wr16(px, u16(s16(640 - s16(rd16(px)))));
+}
+
+HLE(fn_80055C54) {
+    sInWipe = hm::mirrorActive();
+    callOriginal(c, "fn_80055C54");
+    sInWipe = false;
+}
+
+// JUTRect::set(l, t, r, b): the wipe's circle rectangle is centred on x = 312; PAL uses 328.
+HLE(set__7JUTRectFiiii) {
+    if (sInWipe && s32(c.r[4]) + s32(c.r[6]) == 2 * 0x138) {
+        c.r[4] += 16;
+        c.r[6] += 16;
+    }
+    callOriginal(c, "set__7JUTRectFiiii");
 }
 
 }  // namespace recomp

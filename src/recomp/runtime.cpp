@@ -151,8 +151,13 @@ u32 mmio_rd(u32 a, int size) {
     }
 }
 
+namespace hw {
+u32 (*fifoFilter)(u32 v, int size) = nullptr;
+}
+
 void mmio_wr(u32 a, u32 v, int size) {
     if ((a & 0xFFFFFFE0) == 0xCC008000) {  // write-gather pipe -> GX FIFO
+        if (hw::fifoFilter) [[unlikely]] v = hw::fifoFilter(v, size);
         hw::fifoWrite(v, size);
         return;
     }

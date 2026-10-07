@@ -33,5 +33,14 @@ fn_800A47BC
 fn_800A441C
 fn_800A5BA0
 fn_800A926C
+# PAL Hidden Mansion mirror (same file): screen-copy quad, stick X, HUD projection, wipe.
+fn_8005F8B8
+fn_8007F9B8
+fn_800807EC
+fn_800809CC
+fn_80041214
+fn_80009148
+fn_80055C54
+set__7JUTRectFiiii
 # Dev: LM_START_MAP=<n> (new game starts in another map; hidden_mansion_hooks.cpp)
 fn_8000C188

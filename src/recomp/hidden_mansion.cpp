@@ -240,7 +240,13 @@ void syncConstants() {
     sApplied = want;
 }
 
-bool mirrorActive() { return palActive(); }
+bool mirrorActive() {
+    static const bool sOff = [] {  // LM_HM_MIRROR=0 disables the mirror (debugging)
+        const char* env = std::getenv("LM_HM_MIRROR");
+        return env && *env == '0';
+    }();
+    return !sOff && palActive();
+}
 
 void mirrorProjection(float m[4][4], bool perspective) {
     if (!perspective || !mirrorActive()) return;
