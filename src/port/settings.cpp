@@ -45,6 +45,7 @@ std::vector<Field> fields() {
     auto& a = sSettings.audio;
     auto& e = sSettings.enhancements;
     auto& c = sSettings.crt;
+    auto& g = sSettings.gameplay;
     return {
         enm("video", "frame_rate", v.frameRate),
         enm("video", "aspect", v.aspect),
@@ -95,6 +96,13 @@ std::vector<Field> fields() {
         flag("enhancements", "early_ghost_lighting", e.earlyGhostLighting),
         flag("enhancements", "skip_cutscenes", e.skipCutscenes),
         flag("enhancements", "fast_forward_key", e.fastForwardKey),
+        flag("gameplay", "pal_darkness_everywhere", g.palDarknessEverywhere),
+        num("gameplay", "ambient_scale", g.ambientScale),
+        num("gameplay", "damage_scale", g.damageScale),
+        num("gameplay", "health_scale", g.healthScale),
+        num("gameplay", "ghost_health_scale", g.ghostHealthScale),
+        flag("gameplay", "no_heart_drops", g.noHeartDrops),
+        num("gameplay", "vacuum_strength", g.vacuumStrength),
     };
 }
 

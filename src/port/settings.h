@@ -64,11 +64,25 @@ struct EnhancementSettings {
     bool fastForwardKey = true;  // holding Tab runs the game at high speed (src/recomp/skip.cpp)
 };
 
+// Gameplay / difficulty options (F1 > Enhancements > Gameplay). Defaults are neutral: the
+// original game is unchanged until one is moved. They apply in every mansion and variant
+// (docs/GAMEPLAY_OPTIONS.md).
+struct GameplaySettings {
+    bool palDarknessEverywhere = false;  // PAL Hidden Mansion lighting (ambient x0.2) in every mansion
+    float ambientScale = 1.0f;           // room ambient light multiplier, 0.05..1.5 (composes with the above)
+    float damageScale = 1.0f;            // damage Luigi takes, 0..5
+    float healthScale = 1.0f;            // Luigi's starting and maximum health, 0.25..5
+    float ghostHealthScale = 1.0f;       // ghost HP, 0.25..5
+    bool noHeartDrops = false;           // recovery hearts never appear (and any that do heal nothing)
+    float vacuumStrength = 1.0f;         // Poltergust drain rate on ghost HP, 0.25..4
+};
+
 struct Settings {
     VideoSettings video;
     CrtSettings crt;
     AudioSettings audio;
     EnhancementSettings enhancements;
+    GameplaySettings gameplay;
 };
 
 Settings& settings();

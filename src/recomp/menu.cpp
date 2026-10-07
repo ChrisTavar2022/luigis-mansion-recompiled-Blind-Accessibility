@@ -101,6 +101,30 @@ void soundTab() {
     sDirty |= ImGui::Checkbox("Reverb / echo", &a.reverb);
 }
 
+// Gameplay / difficulty (port::GameplaySettings, src/recomp/gameplay_hooks.cpp). All neutral by
+// default; each slider has a "reset" by double-click (ctrl+click to type a value).
+void gameplaySection() {
+    auto& g = port::settings().gameplay;
+    ImGui::TextDisabled("Neutral by default: the original game is unchanged until you move something.");
+    ImGui::SeparatorText("Lighting");
+    sDirty |= ImGui::Checkbox("Hidden Mansion darkness everywhere", &g.palDarknessEverywhere);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Room ambient light x0.2, as in the PAL Hidden Mansion");
+    sDirty |= ImGui::SliderFloat("Ambient light", &g.ambientScale, 0.05f, 1.5f, "%.2fx");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Multiplies room ambient light (also on top of PAL darkness)");
+    ImGui::SeparatorText("Difficulty");
+    sDirty |= ImGui::SliderFloat("Damage taken", &g.damageScale, 0.0f, 5.0f, "%.2fx");
+    sDirty |= ImGui::SliderFloat("Luigi's health", &g.healthScale, 0.25f, 5.0f, "%.2fx");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Starting and maximum health (applies when Luigi is next created)");
+    sDirty |= ImGui::SliderFloat("Ghost health", &g.ghostHealthScale, 0.25f, 5.0f, "%.2fx");
+    sDirty |= ImGui::SliderFloat("Poltergust strength", &g.vacuumStrength, 0.25f, 4.0f, "%.2fx");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("How fast the vacuum drains a captured ghost's HP");
+    sDirty |= ImGui::Checkbox("Disable recovery hearts", &g.noHeartDrops);
+    if (ImGui::Button("Reset gameplay options")) {
+        g = port::GameplaySettings{};
+        sDirty = true;
+    }
+}
+
 void generalEnhancementsTab() {
     auto& e = port::settings().enhancements;
     sDirty |= ImGui::Checkbox("Show FPS", &e.showFps);
@@ -151,6 +175,8 @@ void unusedContentTab() {
             sDirty = true;
         }
     }
+    ImGui::Separator();
+    gameplaySection();
 }
 
 // Gameplay toggles, difficulty and cheats.
