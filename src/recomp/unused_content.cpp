@@ -8,6 +8,7 @@
 #include <dolphin/pad.h>
 
 #include <bit>
+#include <cstdio>
 #include <cstdlib>
 
 namespace recomp {
@@ -64,6 +65,24 @@ HLE(fn_8003CFC0) {
         wr32(kGbhScreenMode, kGbhModeNormal);
     }
     callOriginal(c, "fn_8003CFC0");
+    // Test aid: LM_TELEPORT=x,y,z,frames moves Luigi (actor slot 0, position +0x44) there once,
+    // `frames` HUD updates into gameplay (used to reach the 2F doors for screenshots).
+    static const char* sTp = std::getenv("LM_TELEPORT");
+    if (sTp && *sTp) {
+        static int sFrames = 0;
+        float x = 0, y = 0, z = 0;
+        int at = 300;
+        std::sscanf(sTp, "%f,%f,%f,%d", &x, &y, &z, &at);
+        if (++sFrames == at) {
+            const u32 actor = rd32(0x803D48A0);
+            if (actor >= 0x80000000u && actor < 0x81800000u) {
+                wr32(actor + 0x44, std::bit_cast<u32>(x));
+                wr32(actor + 0x48, std::bit_cast<u32>(y));
+                wr32(actor + 0x4C, std::bit_cast<u32>(z));
+                log("[unused] teleported Luigi to %.0f,%.0f,%.0f", x, y, z);
+            }
+        }
+    }
 }
 
 // Sub-view clear (only used for view 1, i.e. the GBH screen, from fn_800115F8). It draws a

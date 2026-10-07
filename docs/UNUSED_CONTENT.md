@@ -115,6 +115,95 @@ Luigi visible through it. Early shading: a solid grey Boo that hides what is beh
 Not reconstructed: the shipped GBH first-person "ghost scan" pulse (dst-alpha pulsing in the
 0x30 pass, `fn_800E9E48`) has no effect while the option is on.
 
+## Unused assets (`src/recomp/unused_assets.cpp`)
+
+All of these are under F1 > Enhancements > Unused content and are off by default. The hooks
+are US-only (`tools/recomp/hooks.txt`) and gated with `port::usCodeFeature()` in the menu.
+Data patches only overwrite a value that matches the expected retail original (or the patched
+value when you switch an option off). Anything else is left alone and logged once.
+
+### Beta skybox ("Beta skybox")
+
+- Retail: `fn_8002F924` picks the sky descriptor from `lbl_80300C7C[sCurMapNo]`. For map 2
+  that is `lbl_80300B60`: archive `/Iwamoto/vrball_M.szp`, model `/vrball01.bmd`, one texture
+  animation `/vrball01.btk`. `fn_800067D0` mounts the archive, and the callback
+  `fn_8002F4DC` loads the resources through the archive's `getResource`.
+- Unused: the always-mounted game archive (`/Game/game_usa.szp`, returned by
+  `fn_80066FB4`) contains an older `iwamoto/vrbox/vrball01.bmd` (38752 bytes; the retail one
+  is 41888) with its own `vrball01.btk`. No code references that path.
+- Port: `HLE(fn_8002F4DC)` marks the load when the descriptor is `lbl_80300B60`. During that
+  load, `HLE(getResource__10JKRArchiveFPCc)` sends `/vrball01.bmd` and `/vrball01.btk` to the
+  game archive at `/iwamoto/vrbox/...`. The sky then loads, animates and draws through the
+  game's own code. Applies to map 2: the opening, the grounds and every window/balcony. The
+  boss skies (`vrball_B`, `vrKoopa`) are untouched. Takes effect on the next map load. Test
+  aid: `LM_BETA_SKY=1`.
+- Verified: the redirect fires (`[unused] beta skybox: ...` in the log). On screen the older
+  sky is very close to retail (same cloudy green palette), so the visible difference in the
+  opening shots is small.
+
+Verified in game (`LM_TELEPORT`, empty card): the Nursery shows the heart door and the Twins'
+room the star door; retail shows the plain brown door in both. The GBH map (Y, then A to
+zoom) shows a small full-body Luigi instead of the big head.
+
+### Heart door / Star door
+
+- Map 2's doors are a static table in the DOL: `lbl_802FF218[2]` → +0x18 = `0x80302F80`,
+  0x1C bytes per door. Byte +6 is the door type. It selects the model, via
+  `lbl_802FF95C[type]` → `lbl_802FF868` = `/iwamoto/Door/door_NN.bin` in the game archive.
+  It also selects the lock/unlock cutscenes: `fn_8011496C` plays scene
+  `3 + (type-1)*4 + 2*a + b` in `lbl_80373AA4`, which maps to
+  `oodemoNN/codemoNN/hodemoNN/nodemoNN.szp`.
+- Types 07 and 08 have a model (`door_07.bin`, `door_08.bin`) and all four cutscenes
+  (`/Ajioka/ADemo/{oo,co,ho,no}demo07/08.szp`), but no door in any map uses them.
+- Door 46 (`0x80303488`, position -3005/700/-710) is the door from the 2F hallway into the
+  Nursery (Chauncey's room). Door 45 (`0x8030346C`, -2190/700/-710) is the Twins' room door.
+  This was checked against furniture positions: `bed24`/teddy/rocking horse at x ≈ -3700,
+  `bed25`/toy car at x ≈ -1300, both south of the hallway wall at z = -710. Both doors ship
+  as type 01.
+- Port: `HLE(fn_800122BC)` (map setup, before the doors are built) sets the type byte to 07
+  (heart, `0x8030348E`) and/or 08 (star, `0x80303472`). Because the type also picks the
+  cutscenes, the game plays the unused locked/unlock scenes for that door by itself. Takes
+  effect on the next map load. Test aids: `LM_HEART_DOOR=1`, `LM_STAR_DOOR=1`, and
+  `LM_TELEPORT=x,y,z,frames`, which moves Luigi once, for example
+  `-3005,560,-400,60` = inside the Nursery facing the door.
+
+### Game Boy Horror map: full Luigi model
+
+- Retail: the GBH map (`fn_8002967C` for map 2, `fn_8002B310` for the training maps) loads
+  nine files from the guide-map archive (`guidemap.szp` in the DOL's static data, in ARAM)
+  through `fn_8001F8D8`. File 1, `/gide_lui.bin` (43968 bytes), is the big Luigi head drawn at
+  Luigi's position (model `lbl_804D830C + 0x318`, placed by `fn_8002B140`).
+- Unused: the disc still has an older guide-map archive, `/Iwamoto/map2/gidemap.szp`
+  (gidemap/gide_d1/gide_d2/gide_lui/g_d1x/g_d2x/g_key1). Its `gide_lui.bin` (24288 bytes) is
+  a full-body Luigi figure. Nothing loads that archive.
+- Port: on first use, the host reads `/Iwamoto/map2/gidemap.szp` from the disc (Yay0/Yaz0 +
+  RARC, original code), copies `gide_lui.bin` into guest memory (`hleAlloc`) and returns it
+  from `getResource("/gide_lui.bin")`. `HLE(getResSize__10JKRArchiveCFPCv)` reports its size.
+  The game parses and draws it like the retail marker. Test aid: `LM_BETA_MAP_LUIGI=1`.
+
+### Portrificationizer: each ghost's own model
+
+- Table `lbl_8036E52C`, 0x18 bytes per portrait ghost, read by `fn_80121E14`/`fn_80124890`.
+  Field +4 of the 21 entries at `0x8036E548 + 0x18*i` is `0x60` (the generic blue blob)
+  everywhere. The values the known Gecko code writes (`0x64`, then `0x121`, `0x125`, …,
+  `0x16D`) are each ghost's own unused portrait-scene model id.
+- Port: both readers are hooked and write the table first (only over `0x60` or the patched
+  value), so it is correct whenever the scene reads it and goes back to `0x60` when the option
+  is off. Test aid: `LM_UNUSED_PORTRAITS=1`.
+
+### Not done: dedicated air/water nozzles
+
+`/model/wpwater.szp` and `/model/wpair.szp` (and `wplight`) are registered character types
+7/8/9 (`lbl_8033B590`: `wplight`, `wpwater`, `wpair`, right after `vbody`/`vhead`), each
+with a model-registry entry. No code ever creates those actors. Luigi's equipment is created
+in `fn_80072554` (types 6 `vhead`, 5 `vbody`, 0x0A `gameboy`) and attached to joints by
+`fn_800AE1A4` → `fn_800685DC` (child slots at parent +0x5C8, stride 0x40). Hiding an actor is
+MoveObj flag 0x4000 at +0x40. A reconstruction would create type 8/9 actors, attach them
+like `vhead`, and swap visibility while Luigi sprays. I did not find which Luigi/vacuum state
+means "spraying water/air" in the time available: Luigi's action controller is
+`[actor+0x7E4]` +0x310/+0x314/+0x334, and the element is player record +0x58, 3 = water.
+So no option is offered yet.
+
 ## Other leftovers noticed
 
 - GBH screen mode 1 (gauge + two numbers, `fn_80044C4C`) is never selected. It could be
