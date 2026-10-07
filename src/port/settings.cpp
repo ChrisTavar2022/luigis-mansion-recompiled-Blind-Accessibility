@@ -63,6 +63,8 @@ std::vector<Field> fields() {
         flag("enhancements", "pause_on_focus_loss", e.pauseOnFocusLoss),
         flag("enhancements", "skip_intro_logos", e.skipIntroLogos),
         flag("enhancements", "hidden_mansion_pal", e.hiddenMansionPal),
+        flag("enhancements", "gbh_camera", e.gbhCamera),
+        flag("enhancements", "early_ghost_shading", e.earlyGhostShading),
     };
 }
 

@@ -74,7 +74,11 @@ void applyScript(PADStatus& st) {
     }
 }
 
+u16 sLastButtons = 0;  // port 1, as last handed to the game
+
 }  // namespace
+
+u16 padButtons() { return sLastButtons; }
 
 HLE(PADInit) { c.r[3] = PADInit(); }
 HLE(PADReset) { c.r[3] = PADReset(c.r[3]); }
@@ -99,6 +103,7 @@ HLE(PADRead) {
         static u32 sLogged = 0;
         if (st[0].button && sLogged++ < 20) log("[pad] retrace %u: buttons %04X err %d", viRetraceCount(), st[0].button, st[0].err);
     }
+    sLastButtons = st[0].err == PAD_ERR_NONE ? st[0].button : 0;
     for (int i = 0; i < PAD_MAX_CONTROLLERS; i++) {
         const u32 p = c.r[3] + 12 * i;
         wr16(p, st[i].button);

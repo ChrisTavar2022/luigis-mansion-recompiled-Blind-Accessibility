@@ -124,6 +124,11 @@ void enhancementsTab() {
         if (inside) pending("leave the Hidden Mansion to change");
     }
     ImGui::Separator();
+    // Unused content restored from the retail code (docs/UNUSED_CONTENT.md).
+    sDirty |= ImGui::Checkbox("Game Boy Horror camera", &e.gbhCamera);
+    pending("D-pad Up in game");
+    sDirty |= ImGui::Checkbox("Early (opaque) ghost shading", &e.earlyGhostShading);
+    ImGui::Separator();
     ImGui::TextDisabled("Gameplay toggles, cheats and debug viewers will appear here.");
 }
 
