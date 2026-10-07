@@ -1,5 +1,10 @@
 # Unused content in the retail code (GLME01)
 
+Everything here also works on the European game (GLMP01): addresses go through `VA()` and
+the hooks are tagged `us pal` (docs/SETUP.md, *Version-aware code*). European differences:
+the GBH sub-view clear is `fn_8000B7CC` there; the end-of-frame hook is the European
+`LMChangeFrameBuffer` (`fn_80007940`).
+
 Two pre-release features are still in the US `main.dol`. Both are switched on from
 **F1 > Enhancements** and are implemented as hooks that call the original function and
 only change which of the game's own code paths it takes (`src/recomp/unused_content.cpp`,

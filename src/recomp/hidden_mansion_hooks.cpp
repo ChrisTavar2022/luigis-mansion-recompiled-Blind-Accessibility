@@ -6,6 +6,7 @@
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
+#include "recomp/version.h"
 
 #include <bit>
 #include <cstdlib>
@@ -69,7 +70,7 @@ u32 guestCall1(Ctx& c, u32 fn, u32 a0) {
     return r;
 }
 
-constexpr u32 kCurMapNo = 0x804D80C8;  // sCurMapNo
+#define kCurMapNo VA(0x804D80C8)  // sCurMapNo
 
 constexpr u32 kHeartCounter = 0x6C8;  // player field compared by the heart-item logic
 constexpr s32 kUsHiddenThreshold = 400, kPalHiddenThreshold = 1000;
@@ -79,8 +80,12 @@ constexpr s32 kUsHiddenThreshold = 400, kPalHiddenThreshold = 1000;
 // Heart-item check: true when the player's counter reaches the threshold
 // (normal 200, US hidden 400, PAL hidden 1000).
 HLE(fn_800E70BC) {
-    callOriginal(c, "fn_800E70BC");
-    if (hm::palActive()) {
+    hm::callWithFlag(c, "fn_800E70BC");
+    if (hm::usaOnPalActive()) {  // European game, USA rules: 400 instead of the PAL 1000
+        const u32 p = player(c);
+        if (inMem1(p)) c.r[3] = u32(s32(rd32(p + kHeartCounter)) >= kUsHiddenThreshold);
+        HM_FIRST("(USA rules on the European game) fn_800E70BC heart threshold 400");
+    } else if (hm::palActive()) {
         const u32 r3 = c.r[3];
         const u32 p = player(c);
         c.r[3] = inMem1(p) ? u32(s32(rd32(p + kHeartCounter)) >= kPalHiddenThreshold) : r3;
@@ -92,7 +97,19 @@ HLE(fn_800E70BC) {
 // reads the counter once, so while PAL rules apply a value in [400, 1000) is presented as 399
 // for the duration of the call (PAL: below 1000 takes the "under" branch).
 HLE(fn_800E7698) {
-    if (!hm::palActive()) return callOriginal(c, "fn_800E7698");
+    if (hm::usaOnPalActive()) {
+        // European game, USA rules: a counter in [400, 1000) is presented as 1000 for the call
+        // (the European game compares with 1000 in the hidden mansion, the USA game with 400).
+        const u32 p = player(c);
+        const s32 v = inMem1(p) ? s32(rd32(p + kHeartCounter)) : 0;
+        const bool adjust = v >= kUsHiddenThreshold && v < kPalHiddenThreshold;
+        if (adjust) wr32(p + kHeartCounter, u32(kPalHiddenThreshold));
+        hm::callWithFlag(c, "fn_800E7698");
+        if (adjust && rd32(p + kHeartCounter) == u32(kPalHiddenThreshold)) wr32(p + kHeartCounter, u32(v));
+        if (adjust) HM_FIRST("(USA rules on the European game) fn_800E7698 heart threshold 400");
+        return;
+    }
+    if (!hm::palActive()) return hm::callWithFlag(c, "fn_800E7698");
     const u32 p = player(c);
     const s32 v = inMem1(p) ? s32(rd32(p + kHeartCounter)) : 0;
     const bool adjust = v >= kUsHiddenThreshold && v < kPalHiddenThreshold;
@@ -108,6 +125,7 @@ HLE(fn_800E7698) {
 // literal 0x804DB240, only this function) and the move speed (US 20, literal 0x804DB234, also
 // read by fn_8009F4AC, which this function does not call).
 HLE(fn_8009FD54) {
+    if (ver::pal()) return hm::callWithoutFlag(c, "fn_8009FD54");
     if (!hm::palActive()) return callOriginal(c, "fn_8009FD54");
     ScopedLiteral dist(0x804DB240, 40.0f), speed(0x804DB234, 40.0f);
     HM_FIRST("fn_8009FD54 Chauncey distance/speed 40");
@@ -116,6 +134,7 @@ HLE(fn_8009FD54) {
 
 // Chauncey "POYON" state entry: PAL hidden also sets the model's +0xD8 to 2.0.
 HLE(fn_8009FCA8) {
+    if (ver::pal()) return hm::callWithoutFlag(c, "fn_8009FCA8");
     const u32 self = c.r[3];
     callOriginal(c, "fn_8009FCA8");
     if (!hm::palActive()) return;
@@ -129,6 +148,7 @@ HLE(fn_8009FCA8) {
 
 // Enemy strategy (state table 0x8034BB48) state entry: timer 400 -> 250 in the PAL hidden mansion.
 HLE(fn_8006D1B8) {
+    if (ver::pal()) return hm::callWithoutFlag(c, "fn_8006D1B8");
     const u32 self = c.r[3];
     callOriginal(c, "fn_8006D1B8");
     if (hm::palActive() && rd32(self + 0x1CC) == 400) {
@@ -144,8 +164,9 @@ HLE(fn_8006D1B8) {
 HLE(fn_800168EC) {
     const float k = gameplay::ambientFactor();
     if (k == 1.0f) return callOriginal(c, "fn_800168EC");
-    const u32 roomNo = rd32(0x803A3CA0 + 0xC) >> 24;  // US addresses (see gameplay.h)
-    const u32 rooms = rd32(0x804D8178);
+    // Same record layout in both releases (European: read by the PAL-only fn_800179F8).
+    const u32 roomNo = rd32(VA(0x803A3CA0) + 0xC) >> 24;
+    const u32 rooms = rd32(VA(0x804D8178));
     const u32 rec = inMem1(rooms) ? rd32(rooms + roomNo * 0x14C + 0x18) : 0;
     if (!inMem1(rec)) return callOriginal(c, "fn_800168EC");
     u8 saved[3];
@@ -171,6 +192,17 @@ HLE(fn_800B783C) {
     static bool sRideSet = false;  // the "always ride" option turned the mode on
     const u32 self = c.r[3];
     dev::noteLuigi(self);  // info overlay position
+    static const bool sTrace = std::getenv("LM_HM_TRACE_LUIGI") != nullptr;  // dev: position log
+    static u32 sTick = 0;
+    if (ver::pal()) {
+        // The European update sets the mode byte itself every frame (on in map 11 of the hidden
+        // mansion after 15 frames, else off); fn_800B84E4 below overrides it for the options.
+        callOriginal(c, "fn_800B783C");
+        if (sTrace && ++sTick % 30 == 0)
+            log("[hm] luigi map %u pos %.1f %.1f %.1f mode %u", rd32(kCurMapNo), rdf(self + 0x44), rdf(self + 0x48),
+                rdf(self + 0x4C), u32(rd8(self + 0x1350)));
+        return;
+    }
     const bool ride = gameplay::current().alwaysRide && gameplay::rideAllowed(self);
     if (hm::palActive() && rd32(kCurMapNo) == 11) {
         if (self != sLuigi) sLuigi = self, sFrames = 0;
@@ -191,17 +223,38 @@ HLE(fn_800B783C) {
         }
     }
     callOriginal(c, "fn_800B783C");
-    static const bool sTrace = std::getenv("LM_HM_TRACE_LUIGI") != nullptr;  // dev: position log
-    static u32 sTick = 0;
     if (sTrace && ++sTick % 30 == 0)
         log("[hm] luigi map %u pos %.1f %.1f %.1f mode %u", rd32(kCurMapNo), rdf(self + 0x44), rdf(self + 0x48),
             rdf(self + 0x4C), u32(rd8(self + 0x134C)));
+}
+
+// European game: Luigi's state update, called by fn_800B783C after it has set the riding mode
+// byte (+0x1350) for this frame. "Always ride the Poltergust" turns it on, the USA Hidden
+// Mansion rules off (no Boolossus movement mode in the USA release).
+HLE(fn_800B84E4) {
+    const u32 self = c.r[3];
+    if (ver::pal() && inMem1(self)) {
+        const u32 mode = self + VOFF(0x134C, 0x1350);
+        static bool sRideSet = false;
+        if (gameplay::current().alwaysRide && gameplay::rideAllowed(self)) {
+            if (!sRideSet) log("[gameplay] always ride the Poltergust: on");
+            sRideSet = true;
+            hostp(mode)[0] = 1;
+        } else {
+            if (sRideSet) log("[gameplay] always ride the Poltergust: suspended/off");
+            if (sRideSet || hm::usaOnPalActive()) hostp(mode)[0] = 0;
+            if (hm::usaOnPalActive() && rd32(kCurMapNo) == 11) HM_FIRST("(USA rules on the European game) no Boolossus movement mode");
+            sRideSet = false;
+        }
+    }
+    callOriginal(c, "fn_800B84E4");
 }
 
 // Luigi on a damaging floor: US hurts him every 2nd frame of the floor timer (+0x11CC); PAL
 // hidden uses the 8-frame pattern 1,1,0,1,1,0,1,0. The timer is presented to the original so
 // that its "every 2nd frame" test gives PAL's answer, then advanced as usual.
 HLE(fn_800B41E0) {
+    if (ver::pal()) return hm::callWithoutFlag(c, "fn_800B41E0");
     if (!hm::palActive()) return callOriginal(c, "fn_800B41E0");
     static constexpr u8 kPattern[8] = {1, 1, 0, 1, 1, 0, 1, 0};
     const u32 self = c.r[3];
@@ -221,6 +274,7 @@ HLE(fn_800B41E0) {
 // Chauncey's ball spawner: balls 0 and 1 of each volley start at z = +700 in the PAL hidden
 // mansion instead of -700 (ball 2 keeps z = -500). The spawn position is set again on the ball.
 HLE(fn_8009F1DC) {
+    if (ver::pal()) return hm::callWithoutFlag(c, "fn_8009F1DC");
     if (!hm::palActive()) return callOriginal(c, "fn_8009F1DC");
     const u32 self = c.r[3];
     const u32 before = rd32(self + 0x1F4);
@@ -239,6 +293,7 @@ HLE(fn_8009F1DC) {
 // side to side (x velocity 100*sin(20 deg * t), t = the global timer at 0x804D8BF8), faces
 // its direction of travel, and its hit shapes against Luigi are twice as large.
 HLE(fn_800A184C) {
+    if (ver::pal()) return hm::callWithoutFlag(c, "fn_800A184C");
     if (!hm::palActive()) return callOriginal(c, "fn_800A184C");
     const u32 actor = rd32(c.r[3] + 4);
     const u32 model = inMem1(actor) ? rd32(actor + 0x808) : 0;
@@ -295,6 +350,7 @@ HLE(fn_800A47BC) {  // Bowser strategy init
 }
 
 HLE(fn_800A441C) {  // Bowser chase state: switches to state 0x12 when all three bombs are gone
+    if (ver::pal()) return hm::callWithoutFlag(c, "fn_800A441C");
     const u32 self = c.r[3];
     const u32 before = rd16(self + 0xC);
     callOriginal(c, "fn_800A441C");
@@ -330,6 +386,34 @@ HLE(fn_800A926C) {  // bomb: enter "thrown" state
     }
 }
 
+// ---- USA rules on the European game (hidden_mansion.h) -----------------------------------
+// The remaining European functions whose only hidden-mansion code is PAL-specific: the GBH
+// map mirror (fn_80029A74 sets the marker sign, fn_80029DD4/fn_8002A01C flip the map),
+// the enemy strategy (0x8034BB48 states), Chauncey's rocking horses (scale 3.6, weave,
+// fn_8008907C argument) and the JAudio stereo-swap flag.
+#define HM_HIDE(name) \
+    HLE(name) { hm::callWithoutFlag(c, #name); }
+HM_HIDE(fn_80029A74)
+HM_HIDE(fn_80029DD4)
+HM_HIDE(fn_8002A01C)
+HM_HIDE(fn_8006CFBC)
+HM_HIDE(fn_8006D0DC)
+HM_HIDE(fn_8006D4B8)
+HM_HIDE(fn_8006E414)
+HM_HIDE(fn_800A09D0)
+HM_HIDE(fn_800A1BCC)
+HM_HIDE(fn_8018865C)
+HM_HIDE(fn_80189054)
+
+// Functions that read the flag in both releases (USA hidden-mansion behaviour): they see the
+// real value even when reached from inside a hidden call. Damage x2 (fn_800B9680), the GBH
+// screen (fn_8003DF88), fn_800DBE8C (x0.5); the heart and vacuum hooks do the same.
+#define HM_SHOW(name) \
+    HLE(name) { hm::callWithFlag(c, #name); }
+HM_SHOW(fn_800B9680)
+HM_SHOW(fn_8003DF88)
+HM_SHOW(fn_800DBE8C)
+
 // ---- Mirror ------------------------------------------------------------------------------
 // PAL mirrors the hidden mansion by redrawing the EFB copy of the 3D scene (the full-screen
 // quad in US fn_8005F8B8 / PAL fn_80062388) with its S texture coordinates flipped; the HUD,
@@ -348,6 +432,7 @@ u32 flipQuadS(u32 v, int size) {
 }  // namespace
 
 HLE(fn_8005F8B8) {
+    if (ver::pal()) return hm::callWithoutFlag(c, "fn_8005F8B8");
     if (!hm::mirrorActive()) return callOriginal(c, "fn_8005F8B8");
     HM_FIRST("fn_8005F8B8 mirrored screen copy");
     sLastFifoSize = 0;
@@ -378,14 +463,17 @@ struct ScopedStickFlip {
 }  // namespace
 
 HLE(fn_8007F9B8) {  // Luigi movement input (r4 -> {pad, ...})
+    if (ver::pal()) return hm::callWithoutFlag(c, "fn_8007F9B8");
     ScopedStickFlip flip(rd32(c.r[4]));
     callOriginal(c, "fn_8007F9B8");
 }
 HLE(fn_800807EC) {  // pad axis reader (r3 = pad)
+    if (ver::pal()) return hm::callWithoutFlag(c, "fn_800807EC");
     ScopedStickFlip flip(c.r[3]);
     callOriginal(c, "fn_800807EC");
 }
 HLE(fn_800809CC) {  // pad stick-pair reader (r4 = pad)
+    if (ver::pal()) return hm::callWithoutFlag(c, "fn_800809CC");
     ScopedStickFlip flip(c.r[4]);
     callOriginal(c, "fn_800809CC");
 }
@@ -396,6 +484,7 @@ bool sInWipe = false;   // inside fn_80055C54 (iris wipe)
 }  // namespace
 
 HLE(fn_80041214) {
+    if (ver::pal()) return hm::callWithoutFlag(c, "fn_80041214");
     sInHud = hm::mirrorActive();
     callOriginal(c, "fn_80041214");
     sInHud = false;
@@ -409,6 +498,7 @@ HLE(fn_80009148) {
 }
 
 HLE(fn_80055C54) {
+    if (ver::pal()) return hm::callWithoutFlag(c, "fn_80055C54");
     sInWipe = hm::mirrorActive();
     callOriginal(c, "fn_80055C54");
     sInWipe = false;

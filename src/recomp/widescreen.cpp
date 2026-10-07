@@ -4,6 +4,7 @@
 #include "port/options.h"
 #include "port/settings.h"
 #include "recomp/hle.h"
+#include "recomp/version.h"
 
 #include <dolphin/gx/GXAurora.h>
 
@@ -93,7 +94,8 @@ Background backgroundMode() { return Background(port::options().wsBackgrounds); 
 // projection (from the camera's fovY at +0x90, degrees).
 HLE(fn_80008D58) {
     const u32 cam = c.r[3];
-    const bool fullScreen = rd32(cam + 0x1EC) == 0 && rd32(cam + 0x1F4) >= 640;  // viewport x, width
+    // Viewport x and width (the European camera has 12 more bytes before them; fovY is unmoved).
+    const bool fullScreen = rd32(cam + VOFF(0x1EC, 0x1F8)) == 0 && rd32(cam + VOFF(0x1F4, 0x200)) >= 640;
     if (adjusting() && fullScreen) {
         const float fovY = rdf32(cam + 0x90) * 3.14159265f / 180.0f;
         const double sides = fovY > 0.0f ? 1.0 / fovRatio(1.0f / std::tan(fovY * 0.5f)) : 1.0;
@@ -116,19 +118,18 @@ HLE(fn_80008D58) {
 // counter's digits and its icon move together.
 namespace {
 struct HudScreen {
-    u32 start, size;
+    u32 start, end;
 };
-constexpr HudScreen kHudScreens[] = {
-    {0x80056F64, 0x168},  // fn_80056F64
-    {0x8003E3D0, 0x3E0},  // fn_8003E3D0
-};
+// fn_80056F64 and fn_8003E3D0: first and last instruction (USA addresses, VA() gives the
+// running game's; the European versions are larger).
+HudScreen hudScreen(int i) {
+    return i == 0 ? HudScreen{VA(0x80056F64), VA(0x800570C8) + 4} : HudScreen{VA(0x8003E3D0), VA(0x8003E7AC) + 4};
+}
 int sScreenDepth = 0;   // J2DScreen::draw nesting
 bool sInHudScreen = false;
 }  // namespace
 
 bool inHud() {
-    // Needs the J2DScreen::draw hook and the USA HUD functions above (docs/SETUP.md).
-    if (port::usCodeFeature() != port::Avail::Yes) return false;
     return sAnchorHud.load(std::memory_order_relaxed) && active() && (sScreenDepth == 0 || sInHudScreen);
 }
 
@@ -138,8 +139,10 @@ HLE(draw__9J2DScreenFiiPC14J2DGrafContext) {
     const bool outer = sInHudScreen;
     if (sScreenDepth == 0) {
         sInHudScreen = false;
-        for (const HudScreen& s : kHudScreens)
-            if (c.lr - s.start < s.size) sInHudScreen = true;
+        for (int i = 0; i < 2; i++) {
+            const HudScreen s = hudScreen(i);
+            if (c.lr - s.start < s.end - s.start) sInHudScreen = true;
+        }
     }
     sScreenDepth++;
     callOriginal(c, "draw__9J2DScreenFiiPC14J2DGrafContext");

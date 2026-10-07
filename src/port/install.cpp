@@ -37,6 +37,8 @@ Avail palBaseFeature() {
     return i.palReady ? Avail::OtherBase : Avail::NeedsPalDisc;
 }
 
+// The other release's Hidden Mansion needs that release's data: the overlay setup builds from
+// both discs (docs/SETUP.md; PAL rules on the USA game, USA rules on the European game).
 Avail hiddenMansionPal() {
     const auto& i = sInstall;
     if (i.running == GameVersion::PAL || i.hmOverlayReady) return Avail::Yes;
@@ -45,9 +47,8 @@ Avail hiddenMansionPal() {
 
 Avail hiddenMansionUs() {
     const auto& i = sInstall;
-    if (i.running == GameVersion::USA) return Avail::Yes;
-    // On the European game the USA rules need the reverse overlay (docs/SETUP.md).
-    return i.usReady ? Avail::NotYet : Avail::NeedsUsDisc;
+    if (i.running == GameVersion::USA || i.hmOverlayReady) return Avail::Yes;
+    return Avail::NeedsUsDisc;
 }
 
 const char* availNote(Avail a) {

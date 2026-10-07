@@ -4,6 +4,7 @@
 #include "port/settings.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
+#include "recomp/version.h"
 
 #include <dolphin/pad.h>
 
@@ -25,7 +26,7 @@ bool envFlag(const char* name) {
 // update reports the screen rectangle to the renderer (fn_80010EBC), which then renders the
 // second view (first-person camera fn_80021DDC) into it; static noise covers the screen
 // while it is off-screen.
-constexpr u32 kGbhScreenMode = 0x804D846C;
+#define kGbhScreenMode VA(0x804D846C)
 constexpr u32 kGbhModeCamera = 2;
 constexpr u32 kGbhModeNormal = 4;
 
@@ -67,18 +68,27 @@ HLE(fn_8003CFC0) {
 }
 
 // Sub-view clear (only used for view 1, i.e. the GBH screen, from fn_800115F8). It draws a
-// black quad with Z texture REPLACE from an all-0xFFFFFF Z24X8 texture to reset depth to the
-// far plane. Aurora does not implement GXSetZTexture, so depth would come from the quad
-// itself (z = -900, lbl_804D99AC; nothing behind it survives the depth test and the screen
-// stays black). The quad is moved onto the far plane for the call, which gives the same
-// depth without a Z texture.
-HLE(fn_8000B228) {
-    constexpr u32 kQuadZ = 0x804D99AC;  // .sdata2 literal read only by fn_8000B014
-    const u32 saved = rd32(kQuadZ);
-    wr32(kQuadZ, std::bit_cast<u32>(-999.99f));
-    callOriginal(c, "fn_8000B228");
-    wr32(kQuadZ, saved);
+// black quad (fn_8000B014) with Z texture REPLACE from an all-0xFFFFFF Z24X8 texture to reset
+// depth to the far plane. Aurora does not implement GXSetZTexture, so depth would come from
+// the quad itself (z = -900, lbl_804D99AC; nothing behind it survives the depth test and the
+// screen stays black). The quad is moved onto the far plane for the call, which gives the same
+// depth without a Z texture. The European LMDefaultOrthoView has its far plane at 4096
+// instead of 1000, so the far-plane depth there is -4096.
+// The European clear is fn_8000B7CC (it also builds the Z texture object itself); the function
+// the matcher pairs with the USA one (PAL 0x8000B928) is a different, full-screen clear, so the
+// European hook is listed by address (palfn_8000B7CC in hooks.txt).
+namespace {
+void subViewClear(Ctx& c, const char* name) {
+    const u32 quadZ = VA(0x804D99AC);  // .sdata2 literal read only by fn_8000B014
+    const u32 saved = rd32(quadZ);
+    // Just inside the far plane of LMDefaultOrthoView (USA far 1000, European far 4096).
+    wr32(quadZ, std::bit_cast<u32>(ver::pal() ? -4095.9f : -999.99f));
+    callOriginal(c, name);
+    wr32(quadZ, saved);
 }
+}  // namespace
+HLE(fn_8000B228) { subViewClear(c, "fn_8000B228"); }
+HLE(palfn_8000B7CC) { subViewClear(c, "palfn_8000B7CC"); }
 
 // Actor draw pass. r3 selects the pass: (r3 & 0x30) == 0x10 draws normal actors into the
 // scene, 0x30 draws ghosts (type flag 8) into the separate ghost layer that is later added
@@ -102,9 +112,9 @@ HLE(fn_80060E70) {
 // setup call at 0x80058290 in fn_800581E8 (the ghost lighting function): light mask 0x80
 // (light 7) -> 0x40 (light 6) and attenuation function 0 -> 2. fn_8005A5D4 takes the
 // GXSetChanCtrl-style arguments (r7 = light mask, r9 = attenuation), so adjust them only
-// for that call site.
+// for that call site (the European fn_800581E8 is identical; VA() maps the call site).
 HLE(fn_8005A5D4) {
-    if (c.lr == 0x80058294u && port::settings().enhancements.earlyGhostLighting) {
+    if (c.lr == VA(0x80058290) + 4 && port::settings().enhancements.earlyGhostLighting) {
         c.r[7] = 0x40;
         c.r[9] = 2;
     }

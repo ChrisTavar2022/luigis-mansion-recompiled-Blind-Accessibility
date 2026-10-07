@@ -156,7 +156,7 @@ int main(int argc, char* argv[]) {
         inst.running = std::strcmp(wantId, "GLMP01") == 0 ? port::GameVersion::PAL : port::GameVersion::USA;
         inst.usReady = inst.running == port::GameVersion::USA;
         inst.palReady = inst.running == port::GameVersion::PAL;
-        inst.hmOverlayReady = inst.running == port::GameVersion::USA;  // dev: orig/hidden_mansion
+        inst.hmOverlayReady = true;  // dev: orig/hidden_mansion (tools/hidden_mansion_data.py), both directions
     }
 #else
     // LuigisMansionRecomp: set up from the user's discs (first run, or after changes).

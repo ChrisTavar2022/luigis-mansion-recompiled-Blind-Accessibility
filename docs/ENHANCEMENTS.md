@@ -88,7 +88,8 @@ next frame.
        background picture. It follows `--ws-backgrounds`.
      - Everything else is HUD or text: *scaled*, so 4:3 and centered.
    - Orthographic display lists are *scaled*.
-4. **Widen culling.** `fn_80008D58(camera, top, bottom, left, right, near, far)` builds
+4. **Widen culling.** (Both releases; the European camera's viewport fields are at
+   +0x1F8/+0x200.) `fn_80008D58(camera, top, bottom, left, right, near, far)` builds
    the camera's four side culling planes. Every 3D projection setter ends with it
    (`fn_80008654`, `fn_800087D0`, `fn_80008928`). The hook in `widescreen.cpp`
    multiplies `left` and `right` by `1/s` when the camera viewport is full-width, then
@@ -388,7 +389,9 @@ message windows in about 2 s.
 
 ### When a cutscene can be skipped
 
-Read from guest memory every frame (addresses in `skip.cpp`):
+Read from guest memory every frame (addresses in `skip.cpp`; USA addresses, mapped to the
+European game's with `VA()`, docs/SETUP.md: same layout, the European scene table only adds a
+ninth scene):
 
 - the **opening** scene (`sCurScene` = OPENING) when it leads into a new game. The title
   screen's attract demo uses the same scene and is left alone (START already exits it);

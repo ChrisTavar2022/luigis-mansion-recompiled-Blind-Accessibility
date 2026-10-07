@@ -8,9 +8,11 @@ Hidden Mansion variants.
 
 Implementation: `src/recomp/gameplay_hooks.cpp` (hooks listed in `tools/recomp/hooks.txt`,
 all wrapping the original via `callOriginal`), plus the room-ambient hook in
-`src/recomp/hidden_mansion_hooks.cpp`. Hooks are keyed by symbol name. A few use US data
-addresses or struct offsets, marked "US" in the code; a PAL-base install needs the PAL
-equivalents (`tools/pal_diff.py var/field` maps them; most Luigi offsets ≥ +0x134C shift by 4).
+`src/recomp/hidden_mansion_hooks.cpp`. Hooks are keyed by symbol name and apply to both
+releases (`us pal`); data addresses go through `VA()` (docs/SETUP.md). European specifics: Luigi's
+riding byte is +0x1350 and the European Luigi update rewrites it every frame, so "Always ride"
+sets it in his state update `fn_800B84E4`; the PAL Hidden Mansion's 0.2 room ambient is the
+game's own there, so "darkness everywhere" does not apply it twice.
 
 Testing override (not saved): `LM_GAMEPLAY="dark=1,ambient=0.4,damage=2,health=2,ghosthp=3,vacuum=0.5,hearts=0"`.
 

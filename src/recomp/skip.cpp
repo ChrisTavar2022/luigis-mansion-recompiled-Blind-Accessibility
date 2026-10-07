@@ -1,6 +1,6 @@
 // Skippable cutscenes and fast-forward; see skip.h.
 //
-// What the game tells us (US GLME01 addresses):
+// What the game tells us (US GLME01 addresses; the European game's via VA(), same layout):
 //   sCurScene 0x804CFF98 points at the running scene's descriptor: OPENING
 //     (0x8021DBD8, the forest/mansion-exterior intro after the file select) or
 //     MAIN GAME (0x8021DB68), ...
@@ -23,6 +23,7 @@
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
 #include "recomp/menu.h"
+#include "recomp/version.h"
 
 #include <dolphin/pad.h>
 #include <imgui.h>
@@ -44,14 +45,16 @@ namespace {
 
 using clock = std::chrono::steady_clock;
 
-constexpr u32 kCurScene = 0x804CFF98;
-constexpr u32 kMenuOff = 0x804D8088;
-constexpr u32 kModeRequest = 0x804D80C4;
-constexpr u32 kEnManagerPtr = 0x804D8C60;  // r13+0xD00
-constexpr u32 kCharacterTable = 0x803D48A0;
-constexpr u32 kEvent = 0x803D2D40;
-constexpr u32 kSceneMainGame = 0x8021DB68, kSceneOpening = 0x8021DBD8;
-constexpr u32 kOpeningNext = 0x804CFFAC;  // scene id the opening hands over to
+// USA addresses; VA() gives the running version's (version.h).
+#define kCurScene VA(0x804CFF98)
+#define kMenuOff VA(0x804D8088)
+#define kModeRequest VA(0x804D80C4)
+#define kEnManagerPtr VA(0x804D8C60)  // r13+0xD00
+#define kCharacterTable VA(0x803D48A0)
+#define kEvent VA(0x803D2D40)
+#define kSceneMainGame VA(0x8021DB68)
+#define kSceneOpening VA(0x8021DBD8)
+#define kOpeningNext VA(0x804CFFAC)  // scene id the opening hands over to
 constexpr u32 kSceneIdMainGame = 2;
 constexpr u32 kStateAnyKey = 3, kStateWait = 4, kStateChoice = 7;
 // A skip gives up when the script has not moved for this many frames outside a
@@ -82,10 +85,8 @@ const double sSpeed = [] {
     return s >= 1.0 ? s : 32.0;
 }();
 
-// The scene/event addresses above are the USA game's (docs/SETUP.md, feature gating).
-bool enabled() {
-    return port::usCodeFeature() == port::Avail::Yes && (sForceOn || port::settings().enhancements.skipCutscenes);
-}
+// Both releases: the European scene/event state has the same layout (addresses via VA()).
+bool enabled() { return sForceOn || port::settings().enhancements.skipCutscenes; }
 
 struct Status {
     u32 scene = 0;

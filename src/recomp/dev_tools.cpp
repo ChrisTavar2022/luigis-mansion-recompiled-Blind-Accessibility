@@ -1,11 +1,13 @@
 // Developer tools: leftover debug displays, map warps and the info overlay (model viewer:
-// model_viewer.cpp). Addresses are US GLME01; how each was found: docs/UNUSED_CONTENT.md.
+// model_viewer.cpp). Addresses are US GLME01 (VA() maps them to the European game's, see
+// recomp/version.h); how each was found: docs/UNUSED_CONTENT.md.
 #include "recomp/dev_tools.h"
 
 #include "port/settings.h"
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
 #include "recomp/model_viewer.h"
+#include "recomp/version.h"
 
 #include <imgui.h>
 #include <SDL3/SDL.h>
@@ -23,17 +25,17 @@ namespace recomp::dev {
 namespace {
 
 // --- game state ------------------------------------------------------------------------
-constexpr u32 kCurSceneId = 0x804D80A0;       // sCurSceneId: the scene the manager is running
-constexpr u32 kReqSceneId = 0x803A3AE4;       // lbl_803A3AE0+4: the scene the main loop asks for
-constexpr u32 kNextMapNo = 0x804D80A4;        // map loaded by the next game-scene setup
-constexpr u32 kSceneChanging = 0x804D8088;    // set by scene-change requests, cleared after setup
-constexpr u32 kCurMapNo = 0x804D80C8;         // sCurMapNo
-constexpr u32 kAppearPoint = 0x804D872C;      // sGlobalLuigiAppearPoint (SETLUIGI)
-constexpr u32 kRoomState = 0x803A3CA0;        // +0xC: current room number in the top byte
+#define kCurSceneId VA(0x804D80A0)       // sCurSceneId: the scene the manager is running
+#define kReqSceneId VA(0x803A3AE4)       // lbl_803A3AE0+4: the scene the main loop asks for
+#define kNextMapNo VA(0x804D80A4)        // map loaded by the next game-scene setup
+#define kSceneChanging VA(0x804D8088)    // set by scene-change requests, cleared after setup
+#define kCurMapNo VA(0x804D80C8)         // sCurMapNo
+#define kAppearPoint VA(0x804D872C)      // sGlobalLuigiAppearPoint (SETLUIGI)
+#define kRoomState VA(0x803A3CA0)        // +0xC: current room number in the top byte
 
 // Compiled-in debug switches that nothing in the retail game sets (docs/UNUSED_CONTENT.md).
-constexpr u32 kParticleReportFlag = 0x804D8E04;  // byte; fn_80160138 prints emitter/particle counts
-constexpr u32 kDepthBlurFlag = 0x804D86B0;       // word; fn_8005E9EC depth-of-field style blur pass
+#define kParticleReportFlag VA(0x804D8E04)  // byte; fn_80160138 prints emitter/particle counts
+#define kDepthBlurFlag VA(0x804D86B0)       // word; fn_8005E9EC depth-of-field style blur pass
 
 const MapInfo kMaps[] = {
     {0, "Test map (Iwamoto test_00-03)", false, true, "toad, butler, dancer, Boos, Mario test actors"},
