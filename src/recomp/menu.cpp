@@ -151,6 +151,15 @@ void unusedContentTab() {
             sDirty = true;
         }
     }
+    sDirty |= ImGui::Checkbox("Beta skybox", &e.betaSkybox);
+    pending("next map load");
+    sDirty |= ImGui::Checkbox("Heart door (Chauncey's room)", &e.heartDoor);
+    pending("next map load");
+    sDirty |= ImGui::Checkbox("Star door (Twins' room)", &e.starDoor);
+    pending("next map load");
+    sDirty |= ImGui::Checkbox("Game Boy Horror map: full Luigi model", &e.betaMapLuigi);
+    pending("next map load");
+    sDirty |= ImGui::Checkbox("Portrificationizer: each ghost's own model", &e.unusedPortraitModels);
 }
 
 // Gameplay toggles, difficulty and cheats.

@@ -54,3 +54,12 @@ draw__9J2DScreenFiiPC14J2DGrafContext
 
 # Early ghost lighting (cheat-equivalent, src/recomp/unused_content.cpp)
 fn_8005A5D4
+
+# Unused assets (src/recomp/unused_assets.cpp, docs/UNUSED_CONTENT.md): portrait table readers,
+# map setup (door table), sky load callback, archive resource lookup/size (sky + GBH-map Luigi).
+fn_80121E14
+fn_80124890
+fn_800122BC
+fn_8002F4DC
+getResource__10JKRArchiveFPCc
+getResSize__10JKRArchiveCFPCv
