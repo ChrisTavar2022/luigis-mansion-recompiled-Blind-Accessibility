@@ -1,6 +1,7 @@
 #include "recomp/frame.h"
 
 #include "recomp/gx_bridge.h"
+#include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
 #include "recomp/sched.h"
 
@@ -67,6 +68,7 @@ bool gamePaused() { return false; }
 
 void present(Ctx&, u32, bool) {
     gx::endPendingDraw();
+    hm::onFrame();
     static u32 sPresents = 0;
     if (++sPresents % 30 == 0 || sPresents < 60) log("[frame] %u presents, %u retraces", sPresents, viRetraceCount());
     std::unique_lock lk(sM);

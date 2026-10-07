@@ -1,13 +1,12 @@
 #pragma once
-// PAL Hidden Mansion rules on the US (GLME01) recompiled build -- prototype.
+// PAL Hidden Mansion rules on the US (GLME01) recompiled build.
 // Background, addresses and the full list of PAL behaviour changes: docs/HIDDEN_MANSION.md.
 //
-// Nothing here is wired into the shared runtime yet. The integration points are:
-//   hle_dvd.cpp    DVDConvertPathToEntrynum / DVDOpen / DVDFastOpen / DVDRead*: consult
-//                  overlayEntry()/isOverlayEntry()/overlayRead() before Aurora's disc.
-//   frame.cpp      call syncConstants() once per retrace.
-//   hle_gx.cpp     GXSetProjection / GXSetCullMode: mirrorProjection() / mirrorCullMode().
-//   audio output   mirrorStereo() on each mixed buffer (once audio is emulated).
+// Wiring:
+//   hle_dvd.cpp            serves overlay files (overlayEntry/isOverlayEntry/overlayRead).
+//   frame.cpp              onFrame() once per presented frame.
+//   hidden_mansion_hooks   tuning hooks (tools/recomp/hooks.txt).
+//   audio output           mirrorStereo() on each mixed buffer (once audio is emulated).
 #include "recomp/ctx.h"
 
 #include <cstddef>
@@ -21,9 +20,13 @@ enum class Mode {
     Pal,  // PAL (GLMP01) Hidden Mansion: map2u data, PAL scripts, mirror, PAL tuning
 };
 
-// LM_HIDDEN_MANSION=pal selects the PAL rules; LM_HM_OVERLAY points at the overlay built by
-// tools/hidden_mansion_data.py (default: orig/hidden_mansion).
+// --hidden-mansion pal|us (default pal; env LM_HIDDEN_MANSION overrides). LM_HM_OVERLAY points
+// at the overlay built by tools/hidden_mansion_data.py (default: orig/hidden_mansion, searched
+// upwards from the working directory). LM_HM_FORCE=1 keeps the flag set, for testing.
 Mode mode();
+
+// Per presented frame: LM_HM_FORCE, flag-change logging, constant patches.
+void onFrame();
 
 // The game's own hidden-mansion ("ura") flag. US: sbss 0x804D80C0 (r13+0x160), set by the
 // URALUIGI event command, cleared by OMOTELUIGI and on new game. PAL keeps the same variable

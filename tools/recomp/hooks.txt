@@ -14,3 +14,12 @@ DiplSec__FUl
 # Temporary: "is the streamed BGM ready" poll (only caller: a scene init that spins on it).
 # Streamed audio isn't emulated yet, so report ready (src/recomp/hooks_temp.cpp).
 fn_80189054
+
+# PAL Hidden Mansion tuning (src/recomp/hidden_mansion_hooks.cpp, docs/HIDDEN_MANSION.md):
+# each wraps the original and only changes behaviour while the PAL rules are active.
+fn_800E70BC
+fn_800E7698
+fn_8009FD54
+fn_8009FCA8
+fn_8006D1B8
+fn_800168EC

@@ -1,5 +1,6 @@
 // HLE: DVD file system, on top of Aurora's disc reader. Reads complete
 // synchronously; async completions are delivered as interrupts.
+#include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
@@ -17,6 +18,7 @@ namespace {
 
 std::unordered_map<u32, DVDFileInfo> sFiles;  // guest DVDFileInfo -> host
 std::unordered_map<u32, u32> sNames;          // FST entry -> guest copy of its name
+std::unordered_map<u32, s32> sOverlay;        // guest DVDFileInfo -> hm overlay entry
 
 // Disc latency. The game relies on reads taking time (e.g. BootScene switches the
 // current heap right after queueing an async open whose callback allocates), so
@@ -41,8 +43,25 @@ void syncGuest(u32 guest, const DVDFileInfo& fi) {
     wr32(guest + 0x34, fi.length);
 }
 
+// Files replaced by the PAL Hidden Mansion overlay (hidden_mansion.cpp) are served from host
+// memory instead of the disc image.
+bool openOverlay(u32 guest, s32 entry) {
+    sFiles.erase(guest);
+    sOverlay[guest] = entry;
+    wr32(guest + 0x0C, 0);
+    wr32(guest + 0x30, 0);
+    wr32(guest + 0x34, hm::overlayLength(entry));
+    return true;
+}
+
+s32 overlayOf(u32 guest) {
+    auto it = sOverlay.find(guest);
+    return it == sOverlay.end() ? -1 : it->second;
+}
+
 bool openWith(u32 guest, BOOL ok, const DVDFileInfo& fi) {
     if (!ok) return false;
+    sOverlay.erase(guest);
     sFiles[guest] = fi;
     syncGuest(guest, fi);
     return true;
@@ -55,6 +74,10 @@ HLE(DVDGetDriveStatus) { c.r[3] = 0; }
 HLE(DVDCheckDisk) { c.r[3] = 1; }
 HLE(DVDGetCommandBlockStatus) { c.r[3] = rd32(c.r[3] + 0x0C); }
 HLE(DVDConvertPathToEntrynum) {
+    if (const s32 e = hm::overlayEntry(gstr(c.r[3])); e >= 0) {
+        c.r[3] = u32(e);
+        return;
+    }
     const s32 n = DVDConvertPathToEntrynum(gstr(c.r[3]));
     if (n < 0) log("[dvd] path not found: %s", gstr(c.r[3]));
     c.r[3] = u32(n);
@@ -63,14 +86,23 @@ HLE(DVDConvertPathToEntrynum) {
 HLE(DVDOpen) {
     DVDFileInfo fi{};
     const char* path = gstr(c.r[3]);
+    if (const s32 e = hm::overlayEntry(path); e >= 0) {
+        c.r[3] = openOverlay(c.r[4], e);
+        return;
+    }
     c.r[3] = openWith(c.r[4], DVDOpen(path, &fi), fi);
     if (!c.r[3]) log("[dvd] open failed: %s", path);
 }
 HLE(DVDFastOpen) {
+    if (hm::isOverlayEntry(s32(c.r[3]))) {
+        c.r[3] = openOverlay(c.r[4], s32(c.r[3]));
+        return;
+    }
     DVDFileInfo fi{};
     c.r[3] = openWith(c.r[4], DVDFastOpen(s32(c.r[3]), &fi), fi);
 }
 HLE(DVDClose) {
+    sOverlay.erase(c.r[3]);
     if (DVDFileInfo* fi = hostFile(c.r[3])) {
         DVDClose(fi);
         sFiles.erase(c.r[3]);
@@ -81,7 +113,10 @@ HLE(DVDClose) {
 HLE(DVDReadPrio) {
     DVDFileInfo* fi = hostFile(c.r[3]);
     watchRange(c.r[4], c.r[5], "DVDReadPrio");
-    const s32 result = fi ? DVDReadPrio(fi, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]), s32(c.r[7])) : -1;
+    const s32 ov = overlayOf(c.r[3]);
+    const s32 result = ov >= 0 ? hm::overlayRead(ov, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]))
+                       : fi    ? DVDReadPrio(fi, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]), s32(c.r[7]))
+                               : -1;
     // Block this thread until the "drive" finishes.
     static std::atomic<u32> sWaitKey{0xF0000000};  // sleep-queue keys need not be real memory
     const u32 done = sWaitKey.fetch_add(8);
@@ -98,12 +133,14 @@ HLE(DVDReadPrio) {
 HLE(DVDReadAsyncPrio) {
     const u32 guest = c.r[3], cb = c.r[7];
     DVDFileInfo* fi = hostFile(guest);
-    if (!fi) {
+    const s32 ov = overlayOf(guest);
+    if (!fi && ov < 0) {
         c.r[3] = 0;
         return;
     }
     watchRange(c.r[4], c.r[5], "DVDReadAsyncPrio");
-    const s32 result = DVDReadPrio(fi, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]), s32(c.r[8]));
+    const s32 result = ov >= 0 ? hm::overlayRead(ov, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]))
+                               : DVDReadPrio(fi, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]), s32(c.r[8]));
     wr32(guest + 0x0C, 1);  // busy until the completion interrupt
     wr32(guest + 0x38, cb);
     wr32(guest + 0x20, u32(result));
