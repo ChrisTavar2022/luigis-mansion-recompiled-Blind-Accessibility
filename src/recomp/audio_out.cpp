@@ -15,6 +15,7 @@
 #include <cstring>
 #include <mutex>
 #include <algorithm>
+#include <atomic>
 #include <vector>
 
 namespace recomp::audio {
@@ -90,6 +91,22 @@ void outSetRate(u32 rate) {
         SDL_SetAudioStreamFormat(sStream, &spec, nullptr);
     }
 }
+
+std::atomic<bool> sPaused{false};
+
+void outSetPaused(bool paused) {
+    if (sPaused.exchange(paused) == paused) return;
+    std::lock_guard lk(sM);
+    if (!sStream) return;
+    if (paused) {
+        SDL_PauseAudioStreamDevice(sStream);
+    } else {
+        SDL_ClearAudioStream(sStream);
+        SDL_ResumeAudioStreamDevice(sStream);
+    }
+}
+
+bool outPaused() { return sPaused.load(); }
 
 void outPushGuestBlock(u32 addr, u32 bytes) {
     const u32 frames = bytes / 4;

@@ -11,6 +11,7 @@
 #include "port/install.h"
 #include "port/options.h"
 #include "port/settings.h"
+#include "recomp/audio.h"
 #include "recomp/frame.h"
 #include "recomp/menu.h"
 #include "recomp/hle.h"
@@ -240,8 +241,13 @@ int main(int argc, char* argv[]) {
         for (const AuroraEvent* ev = aurora_update(); ev && ev->type != AURORA_NONE; ++ev) {
             if (ev->type == AURORA_SDL_EVENT) menu::handleEvent(ev->sdl);
             if (ev->type == AURORA_EXIT) exiting = true;
-            else if (ev->type == AURORA_PAUSED) paused = true;
-            else if (ev->type == AURORA_UNPAUSED) paused = false;
+            else if (ev->type == AURORA_PAUSED) {
+                paused = true;
+                audio::outSetPaused(true);
+            } else if (ev->type == AURORA_UNPAUSED) {
+                paused = false;
+                audio::outSetPaused(false);
+            }
         }
         frame::setHostPaused(paused);
         if (exiting || paused || !aurora_begin_frame()) continue;

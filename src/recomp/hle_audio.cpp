@@ -35,6 +35,11 @@ void dmaThread() {
     using clock = std::chrono::steady_clock;
     auto next = clock::now();
     for (;;) {
+        if (audio::outPaused()) {  // game paused by the host: no audio interrupts
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            next = clock::now();
+            continue;
+        }
         const u32 len = sDmaLength.load();
         const double secs = len ? (len / 4.0) / rateHz() : 0.005;  // 16-bit stereo frames
         if (audio::outHasDevice()) {

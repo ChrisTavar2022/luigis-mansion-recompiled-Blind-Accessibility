@@ -26,6 +26,10 @@ void outPushGuestBlock(u32 addr, u32 bytes);
 // Seconds of audio queued on the host device (0 when there is no device).
 double outQueuedSeconds();
 bool outHasDevice();
+// Host pause (window lost focus): stop the device and the audio interrupt pacing; on resume
+// drop stale queued audio so playback restarts cleanly.
+void outSetPaused(bool paused);
+bool outPaused();
 
 // Debug logging (LM_AUDIO_LOG=1).
 extern bool g_log;
