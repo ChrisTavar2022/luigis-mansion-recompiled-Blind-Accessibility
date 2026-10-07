@@ -3,7 +3,8 @@
 param(
     [string]$Preset = "windows-clang",
     [switch]$Configure,
-    [string]$Target = ""
+    [string]$Target = "",
+    [string]$Dol = ""  # sets LM_DOL (the main.dol to recompile) when configuring
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -24,8 +25,8 @@ foreach ($p in @("$env:ProgramFiles\CMake\bin", "$env:LOCALAPPDATA\Microsoft\Win
 
 Push-Location $root
 try {
-    if ($Configure -or -not (Test-Path "build/$Preset/build.ninja")) {
-        cmake --preset $Preset
+    if ($Configure -or $Dol -or -not (Test-Path "build/$Preset/build.ninja")) {
+        if ($Dol) { cmake --preset $Preset "-DLM_DOL=$($Dol -replace '\\', '/')" } else { cmake --preset $Preset }
         if ($LASTEXITCODE) { throw "configure failed" }
     }
     if ($Target) { cmake --build --preset $Preset --target $Target } else { cmake --build --preset $Preset }
