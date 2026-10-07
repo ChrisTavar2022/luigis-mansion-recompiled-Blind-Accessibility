@@ -41,6 +41,10 @@
 - Cutscene skip / fast-forward (docs/ENHANCEMENTS.md §4): `LM_SKIP_LOG=1` event-state log + flag snapshots, `LM_FF=1` fast-forward always, `LM_SKIP_AUTO`, `LM_SKIP_TEST`, `LM_INPUT_CLOCK=frames`. Test runs that reach events save the game: set `LM_CARD_DIR`.
 - `python tools/recomp/addr2sym.py <addr>...`; `tools/recomp/hle_refs.py` lists SDK functions game code calls.
 
+## Testing guidance
+- Test a feature where it naturally belongs: general features (ghost rendering, vacuum, HUD, lighting) in an ordinary mansion room with ordinary ghosts after Luigi has the Poltergust/GBH (LM_TEST_STATE presets), not in boss arenas such as Boolossus (map 11) — use boss maps only for boss-specific work.
+- Always test with a scratch APPDATA and LM_CARD_DIR, never the user's real settings/saves.
+
 ## Gotchas
 - Don't write C/C++ with `\n` escapes through bash heredocs/python-in-bash: escapes get mangled. Use the Write/Edit tools.
 - Write Python files with `encoding="utf-8"`.
