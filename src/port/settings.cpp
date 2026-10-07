@@ -47,6 +47,7 @@ std::vector<Field> fields() {
     return {
         enm("video", "frame_rate", v.frameRate),
         enm("video", "aspect", v.aspect),
+        num("video", "resolution_scale", v.resolutionScale),
         num("video", "fov_scale", v.fovScale),
         flag("video", "fullscreen", v.fullscreen),
         flag("video", "vsync", v.vsync),

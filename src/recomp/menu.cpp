@@ -9,7 +9,11 @@
 #include <imgui.h>
 #include <SDL3/SDL.h>
 
+#include <dolphin/vi.h>
+
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
 
 namespace recomp::menu {
 namespace {
@@ -17,8 +21,11 @@ namespace {
 bool sOpen = false;
 bool sDirty = false;
 
+void applyResolution() { VISetFrameBufferScale(float(port::settings().video.resolutionScale)); }
+
 void applyWindowSettings() {
     const auto& v = port::settings().video;
+    applyResolution();
     if (SDL_Window* w = aurora_get_window()) SDL_SetWindowFullscreen(w, v.fullscreen);
     aurora_set_pause_on_focus_lost(port::settings().enhancements.pauseOnFocusLoss);
 }
@@ -48,7 +55,23 @@ void visualsTab() {
     sDirty |= ImGui::SliderFloat("Field of view", &v.fovScale, 0.75f, 1.5f, "%.2fx");
     pending("in progress");
     ImGui::Separator();
-    ImGui::Text("Resolution: renders at the window's native size");
+    {
+        int& rs = v.resolutionScale;
+        char label[64];
+        if (rs <= 0) {
+            std::snprintf(label, sizeof(label), "Match window");
+        } else {
+            const AuroraWindowSize ws = aurora_get_window_size();
+            const float aspect = ws.native_fb_height ? float(ws.native_fb_width) / float(ws.native_fb_height) : 4.0f / 3.0f;
+            const int h = 480 * rs;
+            const int w = int(float(h) * std::max(aspect, 4.0f / 3.0f) + 0.5f);
+            std::snprintf(label, sizeof(label), "%dx  (%d x %d)", rs, w, h);
+        }
+        if (ImGui::SliderInt("Render resolution", &rs, 0, 8, label, ImGuiSliderFlags_AlwaysClamp)) {
+            sDirty = true;
+            applyResolution();
+        }
+    }
     if (ImGui::Checkbox("Fullscreen", &v.fullscreen)) {
         sDirty = true;
         applyWindowSettings();
