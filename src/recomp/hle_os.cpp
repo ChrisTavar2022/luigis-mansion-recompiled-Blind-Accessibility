@@ -1,5 +1,6 @@
 // HLE: OS (threads, messages, mutexes, interrupts, caches, time, reset) and
 // the small debug/serial units.
+#include "port/install.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
@@ -12,7 +13,18 @@
 namespace recomp {
 namespace {
 
-constexpr u32 kCtorsStart = 0x8020BAC0;  // .ctors (null-terminated function pointer list)
+// .ctors (null-terminated function pointer list): `_ctors` in decomp/config/*/symbols.txt.
+constexpr u32 kCtorsStartUs = 0x8020BAC0;
+constexpr u32 kCtorsStartPal = 0x80210AA0;
+
+bool palGame() { return port::install().running == port::GameVersion::PAL; }
+
+// Initial stack pointer from __init_registers (`lis r1, hi; ori r1, r1, lo`). The arena
+// starts just above the stack, where the linker put __ArenaLo (US: 0x804ED940).
+u32 initialStack() {
+    const u32 f = guestSymbol("__init_registers");
+    return (rd32(f) << 16) | (rd32(f + 4) & 0xFFFF);
+}
 
 u32 sProgressiveMode = 0;
 u32 sSoundMode = 1;  // stereo
@@ -24,7 +36,7 @@ void setBool(Ctx& c, bool v) { c.r[3] = v ? 1 : 0; }
 // --- boot -------------------------------------------------------------------
 
 HLE(__init_cpp) {
-    for (u32 p = kCtorsStart; rd32(p) != 0; p += 4) guestCall(c, rd32(p));
+    for (u32 p = palGame() ? kCtorsStartPal : kCtorsStartUs; rd32(p) != 0; p += 4) guestCall(c, rd32(p));
 }
 HLE(__init_user) { hle___init_cpp(c); }
 HLE(_ExitProcess) {
@@ -34,7 +46,7 @@ HLE(_ExitProcess) {
 
 HLE(OSInit) {
     // Boot info in low memory, as left by the IPL/apploader.
-    std::memcpy(hostp(0x80000000), "GLME01", 6);
+    std::memcpy(hostp(0x80000000), port::gameId(port::install().running), 6);
     wr8(0x80000006, 0);  // disc number
     wr8(0x80000007, 0);  // version
     wr32(0x8000001C, 0xC2339F3D);  // DVD magic
@@ -42,11 +54,11 @@ HLE(OSInit) {
     wr32(0x80000024, 1);
     wr32(0x80000028, kMem1Size);
     wr32(0x8000002C, 3);  // retail console
-    wr32(0x800000CC, 0);  // NTSC
+    wr32(0x800000CC, palGame() ? 1 : 0);  // VI_NTSC / VI_PAL
     wr32(0x800000F0, kMem1Size);
     wr32(0x800000F8, 162000000);  // bus clock
     wr32(0x800000FC, 486000000);  // core clock
-    guestCall(c, guestSymbol("OSSetArenaLo"), 0x804ED940);
+    guestCall(c, guestSymbol("OSSetArenaLo"), (initialStack() + 8 + 31) & ~31u);
     guestCall(c, guestSymbol("OSSetArenaHi"), 0x81700000);
 }
 

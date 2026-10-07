@@ -25,6 +25,11 @@ namespace {
 
 // US (GLME01) guest addresses, found with tools/pal_diff.py (`var pal 804C5784`).
 constexpr u32 kUraFlag = 0x804D80C0;  // PAL 0x804C5784
+constexpr u32 kUraFlagPal = 0x804C5784;  // the same flag when the PAL game itself runs
+
+// Everything here patches the US game. On a PAL base install the PAL game runs its own
+// Hidden Mansion and this module only reports the flag (docs/SETUP.md).
+bool usBase() { return port::install().running == port::GameVersion::USA; }
 constexpr u32 kCurMapNo = 0x804D80C8;  // sCurMapNo; PAL 0x804C578C
 
 // LM_HM_OVERLAY, else the overlay setup built in the data directory, else the first
@@ -146,6 +151,7 @@ std::atomic<int> sVariant{-1};
 }  // namespace
 
 Variant variant() {
+    if (!usBase()) return Variant::Pal;
     int v = sVariant.load();
     if (v < 0) {
         int want = int(initialVariant());
@@ -159,7 +165,7 @@ void setVariant(Variant v) {
     if (sVariant.exchange(int(v)) != int(v)) log("[hm] Hidden Mansion variant -> %s", v == Variant::Pal ? "PAL" : "USA");
 }
 
-bool hiddenActive() { return rd32(kUraFlag) != 0; }
+bool hiddenActive() { return rd32(usBase() ? kUraFlag : kUraFlagPal) != 0; }
 
 void onFrame() {
     // LM_HM_FORCE=1: keep the hidden-mansion flag set (testing without a cleared save).
@@ -169,19 +175,19 @@ void onFrame() {
     }();
     if (sForce && !hiddenActive()) {
         log("[hm] LM_HM_FORCE: setting the hidden-mansion flag");
-        wr32(kUraFlag, 1);
+        wr32(usBase() ? kUraFlag : kUraFlagPal, 1);
     }
     static bool sWas = false;
     if (hiddenActive() != sWas) {
         sWas = hiddenActive();
         log("[hm] hidden-mansion flag %s (%s variant)", sWas ? "set" : "cleared", variant() == Variant::Pal ? "PAL" : "USA");
     }
-    syncConstants();
+    if (usBase()) syncConstants();
 }
-bool palActive() { return variant() == Variant::Pal && hiddenActive(); }
+bool palActive() { return usBase() && variant() == Variant::Pal && hiddenActive(); }
 
 std::optional<std::string> redirect(const char* guestPath) {
-    if (variant() != Variant::Pal || !guestPath) return std::nullopt;
+    if (!usBase() || variant() != Variant::Pal || !guestPath) return std::nullopt;
     for (const Redirect& r : kRedirects) {
         if (!samePath(guestPath, r.guestPath)) continue;
         if (r.onlyWhileHidden && !(hiddenActive() && rd32(kCurMapNo) == 2)) return std::nullopt;

@@ -5,78 +5,116 @@
 
 The PAL decomp config has no translation-unit splits and fewer named functions, but the
 runtime finds SDK functions (HLE) and hooks by their US names. This matches every PAL
-function to its US counterpart with tools/pal_diff.py and writes, for each PAL function
-that belongs to an SDK unit or carries a PAL-tagged hook:
+function to its US counterpart and writes
 
-    <PAL address> <canonical (US) name> <translation unit>
+    <PAL address> <canonical name> <translation unit | - | hook>
+
+for each PAL function that belongs to an SDK unit (HLE'd or recompiled by TU), carries a
+PAL-tagged hook, or is unnamed in the PAL map but named in the US one.
+
+Names come from, in order: the PAL map itself; the US function tools/pal_diff.py pairs it
+with; and call-site agreement (a matched caller pair whose `bl` sequences line up names
+the PAL callee after the US one). The last step names the SDK functions the PAL release
+rewrote (PADInit, PADRead, ...), which the similarity matcher cannot pair.
 
 The output is address/name metadata only (like decomp/config/*/symbols.txt); it is
-committed and embedded in the executable. Re-run it after adding a hook tagged `pal` to
+committed and embedded in the executable. Re-run it after tagging a hook `pal` in
 tools/recomp/hooks.txt. Needs the user's own US + PAL dumps (dev machines only).
 """
 import argparse
-import bisect
-import subprocess
 import sys
-import tempfile
+from collections import Counter, defaultdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+import pal_diff as P  # noqa: E402
+
 SDK_PREFIXES = ("os/", "gx/", "vi/", "pad/", "dvd/", "ar/", "card/", "ai/", "dsp/", "db/", "si/",
                 "exi/", "TRK_MINNOW_DOLPHIN/", "OdemuExi2/", "amcstubs/", "odenotstub/")
 
 
+def unnamed(n):
+    return not n or n == "-" or n.startswith(("fn_", "lbl_"))
+
+
+def calls(v, f):
+    out = []
+    for a in range(f["addr"], f["addr"] + f["size"], 4):
+        w = v.dol.word(a)
+        if w >> 26 == 18 and (w & 3) == 1:  # bl
+            li = w & 0x03FFFFFC
+            if li & 0x02000000:
+                li -= 0x04000000
+            out.append((a + li) & 0xFFFFFFFF)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--us")
-    ap.add_argument("--pal")
+    ap.add_argument("--us", default=str(P.DEF_US))
+    ap.add_argument("--pal", default=str(P.DEF_PAL))
     ap.add_argument("--out", default=str(ROOT / "tools" / "recomp" / "GLMP01_map.txt"))
     a = ap.parse_args()
+    us = P.Version("us", a.us, "GLME01")
+    pal = P.Version("pal", a.pal, "GLMP01_00")
+    recs, _, _ = P.match_functions(us, pal)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tsv = Path(tmp) / "match.tsv"
-        cmd = [sys.executable, str(ROOT / "tools" / "pal_diff.py"), "code", "--all", "--tsv", str(tsv)]
-        if a.us:
-            cmd += ["--us", a.us]
-        if a.pal:
-            cmd += ["--pal", a.pal]
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
-        rows = [l.split("\t") for l in tsv.read_text(encoding="utf-8").splitlines()[1:]]
-
-    # PAL address -> (canonical name, TU). Unmatched PAL functions take the TU of the
-    # closest matched PAL function before them (SDK units are contiguous).
-    pal = {}
-    sdk_same = []
-    for kind, us_addr, us_name, pal_addr, pal_name, tu in rows:
-        if pal_addr == "-":
-            continue
-        name = us_name if us_name != "-" else pal_name
-        pal[int(pal_addr, 16)] = [name, tu.strip(), kind]
-        if kind == "same" and tu.startswith(SDK_PREFIXES):
-            sdk_same.append(int(pal_addr, 16))
-    # The SDK is linked as one contiguous block; a match that lands outside it is a false
-    # pairing by the similarity matcher (e.g. a small SDK accessor and a game function).
-    lo, hi = min(sdk_same), max(sdk_same)
-    addrs = sorted(pal)
-    last_tu = ""
-    for addr in addrs:
-        entry = pal[addr]
-        if entry[1].startswith(SDK_PREFIXES) and not lo <= addr <= hi:
-            entry[0], entry[1] = next(p[4] for p in rows if p[3] == f"{addr:08X}"), ""
-        if entry[2] == "pal-only" and lo <= addr <= hi:
-            entry[1] = last_tu
-        if entry[1]:
-            last_tu = entry[1]
+    # PAL address -> [name, TU, kind]
+    info = {}
     us_to_pal = {}
-    for addr in addrs:
-        us_to_pal.setdefault(pal[addr][0], addr)
+    for r in recs:
+        u, p = r["us"], r["pal"]
+        if not p:
+            continue
+        name = p["name"] if not unnamed(p["name"]) or not u else u["name"]
+        info[p["addr"]] = [name, us.tu(u["addr"]) if u else "", r["kind"]]
+        if u:
+            us_to_pal.setdefault(u["name"], p["addr"])
+
+    # Call-site agreement: matched callers with equally long bl lists name their callees.
+    votes = defaultdict(Counter)
+    for r in recs:
+        u, p = r["us"], r["pal"]
+        if not u or not p or r["kind"] == "pal-only":
+            continue
+        cu, cp = calls(us, u), calls(pal, p)
+        if len(cu) != len(cp):
+            continue
+        for tu_, tp in zip(cu, cp):
+            fu, fp = us.fat.get(tu_), pal.fat.get(tp)
+            if fu and fp and unnamed(info.get(tp, ["-"])[0]) and not unnamed(fu["name"]):
+                votes[tp][(fu["name"], us.tu(tu_))] += 1
+    for tp, c in votes.items():
+        (name, tu), n = c.most_common(1)[0]
+        if n * 2 > sum(c.values()) and tp in info:
+            info[tp][0] = name
+            if not info[tp][1]:
+                info[tp][1] = tu
+            us_to_pal.setdefault(name, tp)
+
+    # The SDK is linked as one contiguous block; a pairing outside it is a false match by
+    # the similarity matcher. Unmatched PAL functions inside it take the preceding TU.
+    sdk = [addr for addr, (n, tu, kind) in info.items() if kind == "same" and tu.startswith(SDK_PREFIXES)]
+    lo, hi = min(sdk), max(sdk)
+    last_tu = ""
+    for addr in sorted(info):
+        e = info[addr]
+        if e[1].startswith(SDK_PREFIXES) and not lo <= addr <= hi:
+            e[0], e[1] = pal.fat[addr]["name"], ""
+        if not e[1] and e[2] == "pal-only" and lo <= addr <= hi:
+            e[1] = last_tu
+        if e[1]:
+            last_tu = e[1]
 
     lines = ["# Generated by tools/recomp/gen_version_map.py from tools/pal_diff.py matching. Do not edit.",
-             "# <PAL address> <canonical (US) name> <translation unit>"]
-    for addr in addrs:
-        name, tu, _ = pal[addr]
+             "# <PAL address> <canonical name> <translation unit | - | hook>"]
+    for addr in sorted(info):
+        name, tu, kind = info[addr]
         if tu.startswith(SDK_PREFIXES):
             lines.append(f"{addr:08X} {name} {tu}")
+        elif not unnamed(name) and unnamed(pal.fat[addr]["name"]):
+            lines.append(f"{addr:08X} {name} -")
 
     # Hooks tagged for PAL ("<symbol> ... pal" in hooks.txt) must have a PAL counterpart.
     missing = []
@@ -87,10 +125,13 @@ def main():
         addr = us_to_pal.get(words[0])
         if addr is None:
             missing.append(words[0])
-        elif not pal[addr][1].startswith(SDK_PREFIXES):
+        elif not info[addr][1].startswith(SDK_PREFIXES):
             lines.append(f"{addr:08X} {words[0]} hook")
     Path(a.out).write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
-    print(f"{a.out}: {len(lines) - 2} entries")
+    left = [l for l in lines[2:] if l.split()[1].startswith("fn_") and l.split()[2] != "-"]
+    print(f"{a.out}: {len(lines) - 2} entries; {len(left)} SDK functions still unnamed")
+    for l in left:
+        print("  " + l)
     if missing:
         sys.exit(f"hooks tagged pal without a PAL match: {', '.join(missing)}")
 

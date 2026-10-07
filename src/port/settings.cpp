@@ -53,6 +53,7 @@ std::vector<Field> fields() {
         flag("video", "vsync", v.vsync),
         num("video", "msaa", v.msaa),
         flag("video", "hud_keep_4x3", v.hudKeep4x3),
+        flag("video", "pal60", v.pal60),
         num("audio", "master_volume", a.masterVolume),
         num("audio", "music_volume", a.musicVolume),
         num("audio", "sfx_volume", a.sfxVolume),
@@ -63,6 +64,7 @@ std::vector<Field> fields() {
         flag("enhancements", "pause_on_focus_loss", e.pauseOnFocusLoss),
         flag("enhancements", "skip_intro_logos", e.skipIntroLogos),
         flag("enhancements", "hidden_mansion_pal", e.hiddenMansionPal),
+        num("enhancements", "pal_language", e.palLanguage),
     };
 }
 

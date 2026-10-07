@@ -1,14 +1,20 @@
 # Recompiled functions that check for a host replacement (registered with HLE(name))
-# before running their translated body. One symbol name per line.
+# before running their translated body. One symbol name per line, as named in the US
+# (GLME01) symbol map, optionally followed by the versions it applies to:
+#   <symbol>          US build only (default: hooks are written against US code)
+#   <symbol> us pal   also the PAL build, once the hook has been checked against PAL code
+#   <symbol> pal      PAL build only
+# After tagging a hook `pal`, run tools/recomp/gen_version_map.py (maps it to its PAL
+# address). See docs/SETUP.md.
 
 # JAudio's DSP driver: the audio DSP is not emulated. Its boot handshake is skipped
 # and its command mailbox / halt release drive our microcode stand-in
 # (src/recomp/hle_audio.cpp, src/recomp/audio_dsp.cpp).
-DspBoot__Fv
-DSPSendCommands__FPUlUl
-DSPReleaseHalt__Fv
-DSPWaitFinish__Fv
-DiplSec__FUl
+DspBoot__Fv us pal
+DSPSendCommands__FPUlUl us pal
+DSPReleaseHalt__Fv us pal
+DSPWaitFinish__Fv us pal
+DiplSec__FUl us pal
 
 # Camera culling planes: widened for the Hor+ widescreen projection (src/recomp/widescreen.cpp).
 fn_80008D58

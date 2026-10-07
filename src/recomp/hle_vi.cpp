@@ -1,6 +1,8 @@
-// HLE: VI. A host timer raises the retrace interrupt at 59.94 Hz; the game
-// paces itself on it. VISetNextFrameBuffer marks a finished frame, which is
+// HLE: VI. A host timer raises the retrace interrupt at 59.94 Hz (the PAL game: 50 Hz,
+// or 59.94 Hz "PAL60" when chosen in the F1 menu); the game paces itself on it. VISetNextFrameBuffer marks a finished frame, which is
 // handed to the host loop (see frame.h) before the game continues.
+#include "port/install.h"
+#include "port/settings.h"
 #include "recomp/frame.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
@@ -29,6 +31,15 @@ void retrace(Ctx& c) {
     sched::wakeup(sRetraceQueue);
 }
 
+bool palGame() { return port::install().running == port::GameVersion::PAL; }
+
+// The PAL release's logic is tuned for 50 Hz: at 60 Hz it runs 20% fast (like PAL60 on
+// a console). Read every tick, so the menu option applies immediately.
+double retraceHz() {
+    if (palGame() && !port::settings().video.pal60) return 50.0;
+    return 60000.0 / 1001.0;
+}
+
 }  // namespace
 
 namespace vi {
@@ -37,9 +48,10 @@ void startTimer() {
     sTimerRun = true;
     sTimer = std::thread([] {
         using clock = std::chrono::steady_clock;
-        const auto period = std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(1001.0 / 60000.0));
+        auto period = std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(1.0 / retraceHz()));
         auto next = clock::now() + period;
         while (sTimerRun) {
+            period = std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(1.0 / retraceHz()));
             std::this_thread::sleep_until(next);
             next += period;
             if (clock::now() > next + period * 4) next = clock::now() + period;  // don't spiral after a stall
@@ -73,7 +85,7 @@ HLE(VISetBlack) { sBlack = c.r[3] != 0; }
 HLE(VIGetRetraceCount) { c.r[3] = sRetraceCount.load(); }
 HLE(VIGetNextField) { c.r[3] = 1; }
 HLE(VIGetCurrentLine) { c.r[3] = 0; }
-HLE(VIGetTvFormat) { c.r[3] = 0; }
+HLE(VIGetTvFormat) { c.r[3] = palGame() ? 1 : 0; }  // VI_PAL / VI_NTSC
 HLE(VIGetDTVStatus) { c.r[3] = 0; }
 HLE(VISetPreRetraceCallback) {
     const u32 old = sPreCallback;

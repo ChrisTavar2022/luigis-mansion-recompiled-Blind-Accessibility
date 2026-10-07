@@ -192,6 +192,12 @@ int main(int argc, char* argv[]) {
     menu::init();
     g_mem = static_cast<u8*>(std::calloc(1, kHostMemSize));
     loadDol(dol);
+    if (port::install().running == port::GameVersion::PAL) {
+        // The PAL release's language (.sdata 0x804BD658: 1 English, 2 German, 3 French,
+        // 4 Spanish, 5 Italian; docs/SETUP.md). The game reads it when it loads text.
+        const int lang = port::settings().enhancements.palLanguage;
+        wr32(0x804BD658, u32(lang >= 1 && lang <= 5 ? lang : 1));
+    }
     initTimeBase();
     initTrace();
     initWatch();
