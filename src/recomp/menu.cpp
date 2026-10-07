@@ -4,8 +4,10 @@
 #include "recomp/menu.h"
 
 #include "port/settings.h"
+#include "recomp/crt.h"
 #include "recomp/dev_tools.h"
 #include "recomp/hidden_mansion.h"
+#include "recomp/skip.h"
 
 #include <aurora/aurora.h>
 #include <imgui.h>
@@ -49,13 +51,11 @@ void visualsTab() {
     auto& v = port::settings().video;
     static const char* kFrameRates[] = {"Original (30 fps)", "Interpolated 60 fps", "Interpolated, unlimited"};
     sDirty |= combo("Frame rate", v.frameRate, kFrameRates, 3);
-    pending("in progress");
     static const char* kAspects[] = {"Original 4:3", "Match window", "16:9", "16:10", "21:9", "32:9"};
     sDirty |= combo("Aspect ratio", v.aspect, kAspects, 6);
     sDirty |= ImGui::Checkbox("Keep HUD at 4:3", &v.hudKeep4x3);
-    pending("edge anchoring planned");
+    if (!v.hudKeep4x3) pending("in-game HUD moves to the screen edges");
     sDirty |= ImGui::SliderFloat("Field of view", &v.fovScale, 0.75f, 1.5f, "%.2fx");
-    pending("in progress");
     ImGui::Separator();
     {
         int& rs = v.resolutionScale;
@@ -87,6 +87,8 @@ void visualsTab() {
         sDirty = true;
     }
     pending("next launch");
+    ImGui::Separator();
+    sDirty |= recomp::crt::drawMenu();
 }
 
 void soundTab() {
@@ -109,6 +111,14 @@ void enhancementsTab() {
     }
     sDirty |= ImGui::Checkbox("Skip intro logos", &e.skipIntroLogos);
     pending("planned");
+    sDirty |= ImGui::Checkbox("Skippable cutscenes", &e.skipCutscenes);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Press START during a cutscene to skip it. The game plays the rest of the\n"
+                          "cutscene at high speed behind a black screen, so everything it sets up\n"
+                          "(items, keys, doors, story progress) is the same as after watching it.\n"
+                          "Choices and the save screen still wait for you.");
+    sDirty |= ImGui::Checkbox("Hold Tab to fast-forward", &e.fastForwardKey);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("While Tab is held the game runs as fast as it can, muted.");
     ImGui::Separator();
     {
         // Switching mid-visit would leave PAL data/patches half applied, so only allow it outside.
@@ -124,6 +134,11 @@ void enhancementsTab() {
         ImGui::EndDisabled();
         if (inside) pending("leave the Hidden Mansion to change");
     }
+    ImGui::Separator();
+    // Unused content restored from the retail code (docs/UNUSED_CONTENT.md).
+    sDirty |= ImGui::Checkbox("Game Boy Horror camera", &e.gbhCamera);
+    pending("D-pad Up in game");
+    sDirty |= ImGui::Checkbox("Early (opaque) ghost shading", &e.earlyGhostShading);
     ImGui::Separator();
     recomp::dev::menuSection();
 }
@@ -171,6 +186,8 @@ void handleEvent(const SDL_Event& ev) {
 }
 
 void draw() {
+    skip::drawOverlay();
+    recomp::crt::update();
     if (port::settings().enhancements.showFps) fpsOverlay();
     recomp::dev::drawOverlays();
     if (!sOpen) return;

@@ -4,6 +4,7 @@
 
 #include "port/options.h"
 #include "recomp/menu.h"
+#include "recomp/skip.h"
 
 #include <dolphin/pad.h>
 
@@ -63,7 +64,13 @@ std::vector<ScriptedPress> parseScript(const std::string& script) {
 
 void applyScript(PADStatus& st) {
     static const std::vector<ScriptedPress> script = parseScript(port::options().inputScript);
-    const u32 now = viRetraceCount();
+    // LM_INPUT_CLOCK=frames: time the script in guest frames, which do not depend on
+    // fast-forward (cutscene skipping) the way retraces do.
+    static const bool byFrames = [] {
+        const char* v = std::getenv("LM_INPUT_CLOCK");
+        return v && std::string(v) == "frames";
+    }();
+    const u32 now = byFrames ? skip::guestFrames() : viRetraceCount();
     for (const auto& p : script) {
         if (now >= p.start && now < p.start + p.frames) {
             st.button |= p.buttons;
@@ -74,7 +81,11 @@ void applyScript(PADStatus& st) {
     }
 }
 
+u16 sLastButtons = 0;  // port 1, as last handed to the game
+
 }  // namespace
+
+u16 padButtons() { return sLastButtons; }
 
 HLE(PADInit) { c.r[3] = PADInit(); }
 HLE(PADReset) { c.r[3] = PADReset(c.r[3]); }
@@ -97,8 +108,11 @@ HLE(PADRead) {
     if (!port::options().inputScript.empty()) {
         applyScript(st[0]);
         static u32 sLogged = 0;
-        if (st[0].button && sLogged++ < 20) log("[pad] retrace %u: buttons %04X err %d", viRetraceCount(), st[0].button, st[0].err);
+        if (st[0].button && sLogged++ < 20)
+            log("[pad] retrace %u frame %u: buttons %04X err %d", viRetraceCount(), skip::guestFrames(), st[0].button, st[0].err);
     }
+    skip::filterPad(st, PAD_MAX_CONTROLLERS);
+    sLastButtons = st[0].err == PAD_ERR_NONE ? st[0].button : 0;
     for (int i = 0; i < PAD_MAX_CONTROLLERS; i++) {
         const u32 p = c.r[3] + 12 * i;
         wr16(p, st[i].button);
