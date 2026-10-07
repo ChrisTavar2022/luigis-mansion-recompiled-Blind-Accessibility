@@ -1,5 +1,6 @@
 // HLE: ARAM (16 MiB auxiliary memory) and the ARQ DMA queue. Transfers
 // complete immediately; their callbacks are delivered as interrupts.
+#include "recomp/audio.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
@@ -20,6 +21,12 @@ u8* aram(u32 addr, u32 len) {
 }
 
 }  // namespace
+
+// Read access for the audio DSP stand-in (src/recomp/audio_dsp.cpp).
+const u8* audio::aramRead(u32 addr, u32 len) {
+    if (addr >= kAramSize || len > kAramSize - addr) return nullptr;
+    return sAram.data() + addr;
+}
 
 HLE(ARInit) { c.r[3] = kAramBase; }
 HLE(ARGetBaseAddress) { c.r[3] = kAramBase; }
