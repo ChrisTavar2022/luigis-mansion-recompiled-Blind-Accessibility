@@ -6,6 +6,9 @@
 - Enhancements: high frame rate via interpolation (logic stays 30 Hz), arbitrary resolution, widescreen + ultrawide, faithful advanced effects (EFB copies, fog, lighting, indirect).
 - Every user-facing option lives in the F1 overlay menu (Esc closes): tabs Visuals / Sound / Enhancements (gameplay toggles, cheats, debug viewers). Add new options to `src/port/settings.h` (persisted to %APPDATA%\Luigi's Mansion PC\settings.ini) and `src/recomp/menu.cpp`; CLI flags only override for testing.
 
+## Release requirements
+- End users never run scripts: the game takes their own disc images (ISO/RVZ via Aurora/nod), US required, PAL optional. Anything derived from them (PAL Hidden Mansion overlay now built by tools/hidden_mansion_data.py, recompiled code) is produced automatically on the user's machine (first launch / setup), cached outside the install, and re-validated by hash.
+
 ## Hard rules
 - Never commit game data (ISO/DOL/extracted files/saves) or `build/`. Dumps live in `Luigis Mansion US/`, `Lugis Mansion PAL/`, `orig/` (gitignored).
 - Architecture is a **build-time recompiler**: never hand-translate game functions into the repo; only original tooling/runtime/HLE/hook code. Generated C++ stays in `build/**/recomp_gen`.
