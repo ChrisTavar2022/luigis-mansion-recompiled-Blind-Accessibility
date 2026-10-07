@@ -13,6 +13,7 @@
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
+#include "recomp/widescreen.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -103,7 +104,18 @@ int main(int argc, char* argv[]) {
     AuroraConfig config{};
     config.appName = "Luigi's Mansion PC";
     config.logCallback = &logCallback;
+    // LM_CACHE_DIR: separate shader/pipeline cache, e.g. for test runs of different builds side by side.
+    if (const char* dir = std::getenv("LM_CACHE_DIR")) config.cachePath = dir;
+    const port::Options& opts = port::options();
+    config.startFullscreen = opts.fullscreen;
+    config.windowWidth = opts.windowWidth;
+    config.windowHeight = opts.windowHeight;
+    if (!config.windowWidth && opts.aspectRatio > 0.0f) {  // fixed aspect: open a window of that shape
+        config.windowHeight = 960;
+        config.windowWidth = u32(960.0f * opts.aspectRatio + 0.5f);
+    }
     aurora_initialize(argc, argv, &config);
+    ws::init();
 
     const std::string disc = findDisc();
     if (disc.empty() || !aurora_dvd_open(disc.c_str())) {
@@ -158,6 +170,7 @@ int main(int argc, char* argv[]) {
             else if (ev->type == AURORA_UNPAUSED) paused = false;
         }
         if (exiting || paused || !aurora_begin_frame()) continue;
+        ws::beginFrame();
         const bool running = frame::runUntilPresent();
         aurora_end_frame();
         if (!running) break;

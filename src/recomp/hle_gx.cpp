@@ -9,12 +9,20 @@
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
+#include "recomp/widescreen.h"
 
 #include <dolphin/gx.h>
 
+#include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <mutex>
+#include <string>
+#include <vector>
 
 namespace recomp {
 namespace {
@@ -63,21 +71,300 @@ ObjTable<GXTlutObj> sTlut;
 
 const void* ptr(u32 a) { return a ? hostp(a) : nullptr; }
 
-}  // namespace
+// --- widescreen (see widescreen.h) -------------------------------------------------
+// The guest's projection, viewport and scissor are tracked here, and the host
+// projection/scissor are chosen per draw: unchanged ("plain", i.e. stretched to
+// the window), with the projection's x row scaled by ws::factor() ("scaled":
+// Hor+ for perspective, centered 4:3 for orthographic), or with the y row scaled
+// by 1/factor ("zoom": a 4:3 picture enlarged to fill the width, top and bottom
+// cropped).
 
-void gx::endPendingDraw() {
-    if (sInBegin) {
-        sInBegin = false;
-        GXEnd();
+constexpr f32 kLogicalWidth = 640.0f;
+
+enum class ProjMode : u8 { None, Plain, Scaled, Zoom };
+
+struct {
+    f32 m[4][4] = {};
+    GXProjectionType type = GX_PERSPECTIVE;
+} sProj;
+bool sProjSet = false;              // the guest has set a projection
+bool sProjDirty = false;            // guest projection not yet sent to Aurora
+ProjMode sProjEmitted = ProjMode::None;
+
+struct {
+    f32 left = 0, wd = kLogicalWidth;
+} sVp;
+struct {
+    u32 x = 0, y = 0, w = 640, h = 480;
+} sScissor;
+bool sScissorPillar = false;  // Aurora currently has the centered-4:3 version of the guest scissor
+// Draws written straight into the FIFO by game code (J3D inlines its display-list
+// calls and matrix loads) bypass the HLE draw entry points, so the projection for
+// them is brought up to date before the first raw FIFO write after any change.
+bool sRawCheck = true;
+
+bool viewportFull() { return sVp.left <= 1.0f && sVp.left + sVp.wd >= kLogicalWidth - 1.0f; }
+
+void emitProjection(ProjMode mode) {
+    f32 m[4][4];
+    std::memcpy(m, sProj.m, sizeof(m));
+    if (mode == ProjMode::Scaled) {
+        const f32 s = ws::factor();
+        for (int j = 0; j < 4; j++) m[0][j] *= s;
+    } else if (mode == ProjMode::Zoom) {
+        const f32 s = ws::factor();
+        for (int j = 0; j < 4; j++) m[1][j] /= s;
+    }
+    GXSetProjection(m, sProj.type);
+    sProjEmitted = mode;
+    sProjDirty = false;
+}
+
+void emitScissor(bool pillar) {
+    if (pillar) {
+        const f32 s = ws::factor(), mid = kLogicalWidth * 0.5f;
+        const f32 l = mid + (f32(sScissor.x) - mid) * s;
+        const f32 r = mid + (f32(sScissor.x + sScissor.w) - mid) * s;
+        const u32 li = u32(std::max(0.0f, std::floor(l)));
+        GXSetScissor(li, sScissor.y, u32(std::ceil(r)) - li, sScissor.h);
+    } else {
+        GXSetScissor(sScissor.x, sScissor.y, sScissor.w, sScissor.h);
+    }
+    sScissorPillar = pillar;
+}
+
+// Projection mode for a draw. `ortho2D` is what an orthographic draw into the
+// full-screen viewport gets: Scaled (centered 4:3) or Plain (stretched).
+ProjMode drawMode(ProjMode ortho2D) {
+    if (!ws::active() || !viewportFull()) return ProjMode::Plain;
+    return sProj.type == GX_PERSPECTIVE ? ProjMode::Scaled : ortho2D;
+}
+
+// LM_WS_TRACE=1: per frame, a summary of the widescreen decisions (draw path,
+// projection type, viewport, result; consecutive repeats counted), logged
+// whenever it differs from the previous frame's.
+const bool sTrace = std::getenv("LM_WS_TRACE") != nullptr;
+using TraceFrame = std::vector<std::pair<std::string, u32>>;
+TraceFrame sTraceFrame, sTraceLast;
+void traceNote(const char* fmt, ...) {
+    if (!sTrace) return;
+    char buf[160];
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (!sTraceFrame.empty() && sTraceFrame.back().first == buf) sTraceFrame.back().second++;
+    else sTraceFrame.emplace_back(buf, 1);
+}
+
+void prepareDraw(ProjMode mode, const char* what = "draw") {
+    traceNote("%s %s vp(%.0f,+%.0f) -> %s", what, sProj.type == GX_PERSPECTIVE ? "persp" : "ortho", sVp.left,
+              sVp.wd, mode == ProjMode::Scaled ? "scaled" : mode == ProjMode::Zoom ? "zoom" : "plain");
+    if (sProjSet && (sProjDirty || mode != sProjEmitted)) emitProjection(mode);
+    const bool pillar = mode == ProjMode::Scaled && sProj.type == GX_ORTHOGRAPHIC &&
+                        (sScissor.x > 0 || sScissor.x + sScissor.w < 640);
+    if (pillar != sScissorPillar) emitScissor(pillar);
+}
+
+// Mirror of the vertex layout state that immediate-mode 2D draws use, so a
+// buffered draw's positions can be decoded (see coversScreen).
+struct VatEntry {
+    u8 cnt = 0, type = 0, frac = 0;
+};
+u8 sDesc[GX_VA_MAX_ATTR] = {};           // GXAttrType per attribute
+VatEntry sVat[GX_MAX_VTXFMT][GX_VA_MAX_ATTR];
+u32 sPosArray = 0, sPosStride = 0;
+f32 sPosMtx[10][3][4];
+bool sPosMtxValid[10] = {};
+u32 sCurPosMtx = 0;
+
+int attrSlot(u32 attr) { return attr == GX_VA_NBT ? GX_VA_NRM : attr < GX_VA_MAX_ATTR ? int(attr) : -1; }
+
+int compSize(u8 type) { return type <= GX_S8 ? 1 : type <= GX_S16 ? 2 : 4; }
+
+// Bytes one vertex of attribute `a` takes in the stream, or -1 if unknown.
+int attrSize(int fmt, int a) {
+    const u8 d = sDesc[a];
+    if (d == GX_NONE) return 0;
+    if (d == GX_INDEX8 || d == GX_INDEX16) {
+        const int idx = d == GX_INDEX8 ? 1 : 2;
+        return a == GX_VA_NRM && sVat[fmt][a].cnt == GX_NRM_NBT3 ? idx * 3 : idx;
+    }
+    if (a <= GX_VA_TEX7MTXIDX) return 1;
+    const VatEntry& v = sVat[fmt][a];
+    switch (a) {
+    case GX_VA_POS: return (v.cnt == GX_POS_XYZ ? 3 : 2) * compSize(v.type);
+    case GX_VA_NRM: return (v.cnt == GX_NRM_XYZ ? 3 : 9) * compSize(v.type);
+    case GX_VA_CLR0:
+    case GX_VA_CLR1: {
+        static constexpr int kClr[] = {2, 3, 4, 2, 3, 4};
+        return v.type < 6 ? kClr[v.type] : -1;
+    }
+    default:
+        if (a >= GX_VA_TEX0 && a <= GX_VA_TEX7) return (v.cnt == GX_TEX_ST ? 2 : 1) * compSize(v.type);
+        return -1;
     }
 }
 
-void hw::fifoWrite(u32 v, int size) {
+f32 readComp(const u8* p, u8 type, u8 frac) {
+    const f32 scale = 1.0f / f32(1u << frac);
+    switch (type) {
+    case GX_U8: return f32(p[0]) * scale;
+    case GX_S8: return f32(s8(p[0])) * scale;
+    case GX_U16: return f32(u16(p[0] << 8 | p[1])) * scale;
+    case GX_S16: return f32(s16(p[0] << 8 | p[1])) * scale;
+    default: return std::bit_cast<f32>(u32(p[0]) << 24 | u32(p[1]) << 16 | u32(p[2]) << 8 | p[3]);
+    }
+}
+
+// Immediate-mode draws under an orthographic projection are held back until the
+// draw ends, so the widescreen mode can look at where the vertices land before
+// choosing the projection (see classifyHeld).
+struct {
+    bool active = false;
+    GXPrimitive prim;
+    GXVtxFmt fmt;
+    u16 verts;
+    std::vector<u8> bytes;    // the stream as the console's FIFO would see it (big-endian)
+    std::vector<u32> writes;  // per FIFO write: byte offset | (size - 1) << 30, for exact replay
+} sHeld;
+
+// What the TEV samples, to tell a full-screen picture (a 4:3 background image)
+// from a full-screen fill or a blit of an EFB copy.
+std::vector<u32> sTexImage;      // guest image address (physical) per host texture object
+u32 sMapImage[8] = {};           // image bound to each GXTexMapID
+u8 sTevMap[16] = {};             // GXSetTevOrder map per stage (0xFF: none)
+u32 sNumTevStages = 1;
+std::vector<u32> sCopyDests;     // EFB copy destinations (physical), most recent last
+
+u32 phys(u32 a) { return a & 0x01FFFFFF; }
+bool isCopyDest(u32 image) { return std::find(sCopyDests.begin(), sCopyDests.end(), image) != sCopyDests.end(); }
+
+// True if any active TEV stage samples a texture that is not an EFB copy.
+bool samplesPicture() {
+    for (u32 s = 0; s < sNumTevStages && s < 16; s++) {
+        const u32 map = sTevMap[s];
+        if (map >= 8) continue;  // GX_TEXMAP_NULL, or GX_TEX_DISABLE set
+        if (sMapImage[map] && !isCopyDest(sMapImage[map])) return true;
+    }
+    return false;
+}
+
+bool coversScreen() {
+    const int fmt = sHeld.fmt;
+    const size_t n = sHeld.verts;
+    if (n == 0 || fmt >= GX_MAX_VTXFMT || sHeld.bytes.size() % n) return false;
+    const size_t stride = sHeld.bytes.size() / n;
+    int expected = 0, posOff = -1;
+    for (int a = 0; a <= GX_VA_TEX7; a++) {
+        const int sz = attrSize(fmt, a);
+        if (sz < 0) return false;
+        if (a == GX_VA_POS) posOff = expected;
+        expected += sz;
+    }
+    if (size_t(expected) != stride || sDesc[GX_VA_POS] == GX_NONE) return false;
+    const VatEntry pv = sVat[fmt][GX_VA_POS];
+    const int comps = pv.cnt == GX_POS_XYZ ? 3 : 2;
+    const int cs = compSize(pv.type);
+    f32 lo = 1e30f, hi = -1e30f;
+    for (size_t i = 0; i < n; i++) {
+        const u8* v = sHeld.bytes.data() + i * stride;
+        const u32 mtxId = sDesc[GX_VA_PNMTXIDX] == GX_DIRECT ? v[0] : sCurPosMtx;
+        if (mtxId % 3 || mtxId / 3 >= 10 || !sPosMtxValid[mtxId / 3]) return false;
+        u8 tmp[12];
+        const u8* p = v + posOff;
+        if (sDesc[GX_VA_POS] != GX_DIRECT) {
+            const u32 idx = sDesc[GX_VA_POS] == GX_INDEX8 ? p[0] : u32(p[0] << 8 | p[1]);
+            if (!sPosArray) return false;
+            for (int b = 0; b < comps * cs; b++) tmp[b] = u8(rd8(sPosArray + idx * sPosStride + b));
+            p = tmp;
+        }
+        const f32 pos[4] = {readComp(p, pv.type, pv.frac), readComp(p + cs, pv.type, pv.frac),
+                            comps == 3 ? readComp(p + 2 * cs, pv.type, pv.frac) : 0.0f, 1.0f};
+        const auto& m = sPosMtx[mtxId / 3];
+        f32 eye[4] = {0, 0, 0, 1};
+        for (int r = 0; r < 3; r++) eye[r] = m[r][0] * pos[0] + m[r][1] * pos[1] + m[r][2] * pos[2] + m[r][3];
+        const f32 ndc = sProj.m[0][0] * eye[0] + sProj.m[0][1] * eye[1] + sProj.m[0][2] * eye[2] + sProj.m[0][3];
+        lo = std::min(lo, ndc);
+        hi = std::max(hi, ndc);
+    }
+    return lo <= -0.98f && hi >= 0.98f;
+}
+
+// A held 2D draw into the full-screen viewport:
+//  - covers the logical width and is a fill or samples an EFB copy (fades,
+//    screen-space effects that copy the frame and draw it back): stretched,
+//    so it lines up with the stretched EFB;
+//  - covers the width and samples an ordinary texture (a 4:3 background
+//    picture): per --ws-backgrounds, centered by default;
+//  - anything else is HUD: centered 4:3.
+ProjMode classifyHeld() {
+    if (!coversScreen()) return ProjMode::Scaled;
+    traceNote("full-screen 2D, %s", samplesPicture() ? "picture" : "fill/copy");
+    if (!samplesPicture()) return ProjMode::Plain;
+    switch (ws::backgroundMode()) {
+    case ws::Background::Stretch: return ProjMode::Plain;
+    case ws::Background::Zoom: return ProjMode::Zoom;
+    default: return ProjMode::Scaled;
+    }
+}
+
+void rawFifoWrite(u32 v, int size) {
     switch (size) {
     case 1: GXCmd1u8(u8(v)); break;
     case 2: GXCmd1u16(u16(v)); break;
     default: GXCmd1u32(v); break;
     }
+}
+
+}  // namespace
+
+void gx::endFrame() {
+    endPendingDraw();
+    if (!sTrace) return;
+    static u32 frameNo = 0;
+    if (sTraceFrame != sTraceLast) {
+        std::string text;
+        for (const auto& [note, n] : sTraceFrame) text += "\n  " + note + (n > 1 ? " x" + std::to_string(n) : "");
+        log("[ws] frame %u (factor %.3f):%s", frameNo, ws::factor(), text.c_str());
+        std::fflush(stdout);
+    }
+    frameNo++;
+    sTraceLast = std::move(sTraceFrame);
+    sTraceFrame.clear();
+}
+
+void gx::endPendingDraw() {
+    if (!sInBegin) return;
+    sInBegin = false;
+    if (sHeld.active) {
+        sHeld.active = false;
+        prepareDraw(classifyHeld(), "held");
+        sRawCheck = true;
+        GXBegin(sHeld.prim, sHeld.fmt, sHeld.verts);
+        for (u32 w : sHeld.writes) {
+            const int size = int(w >> 30) + 1;  // 1, 2 or 4 (encoded 0, 1, 3)
+            const u32 off = w & 0x3FFFFFFF;
+            u32 v = 0;
+            for (int b = 0; b < size; b++) v = v << 8 | sHeld.bytes[off + b];
+            rawFifoWrite(v, size);
+        }
+    }
+    GXEnd();
+}
+
+void hw::fifoWrite(u32 v, int size) {
+    if (sHeld.active) [[unlikely]] {
+        const u32 off = u32(sHeld.bytes.size());
+        for (int b = size - 1; b >= 0; b--) sHeld.bytes.push_back(u8(v >> (8 * b)));
+        sHeld.writes.push_back(off | u32(size - 1) << 30);
+        return;
+    }
+    if (sRawCheck && !sInBegin) [[unlikely]] {
+        sRawCheck = false;
+        prepareDraw(drawMode(ProjMode::Scaled), "fifo");
+    }
+    rawFifoWrite(v, size);
 }
 
 #define GXHLE(name)                                       \
@@ -107,14 +394,21 @@ GXHLE(GXInvalidateTexAll) { GXInvalidateTexAll(); }
 
 // --- vertex format ----------------------------------------------------------------
 
-GXHLE(GXClearVtxDesc) { GXClearVtxDesc(); }
-GXHLE(GXSetVtxDesc) { GXSetVtxDesc(GXAttr(c.r[3]), GXAttrType(c.r[4])); }
+GXHLE(GXClearVtxDesc) {
+    std::memset(sDesc, 0, sizeof(sDesc));
+    GXClearVtxDesc();
+}
+GXHLE(GXSetVtxDesc) {
+    if (const int a = attrSlot(c.r[3]); a >= 0) sDesc[a] = u8(c.r[4]);
+    GXSetVtxDesc(GXAttr(c.r[3]), GXAttrType(c.r[4]));
+}
 GXHLE(GXSetVtxDescv) {
     GXVtxDescList list[32];
     int n = 0;
     for (u32 p = c.r[3]; n < 31; p += 8) {
         list[n].attr = GXAttr(rd32(p));
         list[n].type = GXAttrType(rd32(p + 4));
+        if (const int a = attrSlot(list[n].attr); a >= 0) sDesc[a] = u8(list[n].type);
         if (list[n++].attr == GX_VA_NULL) break;
     }
     list[n - 1].attr = GX_VA_NULL;
@@ -126,6 +420,8 @@ GXHLE(GXGetVtxDesc) {
     wr32(c.r[4], u32(t));
 }
 GXHLE(GXSetVtxAttrFmt) {
+    if (const int a = attrSlot(c.r[4]); a >= 0 && c.r[3] < GX_MAX_VTXFMT)
+        sVat[c.r[3]][a] = {u8(c.r[5]), u8(c.r[6]), u8(c.r[7])};
     GXSetVtxAttrFmt(GXVtxFmt(c.r[3]), GXAttr(c.r[4]), GXCompCnt(c.r[5]), GXCompType(c.r[6]), u8(c.r[7]));
 }
 GXHLE(GXSetVtxAttrFmtv) {
@@ -133,26 +429,56 @@ GXHLE(GXSetVtxAttrFmtv) {
     int n = 0;
     for (u32 p = c.r[4]; n < 31; p += 16) {
         list[n] = {GXAttr(rd32(p)), GXCompCnt(rd32(p + 4)), GXCompType(rd32(p + 8)), u8(rd8(p + 12))};
+        if (const int a = attrSlot(list[n].attr); a >= 0 && c.r[3] < GX_MAX_VTXFMT)
+            sVat[c.r[3]][a] = {u8(list[n].cnt), u8(list[n].type), list[n].frac};
         if (list[n++].attr == GX_VA_NULL) break;
     }
     list[n - 1].attr = GX_VA_NULL;
     GXSetVtxAttrFmtv(GXVtxFmt(c.r[3]), list);
 }
 // Size 0: Aurora sizes the array from the indices each draw uses (patch 0002).
-GXHLE(GXSetArray) { GXSetArray(GXAttr(c.r[3]), ptr(c.r[4]), 0, u8(c.r[5]), false); }
-
-GXHLE(GXBegin) {
-    GXBegin(GXPrimitive(c.r[3]), GXVtxFmt(c.r[4]), u16(c.r[5]));
-    sInBegin = true;
+GXHLE(GXSetArray) {
+    if (c.r[3] == GX_VA_POS) {
+        sPosArray = c.r[4];
+        sPosStride = u8(c.r[5]);
+    }
+    GXSetArray(GXAttr(c.r[3]), ptr(c.r[4]), 0, u8(c.r[5]), false);
 }
 
-GXHLE(GXCallDisplayList) { GXCallDisplayList(hostp(c.r[3]), c.r[4]); }
+GXHLE(GXBegin) {
+    sInBegin = true;
+    if (ws::active() && sProj.type == GX_ORTHOGRAPHIC && viewportFull()) {
+        sHeld.active = true;
+        sHeld.prim = GXPrimitive(c.r[3]);
+        sHeld.fmt = GXVtxFmt(c.r[4]);
+        sHeld.verts = u16(c.r[5]);
+        sHeld.bytes.clear();
+        sHeld.writes.clear();
+        return;
+    }
+    prepareDraw(drawMode(ProjMode::Scaled), "begin");
+    GXBegin(GXPrimitive(c.r[3]), GXVtxFmt(c.r[4]), u16(c.r[5]));
+}
+
+GXHLE(GXCallDisplayList) {
+    prepareDraw(drawMode(ProjMode::Scaled), "dlist");
+    GXCallDisplayList(hostp(c.r[3]), c.r[4]);
+}
 GXHLE(GXBeginDisplayList) { GXBeginDisplayList(hostp(c.r[3]), c.r[4]); }
 GXHLE(GXEndDisplayList) { c.r[3] = GXEndDisplayList(); }
 
-GXHLE(GXDrawSphere1) { GXDrawSphere1(u8(c.r[3])); }
-GXHLE(GXDrawCube) { GXDrawCube(); }
-GXHLE(GXDrawCylinder) { GXDrawCylinder(u8(c.r[3])); }
+GXHLE(GXDrawSphere1) {
+    prepareDraw(drawMode(ProjMode::Scaled));
+    GXDrawSphere1(u8(c.r[3]));
+}
+GXHLE(GXDrawCube) {
+    prepareDraw(drawMode(ProjMode::Scaled));
+    GXDrawCube();
+}
+GXHLE(GXDrawCylinder) {
+    prepareDraw(drawMode(ProjMode::Scaled));
+    GXDrawCylinder(u8(c.r[3]));
+}
 
 // --- texgen / transform ---------------------------------------------------------------
 
@@ -161,12 +487,22 @@ GXHLE(GXSetTexCoordGen2) {
     GXSetTexCoordGen2(GXTexCoordID(c.r[3]), GXTexGenType(c.r[4]), GXTexGenSrc(c.r[5]), c.r[6], GXBool(c.r[7]),
                       c.r[8]);
 }
+// Sent to Aurora lazily, at the next draw, once the viewport and (for 2D) the
+// vertices tell which widescreen treatment it gets.
 GXHLE(GXSetProjection) {
     const Mtx<4, 4> m(c.r[3]);
-    GXSetProjection(m.m, GXProjectionType(c.r[4]));
+    std::memcpy(sProj.m, m.m, sizeof(sProj.m));
+    sProj.type = GXProjectionType(c.r[4]);
+    sProjDirty = sProjSet = sRawCheck = true;
+    traceNote("projection %s from %08X", c.r[4] ? "ortho" : "persp", c.lr);
+    if (!ws::active()) emitProjection(ProjMode::Plain);
 }
 GXHLE(GXLoadPosMtxImm) {
     const Mtx<3, 4> m(c.r[3]);
+    if (const u32 id = c.r[4]; id % 3 == 0 && id / 3 < 10) {
+        std::memcpy(sPosMtx[id / 3], m.m, sizeof(m.m));
+        sPosMtxValid[id / 3] = true;
+    }
     GXLoadPosMtxImm(m.m, c.r[4]);
 }
 GXHLE(GXLoadNrmMtxImm) {
@@ -190,12 +526,26 @@ GXHLE(GXLoadTexMtxImm) {
         GXLoadTexMtxImm(m.m, c.r[4], type);
     }
 }
-GXHLE(GXSetCurrentMtx) { GXSetCurrentMtx(c.r[3]); }
-GXHLE(GXSetViewport) { GXSetViewport(farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6)); }
+GXHLE(GXSetCurrentMtx) {
+    sCurPosMtx = c.r[3];
+    GXSetCurrentMtx(c.r[3]);
+}
+GXHLE(GXSetViewport) {
+    sRawCheck = true;
+    sVp.left = farg(c, 1);
+    sVp.wd = farg(c, 3);
+    GXSetViewport(farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6));
+}
 GXHLE(GXSetViewportJitter) {
+    sRawCheck = true;
+    sVp.left = farg(c, 1);
+    sVp.wd = farg(c, 3);
     GXSetViewportJitter(farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6), c.r[3]);
 }
-GXHLE(GXSetScissor) { GXSetScissor(c.r[3], c.r[4], c.r[5], c.r[6]); }
+GXHLE(GXSetScissor) {
+    sScissor = {c.r[3], c.r[4], c.r[5], c.r[6]};
+    emitScissor(false);
+}
 GXHLE(GXSetClipMode) { GXSetClipMode(GXClipMode(c.r[3])); }
 
 // --- geometry state ------------------------------------------------------------------
@@ -233,13 +583,20 @@ GXHLE(GXLoadLightObjImm) { GXLoadLightObjImm(light(c.r[3]), GXLightID(c.r[4])); 
 
 // --- textures ------------------------------------------------------------------------------
 
+static void noteTexImage(u32 obj, u32 image) {
+    const u32 idx = rd32(obj + 4);
+    if (idx >= sTexImage.size()) sTexImage.resize(idx + 1);
+    sTexImage[idx] = phys(image);
+}
 GXHLE(GXInitTexObj) {
     GXInitTexObj(sTex.forInit(c.r[3], kTexTag), ptr(c.r[4]), u16(c.r[5]), u16(c.r[6]), GXTexFmt(c.r[7]),
                  GXTexWrapMode(c.r[8]), GXTexWrapMode(c.r[9]), GXBool(c.r[10]));
+    noteTexImage(c.r[3], c.r[4]);
 }
 GXHLE(GXInitTexObjCI) {
     GXInitTexObjCI(sTex.forInit(c.r[3], kTexTag), ptr(c.r[4]), u16(c.r[5]), u16(c.r[6]), GXCITexFmt(c.r[7]),
                    GXTexWrapMode(c.r[8]), GXTexWrapMode(c.r[9]), GXBool(c.r[10]), stackArg(c, 0));
+    noteTexImage(c.r[3], c.r[4]);
 }
 GXHLE(GXInitTexObjLOD) {
     if (GXTexObj* o = sTex.get(c.r[3], kTexTag))
@@ -247,8 +604,13 @@ GXHLE(GXInitTexObjLOD) {
                         GXBool(c.r[6]), GXBool(c.r[7]), GXAnisotropy(c.r[8]));
 }
 GXHLE(GXLoadTexObj) {
-    if (GXTexObj* o = sTex.get(c.r[3], kTexTag)) GXLoadTexObj(o, GXTexMapID(c.r[4]));
-    else log("[gx] GXLoadTexObj: unknown texture object %08X", c.r[3]);
+    if (GXTexObj* o = sTex.get(c.r[3], kTexTag)) {
+        GXLoadTexObj(o, GXTexMapID(c.r[4]));
+        const u32 idx = rd32(c.r[3] + 4);
+        if (c.r[4] < 8) sMapImage[c.r[4]] = idx < sTexImage.size() ? sTexImage[idx] : 0;
+    } else {
+        log("[gx] GXLoadTexObj: unknown texture object %08X", c.r[3]);
+    }
 }
 GXHLE(GXGetTexBufferSize) {
     c.r[3] = GXGetTexBufferSize(u16(c.r[3]), u16(c.r[4]), c.r[5], GXBool(c.r[6]), u8(c.r[7]));
@@ -263,9 +625,13 @@ GXHLE(GXLoadTlut) {
 
 // --- TEV -------------------------------------------------------------------------------------
 
-GXHLE(GXSetNumTevStages) { GXSetNumTevStages(u8(c.r[3])); }
+GXHLE(GXSetNumTevStages) {
+    sNumTevStages = u8(c.r[3]);
+    GXSetNumTevStages(u8(c.r[3]));
+}
 GXHLE(GXSetTevOp) { GXSetTevOp(GXTevStageID(c.r[3]), GXTevMode(c.r[4])); }
 GXHLE(GXSetTevOrder) {
+    if (c.r[3] < 16) sTevMap[c.r[3]] = c.r[5] & 0x100 ? 0xFF : u8(c.r[5]);
     GXSetTevOrder(GXTevStageID(c.r[3]), GXTexCoordID(c.r[4]), GXTexMapID(c.r[5]), GXChannelID(c.r[6]));
 }
 GXHLE(GXSetTevColorIn) {
@@ -383,8 +749,17 @@ GXHLE(GXSetCopyFilter) {
     GXSetCopyFilter(GXBool(c.r[3]), pattern, GXBool(c.r[5]), vfilter);
 }
 GXHLE(GXCopyDisp) { GXCopyDisp(hostp(c.r[3]), GXBool(c.r[4])); }
-GXHLE(GXSetTexCopySrc) { GXSetTexCopySrc(u16(c.r[3]), u16(c.r[4]), u16(c.r[5]), u16(c.r[6])); }
+GXHLE(GXSetTexCopySrc) {
+    traceNote("copy src (%u,%u %ux%u)", c.r[3], c.r[4], c.r[5], c.r[6]);
+    GXSetTexCopySrc(u16(c.r[3]), u16(c.r[4]), u16(c.r[5]), u16(c.r[6]));
+}
 GXHLE(GXSetTexCopyDst) { GXSetTexCopyDst(u16(c.r[3]), u16(c.r[4]), GXTexFmt(c.r[5]), GXBool(c.r[6])); }
-GXHLE(GXCopyTex) { GXCopyTex(hostp(c.r[3]), GXBool(c.r[4])); }
+GXHLE(GXCopyTex) {
+    if (!isCopyDest(phys(c.r[3]))) {
+        if (sCopyDests.size() >= 64) sCopyDests.erase(sCopyDests.begin());
+        sCopyDests.push_back(phys(c.r[3]));
+    }
+    GXCopyTex(hostp(c.r[3]), GXBool(c.r[4]));
+}
 
 }  // namespace recomp
