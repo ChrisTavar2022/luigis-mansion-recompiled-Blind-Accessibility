@@ -17,12 +17,22 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <cstdio>
 
 namespace recomp::menu {
 namespace {
 
-bool sOpen = false;
+// Test aid: LM_MENU_TAB=<Enhancements sub-tab name> starts with the menu open on that tab.
+const char* sEnvTab = std::getenv("LM_MENU_TAB");
+bool sOpen = sEnvTab != nullptr;
+
+// Flags that select a tab once when LM_MENU_TAB names it.
+ImGuiTabItemFlags envTab(const char* name) {
+    if (!sEnvTab || std::strcmp(sEnvTab, name) != 0) return 0;
+    return ImGuiTabItemFlags_SetSelected;
+}
 bool sDirty = false;
 
 void applyResolution() { VISetFrameBufferScale(float(port::settings().video.resolutionScale)); }
@@ -164,19 +174,19 @@ void debugTab() { recomp::dev::debugSection(); }
 
 void enhancementsTab() {
     if (ImGui::BeginTabBar("enhancements")) {
-        if (ImGui::BeginTabItem("General")) {
+        if (ImGui::BeginTabItem("General", nullptr, envTab("General"))) {
             generalEnhancementsTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Gameplay")) {
+        if (ImGui::BeginTabItem("Gameplay", nullptr, envTab("Gameplay"))) {
             gameplayTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Unused content")) {
+        if (ImGui::BeginTabItem("Unused content", nullptr, envTab("Unused content"))) {
             unusedContentTab();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Debug")) {
+        if (ImGui::BeginTabItem("Debug", nullptr, envTab("Debug"))) {
             debugTab();
             ImGui::EndTabItem();
         }
@@ -246,7 +256,7 @@ void draw() {
                 soundTab();
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("Enhancements")) {
+            if (ImGui::BeginTabItem("Enhancements", nullptr, sEnvTab ? ImGuiTabItemFlags_SetSelected : 0)) {
                 enhancementsTab();
                 ImGui::EndTabItem();
             }

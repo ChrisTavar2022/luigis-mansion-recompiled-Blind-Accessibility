@@ -33,6 +33,7 @@ const AppearPoint* mansionAppearPoints(int* count);
 void requestWarp(int map, int appearPoint = 0);
 bool inGameScene();  // the game scene is running (warps possible)
 int currentMap();
+void noteLuigi(unsigned guestActor);  // from Luigi's per-frame update (hidden_mansion_hooks.cpp)
 
 void unusedSection();           // Enhancements > Unused content: depth blur, unused areas
 void debugSection();            // Enhancements > Debug: debug switches, Visit area, model viewer

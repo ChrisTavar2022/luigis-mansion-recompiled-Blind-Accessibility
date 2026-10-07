@@ -69,6 +69,7 @@ const AppearPoint kAppear[] = {
 std::atomic<int> sWarpMap{-1};
 std::atomic<int> sWarpAppear{0};
 u32 sGameScene = 0xFFFFFFFF;  // scene id the game scene setup ran under
+u32 sLuigi = 0;                // Luigi's actor, seen by his update this frame
 
 // Values sampled on the guest thread for the host-side overlays.
 struct Status {
@@ -110,6 +111,7 @@ void requestWarp(int map, int appearPoint) {
 }
 bool inGameScene() { return sStatus.inGame; }
 int currentMap() { return sStatus.map; }
+void noteLuigi(unsigned guestActor) { sLuigi = guestActor; }
 
 // ---- hooks (guest thread) ------------------------------------------------------------
 
@@ -189,12 +191,13 @@ HLE(LMChangeFrameBuffer__Fv) {
     if (s.inGame) {
         s.map = s32(rd32(kCurMapNo));
         s.room = s32(rd32(kRoomState + 0xC) >> 24);
-        const u32 luigi = gu::call(c, GU_SYM("fn_800AD39C"), {0});
+        const u32 luigi = sLuigi;
         if (gu::inMem1(luigi))
             for (int i = 0; i < 3; i++) s.pos[i] = gu::rdf(luigi + 0x44 + 4 * i);
     }
     sStatus = s;
 
+    sLuigi = 0;
     sReportShown.swap(sReportBuild);
     sReportBuild.clear();
 

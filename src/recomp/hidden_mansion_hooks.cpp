@@ -1,6 +1,7 @@
 // PAL Hidden Mansion tuning on the US build: hooks (tools/recomp/hooks.txt) that run the
 // original US function and adjust its inputs or results while hm::palActive().
 // What each change is, and where PAL makes it: docs/HIDDEN_MANSION.md ("Difficulty and tuning").
+#include "recomp/dev_tools.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
@@ -164,6 +165,7 @@ HLE(fn_800168EC) {
 HLE(fn_800B783C) {
     static u32 sLuigi = 0, sFrames = 0;
     const u32 self = c.r[3];
+    dev::noteLuigi(self);  // info overlay position
     if (hm::palActive()) {
         if (rd32(kCurMapNo) == 11) {
             if (self != sLuigi) sLuigi = self, sFrames = 0;

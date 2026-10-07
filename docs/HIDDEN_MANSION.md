@@ -272,7 +272,7 @@ scripts while the variant is PAL.
 | `fn_8007F9B8`, `fn_800807EC`, `fn_800809CC` | Mirror: main/C stick X negated for Luigi's input |
 | `fn_80041214` + `fn_80009148` | Mirror: projected HUD positions x = 640 - x |
 | `fn_80055C54` + `set__7JUTRectFiiii` | Mirror: iris wipe centred at 328 |
-| `fn_8000C188` | Dev only: `LM_START_MAP=<n>` loads map n instead of the mansion |
+| `fn_8000C188` | Dev only: `LM_START_MAP=<n>` loads map n instead of the mansion (now in `dev_tools.cpp`, docs/UNUSED_CONTENT.md) |
 
 **Literal patches** (`hm::syncConstants`, every frame): `0x804DB278` 1.8 → 3.6 (rocking horse
 scale), `0x804DB2B0` 50 → 100.
