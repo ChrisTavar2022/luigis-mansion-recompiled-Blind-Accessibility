@@ -176,7 +176,7 @@ void buildCatalogue() {
 
 // ---- viewer state ---------------------------------------------------------------------
 
-// Test aid: LM_DEV_VIEWER=<archive path>[|<key name part>] opens the viewer on that archive.
+// Test aid: LM_DEV_VIEWER=<archive path>[#<model name part>][|<key name part>] opens the viewer on it.
 const char* sEnvArchive = std::getenv("LM_DEV_VIEWER");
 bool sOpen = sEnvArchive != nullptr;
 int sArchiveSel = -1;
@@ -260,6 +260,32 @@ bool keyMatches(int key, int mdl) {
         return i == std::string::npos ? std::string() : p.substr(0, i + 5);
     };
     return scope(sMembers[key].path) == scope(sMembers[mdl].path);
+}
+
+void requestLoad();
+
+// Selects an archive, its first model and an animation: the one containing `keyName` if
+// given, else a "wait" pose, else the first key of the model's archive.
+void openArchive(int idx, const char* keyName, const char* mdlName = nullptr) {
+    selectArchive(idx);
+    if (sMdls.empty()) return;
+    sMdlSel = 0;
+    if (mdlName)
+        for (int m = 0; m < int(sMdls.size()); m++)
+            if (sMembers[sMdls[m]].path.find(mdlName) != std::string::npos) {
+                sMdlSel = m;
+                break;
+            }
+    int first = -1, wait = -1, named = -1;
+    for (int k = 0; k < int(sKeys.size()); k++) {
+        if (!keyMatches(sKeys[k], sMdls[sMdlSel])) continue;
+        const std::string& p = sMembers[sKeys[k]].path;
+        if (first < 0) first = k;
+        if (wait < 0 && p.find("wait") != std::string::npos) wait = k;
+        if (named < 0 && keyName && p.find(keyName) != std::string::npos) named = k;
+    }
+    sKeySel = named >= 0 ? named : wait >= 0 ? wait : first;
+    requestLoad();
 }
 
 void requestLoad() {
@@ -441,7 +467,7 @@ void guestFrame(Ctx& c) {
         sFrame += sAnim.speed;
         if (sFrame >= float(sNumFrames)) sFrame = std::fmod(sFrame, float(sNumFrames));
     }
-    if (sCam.spin) sCam.yaw += 0.01f;
+    if (sCam.spin) sCam.yaw = std::remainder(sCam.yaw + 0.01f, 6.2831853f);
     drawModel(c);
 }
 
@@ -451,22 +477,13 @@ void window() {
     if (sEnvArchive) {
         const std::string spec = sEnvArchive;
         sEnvArchive = nullptr;
-        const size_t bar = spec.find('|');
-        const std::string arc = spec.substr(0, bar);
+        // <archive>[#<model name part>][|<animation name part>]
+        const size_t bar = spec.find('|'), hash = spec.find('#');
+        const std::string key = bar == std::string::npos ? "" : spec.substr(bar + 1);
+        const std::string mdl = hash == std::string::npos ? "" : spec.substr(hash + 1, bar == std::string::npos ? std::string::npos : bar - hash - 1);
         for (int i = 0; i < int(sArchives.size()); i++)
-            if (sArchives[i] == arc) {
-                selectArchive(i);
-                if (!sMdls.empty()) {
-                    sMdlSel = 0;
-                    if (bar != std::string::npos)
-                        for (int k = 0; k < int(sKeys.size()); k++)
-                            if (sMembers[sKeys[k]].path.find(spec.substr(bar + 1)) != std::string::npos) {
-                                sKeySel = k;
-                                break;
-                            }
-                    requestLoad();
-                }
-            }
+            if (sArchives[i] == spec.substr(0, std::min(bar, hash)))
+                openArchive(i, key.empty() ? nullptr : key.c_str(), mdl.empty() ? nullptr : mdl.c_str());
     }
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + 8, vp->Pos.y + 8), ImGuiCond_FirstUseEver);
@@ -481,21 +498,7 @@ void window() {
     if (ImGui::BeginChild("archives", ImVec2(0, ImGui::GetContentRegionAvail().y * 0.4f), ImGuiChildFlags_Borders)) {
         for (int i = 0; i < int(sArchives.size()); i++) {
             if (sFilter[0] && sArchives[i].find(sFilter) == std::string::npos) continue;
-            if (ImGui::Selectable(sArchives[i].c_str(), sArchiveSel == i)) {
-                selectArchive(i);
-                if (!sMdls.empty()) {
-                    sMdlSel = 0;
-                    // Default animation: a "wait" pose if there is one, else the first key.
-                    for (int k = 0; k < int(sKeys.size()); k++)
-                        if (keyMatches(sKeys[k], sMdls[0]) && sKeySel < 0) sKeySel = k;
-                    for (int k = 0; k < int(sKeys.size()); k++)
-                        if (keyMatches(sKeys[k], sMdls[0]) && sMembers[sKeys[k]].path.find("wait") != std::string::npos) {
-                            sKeySel = k;
-                            break;
-                        }
-                    requestLoad();
-                }
-            }
+            if (ImGui::Selectable(sArchives[i].c_str(), sArchiveSel == i)) openArchive(i, nullptr);
         }
     }
     ImGui::EndChild();
@@ -512,9 +515,9 @@ void window() {
                 }
             ImGui::EndCombo();
         }
-        const char* curKey = sKeySel >= 0 ? sMembers[sKeys[sKeySel]].path.c_str() : "(rest pose)";
+        const char* curKey = sKeySel >= 0 ? sMembers[sKeys[sKeySel]].path.c_str() : "(no animation)";
         if (ImGui::BeginCombo("Animation", curKey)) {
-            if (ImGui::Selectable("(rest pose)", sKeySel < 0)) {
+            if (ImGui::Selectable("(no animation)", sKeySel < 0)) {
                 sKeySel = -1;
                 requestLoad();
             }

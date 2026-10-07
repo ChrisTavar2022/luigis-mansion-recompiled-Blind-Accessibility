@@ -57,7 +57,7 @@ const AppearPoint kAppear[] = {
     {0, 2, "Foyer (new game / default)"},
     {6, 2, "Foyer, by the front door"},
     {2, 16, "1F, west side"},
-    {9, 70, "Basement"},
+    {9, 70, "Secret Altar (basement)"},
     {1, 24, "2F, west side"},
     {7, 36, "2F, east side"},
     {4, 56, "3F, centre"},
@@ -245,7 +245,7 @@ void drawOverlays() {
             ImGui::Text("room %d", s.room);
             ImGui::Text("luigi %.0f %.0f %.0f", s.pos[0], s.pos[1], s.pos[2]);
         } else {
-            ImGui::Text("scene %u (not in game)", s.scene);
+            ImGui::Text("scene %u: transition, event or menu (warps wait)", s.scene);
         }
         ImGui::End();
     }
