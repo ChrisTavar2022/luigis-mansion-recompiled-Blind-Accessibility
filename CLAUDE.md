@@ -38,5 +38,6 @@
 - Timing matters: instantaneous HW completion can break game assumptions (BootScene heap race).
 
 ## Status (keep updated)
-- Boots to title (3D + 2D), START works, scene changes run. Audio silent (DSP hooked out), memory card stubbed (no card).
+- Boots → title → main menu → opening cutscene → in-game foyer with HUD (`--input "600:START*10,1000:A*6"`, foyer ~70 s).
+- Memory card emulated (GCI folders in %APPDATA%\Luigi's Mansion PC\USA\Card A). Audio silent (DSP hooked out; streamed-BGM-ready hooked to 1 in hooks_temp.cpp).
 - Parallel work streams: memory card, audio, widescreen/interp, PAL Hidden Mansion (agent worktree branches).
