@@ -44,6 +44,7 @@ void visualsTab() {
     static const char* kAspects[] = {"Original 4:3", "Match window", "16:9", "16:10", "21:9", "32:9"};
     sDirty |= combo("Aspect ratio", v.aspect, kAspects, 6);
     sDirty |= ImGui::Checkbox("Keep HUD at 4:3", &v.hudKeep4x3);
+    pending("edge anchoring planned");
     sDirty |= ImGui::SliderFloat("Field of view", &v.fovScale, 0.75f, 1.5f, "%.2fx");
     pending("in progress");
     ImGui::Separator();
@@ -131,10 +132,11 @@ void handleEvent(const SDL_Event& ev) {
 void draw() {
     if (port::settings().enhancements.showFps) fpsOverlay();
     if (!sOpen) return;
-    ImGui::SetNextWindowSize(ImVec2(520, 380), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(680, 400), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
     bool open = true;
     if (ImGui::Begin("Luigi's Mansion PC  (F1)", &open, ImGuiWindowFlags_NoCollapse)) {
+        ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.45f);
         if (ImGui::BeginTabBar("tabs")) {
             if (ImGui::BeginTabItem("Visuals")) {
                 visualsTab();
@@ -150,6 +152,7 @@ void draw() {
             }
             ImGui::EndTabBar();
         }
+        ImGui::PopItemWidth();
     }
     ImGui::End();
     if (!open) sOpen = false;

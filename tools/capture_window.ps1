@@ -5,7 +5,8 @@ param(
     [string]$Out = "build\shot.png",
     [string]$ExeArgs = "",
     [switch]$KeepRunning,
-    [string]$Exe = "lmport"
+    [string]$Exe = "lmport",
+    [string]$Keys = ""   # SendKeys string pressed before capturing, e.g. "{F1}"
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -38,6 +39,10 @@ if ($p.HasExited) { throw ("$Exe exited early with 0x{0:X}" -f $p.ExitCode) }
 $h = $p.MainWindowHandle
 [Win]::SetForegroundWindow($h) | Out-Null
 Start-Sleep -Milliseconds 300
+if ($Keys) {
+    (New-Object -ComObject WScript.Shell).SendKeys($Keys)
+    Start-Sleep -Milliseconds 700
+}
 $r = New-Object Win+RECT
 [Win]::GetClientRect($h, [ref]$r) | Out-Null
 $pt = New-Object Win+POINT
