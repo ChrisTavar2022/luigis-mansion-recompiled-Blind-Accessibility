@@ -118,6 +118,13 @@ std::vector<Field> fields() {
         flag("gameplay", "always_ride", g.alwaysRide),
         flag("debug", "particle_report", e.dbgParticleReport),
         flag("debug", "depth_blur", e.dbgDepthBlur),
+        flag("debug", "luigi_debug_flags", e.dbgLuigiFlags),
+        flag("debug", "info_display", e.dbgInfoDisplay),
+        flag("debug", "scan_boxes", e.dbgScanBoxes),
+        flag("debug", "axes", e.dbgAxes),
+        num("debug", "hud_test", e.dbgHudTest),
+        flag("debug", "font_test", e.dbgFontTest),
+        flag("debug", "font_test_latin", e.dbgFontTestLatin),
     };
 }
 

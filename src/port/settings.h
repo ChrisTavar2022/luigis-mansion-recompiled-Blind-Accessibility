@@ -73,6 +73,13 @@ struct EnhancementSettings {
     // Debug: the game's own compiled-in debug switches (src/recomp/dev_tools.cpp)
     bool dbgParticleReport = false;  // particle manager JUTReport text
     bool dbgDepthBlur = false;       // unused depth blur screen pass
+    bool dbgLuigiFlags = false;      // "Debug Mode" AR code: Luigi debug flags 0xCB
+    bool dbgInfoDisplay = false;     // Luigi's debug text (dust, aura, water, heart)
+    bool dbgScanBoxes = false;       // Game Boy Horror scan boxes
+    bool dbgAxes = false;            // XYZ axes at Luigi
+    int dbgHudTest = 0;              // 0 off, 1 icons, 2 numbers, 3 element meter
+    bool dbgFontTest = false;        // font test screen text
+    bool dbgFontTestLatin = false;   // PAL fix: last font-test line shows "alphabet 123"
 };
 
 // Gameplay / difficulty options (F1 > Enhancements > Gameplay). Defaults are neutral: the

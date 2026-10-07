@@ -253,6 +253,28 @@ Also checked and not usable: `print__14JUTDirectPrint` is only the crash screen
 (JUTException); `test.blog` and `/scrn/testtitl.blo` are unreferenced layout names;
 `ATestData.cpp` (Ajioka) is a water-effect test loader whose strings are OSPanic messages.
 
+### Debug modes known from Action Replay codes
+
+Community AR codes (TCRF / GC-Forever) reach more leftover debug code. The recompiled game has
+no instruction memory to patch, so each code is reproduced by a hook with the same effect
+(`src/recomp/dev_tools.cpp`, Debug tab "Debug modes", all off by default; the original codes
+activated them with button combinations on the pad word `0x804CAFD0`, here they are toggles).
+
+| Feature | AR code (US) | What it changes in the game | Port |
+|---------|--------------|-----------------------------|------|
+| Debug mode | `403A2B84 001325CB` (writes 0xCB to byte +0x1325 of the actor at `[0x803A2B84]`, Luigi) | Luigi's debug-flag halfword +0x1324 (initialised to 0x14 by `fn_800AD5AC`). Bits: 0x08 debug text, 0x40 scan boxes (both read by Luigi's draw callback `fn_800B172C`), 0x10 (`fn_800AE770`), 0x20 (`fn_800B1BD4`, toggled by `fn_800B2F98`), 0x04 (`fn_800B80C4`); 0xCB clears 0x10/0x04, which changes how Luigi is drawn | Low byte forced to 0xCB in Luigi's update hook (`fn_800B783C`); the game's value is put back when turned off |
+| Debug info display | NOP the `beq` at `0x800B17E4` | `fn_800B172C` pass 6: Japanese text at the top left, ホコリ (dust) mg, れいき (aura) cc, みず (water) ml, ハート (hearts), via `fn_8003EF40` | Bit 0x08 presented to the original for the duration of the pass-6 call |
+| Game Boy Horror scan boxes | NOP the `beq` at `0x800B17CC` | `fn_800B172C` pass 3: `fn_8007BDA4` draws orange boxes around every scannable object | Bit 0x40 presented during the pass-3 call |
+| XYZ vectors | NOP the `ble` at `0x800B1794` | `fn_800B172C` pass 2 draws axes (`fn_80094170`, size 150) on joint `+0x1328` only when it is > 0 | After the original, the skipped draw is done: `PSMTXConcat(actor +8, joint 0)` then `fn_80094170` |
+| HUD test | byte `0x804D854A` = 1, plus `0x80043910` = `addi r16, r16, 0x0A90 / 0xFD00 / 0x0FA0` | `fn_800433B4` draws four coloured message panels and a row of 19 sprites; the patched instruction picks the sprite set: HUD icons (shipped value), digits (-0x300), element meter (0xFA0) | Flag written each frame; the sprite pointer of the calls from that loop (`fn_8003BEEC`, return address `0x80043930`) is moved by the same offset. Combo Off / Icons / Numbers / Element meter |
+| Font test | PAL only: `0A4B8590 0201 / 024C5B58 0001`, `02309B26 9B28` | Flag `lbl_804D8488` (PAL `0x804C5B58`, mapped with `pal_diff.py`): `fn_8003EBB0` prints 12 lines of kanji, kana and symbols. The second PAL write repoints table entry 11 (US `0x80304C18`, katakana) at "alphabet 123" | Flag written each frame; "Latin last line" repoints entry 11 (restored when off). US prints under the HUD's projection, so nothing shows; PAL added `LMDefaultOrthoView` at the start of the function, and the hook does the same while the test is on |
+
+Verified in the foyer (`LM_START_MAP=13; LM_DEV_WARPS=2:6@3000`): debug text and scan boxes
+(`build/ar_info_scan_axes.png`, axes are the short red/green lines at Luigi's feet), debug mode
+(`ar_debugmode.png`), HUD test modes (`ar_hud1..3.png`), font test (`ar_font.png`). Test aids:
+`LM_DEV_LUIGI_FLAGS`, `LM_DEV_INFO_DISPLAY`, `LM_DEV_SCAN_BOXES`, `LM_DEV_AXES`,
+`LM_DEV_HUD_TEST=0..3`, `LM_DEV_FONT_TEST=0|1|2` (2 = with the Latin line).
+
 Port-side debug aids in the Debug tab (not game code): an **info overlay** (F3: map, room,
 Luigi's position, taken from Luigi's update `fn_800B783C`), the **Visit area** warp list and
 the **model viewer** (F4). F3/F4 are keyboard-only and not mapped to the pad, so they cannot
@@ -297,6 +319,27 @@ Interpolated60: maps 0, 2 (appear points 6 and 9), 3, 4, 5, 9, 13.
 
 Test aids: `LM_START_MAP=<n>` (new game starts in map n; moved here from the Hidden Mansion
 hooks), `LM_START_APPEAR=<p>`, `LM_DEV_WARPS=<map>[:<appear>]@<frame>,...`.
+
+## Unused rooms (work in progress, paused)
+
+Leftover room models on the disc: `/Iwamoto/map1/h_01.bin` (E3 2001 lab, extra robotic-arm
+stand), `/Iwamoto/map1/h_02.bin` (pre-E3 Portrificationizer room; retail is `map4/h_02.bin`),
+`/Iwamoto/map2/room_67.arc` member `b1_c_67.bin` (older breaker room), `room_07.arc` /
+`room_30.arc` member `room..bin` (duplicate 1F / foyer 2F hallways; room_07's differs from the
+retail `room.bin` by 42 bytes), `/Iwamoto/map2/room01A.bin` (no retail counterpart).
+
+`src/recomp/room_swap.cpp` (Unused content tab, "Unused rooms"): Go warps to the retail room's
+map and, for that visit only, `hle_dvd.cpp` serves the retail file rebuilt with the leftover
+model (RARC member replaced, or the whole `.bin`); collision, doors and objects stay retail.
+The swap ends when Luigi leaves the room/map or another warp is made. Test aid
+`LM_DEV_ROOM=<index>@<frame>`.
+
+Status: the lab and Portrificationizer visits load the leftover models (logged and seen).
+The mansion rooms (67, 7, 30) need Luigi to start inside them; the spawn override
+(`findLuigiAppearIndex` + `ToolData::getValue` pos_x/y/z of Luigi's entry while a visit is
+pending) is implemented but not verified, and Luigi still started in the foyer in the last
+test. Not started: a dedicated room slot for room01A (would need a map-2 room table entry,
+JMP roominfo row and collision), and the breaker-room door/collision mismatch check.
 
 ## Model viewer
 

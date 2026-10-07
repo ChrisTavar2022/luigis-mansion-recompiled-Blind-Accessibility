@@ -105,3 +105,10 @@ fn_800B9680 pal
 fn_8003DF88 pal
 fn_800DBE8C pal
 fn_800B84E4 pal
+# Action Replay debug modes as toggles (dev_tools.cpp): Luigi draw-pass callback, HUD test sprites.
+fn_800B172C
+fn_8003BEEC
+fn_8003EBB0
+# Leftover room visits (room_swap.cpp): Luigi's start position for the visited room.
+findLuigiAppearIndex__Q24Koga9EnManagerFPQ24Koga8ToolDataUl
+getValue__Q24Koga8ToolDataCFiPCcPf
