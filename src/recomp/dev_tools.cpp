@@ -34,6 +34,11 @@ constexpr u32 kRoomState = 0x803A3CA0;        // +0xC: current room number in th
 // Compiled-in debug switches that nothing in the retail game sets (docs/UNUSED_CONTENT.md).
 constexpr u32 kParticleReportFlag = 0x804D8E04;  // byte; fn_80160138 prints emitter/particle counts
 constexpr u32 kDepthBlurFlag = 0x804D86B0;       // word; fn_8005E9EC depth-of-field style blur pass
+constexpr u32 kHudTestFlag = 0x804D854A;         // byte; fn_800433B4 HUD sprite test
+constexpr u32 kFontTestFlag = 0x804D8488;        // u16; fn_8003EBB0 font test (PAL 0x804C5B58)
+constexpr u32 kFontTestLine11 = 0x80304C18;      // font-test string table lbl_80304BEC[11]
+constexpr u32 kFontTestLine11Orig = 0x80304BC0;  // katakana line (retail)
+constexpr u32 kFontTestLatin = 0x80304C1C;       // "alphabet 123" (what the PAL code points it at)
 
 const MapInfo kMaps[] = {
     {0, "Test map (Iwamoto test_00-03)", false, true, "toad, butler, dancer, Boos, Mario test actors"},
@@ -111,7 +116,27 @@ void requestWarp(int map, int appearPoint) {
 }
 bool inGameScene() { return sStatus.inGame; }
 int currentMap() { return sStatus.map; }
-void noteLuigi(unsigned guestActor) { sLuigi = guestActor; }
+// "Debug Mode" Action Replay code (403A2B84 001325CB): Luigi's debug-flag halfword +0x1324 gets
+// low byte 0xCB every frame. Bits as the game reads them: 0x08 debug text (fn_800B172C pass 6),
+// 0x40 scan boxes (pass 3), 0x10 (fn_800AE770), 0x20 (fn_800B1BD4, toggled by fn_800B2F98),
+// 0x04 (fn_800B80C4); Luigi's actor initialises it to 0x14 (fn_800AD5AC). The value the game
+// had is put back when the option is turned off.
+void noteLuigi(unsigned guestActor) {
+    sLuigi = guestActor;
+    static u32 sActor = 0;
+    static u8 sSaved = 0;
+    const bool on = port::settings().enhancements.dbgLuigiFlags || envInt("LM_DEV_LUIGI_FLAGS", 0) != 0;
+    if (on) {
+        if (sActor != guestActor) {
+            sActor = guestActor;
+            sSaved = u8(rd8(guestActor + 0x1325));
+        }
+        hostp(guestActor + 0x1325)[0] = 0xCB;
+    } else if (sActor) {
+        if (sActor == guestActor) hostp(guestActor + 0x1325)[0] = sSaved;
+        sActor = 0;
+    }
+}
 
 // ---- hooks (guest thread) ------------------------------------------------------------
 
@@ -157,6 +182,55 @@ HLE(fn_801D7114) {
     if (c.r[8] > 0 && c.r[7]) sReportBuild.push_back({s32(c.r[4]), s32(c.r[5]), std::string(gstr(c.r[7]), c.r[8])});
 }
 
+// Luigi's draw-pass callback (self, pass). The Action Replay codes NOP three branches in it;
+// the same effect is produced by presenting the flag the branch tests for the duration of the
+// call (and, for the axes, by doing the skipped draw after the original):
+//   0x800B17CC beq (pass 3, flag bit 0x40)  -> Game Boy Horror scan boxes (fn_8007BDA4)
+//   0x800B17E4 beq (pass 6, flag bit 0x08)  -> debug text: dust, aura, water, heart (fn_8003EF40)
+//   0x800B1794 ble (pass 2, +0x1328 > 0)    -> XYZ axes on joint +0x1328 (fn_80094170, size 150)
+HLE(fn_800B172C) {
+    const auto& e = port::settings().enhancements;
+    static const int sEnvInfo = envInt("LM_DEV_INFO_DISPLAY", 0), sEnvScan = envInt("LM_DEV_SCAN_BOXES", 0),
+                     sEnvAxes = envInt("LM_DEV_AXES", 0);
+    const u32 self = c.r[3], pass = c.r[4];
+    u16 force = 0;
+    if (pass == 6 && (e.dbgInfoDisplay || sEnvInfo)) force = 0x08;
+    if (pass == 3 && (e.dbgScanBoxes || sEnvScan)) force = 0x40;
+    const u16 flags = u16(rd16(self + 0x1324));
+    if (force) wr16(self + 0x1324, u16(flags | force));
+    const bool axes = pass == 2 && (e.dbgAxes || sEnvAxes) && s32(rd32(self + 0x1328)) <= 0;
+    callOriginal(c, "fn_800B172C");
+    if (force) wr16(self + 0x1324, u16((rd16(self + 0x1324) & ~force) | (flags & force)));
+    if (axes) {
+        // As the patched code: concat(actor matrix +8, joint matrix [+0x1328 = 0]) then fn_80094170.
+        const u32 joints = rd32(rd32(self + 4) + 0x14);
+        constexpr u32 kMtx = 0x81810400;  // dev scratch (model_viewer.cpp uses 0x81810000-0x810300)
+        if (gu::inMem1(joints)) {
+            gu::call(c, GU_SYM("PSMTXConcat"), {self + 8, joints, kMtx});
+            gu::call(c, GU_SYM("fn_80094170"), {kMtx}, {150.0});
+        }
+    }
+}
+
+// HUD test (lbl_804D854A, fn_800433B4): the Action Replay code rewrites `addi r16, r16, 0xA90`
+// at 0x80043910, the base of the 19 sprites the test's second loop draws with fn_8003BEEC.
+// 0xA90 icons (as shipped), -0x300 numbers, 0xFA0 element meter. Reproduced by moving the
+// sprite pointer of the calls made from that loop (return address 0x80043930).
+HLE(fn_8003BEEC) {
+    static const int sEnvHud = envInt("LM_DEV_HUD_TEST", -1);
+    const int mode = sEnvHud >= 0 ? sEnvHud : port::settings().enhancements.dbgHudTest;
+    if (c.lr == 0x80043930u && (mode == 2 || mode == 3)) c.r[3] = c.r[3] - 0xA90 + (mode == 2 ? u32(-0x300) : 0xFA0u);
+    callOriginal(c, "fn_8003BEEC");
+}
+
+// Font test (fn_8003EBB0, flag lbl_804D8488). In US it prints under whatever projection the HUD
+// drawn just before it left behind, so nothing shows; PAL (fn_80040234) added a call to
+// LMDefaultOrthoView at its start. The same is done here while the test is on.
+HLE(fn_8003EBB0) {
+    if (rd16(kFontTestFlag)) gu::call(c, GU_SYM("LMDefaultOrthoView__Fv"));
+    callOriginal(c, "fn_8003EBB0");
+}
+
 // End of the main loop's frame: copy to the XFB and flip. Debug switches are applied, the
 // overlays' state sampled and the model viewer drawn here (into this frame's EFB).
 HLE(LMChangeFrameBuffer__Fv) {
@@ -165,6 +239,12 @@ HLE(LMChangeFrameBuffer__Fv) {
     static const int sEnvBlur = envInt("LM_DEV_DEPTH_BLUR", -1);
     hostp(kParticleReportFlag)[0] = (sEnvReport >= 0 ? sEnvReport != 0 : e.dbgParticleReport) ? 1 : 0;
     wr32(kDepthBlurFlag, (sEnvBlur >= 0 ? sEnvBlur != 0 : e.dbgDepthBlur) ? 1 : 0);
+    static const int sEnvHud = envInt("LM_DEV_HUD_TEST", -1);
+    hostp(kHudTestFlag)[0] = (sEnvHud >= 0 ? sEnvHud : e.dbgHudTest) != 0 ? 1 : 0;
+    static const int sEnvFont = envInt("LM_DEV_FONT_TEST", -1);
+    const int font = sEnvFont >= 0 ? sEnvFont : (e.dbgFontTest ? (e.dbgFontTestLatin ? 2 : 1) : 0);
+    wr16(kFontTestFlag, font ? 1 : 0);
+    wr32(kFontTestLine11, font == 2 ? kFontTestLatin : kFontTestLine11Orig);
 
     // Test aid: LM_DEV_WARPS=<map>[:<appear>]@<frame>,... queues warps at given frame counts.
     static std::vector<std::array<int, 3>> sEnvWarps = [] {
@@ -316,6 +396,32 @@ void debugSection() {
     ImGui::Checkbox("Info overlay (F3)", &sInfoOverlay);
     helpMarker("Port-side: current map, room and Luigi's position.");
     if (ImGui::Button(viewer::isOpen() ? "Close model viewer (F4)" : "Model viewer (F4)")) viewer::setOpen(!viewer::isOpen());
+
+    ImGui::SeparatorText("Debug modes (Action Replay codes)");
+    bool dirty = false;
+    dirty |= ImGui::Checkbox("Debug mode (Luigi debug flags)", &e.dbgLuigiFlags);
+    helpMarker("AR 403A2B84 001325CB: Luigi's debug flags (+0x1324) low byte = 0xCB every frame.\n"
+               "Turns on the debug text and the scan boxes together and changes some of Luigi's\n"
+               "drawing (his model uses a slightly different shading).");
+    dirty |= ImGui::Checkbox("Debug info display", &e.dbgInfoDisplay);
+    helpMarker("Japanese text at the top left: dust (mg), aura / ghosts captured, water, heart.\n"
+               "AR: NOP 0x800B17E4 (originally on D-pad Left + A).");
+    dirty |= ImGui::Checkbox("Game Boy Horror scan boxes", &e.dbgScanBoxes);
+    helpMarker("Frames around what the Game Boy Horror can scan. AR: NOP 0x800B17CC.");
+    dirty |= ImGui::Checkbox("XYZ axes at Luigi", &e.dbgAxes);
+    helpMarker("Axis vectors at Luigi's position and facing. AR: NOP 0x800B1794.");
+    static const char* kHud[] = {"Off", "Icons", "Numbers", "Element meter"};
+    dirty |= ImGui::Combo("HUD test", &e.dbgHudTest, kHud, 4);
+    helpMarker("The HUD sprite test (flag 0x804D854A) and its three sprite sets.\n"
+               "AR: 0x80043910 addi r16, r16, 0xA90 / -0x300 / 0xFA0.");
+    dirty |= ImGui::Checkbox("Font test", &e.dbgFontTest);
+    helpMarker("Twelve lines of kanji / kana / symbols printed with the game font (flag 0x804D8488;\n"
+               "PAL code 0A4B8590 0201 / 024C5B58 0001).");
+    ImGui::BeginDisabled(!e.dbgFontTest);
+    ImGui::SameLine();
+    dirty |= ImGui::Checkbox("Latin last line (PAL fix)", &e.dbgFontTestLatin);
+    ImGui::EndDisabled();
+    if (dirty) port::saveSettings();
 
     ImGui::SeparatorText("Visit area");
     mapTable("allmaps", false);

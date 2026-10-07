@@ -67,3 +67,7 @@ fn_8000C188
 fn_8000B4A0
 fn_801D7114
 LMChangeFrameBuffer__Fv
+# Action Replay debug modes as toggles (dev_tools.cpp): Luigi draw-pass callback, HUD test sprites.
+fn_800B172C
+fn_8003BEEC
+fn_8003EBB0
