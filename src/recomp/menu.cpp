@@ -43,7 +43,6 @@ void visualsTab() {
     pending("in progress");
     static const char* kAspects[] = {"Original 4:3", "Match window", "16:9", "16:10", "21:9", "32:9"};
     sDirty |= combo("Aspect ratio", v.aspect, kAspects, 6);
-    pending("in progress");
     sDirty |= ImGui::Checkbox("Keep HUD at 4:3", &v.hudKeep4x3);
     sDirty |= ImGui::SliderFloat("Field of view", &v.fovScale, 0.75f, 1.5f, "%.2fx");
     pending("in progress");

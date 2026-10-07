@@ -12,7 +12,7 @@ enum class AudioOutput { Stereo, Mono, Surround };
 
 struct VideoSettings {
     FrameRateMode frameRate = FrameRateMode::Original30;
-    AspectMode aspect = AspectMode::Original4x3;
+    AspectMode aspect = AspectMode::Auto;
     float fovScale = 1.0f;      // multiplies the game's vertical field of view
     bool fullscreen = false;
     bool vsync = true;          // applied at next launch

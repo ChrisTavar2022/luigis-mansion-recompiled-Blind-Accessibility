@@ -10,3 +10,5 @@ DSPReleaseHalt__Fv
 DSPWaitFinish__Fv
 DiplSec__FUl
 
+# Camera culling planes: widened for the Hor+ widescreen projection (src/recomp/widescreen.cpp).
+fn_80008D58
