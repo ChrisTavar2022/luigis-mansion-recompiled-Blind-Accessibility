@@ -303,14 +303,20 @@ void unusedContentTab() {
         }
     }
     ImGui::Separator();
-    recomp::dev::unusedSection();
+    {
+        Gate g(port::usCodeFeature());
+        recomp::dev::unusedSection();
+    }
 }
 
 // Gameplay toggles, difficulty and cheats.
 void gameplayTab() { gameplaySection(); }
 
 // Debug features left in the game, warps and viewers.
-void debugTab() { recomp::dev::debugSection(); }
+void debugTab() {
+    Gate g(port::usCodeFeature());
+    recomp::dev::debugSection();
+}
 
 void enhancementsTab() {
     if (ImGui::BeginTabBar("enhancements")) {

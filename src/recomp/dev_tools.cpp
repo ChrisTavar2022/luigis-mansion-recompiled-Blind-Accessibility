@@ -2,6 +2,7 @@
 // model_viewer.cpp). Addresses are US GLME01; how each was found: docs/UNUSED_CONTENT.md.
 #include "recomp/dev_tools.h"
 
+#include "port/install.h"
 #include "port/settings.h"
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
@@ -291,6 +292,7 @@ bool capturesInput() { return viewer::isOpen(); }
 
 bool handleKey(const SDL_Event& ev) {
     if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) return false;
+    if (port::usCodeFeature() != port::Avail::Yes) return false;  // US addresses only
     if (ev.key.key == SDLK_F3) {
         sInfoOverlay = !sInfoOverlay;
         return true;
