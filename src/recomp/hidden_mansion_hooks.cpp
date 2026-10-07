@@ -183,17 +183,25 @@ HLE(fn_8000C188) {
 // it off everywhere else. The 15-frame counter (PAL Luigi +0x134C) is kept host-side.
 HLE(fn_800B783C) {
     static u32 sLuigi = 0, sFrames = 0;
+    static bool sRideSet = false;  // the "always ride" option turned the mode on
     const u32 self = c.r[3];
-    if (hm::palActive()) {
-        if (rd32(kCurMapNo) == 11) {
-            if (self != sLuigi) sLuigi = self, sFrames = 0;
-            ++sFrames;
-            const bool on = sFrames > 15;
-            if (on) HM_FIRST("fn_800B783C Boolossus movement mode");
-            hostp(self + 0x134C)[0] = on ? 1 : 0;
-        } else {
-            sFrames = 0;
+    const bool ride = gameplay::current().alwaysRide && gameplay::rideAllowed(self);
+    if (hm::palActive() && rd32(kCurMapNo) == 11) {
+        if (self != sLuigi) sLuigi = self, sFrames = 0;
+        ++sFrames;
+        const bool on = sFrames > 15 || ride;
+        if (on) HM_FIRST("fn_800B783C Boolossus movement mode");
+        hostp(self + 0x134C)[0] = on ? 1 : 0;
+    } else {
+        sFrames = 0;
+        if (ride) {
+            if (!sRideSet) log("[gameplay] always ride the Poltergust: on");
+            hostp(self + 0x134C)[0] = 1;
+            sRideSet = true;
+        } else if (hm::palActive() || sRideSet) {
+            if (sRideSet) log("[gameplay] always ride the Poltergust: suspended/off");
             hostp(self + 0x134C)[0] = 0;
+            sRideSet = false;
         }
     }
     callOriginal(c, "fn_800B783C");

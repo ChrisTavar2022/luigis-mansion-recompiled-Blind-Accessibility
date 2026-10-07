@@ -7,6 +7,7 @@
 // table, struct offsets) that are marked "US" where used. A PAL-base install needs the PAL
 // equivalents (tools/pal_diff.py var/field map them).
 #include "port/settings.h"
+#include "recomp/ctx.h"
 
 namespace recomp::gameplay {
 
@@ -17,5 +18,9 @@ port::GameplaySettings current();
 // Room ambient multiplier: 0.2 while the PAL Hidden Mansion rules apply or "PAL darkness
 // everywhere" is on, times the ambient slider (the slider composes with PAL darkness).
 float ambientFactor();
+
+// "Always ride the Poltergust": whether the riding movement mode may be on for this Luigi
+// right now (it is suspended where it would break the game; see docs/GAMEPLAY_OPTIONS.md).
+bool rideAllowed(u32 luigi);
 
 }  // namespace recomp::gameplay

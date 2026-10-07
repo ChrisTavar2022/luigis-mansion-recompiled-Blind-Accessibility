@@ -75,6 +75,7 @@ struct GameplaySettings {
     float ghostHealthScale = 1.0f;       // ghost HP, 0.25..5
     bool noHeartDrops = false;           // recovery hearts never appear (and any that do heal nothing)
     float vacuumStrength = 1.0f;         // Poltergust drain rate on ghost HP, 0.25..4
+    bool alwaysRide = false;             // Luigi always uses the Poltergust-riding movement (PAL Boolossus mode)
 };
 
 struct Settings {

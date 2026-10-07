@@ -31,7 +31,7 @@ s16 rds16(u32 a) { return s16(rd16(a)); }
 struct Overrides {
     bool any = false;
     port::GameplaySettings v;
-    bool has[7] = {};
+    bool has[8] = {};
 };
 
 const Overrides& overrides() {
@@ -57,6 +57,7 @@ const Overrides& overrides() {
             else if (k == "ghosthp") r.v.ghostHealthScale = f, r.has[4] = true;
             else if (k == "hearts") r.v.noHeartDrops = f == 0, r.has[5] = true;
             else if (k == "vacuum") r.v.vacuumStrength = f, r.has[6] = true;
+            else if (k == "ride") r.v.alwaysRide = f != 0, r.has[7] = true;
             else continue;
             r.any = true;
         }
@@ -79,8 +80,18 @@ port::GameplaySettings current() {
         if (o.has[4]) g.ghostHealthScale = o.v.ghostHealthScale;
         if (o.has[5]) g.noHeartDrops = o.v.noHeartDrops;
         if (o.has[6]) g.vacuumStrength = o.v.vacuumStrength;
+        if (o.has[7]) g.alwaysRide = o.v.alwaysRide;
     }
     return g;
+}
+
+bool rideAllowed(u32 luigi) {
+    // Only in the mansion (map 2) and the boss arenas (9 Bowser, 10 Chauncey, 11 Boolossus):
+    // E. Gadd's lab, the training room, the gallery and the ending maps position Luigi by
+    // script and are left alone. Off while Luigi has no health (death sequence).
+    const u32 map = rd32(0x804D80C8);  // sCurMapNo (US)
+    if (map != 2 && map != 9 && map != 10 && map != 11) return false;
+    return s16(rd16(luigi + 0xFC)) > 0;
 }
 
 float ambientFactor() {

@@ -23,6 +23,7 @@ Testing override (not saved): `LM_GAMEPLAY="dark=1,ambient=0.4,damage=2,health=2
 | Ghost health | `ghost_health_scale` | 0.25–5 | Ghost HP when a ghost's HP is set |
 | Poltergust strength | `vacuum_strength` | 0.25–4 | HP the vacuum drains per drain tick |
 | Disable recovery hearts | `no_heart_drops` | on/off | Heart items are removed from all item tables; any remaining heart heals 0 |
+| Always ride the Poltergust | `always_ride` | on/off | Luigi's riding/gliding movement mode (the one PAL enables for Boolossus) everywhere |
 
 ## Details
 
@@ -63,8 +64,30 @@ item's setup (`fn_800D1458`, `EnHeartItem`) sets its heal amount (+0x238) to 0, 
 any other source heals nothing. Tables are read when a map loads, so the option takes full
 effect at the next map load.
 
+**Always ride the Poltergust.** The US Luigi contains a complete alternate movement mode
+behind byte +0x134C (PAL +0x1350): faster run (38 vs 17/18), momentum/gliding physics, its own
+animations and a sound loop (docs/HIDDEN_MANSION.md, *Bosses*). PAL turns it on only in the
+Boolossus fight; this option sets it every frame in Luigi's update hook (`fn_800B783C`).
+It is **suspended** (forced off) outside the mansion and boss arenas — E. Gadd's lab, the
+training room, the gallery and the ending maps, which position Luigi by script — and while
+Luigi has no health (death sequence). Turning the option off clears the byte again.
+Checked: the opening cutscene and arrival in the foyer are unaffected (cutscenes drive Luigi
+directly), Luigi glides with momentum and stops against walls. Not yet checked in play:
+doors, stairs, the elevator-like transitions and vacuuming/flashlight while gliding; if one
+misbehaves, add its condition to `gameplay::rideAllowed()`.
+
 ## Verification
 
-Run with `LM_GAMEPLAY=...`; each hook logs `[gameplay] ...` the first time it changes
-something (`LM_START_MAP=9/10/11` jumps to a boss map). Results are listed in the commit
-message of the change that added these options.
+Run with `LM_GAMEPLAY=...` (e.g. `ride=1`); each hook logs `[gameplay] ...` the first time it
+changes something (`LM_START_MAP=9/10/11` jumps to a boss map; `LM_HM_TRACE_LUIGI=1` logs
+Luigi's position and riding mode). Tested with a scratch `APPDATA` and `LM_CARD_DIR`:
+
+| Option | Test | Result |
+|--------|------|--------|
+| Luigi's health x2 | new game → Chauncey (map 10) | HUD shows 200; `Luigi starts with 200`, `restored Luigi max 200` |
+| Damage x0 | Chauncey's ball hits Luigi | `hit 5 -> 0`, health stays 200 |
+| Ghost health x2 | map 10 | `ghost HP x2.00: 100 -> 200` |
+| Darkness everywhere / ambient 1.5 | normal-mansion foyer | foyer visibly darker / brighter than original |
+| Disable hearts | foyer load | `table item move_sheart -> nothing` |
+| Always ride | opening + foyer | cutscene and arrival normal; gliding movement (trace) |
+| Poltergust strength | — | implemented; not yet exercised in play (needs a scripted ghost capture) |

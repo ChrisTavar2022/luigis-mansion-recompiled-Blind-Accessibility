@@ -103,6 +103,7 @@ std::vector<Field> fields() {
         num("gameplay", "ghost_health_scale", g.ghostHealthScale),
         flag("gameplay", "no_heart_drops", g.noHeartDrops),
         num("gameplay", "vacuum_strength", g.vacuumStrength),
+        flag("gameplay", "always_ride", g.alwaysRide),
     };
 }
 

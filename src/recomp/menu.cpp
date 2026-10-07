@@ -119,6 +119,8 @@ void gameplaySection() {
     sDirty |= ImGui::SliderFloat("Poltergust strength", &g.vacuumStrength, 0.25f, 4.0f, "%.2fx");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("How fast the vacuum drains a captured ghost's HP");
     sDirty |= ImGui::Checkbox("Disable recovery hearts", &g.noHeartDrops);
+    sDirty |= ImGui::Checkbox("Always ride the Poltergust", &g.alwaysRide);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Luigi glides with momentum everywhere (the PAL Boolossus-fight movement)");
     if (ImGui::Button("Reset gameplay options")) {
         g = port::GameplaySettings{};
         sDirty = true;
