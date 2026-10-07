@@ -1,14 +1,21 @@
 // HLE: OS (threads, messages, mutexes, interrupts, caches, time, reset) and
 // the small debug/serial units.
 #include "port/install.h"
+#include "port/settings.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
+#include "recomp/skip.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 namespace recomp {
 namespace {
@@ -60,6 +67,65 @@ HLE(OSInit) {
     wr32(0x800000FC, 486000000);  // core clock
     guestCall(c, guestSymbol("OSSetArenaLo"), (initialStack() + 8 + 31) & ~31u);
     guestCall(c, guestSymbol("OSSetArenaHi"), 0x81700000);
+}
+
+// --- alarms (used by the PAL release's frame pacing, LMDisplayUtil) -----------
+// OSAlarm (0x28 bytes): handler at +0. A host timer raises the handler as an interrupt;
+// re-arming or cancelling an alarm invalidates the pending expiry.
+
+namespace {
+std::mutex sAlarmM;
+std::unordered_map<u32, u32> sAlarmGen;  // alarm -> generation of its pending expiry
+using AlarmClock = std::chrono::steady_clock;
+std::unordered_map<u32, AlarmClock::time_point> sAlarmFired;  // alarm -> when it last expired
+
+void armAlarm(u32 alarm, u64 ticks, u32 handler, u64 period) {
+    // Fast-forward (skip.h) speeds alarms up like it speeds up retraces.
+    const double speed = std::max(1.0, skip::retraceSpeed());
+    const auto delay = std::chrono::duration_cast<AlarmClock::duration>(
+        std::chrono::duration<double>(double(ticks) / kTimerClock / speed));
+    const auto now = AlarmClock::now();
+    auto when = now + delay;
+    u32 gen;
+    {
+        std::lock_guard lk(sAlarmM);
+        gen = ++sAlarmGen[alarm];
+        // An alarm re-armed from its own expiry (the PAL frame pacer: wait for the alarm,
+        // set it again) counts from the expiry, not from when the host got around to it:
+        // on the console that gap is microseconds, here it includes host scheduling and
+        // the lockstep wait for the display, which would otherwise slow the game down.
+        if (auto it = sAlarmFired.find(alarm); it != sAlarmFired.end() && now - it->second < delay)
+            when = it->second + delay;
+    }
+    wr32(alarm, handler);
+    const double seconds = std::chrono::duration<double>(when - now).count();
+    sched::postIrqAfter(std::max(0.0, seconds), [alarm, gen, handler, period, when](Ctx& c) {
+        {
+            std::lock_guard lk(sAlarmM);
+            if (sAlarmGen[alarm] != gen) return;  // cancelled or re-armed
+            sAlarmFired[alarm] = when;
+        }
+        if (period) armAlarm(alarm, period, handler, period);
+        guestCall(c, handler, alarm, 0);
+    });
+}
+}  // namespace
+
+HLE(OSCreateAlarm) {
+    std::memset(hostp(c.r[3]), 0, 0x28);
+    std::lock_guard lk(sAlarmM);
+    ++sAlarmGen[c.r[3]];
+    sAlarmFired.erase(c.r[3]);
+}
+HLE(OSSetAlarm) { armAlarm(c.r[3], u64(c.r[5]) << 32 | c.r[6], c.r[7], 0); }
+HLE(OSSetPeriodicAlarm) {
+    // (alarm, u64 start r5:r6, u64 period r7:r8, handler r9); start is absolute time.
+    const u64 now = timeBase(), start = u64(c.r[5]) << 32 | c.r[6], period = u64(c.r[7]) << 32 | c.r[8];
+    armAlarm(c.r[3], start > now ? start - now : 0, c.r[9], period ? period : 1);
+}
+HLE(OSCancelAlarm) {
+    std::lock_guard lk(sAlarmM);
+    ++sAlarmGen[c.r[3]];
 }
 
 // --- interrupts ---------------------------------------------------------------
@@ -289,6 +355,12 @@ HLE(OSGetResetCode) { c.r[3] = 0; }
 HLE(OSGetProgressiveMode) { c.r[3] = sProgressiveMode; }
 HLE(OSSetProgressiveMode) { sProgressiveMode = c.r[3]; }
 HLE(OSGetSoundMode) { c.r[3] = sSoundMode; }
+// Console language (SRAM: 0 English, 1 German, 2 French, 3 Spanish, 4 Italian, 5 Dutch).
+// Only the PAL release asks; it uses it when its save has no language yet (docs/SETUP.md).
+HLE(OSGetLanguage) {
+    const int lang = port::settings().enhancements.palLanguage;  // 1..5 as the game numbers them
+    c.r[3] = u32(lang >= 1 && lang <= 5 ? lang - 1 : 0);
+}
 HLE(OSSetSoundMode) { sSoundMode = c.r[3]; }
 
 // --- EXI / serial (no devices attached; UART output goes to stdout) -----------------

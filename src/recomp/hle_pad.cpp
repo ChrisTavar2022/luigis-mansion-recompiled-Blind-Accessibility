@@ -93,6 +93,7 @@ HLE(PADRecalibrate) { c.r[3] = PADRecalibrate(c.r[3]); }
 HLE(PADSetSpec) { PADSetSpec(c.r[3]); }
 HLE(PADSetAnalogMode) { PADSetAnalogMode(c.r[3]); }
 HLE(PADControlMotor) { PADControlMotor(c.r[3], c.r[4]); }
+HLE(PADSetSamplingRate) {}  // PAL release; sampling is the host's business
 
 // PADStatus (12 bytes): button, stickX/Y, substickX/Y, triggerL/R, analogA/B, err.
 HLE(PADRead) {

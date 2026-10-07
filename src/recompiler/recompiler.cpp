@@ -413,8 +413,10 @@ private:
         return extra.size();
     }
 
-    // Map each bctr address to its jump-table targets (table found from the lis/addi
-    // that loads its base earlier in the same function).
+    // Map each bctr address to jump-table targets: every table whose base the function
+    // materialises (lis/addi). A base can be loaded once into a register and used by
+    // several bctrs, and a stray case is harmless (cases match the exact ctr value), so
+    // each bctr gets the targets of all of the function's tables.
     void findJumpTables(const std::map<std::string, std::pair<u32, u32>>& objs) {
         std::unordered_map<u32, u32> byAddr;
         for (auto& [name, o] : objs)
@@ -422,8 +424,7 @@ private:
         for (auto& [faddr, f] : funcs) {
             if (hle.count(faddr)) continue;
             std::unordered_map<u32, u32> hi;
-            bool havePending = false;
-            u32 pending = 0;
+            std::vector<u32> targets, bctrs;
             for (u32 pc = faddr; pc < faddr + f.size; pc += 4) {
                 const u32 w = dol.word(pc);
                 const u32 op = bits(w, 0, 5);
@@ -431,18 +432,14 @@ private:
                     hi[bits(w, 6, 10)] = (w & 0xFFFF) << 16;
                 } else if (op == 14 && hi.count(bits(w, 11, 15))) {
                     const u32 base = hi[bits(w, 11, 15)] + u32(sext(w & 0xFFFF, 16));
-                    if (byAddr.count(base)) {
-                        pending = base;
-                        havePending = true;
-                    }
-                } else if (op == 19 && bits(w, 21, 30) == 528 && !(w & 1) && havePending) {
-                    const u32 n = byAddr[pending] / 4;
-                    std::vector<u32> t;
-                    for (u32 i = 0; i < n; i++) t.push_back(dol.word(pending + i * 4));
-                    jumpTables[pc] = std::move(t);
-                    havePending = false;
+                    if (auto it = byAddr.find(base); it != byAddr.end())
+                        for (u32 i = 0; i < it->second / 4; i++) targets.push_back(dol.word(base + i * 4));
+                } else if (op == 19 && bits(w, 21, 30) == 528 && !(w & 1)) {
+                    bctrs.push_back(pc);
                 }
             }
+            if (!targets.empty())
+                for (u32 pc : bctrs) jumpTables[pc] = targets;
         }
     }
 };

@@ -113,7 +113,12 @@ HLE(VIWaitForRetrace) {
     const u32 start = sRetraceCount.load();
     while (sRetraceCount.load() == start) sched::sleepOn(sRetraceQueue);
 }
-HLE(VISetNextFrameBuffer) { frame::present(c, c.r[3], sBlack); }
+HLE(VISetNextFrameBuffer) {
+    if (!frame::presentOnCopy()) frame::present(c, c.r[3], sBlack);
+}
+
+bool frame::presentOnCopy() { return palGame(); }
+bool frame::viBlack() { return sBlack; }
 
 }  // namespace recomp
 

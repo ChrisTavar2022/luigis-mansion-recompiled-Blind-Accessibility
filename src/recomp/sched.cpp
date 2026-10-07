@@ -14,6 +14,14 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <timeapi.h>
+#pragma comment(lib, "winmm.lib")
+#endif
+
 namespace recomp {
 
 namespace {
@@ -386,6 +394,9 @@ std::multimap<std::chrono::steady_clock::time_point, std::function<void(Ctx&)>> 
 std::thread sTimerThread;
 
 void timerMain() {
+#ifdef _WIN32
+    timeBeginPeriod(1);  // 1 ms scheduler resolution for timed interrupts
+#endif
     std::unique_lock lk(sTimerM);
     while (!g_shutdown) {
         if (sTimed.empty()) {
@@ -393,8 +404,17 @@ void timerMain() {
             continue;
         }
         const auto when = sTimed.begin()->first;
-        if (std::chrono::steady_clock::now() < when) {
-            sTimerCv.wait_until(lk, when);
+        if (const auto now = std::chrono::steady_clock::now(); now < when) {
+            // Waits are only as precise as the OS timer (15.6 ms on Windows by default), too
+            // coarse for the PAL release's frame alarms: sleep coarsely, then yield.
+            constexpr auto kSpin = std::chrono::milliseconds(3);
+            if (when - now > kSpin) {
+                sTimerCv.wait_until(lk, when - kSpin);
+            } else {
+                lk.unlock();
+                std::this_thread::yield();
+                lk.lock();
+            }
             continue;
         }
         auto fn = std::move(sTimed.begin()->second);
