@@ -42,4 +42,5 @@
 - Boots → title → main menu → opening cutscene → in-game foyer with HUD (`--input "600:START*10,1000:A*6"`, foyer ~70 s).
 - Memory card emulated (GCI folders in %APPDATA%\Luigi's Mansion PC\USA\Card A).
 - Audio plays (DSP microcode stand-in in audio_dsp.cpp, SDL3 out in audio_out.cpp; docs/AUDIO.md; LM_AUDIO_WAV=, LM_AUDIO_LOG=1, LM_AUDIO=0, LM_AUDIO_FX=0). Reverb routing is a guess.
-- Parallel work streams: widescreen/interp, PAL Hidden Mansion (agent worktree branches).
+- PAL Hidden Mansion variant works (map2u overlay, event scripts, lighting, hearts, boss mechanics, mirror; docs/HIDDEN_MANSION.md). Needs `python tools/hidden_mansion_data.py` once to build orig/hidden_mansion/. Selected in F1 > Enhancements until the lab-menu choice exists. Test aids: LM_HM_FORCE=1, LM_START_MAP=9/10/11.
+- Widescreen/ultrawide + render-resolution slider work. Parallel work streams: interpolation/FOV/HUD anchoring, skippable cutscenes (agent worktree branches).

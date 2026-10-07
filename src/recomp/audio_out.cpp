@@ -3,6 +3,7 @@
 // the 32/48 kHz DSP rate to the device). LM_AUDIO_WAV=<path> also records
 // everything to a WAV file; LM_AUDIO=0 disables the device.
 #include "port/settings.h"
+#include "recomp/hidden_mansion.h"
 #include "recomp/audio.h"
 #include "recomp/hle.h"
 
@@ -97,7 +98,8 @@ void outPushGuestBlock(u32 addr, u32 bytes) {
     const auto& as = port::settings().audio;
     const s32 gain = s32(std::clamp(as.masterVolume, 0.0f, 1.0f) * 32768.0f);
     const bool mono = as.output == port::AudioOutput::Mono;
-    const bool swap = as.swapChannels != kRightFirst;
+    // PAL Hidden Mansion mirrors the picture, so it swaps the speakers too.
+    const bool swap = (as.swapChannels != kRightFirst) != hm::mirrorActive();
     for (u32 i = 0; i < frames; i++) {
         const s16 a = s16(rd16(addr + i * 4)), b = s16(rd16(addr + i * 4 + 2));
         s32 l = swap ? b : a, r = swap ? a : b;

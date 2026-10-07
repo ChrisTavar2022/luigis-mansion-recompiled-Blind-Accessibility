@@ -4,6 +4,7 @@
 #include "recomp/menu.h"
 
 #include "port/settings.h"
+#include "recomp/hidden_mansion.h"
 
 #include <aurora/aurora.h>
 #include <imgui.h>
@@ -107,6 +108,21 @@ void enhancementsTab() {
     }
     sDirty |= ImGui::Checkbox("Skip intro logos", &e.skipIntroLogos);
     pending("planned");
+    ImGui::Separator();
+    {
+        // Switching mid-visit would leave PAL data/patches half applied, so only allow it outside.
+        const bool inside = recomp::hm::hiddenActive();
+        ImGui::BeginDisabled(inside);
+        int v = e.hiddenMansionPal ? 1 : 0;
+        static const char* kVariants[] = {"USA (original)", "PAL (harder, mirrored)"};
+        if (ImGui::Combo("Hidden Mansion version", &v, kVariants, 2)) {
+            e.hiddenMansionPal = v == 1;
+            recomp::hm::setVariant(e.hiddenMansionPal ? recomp::hm::Variant::Pal : recomp::hm::Variant::Us);
+            sDirty = true;
+        }
+        ImGui::EndDisabled();
+        if (inside) pending("leave the Hidden Mansion to change");
+    }
     ImGui::Separator();
     ImGui::TextDisabled("Gameplay toggles, cheats and debug viewers will appear here.");
 }

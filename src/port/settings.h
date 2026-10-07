@@ -34,6 +34,7 @@ struct EnhancementSettings {
     bool showFps = false;
     bool pauseOnFocusLoss = true;
     bool skipIntroLogos = false;
+    bool hiddenMansionPal = true;  // Hidden Mansion uses the PAL release's rules (until the lab menu offers both)
 };
 
 struct Settings {

@@ -29,7 +29,7 @@ struct Options {
     // --hidden-mansion-variant pal|us (alias --hidden-mansion): initial Hidden Mansion variant,
     // i.e. which release's rules apply while the game's hidden-mansion flag is set (default
     // pal; docs/HIDDEN_MANSION.md).
-    std::string hiddenMansion = "pal";
+    std::string hiddenMansion;  // empty: use the F1 menu setting
 };
 
 Options& options();

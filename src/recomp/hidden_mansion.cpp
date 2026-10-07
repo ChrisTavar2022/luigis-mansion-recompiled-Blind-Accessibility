@@ -4,6 +4,7 @@
 #include "recomp/hidden_mansion.h"
 
 #include "port/options.h"
+#include "port/settings.h"
 #include "recomp/hle.h"
 
 #include <algorithm>
@@ -129,6 +130,7 @@ Variant initialVariant() {
     const char* env = std::getenv("LM_HIDDEN_MANSION_VARIANT");
     if (!env || !*env) env = std::getenv("LM_HIDDEN_MANSION");
     std::string v = env && *env ? env : port::options().hiddenMansion;
+    if (v.empty()) v = port::settings().enhancements.hiddenMansionPal ? "pal" : "us";
     for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch)));
     const bool pal = v != "us";
     const bool have = std::filesystem::exists(overlayDir() + "manifest.txt");
