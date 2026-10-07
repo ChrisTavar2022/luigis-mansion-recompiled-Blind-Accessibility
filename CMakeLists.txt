@@ -119,7 +119,7 @@ if (EXISTS ${LM_DOL})
 
     file(GLOB RECOMP_RUNTIME_SOURCES CONFIGURE_DEPENDS src/recomp/*.cpp)
     add_executable(lmrecomp ${RECOMP_RUNTIME_SOURCES} ${_recomp_files}
-        src/port/crash_handler.cpp src/port/options.cpp src/port/dol.cpp)
+        src/port/crash_handler.cpp src/port/options.cpp src/port/dol.cpp src/port/settings.cpp)
     target_include_directories(lmrecomp PRIVATE src ${LM_RECOMP_DIR}
         ${CMAKE_SOURCE_DIR}/extern/aurora/include/dolphin ${CMAKE_SOURCE_DIR}/extern/aurora/include)
     target_compile_definitions(lmrecomp PRIVATE TARGET_PC=1)

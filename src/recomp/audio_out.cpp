@@ -2,6 +2,7 @@
 // from big-endian s16 stereo and queued on an SDL3 audio stream (SDL resamples
 // the 32/48 kHz DSP rate to the device). LM_AUDIO_WAV=<path> also records
 // everything to a WAV file; LM_AUDIO=0 disables the device.
+#include "port/settings.h"
 #include "recomp/audio.h"
 #include "recomp/hle.h"
 
@@ -11,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <algorithm>
 #include <vector>
 
 namespace recomp::audio {
@@ -92,10 +94,16 @@ void outPushGuestBlock(u32 addr, u32 bytes) {
     if (!frames) return;
     static thread_local std::vector<s16> buf;
     buf.resize(frames * 2);
+    const auto& as = port::settings().audio;
+    const s32 gain = s32(std::clamp(as.masterVolume, 0.0f, 1.0f) * 32768.0f);
+    const bool mono = as.output == port::AudioOutput::Mono;
+    const bool swap = as.swapChannels != kRightFirst;
     for (u32 i = 0; i < frames; i++) {
         const s16 a = s16(rd16(addr + i * 4)), b = s16(rd16(addr + i * 4 + 2));
-        buf[i * 2 + 0] = kRightFirst ? b : a;
-        buf[i * 2 + 1] = kRightFirst ? a : b;
+        s32 l = swap ? b : a, r = swap ? a : b;
+        if (mono) l = r = (l + r) / 2;
+        buf[i * 2 + 0] = s16((l * gain) >> 15);
+        buf[i * 2 + 1] = s16((r * gain) >> 15);
     }
     std::lock_guard lk(sM);
     if (sStream) SDL_PutAudioStreamData(sStream, buf.data(), int(frames * 4));

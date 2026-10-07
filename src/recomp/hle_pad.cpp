@@ -3,6 +3,7 @@
 #include "recomp/hle.h"
 
 #include "port/options.h"
+#include "recomp/menu.h"
 
 #include <dolphin/pad.h>
 
@@ -86,6 +87,13 @@ HLE(PADControlMotor) { PADControlMotor(c.r[3], c.r[4]); }
 HLE(PADRead) {
     PADStatus st[PAD_MAX_CONTROLLERS] = {};
     const u32 motor = PADRead(st);
+    if (menu::isOpen()) {  // the overlay menu owns input while open
+        for (auto& s : st) {
+            const s8 err = s.err;
+            s = PADStatus{};
+            s.err = err;
+        }
+    }
     if (!port::options().inputScript.empty()) {
         applyScript(st[0]);
         static u32 sLogged = 0;

@@ -9,7 +9,9 @@
 #include "port/crash_handler.h"
 #include "port/dol.h"
 #include "port/options.h"
+#include "port/settings.h"
 #include "recomp/frame.h"
+#include "recomp/menu.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
@@ -103,6 +105,9 @@ int main(int argc, char* argv[]) {
     AuroraConfig config{};
     config.appName = "Luigi's Mansion PC";
     config.logCallback = &logCallback;
+    port::loadSettings();
+    config.msaa = u32(port::settings().video.msaa);
+    config.vsync = port::settings().video.vsync;
     aurora_initialize(argc, argv, &config);
 
     const std::string disc = findDisc();
@@ -119,6 +124,7 @@ int main(int argc, char* argv[]) {
     s32 dolSize = 0;
     const u8* dol = DVDGetDOLLocation(&dolSize);
 
+    menu::init();
     g_mem = static_cast<u8*>(std::calloc(1, kHostMemSize));
     loadDol(dol);
     initTimeBase();
@@ -153,12 +159,14 @@ int main(int argc, char* argv[]) {
     bool paused = false;
     while (!exiting) {
         for (const AuroraEvent* ev = aurora_update(); ev && ev->type != AURORA_NONE; ++ev) {
+            if (ev->type == AURORA_SDL_EVENT) menu::handleEvent(ev->sdl);
             if (ev->type == AURORA_EXIT) exiting = true;
             else if (ev->type == AURORA_PAUSED) paused = true;
             else if (ev->type == AURORA_UNPAUSED) paused = false;
         }
         if (exiting || paused || !aurora_begin_frame()) continue;
         const bool running = frame::runUntilPresent();
+        menu::draw();
         aurora_end_frame();
         if (!running) break;
     }

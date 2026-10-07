@@ -6,6 +6,7 @@
 // PCM16), 4-tap polyphase resampling, per-bus volume ramps, and the per-voice
 // status JAudio reads back (end-of-sample flag, play position). See docs/AUDIO.md
 // for the block layout and the frame protocol.
+#include "port/settings.h"
 #include "recomp/audio.h"
 #include "recomp/hle.h"
 
@@ -292,6 +293,16 @@ void mixVoice(u32 i, BusMix& mix) {
         }
     }
 
+    // User volume per category (Sound tab): streamed music plays through ring voices.
+    {
+        const auto& a = port::settings().audio;
+        const float g = bu16(blk + kSourceType) == kSrcRamPcm16 ? a.musicVolume : a.sfxVolume;
+        if (g < 0.999f) {
+            const s32 q = s32(std::clamp(g, 0.0f, 1.0f) * 32768.0f);
+            for (u32 n = 0; n < kSubframe; n++) tmp[n] = s16((s32(tmp[n]) * q) >> 15);
+        }
+    }
+
     for (int m = 0; m < kMixers; m++) {
         const u32 mx = blk + kMixer + m * 8;
         const u16 bus = bu16(mx);
@@ -345,7 +356,7 @@ void runFx(BusMix& mix) {
         const char* e = std::getenv("LM_AUDIO_FX");
         return !(e && *e == '0');
     }();
-    if (!S.fxBase || !enabled) return;
+    if (!S.fxBase || !enabled || !port::settings().audio.reverb) return;
     for (int l = 0; l < kFxLines; l++) {
         const u32 f = S.fxBase + l * 0x20;
         const u32 len = bu16(f + 2);
