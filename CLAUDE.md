@@ -8,6 +8,7 @@
 
 ## Rendering principle
 - Aim for hardware-accurate GX rendering wherever possible (EFB copies incl. copy-to-RAM, TEV/indirect precision, Z textures, fog, copy filters/gamma), then make every enhancement (resolution, aspect ratio, frame rate) scale on top of the accurate base. Accept a moderate performance cost for accuracy (it's a PC port), but keep it reasonable: prefer targeted accuracy (only the copies/effects the game needs) over brute-force emulation, and measure.
+- Every accuracy feature with a real cost gets a toggle in F1 > Visuals > Rendering (sub-tab), ON by default (best quality), so weaker PCs can turn it off for speed (e.g. EFB copy to RAM, Z textures, accurate copy filters). Note each toggle's visible effect in its tooltip.
 
 ## Release requirements
 - Distribution: ship the recompiler + a bundled clang/lld. `LuigisMansionRecomp.exe` first run asks for US and/or PAL disc images (ISO/RVZ), then does a one-time setup (recompile DOL into a game module, build PAL overlay) into AppData (docs/SETUP.md). Features needing a disc that wasn't provided are greyed out in the F1 menu until it is added.
