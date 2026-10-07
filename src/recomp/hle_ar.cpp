@@ -1,6 +1,7 @@
 // HLE: ARAM (16 MiB auxiliary memory) and the ARQ DMA queue. Transfers
 // complete immediately; their callbacks are delivered as interrupts.
 #include "recomp/hle.h"
+#include "recomp/runtime.h"
 #include "recomp/sched.h"
 
 #include <vector>
@@ -42,7 +43,10 @@ HLE(ARQPostRequest) {
     wr32(req + 0x18, len);
     wr32(req + 0x1C, cb);
     if (type == 0) std::memcpy(aram(dst, len), hostp(src), len);  // main memory -> ARAM
-    else std::memcpy(hostp(dst), aram(src, len), len);            // ARAM -> main memory
+    else {
+        watchRange(dst, len, "ARQ");
+        std::memcpy(hostp(dst), aram(src, len), len);
+    }            // ARAM -> main memory
     if (cb) sched::postIrq([req, cb](Ctx& ic) { guestCall(ic, cb, req); });
 }
 

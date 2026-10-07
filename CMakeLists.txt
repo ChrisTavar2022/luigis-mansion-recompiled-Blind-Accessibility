@@ -85,7 +85,7 @@ endif ()
 set(LM_DOL "${CMAKE_SOURCE_DIR}/Luigis Mansion US/sys/main.dol" CACHE FILEPATH
     "Path to your Luigi's Mansion (USA) main.dol, extracted from your own disc")
 set(LM_RECOMP_DIR ${CMAKE_BINARY_DIR}/recomp_gen)
-set(_recomp_inputs ${CMAKE_SOURCE_DIR}/tools/recomp/recomp.py ${LM_DOL}
+set(_recomp_inputs ${CMAKE_SOURCE_DIR}/tools/recomp/recomp.py ${CMAKE_SOURCE_DIR}/tools/recomp/hooks.txt ${LM_DOL}
     ${CMAKE_SOURCE_DIR}/decomp/config/GLME01/symbols.txt ${CMAKE_SOURCE_DIR}/decomp/config/GLME01/splits.txt)
 if (EXISTS ${LM_DOL})
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_recomp_inputs})

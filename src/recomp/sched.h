@@ -43,9 +43,12 @@ void wakeup(u32 queue);
 
 // Queues an interrupt handler (runs with the interrupt context).
 void postIrq(std::function<void(Ctx&)> fn);
+// Raises the interrupt after `seconds` of host time (models hardware latency).
+void postIrqAfter(double seconds, std::function<void(Ctx&)> fn);
 bool inIrq();
 
 void shutdown();
+void dumpThreads();
 void serviceOnThread(Ctx& c);
 
 }  // namespace recomp::sched

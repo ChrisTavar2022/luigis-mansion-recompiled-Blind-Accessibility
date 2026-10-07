@@ -92,3 +92,7 @@ HLE(VIWaitForRetrace) {
 HLE(VISetNextFrameBuffer) { frame::present(c, c.r[3], sBlack); }
 
 }  // namespace recomp
+
+namespace recomp {
+u32 viRetraceCount() { return sRetraceCount.load(); }
+}  // namespace recomp

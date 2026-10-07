@@ -3,6 +3,8 @@
 #include "recomp/hle.h"
 
 #include <algorithm>
+#include <chrono>
+#include <map>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -321,6 +323,58 @@ void postIrq(std::function<void(Ctx&)> fn) {
     runIrqs();
     lk.lock();
     handOff(pick(nullptr));
+}
+
+void dumpThreads() {
+    std::lock_guard lk(sM);
+    log("[sched] running=%08X irqPending=%d", sRunning == &sIrqMarker ? 0xFFFFFFFF : sRunning ? sRunning->guest : 0,
+        int(g_irqPending.load()));
+    for (auto* t : sThreads)
+        log("[sched]   %08X prio %d suspend %d state %d wait %08X lr %08X", t->guest, t->priority, t->suspendCount,
+            int(t->st), t->waitQueue, t->ctx.lr);
+}
+
+namespace {
+struct TimedIrq {
+    std::chrono::steady_clock::time_point when;
+    std::function<void(Ctx&)> fn;
+};
+std::mutex sTimerM;
+std::condition_variable sTimerCv;
+std::multimap<std::chrono::steady_clock::time_point, std::function<void(Ctx&)>> sTimed;
+std::thread sTimerThread;
+
+void timerMain() {
+    std::unique_lock lk(sTimerM);
+    while (!g_shutdown) {
+        if (sTimed.empty()) {
+            sTimerCv.wait(lk);
+            continue;
+        }
+        const auto when = sTimed.begin()->first;
+        if (std::chrono::steady_clock::now() < when) {
+            sTimerCv.wait_until(lk, when);
+            continue;
+        }
+        auto fn = std::move(sTimed.begin()->second);
+        sTimed.erase(sTimed.begin());
+        lk.unlock();
+        postIrq(std::move(fn));
+        lk.lock();
+    }
+}
+}  // namespace
+
+void postIrqAfter(double seconds, std::function<void(Ctx&)> fn) {
+    const auto when = std::chrono::steady_clock::now() +
+                      std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds));
+    std::lock_guard lk(sTimerM);
+    if (!sTimerThread.joinable()) {
+        sTimerThread = std::thread(timerMain);
+        sTimerThread.detach();
+    }
+    sTimed.emplace(when, std::move(fn));
+    sTimerCv.notify_one();
 }
 
 void shutdown() {

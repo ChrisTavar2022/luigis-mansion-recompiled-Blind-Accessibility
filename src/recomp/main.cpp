@@ -18,6 +18,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <thread>
+#include <chrono>
 
 namespace recomp {
 namespace vi {
@@ -120,9 +122,19 @@ int main(int argc, char* argv[]) {
     g_mem = static_cast<u8*>(std::calloc(1, kHostMemSize));
     loadDol(dol);
     initTimeBase();
+    initTrace();
+    initWatch();
     std::printf("Opened %s\n", disc.c_str());
 
     frame::start(&boot);
+    if (std::getenv("LM_WATCHDOG")) {
+        std::thread([] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+                sched::dumpThreads();
+            }
+        }).detach();
+    }
 
     bool exiting = false;
     bool paused = false;

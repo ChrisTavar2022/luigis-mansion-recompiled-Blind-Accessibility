@@ -773,6 +773,8 @@ class Recompiler:
             for lo, hi, tu in hle_ranges:
                 if lo <= addr < hi:
                     self.hle[addr] = (name, tu)
+        self.hooks = set()
+        self.address_entries = self.add_address_taken_entries(objs)
         while self.add_interior_entries():
             pass
         self.unsupported = {}
@@ -807,6 +809,52 @@ class Recompiler:
                     extra[t] = (f"{self.funcs[ca][0]}_entry_{t:08X}", cend - t)
         self.funcs.update(extra)
         return bool(extra)
+
+    def add_address_taken_entries(self, objs):
+        """Code addresses the program materialises (lis/addi pairs in code, words in
+        data sections) may be called indirectly: give interior ones an entry point."""
+        import bisect
+        starts = sorted(self.funcs)
+        text = [(a, a + s) for a, o, s in self.dol.sections if a < 0x80200000 and a >= 0x80003100]
+        jt = set()
+        for name, (addr, size) in objs.items():
+            if name.startswith("jumptable_"):
+                jt.update(range(addr, addr + size, 4))
+
+        def in_text(t):
+            return t % 4 == 0 and any(lo <= t < hi for lo, hi in text)
+
+        cands = set()
+        for faddr, (name, size) in self.funcs.items():
+            his = {}
+            for pc in range(faddr, faddr + size, 4):
+                w = self.dol.word(pc)
+                op = bits(w, 0, 5)
+                if op == 15 and bits(w, 11, 15) == 0:
+                    his[bits(w, 6, 10)] = (w & 0xFFFF) << 16
+                elif op in (14, 24) and bits(w, 11, 15) in his:
+                    lo = sext(w & 0xFFFF, 16) if op == 14 else (w & 0xFFFF)
+                    cands.add((his[bits(w, 11, 15)] + lo) & 0xFFFFFFFF)
+        for a, o, size in self.dol.sections:
+            if any(lo <= a < hi for lo, hi in text):
+                continue
+            for i in range(0, size - 3, 4):
+                if a + i in jt:
+                    continue
+                cands.add(int.from_bytes(self.dol.data[o + i:o + i + 4], "big"))
+        extra = {}
+        for t in cands:
+            if not in_text(t) or t in self.funcs:
+                continue
+            i = bisect.bisect_right(starts, t) - 1
+            if i < 0:
+                continue
+            ca = starts[i]
+            cend = ca + self.funcs[ca][1]
+            if t < cend and ca not in self.hle:
+                extra[t] = (f"{self.funcs[ca][0]}_entry_{t:08X}", cend - t)
+        self.funcs.update(extra)
+        return len(extra)
 
     def find_jump_tables(self, objs):
         """Map each bctr address to its jump-table targets (table found from the lis/addi
@@ -859,10 +907,14 @@ class Recompiler:
                 name, size = self.funcs[a]
                 lines.append(f"// {name}")
                 lines.append(f"void {self.fname(a)}(Ctx& c) {{")
+                lines.append(f"    c.enter(0x{a:08X}u);")
                 if a in self.hle:
                     lines.append(f"    static const HleFn s = hleLookup(\"{name}\");")
                     lines.append(f"    if (s) {{ s(c); }} else {{ hleMissing(\"{name}\", 0x{a:08X}u, c); }}")
                 else:
+                    if name in self.hooks:
+                        lines.append(f"    static const HleFn hook = hleLookup(\"{name}\");")
+                        lines.append("    if (hook) { hook(c); return; }")
                     lines += FuncEmitter(self, a, size, name).translate()
                 lines.append("}")
             name = f"funcs_{i // FUNCS_PER_FILE:03d}.cpp"
@@ -892,9 +944,11 @@ def main():
     funcs, objs = load_symbols(Path(a.symbols))
     funcs = {k: v for k, v in funcs.items() if v[1] > 0 and dol.has(k)}
     rc = Recompiler(dol, funcs, objs, load_hle_ranges(Path(a.splits)))
+    hooks = Path(__file__).with_name("hooks.txt")
+    rc.hooks = {l.strip() for l in hooks.read_text().splitlines() if l.strip() and not l.startswith("#")}
     files = rc.run(Path(a.out))
     print(f"recomp: {len(funcs)} functions ({len(rc.hle)} HLE) -> {len(files)} files; "
-          f"{len(rc.jump_tables)} jump tables")
+          f"{len(rc.jump_tables)} jump tables, {rc.address_entries} address-taken interior entries")
     for k, v in sorted(rc.unsupported.items(), key=lambda kv: -kv[1]):
         print(f"  unsupported {k}: {v}")
 

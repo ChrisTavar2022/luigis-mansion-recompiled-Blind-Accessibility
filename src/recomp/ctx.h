@@ -36,6 +36,9 @@ inline u16 bswap16(u16 v) { return __builtin_bswap16(v); }
 
 extern u8* g_mem;
 extern std::atomic<bool> g_irqPending;
+extern bool g_traceOn;  // LM_TRACE: log/record guest function entries
+extern bool g_watchOn;  // LM_WATCH: report guest stores to an address range
+void watch_store(u32 a, u32 v, int size);
 
 inline u8* hostp(u32 a) {
     return g_mem + ((a >> 28) == 0xE ? (kLockedCacheOffset | (a & 0x3FFF)) : (a & 0x01FFFFFF));
@@ -72,16 +75,19 @@ inline u32 rd16r(u32 a) {
     return v;
 }
 inline void wr32(u32 a, u32 v) {
+    if (g_watchOn) [[unlikely]] watch_store(a, v, 4);
     if (is_mmio(a)) [[unlikely]] return mmio_wr(a, v, 4);
     v = bswap32(v);
     std::memcpy(hostp(a), &v, 4);
 }
 inline void wr16(u32 a, u32 v) {
+    if (g_watchOn) [[unlikely]] watch_store(a, v, 2);
     if (is_mmio(a)) [[unlikely]] return mmio_wr(a, v & 0xFFFF, 2);
     const u16 s = bswap16(u16(v));
     std::memcpy(hostp(a), &s, 2);
 }
 inline void wr8(u32 a, u32 v) {
+    if (g_watchOn) [[unlikely]] watch_store(a, v, 1);
     if (is_mmio(a)) [[unlikely]] return mmio_wr(a, v & 0xFF, 1);
     *hostp(a) = u8(v);
 }
@@ -112,6 +118,7 @@ struct SymEntry {
 };
 
 void service_irq(Ctx& c);
+void trace_enter(u32 addr, Ctx& c);
 [[noreturn]] void fatal(const char* fmt, ...);
 
 struct Ctx {
@@ -198,6 +205,9 @@ struct Ctx {
     u32 mftb(u32 spr);
     static void dcbz(u32 ea) { std::memset(hostp(ea & ~31u), 0, 32); }
 
+    void enter(u32 addr) {
+        if (g_traceOn) [[unlikely]] trace_enter(addr, *this);
+    }
     void poll() {
         if (g_irqPending.load(std::memory_order_relaxed) && (msr & 0x8000)) [[unlikely]]
             service_irq(*this);

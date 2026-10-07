@@ -8,6 +8,9 @@ constexpr double kTimerClock = 40500000.0;  // OS timer: bus clock / 4
 
 GuestFn lookupFunc(u32 addr);
 void initTimeBase();
+void initTrace();
+void initWatch();
+void watchRange(u32 addr, u32 len, const char* what);  // HLE bulk writes
 u64 timeBase();
 
 namespace hw {

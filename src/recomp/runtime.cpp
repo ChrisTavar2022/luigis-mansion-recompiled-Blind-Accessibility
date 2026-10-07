@@ -23,6 +23,86 @@ extern const SymEntry kSymTable[];
 extern const unsigned kSymTableSize;
 
 u8* g_mem = nullptr;
+bool g_traceOn = false;
+
+// ---------------------------------------------------------------------------
+// Tracing (LM_TRACE=all | ring | <hex addr>,<hex addr>...)
+// ---------------------------------------------------------------------------
+
+namespace {
+enum class TraceMode { Off, Ring, Set, All };
+TraceMode sTraceMode = TraceMode::Off;
+std::unordered_set<u32> sTraceSet;
+constexpr int kRingSize = 64;
+thread_local u32 tRing[kRingSize];
+thread_local u32 tRingLr[kRingSize];
+thread_local unsigned tRingPos = 0;
+}  // namespace
+
+void initTrace() {
+    const char* env = std::getenv("LM_TRACE");
+    if (!env || !*env) return;
+    const std::string v = env;
+    if (v == "all") sTraceMode = TraceMode::All;
+    else if (v == "ring") sTraceMode = TraceMode::Ring;
+    else {
+        sTraceMode = TraceMode::Set;
+        size_t pos = 0;
+        while (pos < v.size()) {
+            const size_t comma = v.find(',', pos);
+            sTraceSet.insert(u32(std::strtoul(v.substr(pos, comma - pos).c_str(), nullptr, 16)));
+            if (comma == std::string::npos) break;
+            pos = comma + 1;
+        }
+    }
+    g_traceOn = true;
+}
+
+void trace_enter(u32 addr, Ctx& c) {
+    tRing[tRingPos % kRingSize] = addr;
+    tRingLr[tRingPos % kRingSize] = c.lr;
+    tRingPos++;
+    if (sTraceMode == TraceMode::All || (sTraceMode == TraceMode::Set && sTraceSet.count(addr)))
+        log("[trace] %08X lr %08X r3 %08X r4 %08X r5 %08X", addr, c.lr, c.r[3], c.r[4], c.r[5]);
+}
+
+// LM_WATCH=<hex addr>[,<hex len>]: report every guest store into the range, with
+// the function that made it (needs LM_TRACE, e.g. LM_TRACE=ring, for the name).
+bool g_watchOn = false;
+namespace {
+u32 sWatchLo = 0, sWatchHi = 0;
+}  // namespace
+
+void initWatch() {
+    const char* env = std::getenv("LM_WATCH");
+    if (!env || !*env) return;
+    char* end = nullptr;
+    sWatchLo = u32(std::strtoul(env, &end, 16));
+    sWatchHi = sWatchLo + (end && *end == ',' ? u32(std::strtoul(end + 1, nullptr, 16)) : 4);
+    g_watchOn = true;
+}
+
+void watch_store(u32 a, u32 v, int size) {
+    const u32 phys = a & 0x01FFFFFF;
+    if (phys + size <= (sWatchLo & 0x01FFFFFF) || phys >= (sWatchHi & 0x01FFFFFF)) return;
+    const u32 fn = tRingPos ? tRing[(tRingPos - 1) % kRingSize] : 0;
+    log("[watch] store%d %08X = %08X in %08X", size * 8, a, v, fn);
+}
+
+void watchRange(u32 a, u32 len, const char* what) {
+    if (!g_watchOn) return;
+    const u32 lo = a & 0x01FFFFFF, hi = lo + len;
+    if (hi <= (sWatchLo & 0x01FFFFFF) || lo >= (sWatchHi & 0x01FFFFFF)) return;
+    log("[watch] %s writes %08X+%X", what, a, len);
+}
+
+void dumpTraceRing() {
+    if (!g_traceOn) return;
+    std::fprintf(stderr, "last guest calls on this thread (oldest first):\n");
+    const unsigned n = tRingPos < kRingSize ? tRingPos : kRingSize;
+    for (unsigned i = tRingPos - n; i < tRingPos; i++)
+        std::fprintf(stderr, "  %08X (from %08X)\n", tRing[i % kRingSize], tRingLr[i % kRingSize]);
+}
 
 void log(const char* fmt, ...) {
     va_list ap;
@@ -40,6 +120,7 @@ void fatal(const char* fmt, ...) {
     std::vfprintf(stderr, fmt, ap);
     va_end(ap);
     std::fputc('\n', stderr);
+    dumpTraceRing();
     std::fflush(stderr);
     std::abort();
 }
@@ -92,7 +173,12 @@ void Ctx::call(u32 addr) {
         fn(*this);
         return;
     }
-    if (addr == 0) fatal("call to null (lr=%08X)", lr);
+    if (addr == 0) {
+        // Usually a virtual call: show the object and its vtable.
+        const u32 obj = r[3];
+        const u32 vt = (obj >> 24) == 0x80 || (obj >> 24) == 0x81 ? rd32(obj) : 0;
+        fatal("call to null (lr=%08X) r3=%08X vtable=%08X r12=%08X", lr, obj, vt, r[12]);
+    }
     fatal("call to %08X: no function starts there (lr=%08X)", addr, lr);
 }
 

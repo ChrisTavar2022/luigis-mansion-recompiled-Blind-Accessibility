@@ -26,6 +26,8 @@ void parseOptions(int argc, char* argv[]) {
         } else if (std::strcmp(argv[i], "--map-viewer") == 0) {
             o.mapViewer = argv[++i];
             o.modelViewer = "(map)";
+        } else if (std::strcmp(argv[i], "--input") == 0) {
+            o.inputScript = argv[++i];
         } else if (std::strcmp(argv[i], "--room-viewer") == 0) {
             o.roomViewer = argv[++i];
             o.modelViewer = "(room)";  // the viewer scene handles both
