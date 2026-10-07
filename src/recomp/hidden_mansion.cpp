@@ -7,6 +7,7 @@
 #include "recomp/hle.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cctype>
 #include <cstdlib>
@@ -123,20 +124,33 @@ u32 fbits(float f) { return std::bit_cast<u32>(f); }
 
 }  // namespace
 
-Mode mode() {
-    static const Mode m = [] {
-        const char* env = std::getenv("LM_HIDDEN_MANSION");
-        std::string v = env && *env ? env : port::options().hiddenMansion;
-        for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch)));
-        const bool pal = v != "us";
-        if (pal) {
-            const bool have = std::filesystem::exists(overlayDir() + "manifest.txt");
-            log("[hm] PAL Hidden Mansion rules (overlay %s%s)", overlayDir().c_str(),
-                have ? "" : ": missing, run tools/hidden_mansion_data.py; using US data");
-        }
-        return pal ? Mode::Pal : Mode::Us;
-    }();
-    return m;
+namespace {
+Variant initialVariant() {
+    const char* env = std::getenv("LM_HIDDEN_MANSION_VARIANT");
+    if (!env || !*env) env = std::getenv("LM_HIDDEN_MANSION");
+    std::string v = env && *env ? env : port::options().hiddenMansion;
+    for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+    const bool pal = v != "us";
+    const bool have = std::filesystem::exists(overlayDir() + "manifest.txt");
+    log("[hm] Hidden Mansion variant: %s (overlay %s%s)", pal ? "PAL" : "USA", overlayDir().c_str(),
+        have ? "" : ": missing, run tools/hidden_mansion_data.py; PAL data unavailable");
+    return pal ? Variant::Pal : Variant::Us;
+}
+std::atomic<int> sVariant{-1};
+}  // namespace
+
+Variant variant() {
+    int v = sVariant.load();
+    if (v < 0) {
+        int want = int(initialVariant());
+        sVariant.compare_exchange_strong(v, want);
+        v = sVariant.load();
+    }
+    return Variant(v);
+}
+
+void setVariant(Variant v) {
+    if (sVariant.exchange(int(v)) != int(v)) log("[hm] Hidden Mansion variant -> %s", v == Variant::Pal ? "PAL" : "USA");
 }
 
 bool hiddenActive() { return rd32(kUraFlag) != 0; }
@@ -154,14 +168,14 @@ void onFrame() {
     static bool sWas = false;
     if (hiddenActive() != sWas) {
         sWas = hiddenActive();
-        log("[hm] hidden-mansion flag %s (%s rules)", sWas ? "set" : "cleared", mode() == Mode::Pal ? "PAL" : "US");
+        log("[hm] hidden-mansion flag %s (%s variant)", sWas ? "set" : "cleared", variant() == Variant::Pal ? "PAL" : "USA");
     }
     syncConstants();
 }
-bool palActive() { return mode() == Mode::Pal && hiddenActive(); }
+bool palActive() { return variant() == Variant::Pal && hiddenActive(); }
 
 std::optional<std::string> redirect(const char* guestPath) {
-    if (mode() != Mode::Pal || !guestPath) return std::nullopt;
+    if (variant() != Variant::Pal || !guestPath) return std::nullopt;
     for (const Redirect& r : kRedirects) {
         if (!samePath(guestPath, r.guestPath)) continue;
         if (r.onlyWhileHidden && !(hiddenActive() && rd32(kCurMapNo) == 2)) return std::nullopt;
@@ -208,7 +222,6 @@ s32 overlayRead(s32 entry, void* dst, s32 length, s32 offset) {
 }
 
 void syncConstants() {
-    if (mode() != Mode::Pal) return;
     static bool sApplied = false;
     static bool sChecked = false, sOk = true;
     if (!sChecked) {  // refuse to touch memory that does not hold the expected US literal
@@ -221,7 +234,7 @@ void syncConstants() {
         }
     }
     if (!sOk) return;
-    const bool want = hiddenActive();
+    const bool want = palActive();  // switching variant or leaving the hidden mansion restores US values
     if (want == sApplied) return;
     for (const ConstPatch& p : kConstPatches) wr32(p.addr, fbits(want ? p.palValue : p.usValue));
     sApplied = want;

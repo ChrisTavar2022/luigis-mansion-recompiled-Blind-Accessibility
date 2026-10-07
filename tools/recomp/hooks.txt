@@ -23,3 +23,15 @@ fn_8009FD54
 fn_8009FCA8
 fn_8006D1B8
 fn_800168EC
+fn_800B41E0
+# PAL Hidden Mansion boss mechanics (same file): Boolossus movement mode, Chauncey balls and
+# rocking horses, Bowser bomb volleys.
+fn_800B783C
+fn_8009F1DC
+fn_800A184C
+fn_800A47BC
+fn_800A441C
+fn_800A5BA0
+fn_800A926C
+# Dev: LM_START_MAP=<n> (new game starts in another map; hidden_mansion_hooks.cpp)
+fn_8000C188
