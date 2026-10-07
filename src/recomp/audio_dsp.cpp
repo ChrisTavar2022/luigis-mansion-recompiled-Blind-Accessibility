@@ -13,6 +13,7 @@
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <vector>
 
 namespace recomp::audio {
 bool g_log = [] {
@@ -57,7 +58,18 @@ enum : u32 {
 enum : u16 { kSrcAfc5 = 0x05, kSrcPcm8 = 0x08, kSrcAfc9 = 0x09, kSrcPcm16 = 0x10, kSrcRamPcm16 = 0x21 };
 
 // Output buses: DSP-memory buffer addresses from JAudio's bus table.
-constexpr u16 kBusLeft = 0x0D00, kBusRight = 0x0D60;
+// 0x0D00/0x0D60 are the left/right outputs; 0x0DC0/0x0E20 are the sends voices use
+// for the effect lines (see runFx).
+constexpr u16 kBusIds[4] = {0x0D00, 0x0D60, 0x0DC0, 0x0E20};
+constexpr int kNumBuses = 4;
+constexpr int kFxLines = 2;  // lines fed by the two send buses
+using BusMix = s32[kNumBuses][kSubframe];
+
+int busIndex(u16 id) {
+    for (int b = 0; b < kNumBuses; b++)
+        if (kBusIds[b] == id) return b;
+    return -1;
+}
 
 // AFC coefficient pairs, used until JAudio's setup command hands us its own table.
 constexpr s16 kAfcCoefDefault[16][2] = {
@@ -79,7 +91,6 @@ struct Voice {
     s16 frame[16]{};
     bool sourceEnded = false;
     bool warned = false;
-    bool loudLogged = false;
 };
 
 struct State {
@@ -92,8 +103,10 @@ struct State {
     u32 subframes = 0, sub = 0, bufL = 0, bufR = 0;
     u16 level = 0x4000;
     std::array<Voice, kMaxVoices> voices{};
-    u32 busSeen[16]{};
-    u16 busIds[16]{};
+    // Effect-line delay memory (host side; the game's buffer is left alone).
+    std::vector<s16> fxDelay[kFxLines];
+    u32 fxPos[kFxLines]{};
+    s16 fxHist[kFxLines][8]{};
 } S;
 
 inline u16 bu16(u32 a) { return u16(rd16(a)); }
@@ -241,7 +254,7 @@ void startVoice(Voice& v, u32 blk) {
 }
 
 // Mixes one subframe of voice `i` into the bus accumulators.
-void mixVoice(u32 i, s32* outL, s32* outR) {
+void mixVoice(u32 i, BusMix& mix) {
     const u32 blk = S.chanBase + i * kBlockSize;
     Voice& v = S.voices[i];
     const bool enabled = bu16(blk + kEnabled) != 0;
@@ -255,14 +268,8 @@ void mixVoice(u32 i, s32* outL, s32* outR) {
         startVoice(v, blk);
     }
     if (!v.playing || bu16(blk + kPause)) return;
-    if (g_log && bu16(blk + kFilterMode)) {
-        static u32 filtLogged = 0;
-        if (filtLogged++ < 20)
-            log("[audio] voice %u filter mode %04X iir %04X %04X %04X %04X fir %04X %04X %04X %04X %04X %04X %04X %04X dist %04X", i,
-                bu16(blk + kFilterMode), bu16(blk + 0x148), bu16(blk + 0x14A), bu16(blk + 0x14C), bu16(blk + 0x14E),
-                bu16(blk + 0x120), bu16(blk + 0x122), bu16(blk + 0x124), bu16(blk + 0x126), bu16(blk + 0x128),
-                bu16(blk + 0x12A), bu16(blk + 0x12C), bu16(blk + 0x12E), bu16(blk + 0x150));
-    }
+    // Per-voice filters (+0x108 mode, FIR8 at +0x120, IIR at +0x148) are not applied;
+    // the configurations seen so far are pass-through (IIR {0x7FFF, 0, 0, 0}).
 
     const bool stopping = bu16(blk + kStopReq) != 0;
     s16 tmp[kSubframe];
@@ -292,28 +299,13 @@ void mixVoice(u32 i, s32* outL, s32* outR) {
         const s32 target = stopping ? 0 : bs16(mx + 2);
         const s32 from = bs16(mx + 4);
         wr16(mx + 4, u32(target));
-        if (g_log) {
-            for (int b = 0; b < 16; b++) {
-                if (S.busIds[b] == bus || S.busIds[b] == 0) {
-                    S.busIds[b] = bus;
-                    S.busSeen[b]++;
-                    break;
-                }
-            }
-        }
-        s32* out = bus == kBusLeft ? outL : bus == kBusRight ? outR : nullptr;
-        if (g_log && !out && (from || target)) {
-            static u32 auxLogged = 0;
-            if (auxLogged++ < 20) log("[audio] voice %u sends to aux bus %04X vol %04X", i, bus, u16(target));
-        }
+        const int bi = busIndex(bus);
+        s32* out = bi >= 0 ? mix[bi] : nullptr;
         if (!out || (from == 0 && target == 0)) continue;
+        // Volumes are 1.15; the current volume ramps to the target over the subframe.
         for (u32 n = 0; n < kSubframe; n++) {
             const s32 vol = from + (target - from) * s32(n + 1) / s32(kSubframe);
             out[n] += (tmp[n] * vol) >> 15;
-            if (g_log && std::abs((tmp[n] * vol) >> 15) > 3000 && !v.loudLogged) {
-                v.loudLogged = true;
-                log("[audio] voice %u loud: sample %d vol %04X->%04X bus %04X pitch %04X", i, tmp[n], u16(from), u16(target), bus, bu16(blk + kPitch));
-            }
         }
     }
 
@@ -341,15 +333,63 @@ void mixVoice(u32 i, s32* outL, s32* outR) {
     }
 }
 
+// Effect lines (JAudio DFX_SetFxLine: 0x20 bytes each at the setup's FX address):
+//   +0 u16 enabled, +2 u16 delay length in subframes, +4 u32 delay buffer,
+//   +8 u16 out bus A, +A s16 volume A, +C u16 out bus B, +E s16 volume B,
+//   +10 s16[8] FIR applied to the fed-back signal.
+// Approximation (docs/AUDIO.md): line n reads send bus n (0x0DC0 / 0x0E20) into a
+// delay of `length` subframes; the delayed signal goes to the two output buses and
+// back into the delay through the FIR, giving a decaying echo.
+void runFx(BusMix& mix) {
+    static const bool enabled = [] {
+        const char* e = std::getenv("LM_AUDIO_FX");
+        return !(e && *e == '0');
+    }();
+    if (!S.fxBase || !enabled) return;
+    for (int l = 0; l < kFxLines; l++) {
+        const u32 f = S.fxBase + l * 0x20;
+        const u32 len = bu16(f + 2);
+        auto& d = S.fxDelay[l];
+        if (!bu16(f) || !len) {
+            d.clear();
+            continue;
+        }
+        const u32 size = len * kSubframe;
+        if (d.size() != size) {
+            d.assign(size, 0);
+            S.fxPos[l] = 0;
+        }
+        s16 fir[8];
+        for (int t = 0; t < 8; t++) fir[t] = bs16(f + 0x10 + t * 2);
+        const s32* in = mix[2 + l];
+        u32& pos = S.fxPos[l];
+        const int outA = busIndex(bu16(f + 8)), outB = busIndex(bu16(f + 12));
+        const s32 volA = bs16(f + 10), volB = bs16(f + 14);
+        for (u32 n = 0; n < kSubframe; n++) {
+            const s32 y = d[pos];
+            s16* h = S.fxHist[l];  // h[0] = newest delayed sample
+            for (int t = 7; t > 0; t--) h[t] = h[t - 1];
+            h[0] = s16(y);
+            s32 fb = 0;  // FIR over the delayed signal
+            for (int t = 0; t < 8; t++) fb += h[t] * fir[t];
+            if (outA >= 0 && outA < 2) mix[outA][n] += (y * volA) >> 15;
+            if (outB >= 0 && outB < 2) mix[outB][n] += (y * volB) >> 15;
+            d[pos] = s16(std::clamp(in[n] + (fb >> 15), -32768, 32767));
+            pos = (pos + 1) % size;
+        }
+    }
+}
+
 void runSubframe() {
-    s32 accL[kSubframe]{}, accR[kSubframe]{};
+    BusMix mix{};
     if (S.chanBase && S.haveInterp)
-        for (u32 i = 0; i < S.numVoices; i++) mixVoice(i, accL, accR);
+        for (u32 i = 0; i < S.numVoices; i++) mixVoice(i, mix);
+    runFx(mix);
     const u32 off = S.sub * kSubframe * 2;
     for (u32 n = 0; n < kSubframe; n++) {
         // The frame's mixer level is 4.12 fixed point (JAudio: DsetMixerLevel(f) = f * 4096).
-        const s32 l = (accL[n] * s32(S.level)) >> 12;
-        const s32 r = (accR[n] * s32(S.level)) >> 12;
+        const s32 l = (mix[0][n] * s32(S.level)) >> 12;
+        const s32 r = (mix[1][n] * s32(S.level)) >> 12;
         wr16(S.bufL + off + n * 2, u32(std::clamp(l, -32768, 32767)));
         wr16(S.bufR + off + n * 2, u32(std::clamp(r, -32768, 32767)));
     }
@@ -387,16 +427,14 @@ bool dspRunSubframe() {
     if (++S.sub >= S.subframes) S.frameActive = false;
     if (g_log) {
         static u32 frames = 0;
-        if (!S.frameActive && ++frames % 600 == 0) {
-            u32 active = 0;
-            for (auto& v : S.voices) active += v.playing;
-            log("[audio] %u DSP frames, %u voices playing, level %04X", frames, active, S.level);
-            for (int b = 0; b < 16 && S.busIds[b]; b++) log("[audio]   bus %04X used %u", S.busIds[b], S.busSeen[b]);
-            for (u32 l = 0; S.fxBase && l < 4; l++) {
-                const u32 f = S.fxBase + l * 0x20;
-                log("[audio]   fx %u: %04X %04X %08X %04X %04X %04X %04X | %04X %04X %04X %04X %04X %04X %04X %04X", l, bu16(f),
-                    bu16(f + 2), rd32(f + 4), bu16(f + 8), bu16(f + 10), bu16(f + 12), bu16(f + 14), bu16(f + 16), bu16(f + 18),
-                    bu16(f + 20), bu16(f + 22), bu16(f + 24), bu16(f + 26), bu16(f + 28), bu16(f + 30));
+        if (!S.frameActive && ++frames % 114 == 0) {
+            log("[audio] frame %u (%.1f s), level %04X", frames, frames * 560 / 32000.0, S.level);
+            for (u32 i = 0; i < S.numVoices; i++) {
+                if (!S.voices[i].playing) continue;
+                const u32 blk = S.chanBase + i * kBlockSize;
+                log("[audio]   v%u type %02X pitch %04X L %04X R %04X aux %04X %04X stop %u", i, bu16(blk + kSourceType),
+                    bu16(blk + kPitch), bu16(blk + kMixer + 2), bu16(blk + kMixer + 10), bu16(blk + kMixer + 18),
+                    bu16(blk + kMixer + 26), bu16(blk + kStopReq));
             }
         }
     }

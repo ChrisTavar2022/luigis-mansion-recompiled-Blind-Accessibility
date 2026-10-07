@@ -17,7 +17,7 @@
 - Any game function can be replaced: add its symbol to `tools/recomp/hooks.txt` + `HLE(symbol)`.
 - `src/recomp/ctx.h`: guest memory (`hostp`, `rd32/wr32`, BE), MMIO (0xCC008000 WGP → Aurora FIFO), Ctx/paired singles.
 - `src/recomp/sched.*`: one host thread per OSThread, only one runs guest code (priority scheduler); interrupts via `postIrq`/`postIrqAfter`, delivered at loop back-edges/HLE calls or by the idle poster.
-- `frame.*`: guest runs only inside an Aurora frame; handoff at `VISetNextFrameBuffer`. VI retrace timer 59.94 Hz; AI DMA timer drives JAudio; DVD reads have modelled latency (game depends on it).
+- `frame.*`: guest runs only inside an Aurora frame; handoff at `VISetNextFrameBuffer`. VI retrace timer 59.94 Hz; AI DMA interrupt paced by the SDL3 audio device drives JAudio (docs/AUDIO.md); DVD reads have modelled latency (game depends on it).
 - Aurora local patches: `patches/aurora/*.patch` (auto-applied at configure). 0002 = vertex arrays with size 0 sized from draw indices.
 - `src/game/`, `lmport` target: older hand-port prototype + dev viewers (reference only).
 
@@ -38,5 +38,5 @@
 - Timing matters: instantaneous HW completion can break game assumptions (BootScene heap race).
 
 ## Status (keep updated)
-- Boots to title (3D + 2D), START works, scene changes run. Audio silent (DSP hooked out), memory card stubbed (no card).
+- Boots to title (3D + 2D), START works, scene changes run. Audio plays (DSP microcode stand-in in audio_dsp.cpp, docs/AUDIO.md; LM_AUDIO_WAV=, LM_AUDIO_LOG=1), memory card stubbed (no card).
 - Parallel work streams: memory card, audio, widescreen/interp, PAL Hidden Mansion (agent worktree branches).

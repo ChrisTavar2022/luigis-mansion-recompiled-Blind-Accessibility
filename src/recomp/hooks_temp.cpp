@@ -4,7 +4,7 @@
 
 namespace recomp {
 
-// "Streamed BGM ready?" (JAudio stream status). Remove once streamed audio plays.
-HLE(fn_80189054) { c.r[3] = 1; }
+// (none at the moment; the streamed-BGM poll fn_80189054 now runs for real since
+// the DSP stand-in plays the stream's ring-buffer voices, see docs/AUDIO.md)
 
 }  // namespace recomp

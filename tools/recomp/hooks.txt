@@ -10,6 +10,3 @@ DSPReleaseHalt__Fv
 DSPWaitFinish__Fv
 DiplSec__FUl
 
-# Temporary: "is the streamed BGM ready" poll (only caller: a scene init that spins on it).
-# Streamed audio isn't emulated yet, so report ready (src/recomp/hooks_temp.cpp).
-fn_80189054
