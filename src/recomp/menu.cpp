@@ -191,8 +191,6 @@ void unusedContentTab() {
     }
     ImGui::Separator();
     recomp::dev::unusedSection();
-    ImGui::Separator();
-    gameplaySection();
 }
 
 // Gameplay toggles, difficulty and cheats.
