@@ -298,8 +298,8 @@ scripts: 1, 2, 3, 4, 6, 9, 10, 11, 12, 13. Never loaded: **0, 5, 7, 8**.
 |-----|-------------------|---------|-------|
 | 0 | `map0/test_00..03.bin` | Test map. JMP: Luigi, `dancer`, `situji` (butler), `candle`, two `dltelesa` Boos, `marioe`, `mphand`; observers `kinopio` (Toad) and `rion1`; events 74 and 95; rat, skull, "waiter" and `test1-4` paths | Loads; a mansion-like room with test actors |
 | 5 | `map5/h_03_00..03.bin` | "Statue hall": winged-unicorn statues, pillars, two doors. Only Luigi in its tables; `telesa`, `dance`, `mg_test` paths | Loads, playable |
-| 7 | `map7/h_05_00..03.bin` | Same room geometry as map 5 (the files differ only in their names), its own `col.mp` | Host stack overflow while loading (unbounded guest recursion); Go button disabled |
-| 8 | `map8/h_06_00..03.bin` | Same room family; JMP tables in an older field layout (characterinfo 16 fields instead of 23, groupinfo 20), an E. Gadd (`lohakase`) and event 14 | Crashes while loading; disabled |
+| 7 | `map7/h_05_00..03.bin` | Map 5's statue hall with both corridors (rooms 1 and 2) 2000 units longer and the end hall (room 3) moved back to match; own `col.mp`. Only Luigi | Loads with the rebuilt archive (below), walkable end to end |
+| 8 | `map8/h_06_00..03.bin` | The same four-room plan in a wooden, lantern-lit style (two stone chests in the entrance hall, side alcoves, corridors 5500 units long, end hall). E. Gadd (`lohakase`) stands in the entrance hall with event 14 attached. JMP tables in an older layout | Loads with the rebuilt archive (below), walkable |
 
 Used maps for reference: 1 E. Gadd's lab, 2 mansion, 3 training room, 4 Portrificationizer,
 6 portrait gallery, 9 roof (King Boo / Bowser), 10 Chauncey's room, 11 balcony (Boolossus),
@@ -319,6 +319,63 @@ Interpolated60: maps 0, 2 (appear points 6 and 9), 3, 4, 5, 9, 13.
 
 Test aids: `LM_START_MAP=<n>` (new game starts in map n; moved here from the Hidden Mansion
 hooks), `LM_START_APPEAR=<p>`, `LM_DEV_WARPS=<map>[:<appear>]@<frame>,...`.
+
+### Maps 7 and 8: why they crashed and how they load now
+
+Both crashed for the same reason, and it is in the data, not the port: the game would fail
+the same way on a console.
+
+- **Missing model.** Every map setup loads `k03-elem1_eyes.bmd` from the map archive (the
+  lookup at `0x8017310C`, type `K03-`) and builds a J3D model from it without checking the
+  result. Every retail map archive has `j3d_effect/k03-elem1_eyes/`; `map7.szp` and
+  `map8.szp` have no `j3d_effect` directory at all. The model is built from a null resource.
+  On the console that read of address 0 (not mapped by the OS's BATs) is a DSI exception.
+  In the port low addresses alias main RAM, so the loader wrote through garbage pointers
+  instead (J3D packets, the audio message queue, JAudio's track tree). The audio thread then
+  recursed through the corrupted track tree (`SeqUpdate` -> `Jam_UpdateTrack` ->
+  `SeqUpdate`, and `Jam_SeqmainNote`) until the host thread's stack ran out. That is the
+  "unbounded recursion" seen before: a cycle in corrupted data, not deep-but-finite guest
+  recursion, so a bigger host stack would not have helped. Found with `LM_TRACE=ring`, a
+  resource-lookup log and `LM_WATCH` on a track's child pointers.
+- **Map 8's tables.** Its JMP tables predate the retail field layout: characterinfo has 16
+  fields instead of 23 (no `create_name`, `room_no`, `item_table`, `appear_point`, `msg_no`,
+  `cond_type`, `move_type`, `appear_type`; `dir_x/y/z` are 16-bit ints), groupinfo 20
+  instead of 9 (with link and transform fields since dropped), eventinfo 21 instead of 24,
+  polygoninfo 8-byte entries with 7 fields instead of 4-byte entries with 3. furnitureinfo,
+  observerinfo, soundgroupinfo, soundpolygoninfo and roominfo are missing.
+
+**Fix** (`src/recomp/unused_maps.cpp`, `src/recomp/rarc.cpp`): when the game opens
+`/Map/map7.szp` or `/Map/map8.szp`, the port serves a copy rebuilt from the user's disc
+(`hle_dvd.cpp` overlay chain, virtual entries `0x4C000000+`). The archive is unpacked into a
+directory tree and `j3d_effect/k03-elem1_eyes/k03-elem1_eyes.bmd` is added from
+`/Map/map5.szp` (map 7's twin). For map 8, every table map 5 has is rebuilt in map 5's
+layout. Fields are matched by name hash (that is how `ToolData` finds them), ints and floats
+are converted where the layouts disagree, and fields with no source get the retail
+"nothing" values (`create_name` `----`, other strings `(null)`, numbers 0). The sound
+tables get one zeroed entry per collision polygon or group, and the other missing tables
+stay empty. The result is repacked as a RARC and wrapped in a literal-only Yay0 stream.
+Retail never loads these two files, so nothing else changes. With tracing on, the runtime
+now reports host-stack exhaustion with the call ring instead of dying silently.
+
+**What is there** (verified with `LM_START_MAP=7/8` and `LM_DEV_WARPS=7@3000,8@4500` from
+the mansion, with screenshots, F3 overlay for positions):
+
+- Map 7: Luigi starts in the statue hall. Both corridors lead about 4500 units north (map 5's
+  stop at about 2500) and end at a door.
+- Map 8: Luigi starts at (2547, 0, -138) facing a lantern-lit wooden hallway. E. Gadd
+  (`demo_hakase`) stands at (2549, 0, -932) between the corridors. Luigi bumps into him, and
+  the walls and the chests block him. The left corridor runs to a door at about z -6500.
+  The wall between the entrance hall and the corridors (z -1050) is fan-triangulated from
+  one corner in `col.mp`, so thin collision slivers cover the right part of each corridor
+  entrance. Enter the left corridor at x of about 2200, and the right one near its left
+  edge. Maps 5 and 7 have a milder version of the same thing.
+- Event 14 on map 8 is a talk-style trigger (`EventIf` 1, `EventLock` 1, area 120) at
+  E. Gadd's position. Its script is the retail `event14.txt`: Lydia's portrait line "Oh
+  dear... Such a draft..." (map 2 uses it for her room), then `<FLAGOFF>(169)`. With the
+  shipped area it cannot start, because E. Gadd's body keeps Luigi about 165 units away. In
+  a test with the area raised to 300 (not shipped), pressing A next to him played the line
+  over this hallway. So in this early build the event was a test hookup on E. Gadd, not a
+  scene of his own.
 
 ## Unused rooms (work in progress, paused)
 

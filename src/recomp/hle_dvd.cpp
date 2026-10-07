@@ -2,6 +2,7 @@
 // synchronously; async completions are delivered as interrupts.
 #include "recomp/hidden_mansion.h"
 #include "recomp/room_swap.h"
+#include "recomp/unused_maps.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
@@ -17,15 +18,23 @@
 namespace recomp {
 namespace {
 
-// Host-served files: leftover-room visits (room_swap.cpp), then the PAL Hidden Mansion overlay.
+// Host-served files: leftover-room visits (room_swap.cpp), the rebuilt unused maps 7/8
+// (unused_maps.cpp), then the PAL Hidden Mansion overlay.
 s32 ovEntry(const char* path) {
-    const s32 e = rooms::overlayEntry(path);
+    s32 e = rooms::overlayEntry(path);
+    if (e < 0) e = unused_maps::overlayEntry(path);
     return e >= 0 ? e : hm::overlayEntry(path);
 }
-bool ovIs(s32 e) { return rooms::isOverlayEntry(e) || hm::isOverlayEntry(e); }
-u32 ovLength(s32 e) { return rooms::isOverlayEntry(e) ? rooms::overlayLength(e) : hm::overlayLength(e); }
+bool ovIs(s32 e) { return rooms::isOverlayEntry(e) || unused_maps::isOverlayEntry(e) || hm::isOverlayEntry(e); }
+u32 ovLength(s32 e) {
+    if (rooms::isOverlayEntry(e)) return rooms::overlayLength(e);
+    if (unused_maps::isOverlayEntry(e)) return unused_maps::overlayLength(e);
+    return hm::overlayLength(e);
+}
 s32 ovRead(s32 e, void* dst, s32 len, s32 off) {
-    return rooms::isOverlayEntry(e) ? rooms::overlayRead(e, dst, len, off) : hm::overlayRead(e, dst, len, off);
+    if (rooms::isOverlayEntry(e)) return rooms::overlayRead(e, dst, len, off);
+    if (unused_maps::isOverlayEntry(e)) return unused_maps::overlayRead(e, dst, len, off);
+    return hm::overlayRead(e, dst, len, off);
 }
 
 std::unordered_map<u32, DVDFileInfo> sFiles;  // guest DVDFileInfo -> host
