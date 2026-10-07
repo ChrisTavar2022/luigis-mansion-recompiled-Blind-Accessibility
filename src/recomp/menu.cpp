@@ -138,7 +138,7 @@ void gameTab() {
 
 void visualsTab() {
     auto& v = port::settings().video;
-    static const char* kFrameRates[] = {"Original (30 fps)", "Interpolated 60 fps", "Interpolated, unlimited"};
+    static const char* kFrameRates[] = {"Original (30 fps)", "Interpolated 60 fps (experimental)", "Interpolated, unlimited (experimental)"};
     sDirty |= combo("Frame rate", v.frameRate, kFrameRates, 3);
     static const char* kAspects[] = {"Original 4:3", "Match window", "16:9", "16:10", "21:9", "32:9"};
     sDirty |= combo("Aspect ratio", v.aspect, kAspects, 6);
