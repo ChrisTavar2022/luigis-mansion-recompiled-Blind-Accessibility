@@ -23,7 +23,7 @@
 - `src/recomp/ctx.h`: guest memory (`hostp`, `rd32/wr32`, BE), MMIO (0xCC008000 WGP → Aurora FIFO), Ctx/paired singles.
 - `src/recomp/sched.*`: one host thread per OSThread, only one runs guest code (priority scheduler); interrupts via `postIrq`/`postIrqAfter`, delivered at loop back-edges/HLE calls or by the idle poster.
 - `frame.*`: guest runs only inside an Aurora frame; handoff at `VISetNextFrameBuffer`. VI retrace timer 59.94 Hz; AI DMA interrupt paced by the SDL3 audio device drives JAudio (docs/AUDIO.md); DVD reads have modelled latency (game depends on it).
-- Aurora local patches: `patches/aurora/*.patch` (auto-applied at configure). 0002 = vertex arrays with size 0 sized from draw indices.
+- Aurora local patches: `patches/aurora/*.patch` (auto-applied at configure). 0002 = vertex arrays with size 0 sized from draw indices. 0005 = post-process hook (`include/aurora/postfx.h`: WGSL pass chain on the game image before ImGui), used by the CRT filter (`src/recomp/crt.cpp`, F1 > Visuals; `LM_CRT=<preset 0-3>[,<scanlines 0-2>]` test override).
 - `src/game/`, `lmport` target: older hand-port prototype + dev viewers (reference only).
 
 ## Build / run

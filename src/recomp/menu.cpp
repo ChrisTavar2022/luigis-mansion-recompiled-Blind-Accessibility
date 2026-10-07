@@ -4,6 +4,7 @@
 #include "recomp/menu.h"
 
 #include "port/settings.h"
+#include "recomp/crt.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/skip.h"
 
@@ -85,6 +86,8 @@ void visualsTab() {
         sDirty = true;
     }
     pending("next launch");
+    ImGui::Separator();
+    sDirty |= recomp::crt::drawMenu();
 }
 
 void soundTab() {
@@ -182,6 +185,7 @@ void handleEvent(const SDL_Event& ev) {
 
 void draw() {
     skip::drawOverlay();
+    recomp::crt::update();
     if (port::settings().enhancements.showFps) fpsOverlay();
     if (!sOpen) return;
     ImGui::SetNextWindowSize(ImVec2(680, 400), ImGuiCond_FirstUseEver);
