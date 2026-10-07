@@ -2,7 +2,8 @@
 #   powershell -ExecutionPolicy Bypass -File tools\build.ps1 [-Preset windows-clang] [-Configure]
 param(
     [string]$Preset = "windows-clang",
-    [switch]$Configure
+    [switch]$Configure,
+    [string]$Target = ""
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -27,7 +28,7 @@ try {
         cmake --preset $Preset
         if ($LASTEXITCODE) { throw "configure failed" }
     }
-    cmake --build --preset $Preset
+    if ($Target) { cmake --build --preset $Preset --target $Target } else { cmake --build --preset $Preset }
     if ($LASTEXITCODE) { throw "build failed" }
 } finally {
     Pop-Location

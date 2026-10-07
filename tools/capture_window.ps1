@@ -1,10 +1,11 @@
-# Launches lmport.exe, waits, and saves a PNG of its window (for checking rendering).
+# Launches lmport.exe (or -Exe lmrecomp), waits, and saves a PNG of its window (for checking rendering).
 #   powershell -ExecutionPolicy Bypass -File tools\capture_window.ps1 -Seconds 8 -Out build\shot.png [-ExeArgs "--foo"]
 param(
     [int]$Seconds = 8,
     [string]$Out = "build\shot.png",
     [string]$ExeArgs = "",
-    [switch]$KeepRunning
+    [switch]$KeepRunning,
+    [string]$Exe = "lmport"
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -32,7 +33,7 @@ $p = if ($argList) { Start-Process .\build\windows-clang\lmport.exe -ArgumentLis
         -RedirectStandardOutput build\run.log -RedirectStandardError build\err.log }
 Start-Sleep -Seconds $Seconds
 $p.Refresh()
-if ($p.HasExited) { throw ("lmport exited early with 0x{0:X}" -f $p.ExitCode) }
+if ($p.HasExited) { throw ("$Exe exited early with 0x{0:X}" -f $p.ExitCode) }
 $h = $p.MainWindowHandle
 [Win]::SetForegroundWindow($h) | Out-Null
 Start-Sleep -Milliseconds 300

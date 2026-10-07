@@ -1,0 +1,306 @@
+// HLE: OS (threads, messages, mutexes, interrupts, caches, time, reset) and
+// the small debug/serial units.
+#include "recomp/hle.h"
+#include "recomp/runtime.h"
+#include "recomp/sched.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <string>
+
+namespace recomp {
+namespace {
+
+constexpr u32 kCtorsStart = 0x8020BAC0;  // .ctors (null-terminated function pointer list)
+
+u32 sProgressiveMode = 0;
+u32 sSoundMode = 1;  // stereo
+
+void setBool(Ctx& c, bool v) { c.r[3] = v ? 1 : 0; }
+
+}  // namespace
+
+// --- boot -------------------------------------------------------------------
+
+HLE(__init_cpp) {
+    for (u32 p = kCtorsStart; rd32(p) != 0; p += 4) guestCall(c, rd32(p));
+}
+HLE(__init_user) { hle___init_cpp(c); }
+HLE(_ExitProcess) {
+    log("[os] _ExitProcess");
+    std::exit(0);
+}
+
+HLE(OSInit) {
+    // Boot info in low memory, as left by the IPL/apploader.
+    std::memcpy(hostp(0x80000000), "GLME01", 6);
+    wr8(0x80000006, 0);  // disc number
+    wr8(0x80000007, 0);  // version
+    wr32(0x8000001C, 0xC2339F3D);  // DVD magic
+    wr32(0x80000020, 0x0D15EA5E);
+    wr32(0x80000024, 1);
+    wr32(0x80000028, kMem1Size);
+    wr32(0x8000002C, 3);  // retail console
+    wr32(0x800000CC, 0);  // NTSC
+    wr32(0x800000F0, kMem1Size);
+    wr32(0x800000F8, 162000000);  // bus clock
+    wr32(0x800000FC, 486000000);  // core clock
+    guestCall(c, guestSymbol("OSSetArenaLo"), 0x804ED940);
+    guestCall(c, guestSymbol("OSSetArenaHi"), 0x81700000);
+}
+
+// --- interrupts ---------------------------------------------------------------
+
+HLE(OSDisableInterrupts) {
+    const u32 old = (c.msr >> 15) & 1;
+    c.msr &= ~0x8000u;
+    c.r[3] = old;
+}
+HLE(OSEnableInterrupts) {
+    const u32 old = (c.msr >> 15) & 1;
+    c.msr |= 0x8000u;
+    c.r[3] = old;
+    c.poll();
+}
+HLE(OSRestoreInterrupts) {
+    const u32 old = (c.msr >> 15) & 1;
+    if (c.r[3]) c.msr |= 0x8000u;
+    else c.msr &= ~0x8000u;
+    c.r[3] = old;
+    c.poll();
+}
+HLE(__OSSetInterruptHandler) { c.r[3] = 0; }
+HLE(__OSUnmaskInterrupts) { c.r[3] = 0; }
+HLE(__OSMaskInterrupts) { c.r[3] = 0; }
+
+// --- threads ------------------------------------------------------------------
+
+HLE(OSCreateThread) {
+    setBool(c, sched::create(c.r[3], c.r[4], c.r[5], c.r[6], c.r[7], s32(c.r[8]), c.r[9]));
+}
+HLE(OSResumeThread) { c.r[3] = u32(sched::resume(c.r[3])); }
+HLE(OSSuspendThread) { c.r[3] = u32(sched::suspend(c.r[3])); }
+HLE(OSCancelThread) { sched::cancel(c.r[3]); }
+HLE(OSExitThread) { sched::exitThread(c.r[3]); }
+HLE(OSGetCurrentThread) { c.r[3] = sched::currentGuest(); }
+HLE(OSGetThreadPriority) { c.r[3] = u32(sched::priority(c.r[3])); }
+HLE(OSIsThreadTerminated) { setBool(c, sched::isTerminated(c.r[3])); }
+HLE(OSDetachThread) { sched::detach(c.r[3]); }
+HLE(OSInitThreadQueue) {
+    wr32(c.r[3], 0);
+    wr32(c.r[3] + 4, 0);
+}
+HLE(OSSleepThread) { sched::sleepOn(c.r[3]); }
+HLE(OSWakeupThread) { sched::wakeup(c.r[3]); }
+HLE(OSYieldThread) { c.poll(); }
+
+// --- message queues (OSMessageQueue: send queue, receive queue, array, count, first, used)
+
+HLE(OSInitMessageQueue) {
+    const u32 mq = c.r[3];
+    for (u32 i = 0; i < 0x10; i += 4) wr32(mq + i, 0);
+    wr32(mq + 0x10, c.r[4]);
+    wr32(mq + 0x14, c.r[5]);
+    wr32(mq + 0x18, 0);
+    wr32(mq + 0x1C, 0);
+}
+
+HLE(OSSendMessage) {
+    const u32 mq = c.r[3], msg = c.r[4], flags = c.r[5];
+    for (;;) {
+        const u32 count = rd32(mq + 0x14), used = rd32(mq + 0x1C);
+        if (used < count) break;
+        if (!(flags & 1)) {
+            c.r[3] = 0;
+            return;
+        }
+        sched::sleepOn(mq);
+    }
+    const u32 count = rd32(mq + 0x14), first = rd32(mq + 0x18), used = rd32(mq + 0x1C);
+    wr32(rd32(mq + 0x10) + ((first + used) % count) * 4, msg);
+    wr32(mq + 0x1C, used + 1);
+    sched::wakeup(mq + 8);
+    c.r[3] = 1;
+}
+
+HLE(OSJamMessage) {
+    const u32 mq = c.r[3], msg = c.r[4], flags = c.r[5];
+    for (;;) {
+        if (rd32(mq + 0x1C) < rd32(mq + 0x14)) break;
+        if (!(flags & 1)) {
+            c.r[3] = 0;
+            return;
+        }
+        sched::sleepOn(mq);
+    }
+    const u32 count = rd32(mq + 0x14);
+    const u32 first = (rd32(mq + 0x18) + count - 1) % count;
+    wr32(rd32(mq + 0x10) + first * 4, msg);
+    wr32(mq + 0x18, first);
+    wr32(mq + 0x1C, rd32(mq + 0x1C) + 1);
+    sched::wakeup(mq + 8);
+    c.r[3] = 1;
+}
+
+HLE(OSReceiveMessage) {
+    const u32 mq = c.r[3], out = c.r[4], flags = c.r[5];
+    while (rd32(mq + 0x1C) == 0) {
+        if (!(flags & 1)) {
+            c.r[3] = 0;
+            return;
+        }
+        sched::sleepOn(mq + 8);
+    }
+    const u32 count = rd32(mq + 0x14), first = rd32(mq + 0x18);
+    if (out) wr32(out, rd32(rd32(mq + 0x10) + first * 4));
+    wr32(mq + 0x18, (first + 1) % count);
+    wr32(mq + 0x1C, rd32(mq + 0x1C) - 1);
+    sched::wakeup(mq);
+    c.r[3] = 1;
+}
+
+// --- mutexes (OSMutex: queue, owner thread, count, link) ------------------------
+
+HLE(OSInitMutex) {
+    for (u32 i = 0; i < 0x18; i += 4) wr32(c.r[3] + i, 0);
+}
+HLE(OSLockMutex) {
+    const u32 m = c.r[3], self = sched::currentGuest();
+    for (;;) {
+        const u32 owner = rd32(m + 8);
+        if (owner == 0) {
+            wr32(m + 8, self);
+            wr32(m + 0xC, 1);
+            return;
+        }
+        if (owner == self) {
+            wr32(m + 0xC, rd32(m + 0xC) + 1);
+            return;
+        }
+        sched::sleepOn(m);
+    }
+}
+HLE(OSTryLockMutex) {
+    const u32 m = c.r[3], self = sched::currentGuest();
+    const u32 owner = rd32(m + 8);
+    if (owner == 0 || owner == self) {
+        wr32(m + 8, self);
+        wr32(m + 0xC, rd32(m + 0xC) + 1);
+        c.r[3] = 1;
+    } else {
+        c.r[3] = 0;
+    }
+}
+HLE(OSUnlockMutex) {
+    const u32 m = c.r[3];
+    if (rd32(m + 8) != sched::currentGuest()) return;
+    const u32 n = rd32(m + 0xC) - 1;
+    wr32(m + 0xC, n);
+    if (n == 0) {
+        wr32(m + 8, 0);
+        sched::wakeup(m);
+    }
+}
+
+// --- time -----------------------------------------------------------------------
+
+HLE(OSGetTime) {
+    const u64 t = timeBase();
+    c.r[3] = u32(t >> 32);
+    c.r[4] = u32(t);
+}
+HLE(OSGetTick) { c.r[3] = u32(timeBase()); }
+HLE(OSTicksToCalendarTime) {
+    const s64 ticks = s64(u64(c.r[3]) << 32 | c.r[4]);
+    const u32 td = c.r[5];
+    const double secs = double(ticks) / kTimerClock;
+    const std::time_t t = std::time_t(946684800 + s64(secs));
+    std::tm tm{};
+#ifdef _WIN32
+    gmtime_s(&tm, &t);
+#else
+    gmtime_r(&t, &tm);
+#endif
+    const double frac = secs - std::floor(secs);
+    const u32 fields[10] = {u32(tm.tm_sec), u32(tm.tm_min), u32(tm.tm_hour), u32(tm.tm_mday), u32(tm.tm_mon),
+                            u32(tm.tm_year + 1900), u32(tm.tm_wday), u32(tm.tm_yday), u32(frac * 1000),
+                            u32(std::fmod(frac * 1e6, 1000.0))};
+    for (int i = 0; i < 10; i++) wr32(td + i * 4, fields[i]);
+}
+
+// --- caches -------------------------------------------------------------------------
+
+HLE(DCFlushRange) {}
+HLE(DCFlushRangeNoSync) {}
+HLE(DCStoreRange) {}
+HLE(DCStoreRangeNoSync) {}
+HLE(DCInvalidateRange) {}
+HLE(ICInvalidateRange) {}
+HLE(DCZeroRange) { std::memset(hostp(c.r[3] & ~31u), 0, (c.r[4] + 31) & ~31u); }
+HLE(LCEnable) {}
+HLE(LCDisable) {}
+HLE(LCQueueWait) {}
+HLE(LCLoadBlocks) {  // (lc dest, mem src, blocks)
+    const u32 n = c.r[5] ? c.r[5] : 128;
+    std::memmove(hostp(c.r[3]), hostp(c.r[4]), n * 32);
+}
+HLE(LCStoreBlocks) {  // (mem dest, lc src, blocks)
+    const u32 n = c.r[5] ? c.r[5] : 128;
+    std::memmove(hostp(c.r[3]), hostp(c.r[4]), n * 32);
+}
+
+// --- contexts / errors --------------------------------------------------------------
+
+HLE(OSClearContext) {}
+HLE(OSSetCurrentContext) {}
+HLE(OSFillFPUContext) {}
+HLE(OSSetErrorHandler) { c.r[3] = 0; }
+HLE(OSPanic) { fatal("OSPanic %s:%u: %s", gstr(c.r[3]), c.r[4], gstr(c.r[5])); }
+HLE(OSReport) { std::fputs(gstr(c.r[3]), stdout); }
+
+// --- reset / settings ---------------------------------------------------------------
+
+HLE(OSResetSystem) {
+    log("[os] OSResetSystem(%u, %08X, %u)", c.r[3], c.r[4], c.r[5]);
+    std::exit(0);
+}
+HLE(OSGetResetSwitchState) { c.r[3] = 0; }
+HLE(OSGetResetCode) { c.r[3] = 0; }
+HLE(OSGetProgressiveMode) { c.r[3] = sProgressiveMode; }
+HLE(OSSetProgressiveMode) { sProgressiveMode = c.r[3]; }
+HLE(OSGetSoundMode) { c.r[3] = sSoundMode; }
+HLE(OSSetSoundMode) { sSoundMode = c.r[3]; }
+
+// --- EXI / serial (no devices attached; UART output goes to stdout) -----------------
+
+HLE(EXIProbe) { c.r[3] = 0; }
+HLE(EXIProbeEx) { c.r[3] = u32(-1); }
+HLE(EXISelect) { c.r[3] = 0; }
+HLE(EXIDeselect) { c.r[3] = 0; }
+HLE(EXIImmEx) { c.r[3] = 0; }
+HLE(EXILock) { c.r[3] = 0; }
+HLE(EXIUnlock) { c.r[3] = 1; }
+HLE(InitializeUART) { c.r[3] = 0; }
+HLE(ReadUARTN) { c.r[3] = 0; }
+HLE(WriteUARTN) {
+    std::fwrite(hostp(c.r[3]), 1, c.r[4], stdout);
+    std::fflush(stdout);
+    c.r[3] = 0;
+}
+
+// --- debugger ---------------------------------------------------------------------------
+
+HLE(DBInit) {}
+HLE(DBPrintf) { std::fputs(gstr(c.r[3]), stdout); }
+
+// --- PPC architecture helpers -----------------------------------------------------------
+
+HLE(PPCMfmsr) { c.r[3] = c.msr; }
+HLE(PPCMtmsr) { c.msr = c.r[3]; }
+HLE(PPCMfhid2) { c.r[3] = c.mfspr(920); }
+HLE(PPCMthid2) { c.mtspr(920, c.r[3]); }
+HLE(PPCSync) {}
+HLE(PPCHalt) { fatal("PPCHalt"); }
+
+}  // namespace recomp

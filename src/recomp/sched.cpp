@@ -1,0 +1,344 @@
+#include "recomp/sched.h"
+
+#include "recomp/hle.h"
+
+#include <algorithm>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+namespace recomp {
+
+std::atomic<bool> g_irqPending{false};
+bool g_shutdown = false;
+
+struct GuestThread {
+    u32 guest = 0;
+    Ctx ctx;
+    s32 priority = 16;
+    s32 suspendCount = 0;
+    enum class St { Ready, Waiting, Moribund } st = St::Ready;
+    u32 waitQueue = 0;
+    bool cancelled = false;
+    bool detached = false;
+    u32 entry = 0, arg = 0;
+    std::condition_variable cv;
+    std::thread host;
+};
+
+}  // namespace recomp
+
+namespace recomp::sched {
+namespace {
+
+// OSThread field offsets (Dolphin SDK).
+constexpr u32 kState = 0x2C8;
+constexpr u32 kSuspend = 0x2CC;
+constexpr u32 kPriority = 0x2D0;
+constexpr u32 kBase = 0x2D4;
+constexpr u32 kVal = 0x2D8;
+constexpr u32 kQueueJoin = 0x2E8;
+constexpr u32 kStackBase = 0x304;
+constexpr u32 kStackEnd = 0x308;
+constexpr u16 kStateReady = 1, kStateRunning = 2, kStateWaiting = 4, kStateMoribund = 8;
+
+std::mutex sM;
+std::vector<GuestThread*> sThreads;  // creation order breaks priority ties
+GuestThread* sRunning = nullptr;
+GuestThread sIrqMarker;  // sRunning while the idle CPU services interrupts
+thread_local GuestThread* tSelf = nullptr;
+thread_local bool tInIrq = false;
+
+std::mutex sIrqM;
+std::deque<std::function<void(Ctx&)>> sIrqs;
+Ctx sIrqCtx;
+u32 sIrqStackTop = 0;
+
+GuestThread* find(u32 guest) {
+    for (auto* t : sThreads)
+        if (t->guest == guest) return t;
+    return nullptr;
+}
+
+void writeState(GuestThread* t, u16 s) {
+    if (t->guest) wr16(t->guest + kState, s);
+}
+
+bool eligible(const GuestThread* t) { return t->st == GuestThread::St::Ready && t->suspendCount <= 0; }
+
+GuestThread* pick(GuestThread* prefer) {
+    GuestThread* best = nullptr;
+    for (auto* t : sThreads) {
+        if (!eligible(t)) continue;
+        if (!best || t->priority < best->priority) best = t;
+    }
+    if (best && prefer && eligible(prefer) && prefer->priority <= best->priority) return prefer;
+    return best;
+}
+
+void handOff(GuestThread* next) {
+    if (sRunning && sRunning != &sIrqMarker && sRunning->st == GuestThread::St::Ready) writeState(sRunning, kStateReady);
+    sRunning = next;
+    if (next) {
+        writeState(next, kStateRunning);
+        next->cv.notify_all();
+    }
+}
+
+void waitForCpu(std::unique_lock<std::mutex>& lk, GuestThread* self) {
+    self->cv.wait(lk, [&] { return sRunning == self || g_shutdown; });
+    if (g_shutdown) {
+        lk.unlock();
+        throw ThreadExit{};
+    }
+    if (self->cancelled) {
+        lk.unlock();
+        throw ThreadExit{};
+    }
+}
+
+// Gives the CPU to the best thread; returns once `self` owns it again.
+void reschedule(std::unique_lock<std::mutex>& lk, GuestThread* self) {
+    GuestThread* next = pick(self);
+    if (next == self) return;
+    handOff(next);
+    waitForCpu(lk, self);
+}
+
+void runIrqs() {
+    tInIrq = true;
+    for (;;) {
+        std::function<void(Ctx&)> fn;
+        {
+            std::lock_guard lk(sIrqM);
+            if (sIrqs.empty()) {
+                g_irqPending.store(false);
+                break;
+            }
+            fn = std::move(sIrqs.front());
+            sIrqs.pop_front();
+        }
+        Ctx& c = sIrqCtx;
+        c.r[1] = sIrqStackTop;
+        c.msr = 0;
+        fn(c);
+    }
+    tInIrq = false;
+}
+
+void finishThread(GuestThread* t, u32 val) {
+    std::unique_lock lk(sM);
+    t->st = GuestThread::St::Moribund;
+    if (t->guest) {
+        wr32(t->guest + kVal, val);
+        writeState(t, kStateMoribund);
+    }
+    // Wake joiners.
+    for (auto* o : sThreads)
+        if (o->st == GuestThread::St::Waiting && o->waitQueue == t->guest + kQueueJoin) o->st = GuestThread::St::Ready;
+    if (sRunning == t) handOff(pick(nullptr));
+}
+
+void threadMain(GuestThread* t) {
+    tSelf = t;
+    u32 val = 0;
+    try {
+        {
+            std::unique_lock lk(sM);
+            waitForCpu(lk, t);
+        }
+        Ctx& c = t->ctx;
+        c.r[3] = t->arg;
+        c.lr = 0;
+        c.call(t->entry);
+        val = c.r[3];
+    } catch (const ThreadExit&) {
+        val = t->ctx.r[3];
+    }
+    finishThread(t, val);
+}
+
+}  // namespace
+
+GuestThread* adoptBootThread(u32 guest, const Ctx& init) {
+    auto* t = new GuestThread;
+    t->guest = guest;
+    t->ctx = init;
+    t->ctx.thread = t;
+    t->priority = 16;
+    tSelf = t;
+    std::lock_guard lk(sM);
+    sThreads.push_back(t);
+    sRunning = t;
+    if (guest) {
+        wr16(guest + kState, kStateRunning);
+        wr32(guest + kPriority, 16);
+        wr32(guest + kBase, 16);
+    }
+    return t;
+}
+
+void setIrqContext(const Ctx& base, u32 stackTop) {
+    sIrqCtx = base;
+    sIrqCtx.thread = nullptr;
+    sIrqStackTop = stackTop;
+}
+
+GuestThread* current() { return tSelf; }
+u32 currentGuest() { return tSelf ? tSelf->guest : 0; }
+Ctx& ctxOf(GuestThread* t) { return t->ctx; }
+bool inIrq() { return tInIrq; }
+
+bool create(u32 guest, u32 entry, u32 arg, u32 stackTop, u32 stackSize, s32 prio, u32 attr) {
+    if (prio < 0 || prio > 31) return false;
+    auto* t = new GuestThread;
+    t->guest = guest;
+    t->entry = entry;
+    t->arg = arg;
+    t->priority = prio;
+    t->suspendCount = 1;
+    t->detached = (attr & 1) != 0;
+    // Same registers as the creator (r2/r13 small-data bases, GQRs), fresh stack.
+    t->ctx = tSelf ? tSelf->ctx : sIrqCtx;
+    t->ctx.thread = t;
+    t->ctx.r[1] = (stackTop & ~7u) - 8;
+    wr32(t->ctx.r[1], 0);
+    t->ctx.msr = 0x8000;
+    std::memset(hostp(guest), 0, 0x310);
+    wr16(guest + kState, kStateReady);
+    wr16(guest + kState + 2, u16(attr));
+    wr32(guest + kSuspend, 1);
+    wr32(guest + kPriority, u32(prio));
+    wr32(guest + kBase, u32(prio));
+    wr32(guest + kStackBase, stackTop);
+    wr32(guest + kStackEnd, stackTop - stackSize);
+    wr32(stackTop - stackSize, 0xDEADBABE);
+    {
+        std::lock_guard lk(sM);
+        // A thread struct can be reused once its previous thread has terminated.
+        std::erase_if(sThreads, [&](GuestThread* o) { return o->guest == guest && o->st == GuestThread::St::Moribund; });
+        sThreads.push_back(t);
+    }
+    t->host = std::thread(threadMain, t);
+    t->host.detach();
+    return true;
+}
+
+s32 resume(u32 guest) {
+    std::unique_lock lk(sM);
+    GuestThread* t = find(guest);
+    if (!t) return 0;
+    const s32 old = t->suspendCount;
+    if (t->suspendCount > 0) t->suspendCount--;
+    wr32(guest + kSuspend, u32(std::max(t->suspendCount, 0)));
+    if (old == 1 && tSelf && !tInIrq) reschedule(lk, tSelf);
+    return old;
+}
+
+s32 suspend(u32 guest) {
+    std::unique_lock lk(sM);
+    GuestThread* t = find(guest);
+    if (!t) return 0;
+    const s32 old = t->suspendCount++;
+    wr32(guest + kSuspend, u32(t->suspendCount));
+    if (t == tSelf && !tInIrq) reschedule(lk, tSelf);
+    return old;
+}
+
+void cancel(u32 guest) {
+    std::unique_lock lk(sM);
+    GuestThread* t = find(guest);
+    if (!t || t->st == GuestThread::St::Moribund) return;
+    if (t == tSelf) {
+        lk.unlock();
+        exitThread(0);
+    }
+    t->cancelled = true;
+    t->st = GuestThread::St::Ready;
+    t->suspendCount = 0;  // let it run so it can unwind
+    t->priority = 32;     // ...but only when nothing else wants the CPU
+}
+
+void exitThread(u32 val) {
+    tSelf->ctx.r[3] = val;
+    throw ThreadExit{};
+}
+
+bool isTerminated(u32 guest) {
+    std::lock_guard lk(sM);
+    GuestThread* t = find(guest);
+    return !t || t->st == GuestThread::St::Moribund;
+}
+
+s32 priority(u32 guest) {
+    std::lock_guard lk(sM);
+    GuestThread* t = find(guest);
+    return t ? t->priority : 0;
+}
+
+void detach(u32 guest) {
+    std::lock_guard lk(sM);
+    if (GuestThread* t = find(guest)) t->detached = true;
+}
+
+void sleepOn(u32 queue) {
+    GuestThread* self = tSelf;
+    if (!self || tInIrq) fatal("sleepOn(%08X) outside a guest thread", queue);
+    std::unique_lock lk(sM);
+    self->st = GuestThread::St::Waiting;
+    self->waitQueue = queue;
+    writeState(self, kStateWaiting);
+    GuestThread* next = pick(nullptr);
+    handOff(next);
+    waitForCpu(lk, self);
+}
+
+void wakeup(u32 queue) {
+    std::unique_lock lk(sM);
+    for (auto* t : sThreads) {
+        if (t->st == GuestThread::St::Waiting && t->waitQueue == queue) {
+            t->st = GuestThread::St::Ready;
+            t->waitQueue = 0;
+            writeState(t, kStateReady);
+        }
+    }
+    if (tSelf && !tInIrq && sRunning == tSelf) reschedule(lk, tSelf);
+}
+
+void postIrq(std::function<void(Ctx&)> fn) {
+    {
+        std::lock_guard lk(sIrqM);
+        sIrqs.push_back(std::move(fn));
+        g_irqPending.store(true);
+    }
+    // An idle CPU is serviced by the poster itself.
+    std::unique_lock lk(sM);
+    if (sRunning != nullptr || g_shutdown) return;
+    sRunning = &sIrqMarker;
+    lk.unlock();
+    runIrqs();
+    lk.lock();
+    handOff(pick(nullptr));
+}
+
+void shutdown() {
+    std::lock_guard lk(sM);
+    g_shutdown = true;
+    for (auto* t : sThreads) t->cv.notify_all();
+}
+
+void serviceOnThread(Ctx& c) {
+    GuestThread* self = c.thread;
+    if (!self || tInIrq || self != tSelf) return;
+    runIrqs();
+    std::unique_lock lk(sM);
+    if (sRunning == self) reschedule(lk, self);
+}
+
+}  // namespace recomp::sched
+
+namespace recomp {
+void service_irq(Ctx& c) { sched::serviceOnThread(c); }
+}  // namespace recomp
