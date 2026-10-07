@@ -92,6 +92,8 @@ void loadStaticData() {
 s32 sAudioReady;
 JKRMemArchive* sStaticDataArchive;
 
+JKRMemArchive* gameArchive() { return sGameArchive; }
+
 static void init() {
     sState = STATE_START_LOADING;
     sAudioReady = 0;

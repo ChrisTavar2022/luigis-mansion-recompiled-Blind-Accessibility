@@ -225,8 +225,10 @@ void defaultOrthoView() {
 void setViewportJitter(f32 left, f32 top, f32 width, f32 height, f32 nearZ, f32 farZ) {
     const f32 widthScale = sCurRenderMode->fbWidth / 640.0f;
     const u32 field = sCurRenderMode->field_rendering ? VIGetNextField() : 1;
-    // Retail passes top*-1 / height*-1 here; GX's viewport takes them as-is on console.
-    GXSetViewportJitter(left * widthScale, top * -1.0f, width * widthScale, height * -1.0f, nearZ, farZ, field);
+    // Vertical scale is 1.0 (lbl_804D988C); lm-decomp's version misreads it as -1.
+    constexpr f32 kHeightScale = 1.0f;
+    GXSetViewportJitter(left * widthScale, top * kHeightScale, width * widthScale, height * kHeightScale, nearZ, farZ,
+                        field);
 }
 
 void setDisplayFlags(u16 flags) { sVISettings.flags |= flags; }

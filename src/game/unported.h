@@ -48,6 +48,10 @@ void fn_80188D0C_stopStream(s32 fadeFrames);
 void fn_80047444_showProgressiveMessage(s32 mode);  // progressive-scan prompt text
 void setLuigiAppearPoint(u32 point);                // game progress: where Luigi spawns
 
+// --- Model renderer ---
+void fn_8005D184_jointCallback(void* node, void* jointMtx);  // one-shot joint hook (flag 0x40)
+void fn_8005DD50_setupLightMapStages();                     // light-map TEV stages 0-1
+
 // --- Misc ---
 void fn_80066FAC_setStaticArchive(JKRMemArchive* archive);
 void fn_8005FD80_fillRandomTable();     // 0x2000-byte table from the game RNG (fn_80009638)

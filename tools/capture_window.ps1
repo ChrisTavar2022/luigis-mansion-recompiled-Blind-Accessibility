@@ -1,9 +1,9 @@
 # Launches lmport.exe, waits, and saves a PNG of its window (for checking rendering).
-#   powershell -ExecutionPolicy Bypass -File tools\capture_window.ps1 -Seconds 8 -Out build\shot.png [-Args "--foo"]
+#   powershell -ExecutionPolicy Bypass -File tools\capture_window.ps1 -Seconds 8 -Out build\shot.png [-ExeArgs "--foo"]
 param(
     [int]$Seconds = 8,
     [string]$Out = "build\shot.png",
-    [string]$Args = "",
+    [string]$ExeArgs = "",
     [switch]$KeepRunning
 )
 $ErrorActionPreference = "Stop"
@@ -25,7 +25,7 @@ public static class Win {
 "@
 [Win]::SetProcessDPIAware() | Out-Null
 
-$argList = if ($Args) { $Args } else { $null }
+$argList = if ($ExeArgs) { $ExeArgs } else { $null }
 $p = if ($argList) { Start-Process .\build\windows-clang\lmport.exe -ArgumentList $argList -PassThru `
         -RedirectStandardOutput build\run.log -RedirectStandardError build\err.log }
      else { Start-Process .\build\windows-clang\lmport.exe -PassThru `

@@ -3,6 +3,8 @@
 #include "game/scene/scene.h"
 #include "game/scene/boot_scene.h"
 #include "game/scene/title_scene.h"
+#include "game/dev/model_viewer.h"
+#include "port/options.h"
 #include "game/system/display.h"
 #include "game/system/dvd_file.h"
 #include "game/system/gx_util.h"
@@ -239,6 +241,9 @@ void runScenes() {
         freeFrameScratch();
 
         Scene* next = gCurSceneId >= 0 && gCurSceneId < SCENE_MAX ? gSceneTable[gCurSceneId] : nullptr;
+        if (gCurSceneId == SCENE_TITLE && !port::options().modelViewer.empty()) {
+            next = &dev::ModelViewer::sScene;
+        }
         if (next == nullptr) {
             // PORT: the remaining scenes are not ported yet; stop here rather than crash.
             OSReport("[scene] scene %d is not ported yet; halting the scene machine\n", gCurSceneId);
@@ -246,6 +251,9 @@ void runScenes() {
                 beginFrame();
                 presentFrame();
             }
+        }
+        if (gCurSceneId == SCENE_TITLE && !port::options().modelViewer.empty()) {
+            next = &dev::ModelViewer::sScene;  // developer model viewer replaces the title
         }
         gCurScene = next;
         freeSceneGroups(0x1A);

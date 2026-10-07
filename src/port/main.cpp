@@ -7,6 +7,7 @@
 
 #include "port/dol.h"
 #include "port/frame_driver.h"
+#include "port/options.h"
 
 #include <chrono>
 #include <cstdio>
@@ -33,10 +34,8 @@ static void log_callback(AuroraLogLevel level, const char* module, const char* m
 // Finds the disc image: --disc <path>, else orig/GLME01.iso searched upward
 // from the working directory (the repo layout produced by tools/make_iso.py).
 static std::string find_disc(int argc, char* argv[]) {
-    for (int i = 1; i + 1 < argc; ++i) {
-        if (std::strcmp(argv[i], "--disc") == 0) {
-            return argv[i + 1];
-        }
+    if (!port::options().disc.empty()) {
+        return port::options().disc;
     }
     for (auto dir = std::filesystem::current_path(); ; dir = dir.parent_path()) {
         const auto candidate = dir / "orig" / "GLME01.iso";
@@ -50,6 +49,7 @@ static std::string find_disc(int argc, char* argv[]) {
 }
 
 int main(int argc, char* argv[]) {
+    port::parseOptions(argc, argv);
     AuroraConfig config{};
     config.appName = "Luigi's Mansion PC";
     config.logCallback = &log_callback;

@@ -45,6 +45,9 @@ void fn_80188D0C_stopStream(s32) { UNPORTED(); }
 void fn_80047444_showProgressiveMessage(s32) { UNPORTED(); }
 void setLuigiAppearPoint(u32) { UNPORTED(); }
 
+void fn_8005D184_jointCallback(void*, void*) { UNPORTED(); }
+void fn_8005DD50_setupLightMapStages() { UNPORTED(); }
+
 void fn_80066FAC_setStaticArchive(JKRMemArchive*) { UNPORTED(); }
 void fn_8005FD80_fillRandomTable() { UNPORTED(); }
 void fn_8003EB44_initSystemFont() { UNPORTED(); }
