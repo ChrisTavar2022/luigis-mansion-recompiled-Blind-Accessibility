@@ -1,13 +1,12 @@
 #pragma once
-// PAL Hidden Mansion rules on the US (GLME01) recompiled build -- prototype.
+// PAL Hidden Mansion rules on the US (GLME01) recompiled build.
 // Background, addresses and the full list of PAL behaviour changes: docs/HIDDEN_MANSION.md.
 //
-// Nothing here is wired into the shared runtime yet. The integration points are:
-//   hle_dvd.cpp    DVDConvertPathToEntrynum / DVDOpen / DVDFastOpen / DVDRead*: consult
-//                  overlayEntry()/isOverlayEntry()/overlayRead() before Aurora's disc.
-//   frame.cpp      call syncConstants() once per retrace.
-//   hle_gx.cpp     GXSetProjection / GXSetCullMode: mirrorProjection() / mirrorCullMode().
-//   audio output   mirrorStereo() on each mixed buffer (once audio is emulated).
+// Wiring:
+//   hle_dvd.cpp            serves overlay files (overlayEntry/isOverlayEntry/overlayRead).
+//   frame.cpp              onFrame() once per presented frame.
+//   hidden_mansion_hooks   tuning hooks (tools/recomp/hooks.txt).
+//   audio output           mirrorStereo() on each mixed buffer (once audio is emulated).
 #include "recomp/ctx.h"
 
 #include <cstddef>
@@ -16,24 +15,33 @@
 
 namespace recomp::hm {
 
-enum class Mode {
-    Us,   // retail US behaviour (default)
-    Pal,  // PAL (GLMP01) Hidden Mansion: map2u data, PAL scripts, mirror, PAL tuning
-};
+// Which release's Hidden Mansion rules apply. This is separate from the game's own
+// hidden-mansion flag: the PAL rules are active only while the flag is set AND the variant is
+// Pal, and switching back to Us fully restores US behaviour (overlay off, literals restored,
+// hooks pass straight through to the original). The intended UI is a second Hidden Mansion
+// entry in E. Gadd's lab menu (docs/HIDDEN_MANSION.md); until then the variant comes from
+// --hidden-mansion-variant pal|us (alias --hidden-mansion; env LM_HIDDEN_MANSION_VARIANT),
+// default pal.
+enum class Variant { Us = 0, Pal = 1 };
+Variant variant();
+void setVariant(Variant v);
 
-// LM_HIDDEN_MANSION=pal selects the PAL rules; LM_HM_OVERLAY points at the overlay built by
-// tools/hidden_mansion_data.py (default: orig/hidden_mansion).
-Mode mode();
+// LM_HM_OVERLAY points at the overlay built by tools/hidden_mansion_data.py (default:
+// orig/hidden_mansion, searched upwards from the working directory). LM_HM_FORCE=1 keeps the
+// game's hidden-mansion flag set, for testing.
+
+// Per presented frame: LM_HM_FORCE, flag-change logging, constant patches.
+void onFrame();
 
 // The game's own hidden-mansion ("ura") flag. US: sbss 0x804D80C0 (r13+0x160), set by the
 // URALUIGI event command, cleared by OMOTELUIGI and on new game. PAL keeps the same variable
 // (0x804C5784) and only adds a deferred "set at next scene" request (0x804C5780).
 bool hiddenActive();
-bool palActive();  // mode() == Pal && hiddenActive()
+bool palActive();  // variant() == Pal && hiddenActive()
 
 // ---- Disc overlay ---------------------------------------------------------------------
 // Host file that should be served instead of a guest disc path, if any. Map archives are
-// redirected only while palActive(); patched event archives whenever mode() == Pal (their
+// redirected only while palActive(); patched event archives whenever variant() == Pal (their
 // PAL changes are inside CHECKFLAG(8) "ura" branches, so the normal mansion is unaffected).
 std::optional<std::string> redirect(const char* guestPath);
 

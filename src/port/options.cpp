@@ -46,6 +46,9 @@ void parseOptions(int argc, char* argv[]) {
         } else if (std::strcmp(argv[i], "--map-viewer") == 0) {
             o.mapViewer = argv[++i];
             o.modelViewer = "(map)";
+        } else if (std::strcmp(argv[i], "--hidden-mansion") == 0 ||
+                   std::strcmp(argv[i], "--hidden-mansion-variant") == 0) {
+            o.hiddenMansion = argv[++i];
         } else if (std::strcmp(argv[i], "--input") == 0) {
             o.inputScript = argv[++i];
         } else if (std::strcmp(argv[i], "--room-viewer") == 0) {

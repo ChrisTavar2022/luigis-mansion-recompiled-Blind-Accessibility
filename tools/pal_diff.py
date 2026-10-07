@@ -766,6 +766,22 @@ def _insn(w):
     return f".word {w:08x}"
 
 
+def cmd_field(a, us, pal):
+    """Loads/stores/addi with a given displacement through a non-stack, non-small-data base
+    register (struct field uses), optionally only in functions whose name matches --in."""
+    v = pal if a.version == "pal" else us
+    off = int(a.offset, 0)
+    names = {}
+    if v is pal:
+        _, u2p, _ = match_functions(us, pal)
+        names = {pa: us.fat[ua]["name"] + "(US)" for ua, pa in u2p.items()}
+    for f in v.funcs:
+        for ad, w, ea in walk(v, f):
+            op, ra = w >> 26, (w >> 16) & 31
+            if (op in range(32, 56) or op == 14) and ra not in (0, 1, 2, 13) and (w & 0xFFFF) == (off & 0xFFFF):
+                print(f"{ad:08X} {_insn(w):28} {names.get(f['addr'], f['name'])}")
+
+
 def cmd_var(a, us, pal):
     """Map a data address between versions (via matched functions) and list who uses it."""
     recs, u2p, dmap = match_functions(us, pal)
@@ -826,6 +842,9 @@ def main():
     x.add_argument("version", choices=["us", "pal"])
     x.add_argument("addr")
     x.add_argument("--exact", action="store_true", help="only the exact address, not its whole object")
+    fl = sub.add_parser("field", help="struct-field uses of a displacement")
+    fl.add_argument("version", choices=["us", "pal"])
+    fl.add_argument("offset")
     va = sub.add_parser("var")
     va.add_argument("version", choices=["us", "pal"])
     va.add_argument("addr")
@@ -834,7 +853,7 @@ def main():
     us = Version("US ", a.us, "GLME01")
     pal = Version("PAL", a.pal_disc, "GLMP01_00")
     {"code": cmd_code, "show": cmd_show, "data": cmd_data, "files": cmd_files,
-     "strings": cmd_strings, "xref": cmd_xref, "var": cmd_var, "arcdiff": cmd_arcdiff}[a.cmd](a, us, pal)
+     "strings": cmd_strings, "xref": cmd_xref, "var": cmd_var, "field": cmd_field, "arcdiff": cmd_arcdiff}[a.cmd](a, us, pal)
 
 
 if __name__ == "__main__":

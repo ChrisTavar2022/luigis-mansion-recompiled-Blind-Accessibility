@@ -16,6 +16,9 @@ u64 timeBase();
 namespace hw {
 u32 viRead(u32 addr, int size);        // hle_vi.cpp
 void fifoWrite(u32 value, int size);  // hle_gx.cpp
+// Optional rewrite of values the game writes to the GX write-gather pipe (set only for the
+// duration of a hook, e.g. hidden_mansion_hooks.cpp's mirrored screen-copy quad).
+extern u32 (*fifoFilter)(u32 value, int size);
 }  // namespace hw
 
 }  // namespace recomp

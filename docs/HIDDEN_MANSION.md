@@ -14,6 +14,7 @@ to reproduce each finding are given inline. Addresses are virtual (0x80......); 
 | `tools/pal_diff.py show <US fn> [--pal ADDR] [--side pal]` | Side-by-side disassembly; PAL calls/data are labelled with US names |
 | `tools/pal_diff.py var <us\|pal> <ADDR>` | Maps a variable to the other version and lists every use in both |
 | `tools/pal_diff.py xref <us\|pal> <ADDR> [--exact]` | Code that references an address (or the object containing it) |
+| `tools/pal_diff.py field <us\|pal> <OFFSET>` | Struct-field uses of a displacement (PAL shown with US function names) |
 | `tools/pal_diff.py data` | Same-shaped data objects whose bytes differ (pointers masked) |
 | `tools/pal_diff.py files [--deep]` | Disc files that differ, and the members inside differing archives |
 | `tools/pal_diff.py arcdiff A.szp B.szp [--path RE]` | Two archives member by member; JMP tables row by row with field names |
@@ -90,14 +91,14 @@ The 3D scene is mirrored, the HUD is not, and everything that ties the two toget
 | `800B7534` | `fn_800B41E0` (Luigi, damaging floor) | Hidden: damage on 5 of every 8 frames (table `0x804C8D5C` = 1,1,0,1,1,0,1,0) instead of every 2nd frame; each hit still x2 |
 | `800EA4F8`, `800EAAD0` | `fn_800E70BC`, `fn_800E7698` (heart items, `Koga/800E634C.cpp`) | Threshold on Luigi field +0x6C8: 200 normal, **400 in US hidden, 1000 in PAL hidden** |
 | `800179F8` (new, split out of `80017BC8`) | `fn_800168EC` (room ambient colour) | Ambient RGB additionally x0.2 (`0x804BD728`) — darker rooms |
-| `800A2204` | `fn_8009F1DC` (`KtEnBaby`, Chauncey) | A distance becomes 900-200 = 700 instead of 200 |
+| `800A2204` | `fn_8009F1DC` (`KtEnBaby`, Chauncey's ball spawner) | Balls 0 and 1 of each volley spawn at z = +700 (900-200) instead of -700 |
 | `800A2CFC` | `fn_8009FCA8` (Chauncey) | Sets field +0xD8 = 2.0 |
 | `800A2DBC` | `fn_8009FD54` (Chauncey) | Threshold 20 → 40 |
 | `800A3A50` | `fn_800A09D0` (`KtEnMoku`, Chauncey's rocking horses) | Scale 1.8 → 3.6 |
-| `800A48E4` | `fn_800A184C` (`KtEnMoku`) | Rewritten (0x1A8 → 0x308 bytes) with hidden-only branches |
+| `800A48E4` | `fn_800A184C` (`KtEnMoku2`, rocking-horse charge) | Horse weaves side to side, faces its travel direction, hit shapes x2 (see *Bosses*) |
 | `800A4DC4` | `fn_800A1BCC` (`KtEnMoku2`) | Argument to `fn_8008907C` 50 → 100 |
-| `800A7640` | `fn_800A441C` (Bowser / `dkopa` boss) | Toggles field +0x1EE when its counter reaches 3 |
-| `800BABC8` | `fn_800B783C` (Luigi) | Map 11 + hidden: counts frames in new field +0x134C, sets +0x1350 after 15 |
+| `800A7640` (+ `800A79FC`, `800A8E10`, new `800AC584`) | `fn_800A441C` (+ `fn_800A47BC`, `fn_800A5BA0`) (Bowser / King Boo) | Alternating fast bomb volleys (see *Bosses*) |
+| `800BABC8` | `fn_800B783C` (Luigi) | Map 11 (Boolossus) + hidden: after 15 frames enables Luigi's Boolossus movement mode (see *Bosses*) |
 | `8006FD0C`, `8006FE44`, `8006FF88`, `800702A0`, `80071240` | `fn_8006CFBC`, `fn_8006D0DC`, `fn_8006D1B8`, `fn_8006D4B8`, `fn_8006E414` (enemy strategy, state table `0x8034BB48`; not yet identified) | State timer 400 → 250, early exit below 130, colour words, extra parameters |
 | `8003F444` | `fn_8003DF88` (GBH screen) | Both: picks `fn_8003B668` instead of `fn_8003B700` |
 | `800DF2CC` | `fn_800DBE8C` | Both: value x0.5 |
@@ -167,76 +168,158 @@ Boo `move_time`) are therefore used unchanged. On a 50 Hz PAL console they last 
 wall-clock time than they will in the 60 Hz US build; scaling them is a design choice, not a
 porting requirement. (No PAL60 option was found in the PAL DOL.)
 
+## Bosses
+
+Found from the flag uses above plus `pal_diff.py field` (struct-field uses) and the boss
+actors' state tables. Boss maps: 9 = Bowser/King Boo, 10 = Chauncey, 11 = Boolossus.
+
+### Boolossus: Luigi's "Boolossus movement mode"
+
+The US Luigi already contains a complete alternative movement mode behind byte **US +0x134C**
+(PAL +0x1350; PAL inserted a float at +0x134C, shifting it by 4). Eight Luigi functions read
+it: run speed 38 instead of 17/18 (`fn_800B9848`), state selection (`fn_800B5324` → state 9,
+`fn_800B5C14` → state 5), movement physics with momentum (`fn_800B63FC`: 0.995 damping, 1.5 /
+-1.4 accel; `fn_800B6B50`: 20 / 0.9), animation selection (`fn_800AE9DC`) and a looping sound
+(`fn_800B79B8`, sound 0x43). **US never sets it** (only Luigi init clears it). PAL adds the
+enabling code in `fn_800B783C` (PAL `800BABC8`): in map 11 with the hidden-mansion flag set, a
+frame counter (new PAL field +0x134C) increments every frame and the mode turns on once it
+exceeds 15 (`0x804C032C` = 15); elsewhere it is forced off. In-game (port, PAL variant) Luigi
+slides with momentum and keeps gliding after the stick is released; with the US variant he
+stops dead.
+
+### Chauncey (map 10)
+
+| PAL | US | Change in the PAL hidden mansion |
+|-----|----|----------------------------------|
+| `800A2204` | `fn_8009F1DC` | Balls 0/1 of each volley spawn at z = +700 instead of -700 (ball 2 unchanged) |
+| `800A2CFC` | `fn_8009FCA8` | "POYON" state entry also sets the model's +0xD8 = 2.0 |
+| `800A2DBC` | `fn_8009FD54` | Approach state: distance test 15 → 40 and move speed 20 → 40 (PAL normal: 20/20) |
+| `800A3A50` | `fn_800A09D0` | `KtEnMoku` rocking-horse scale 1.8 → 3.6 |
+| `800A48E4` | `fn_800A184C` | `KtEnMoku2` charge: weaves (x velocity 100·sin(20°·t), t = `0x804D8BF8`), yaw follows travel (`fn_8000965C`), hit shapes vs Luigi x2 |
+| `800A4DC4` | `fn_800A1BCC` | `KtEnMoku2`: value passed to `fn_8008907C` 50 → 100 |
+
+`map2u`/event data for Chauncey's room is unchanged; his parameter files are identical.
+
+### Bowser / King Boo (map 9)
+
+PAL adds byte **+0x1EE** to the boss strategy (cleared in init `fn_800A47BC`). In the chase
+state (`fn_800A441C`), when all three bombs are gone it flips the byte (hidden mansion only)
+before switching to state 0x12. In the throw function (`fn_800A5BA0`, `bom_throw_timing`), the
+first bomb of a volley is thrown as before; the following bombs normally enter the "thrown"
+state, but while the byte is set they enter a **new bomb state** that PAL inserted into the
+bomb strategy's state table (PAL `0x8034A0D8`, new init `fn_800AC584`; later states shift by
+one, which is why several bomb functions differ only in state numbers). The new state is the
+thrown state with timers +0x1D0/+0x1D4 = 100/30 instead of 300/90 (PAL's normal thrown state
+also sets +0x1D4 = 90, US leaves it). So every other volley in the PAL hidden mansion is a fast
+volley.
+
+### Other bosses and portrait ghosts
+
+No other boss or portrait-ghost code reads the flag (Bogmire, the portrait ghosts and the
+Boos' actors are identical apart from field-offset shifts), and their parameter files are
+identical. Boo differences are data (`jmp/telesa` in `map2u`) and event scripts (Boo-count
+gates).
+
+## Lighting
+
+The only lighting change is the room ambient colour x0.2 (`fn_800168EC` / PAL `800179F8`),
+for every room including hallways and the exterior, lit or unlit (lit rooms already use
+x0.6). `map2u`'s `roominfo` values are identical to `map2`'s, no other code reads the flag,
+and no fog, light-colour or light-table data differs. Verified in the foyer: the PAL variant is
+markedly darker than the US one (candle/lamp light sources unaffected).
+
+## Hearts
+
+* **Heal amount, not spawn chance.** `fn_800E70BC` is called from the heart item's init
+  (`fn_800D1458`, `EnHeartItem`): a small heart (type 0xCD) heals 20 instead of 10 when the
+  player's counter at status +0x6C8 reaches the threshold; big hearts (0xCE) always heal 50. The
+  same threshold in `fn_800E7698` picks between item 0x19 and 0x1A for a drop. The counter is
+  copied from Luigi +0x12F4 (incremented by the treasure-pickup message in `fn_800AEEA8` and
+  shown by the money/rank screens), i.e. a treasure total. Normal 200, US hidden 400, PAL
+  hidden 1000 — so in the PAL hidden mansion small hearts practically always heal only 10.
+* **Fewer hearts (data).** `map2u` `itemappeartable` replaces many `sheart`/`move_sheart`
+  slots with `mkinoko` (poison mushroom), `money` or `nothing`, and changes 47 furniture item
+  tables; Speedy Spirits/gold mice drops change (`iyapootable`). These come with the overlay.
+
 ## Implementation in the port
 
-The mode is selected with `LM_HIDDEN_MANSION=pal` (default: US rules). Prototype:
-`src/recomp/hidden_mansion.{h,cpp}` (compiled into `lmrecomp`, not yet called).
+**Variant.** PAL rules are a runtime *variant* separate from the game's own flag:
+`hm::variant()` / `hm::setVariant()` (`src/recomp/hidden_mansion.h`). Everything below is
+active only while the game's flag is set **and** the variant is PAL; with the US variant the
+overlay is off, patched literals are restored and every hook passes straight through to the
+original. Until the lab menu offers both (below), the variant comes from
+`--hidden-mansion-variant pal|us` (alias `--hidden-mansion`, env
+`LM_HIDDEN_MANSION_VARIANT`), default `pal`.
 
-### 1. Data overlay (done in the prototype)
+**Data overlay** (`tools/hidden_mansion_data.py` → `orig/hidden_mansion/`, served by
+`hle_dvd.cpp` through `hm::overlayEntry`/`overlayRead`): `/Map/map2.szp` → PAL `map2u.szp` while
+PAL rules apply and map 2 loads; `/Event/event{08,16,73}.szp` → US archives with the PAL
+scripts while the variant is PAL.
 
-`python tools/hidden_mansion_data.py` writes `orig/hidden_mansion/` (git-ignored) from the
-user's two dumps: `Map/map2u.szp` copied from PAL, and `Event/event{08,16,73}.szp` = the US
-archive with only the script replaced (stored as literal-only Yay0 so the container format is
-unchanged). `hm::redirect()` / `hm::overlayEntry()` / `hm::overlayRead()` serve those files:
-map2 only while the flag is set and the map is 2 (exactly PAL's condition), event archives
-always in PAL mode. Integration: in `hle_dvd.cpp`, check `hm::overlayEntry(path)` in
-`DVDConvertPathToEntrynum`/`DVDOpen`, and route `DVDFastOpen`/`DVDRead*` for
-`hm::isOverlayEntry(entry)` to `overlayLength`/`overlayRead`.
+**Hooks** (`src/recomp/hidden_mansion_hooks.cpp`, listed in `tools/recomp/hooks.txt`, all via
+`callOriginal`):
 
-### 2. Constant patches (done in the prototype)
+| Hook | PAL behaviour |
+|------|---------------|
+| `fn_800168EC` | Room ambient x0.2 (current room's RGB scaled for the call) |
+| `fn_800E70BC`, `fn_800E7698` | Heart threshold 1000 |
+| `fn_800B41E0` | Damaging-floor 5-of-8 pattern |
+| `fn_800B783C` | Boolossus movement mode in map 11 |
+| `fn_8009F1DC`, `fn_8009FCA8`, `fn_8009FD54`, `fn_800A184C` | Chauncey balls, POYON, approach, rocking-horse weave and hit shapes |
+| `fn_800A47BC`, `fn_800A441C`, `fn_800A5BA0`, `fn_800A926C` | Bowser volley alternation and fast bombs (state kept host-side) |
+| `fn_8006D1B8` | Enemy strategy (`0x8034BB48`) state timer 400 → 250 |
+| `fn_8005F8B8` | Mirror: S texcoords of the screen-copy quad flipped (FIFO filter for the call) |
+| `fn_8007F9B8`, `fn_800807EC`, `fn_800809CC` | Mirror: main/C stick X negated for Luigi's input |
+| `fn_80041214` + `fn_80009148` | Mirror: projected HUD positions x = 640 - x |
+| `fn_80055C54` + `set__7JUTRectFiiii` | Mirror: iris wipe centred at 328 |
+| `fn_8000C188` | Dev only: `LM_START_MAP=<n>` loads map n instead of the mansion |
 
-Where a PAL change multiplies a literal that in the US build sits in `.sdata2` and is used by
-exactly one function, `hm::syncConstants()` rewrites the literal while the flag is set and
-restores it otherwise (it first checks that the US value is there):
+**Literal patches** (`hm::syncConstants`, every frame): `0x804DB278` 1.8 → 3.6 (rocking horse
+scale), `0x804DB2B0` 50 → 100.
 
-| US literal | Value | PAL hidden | Used only by |
-|------------|-------|------------|--------------|
-| `0x804DB278` | 1.8 | 3.6 | `fn_800A09D0` (rocking horse scale) |
-| `0x804DB2B0` | 50 | 100 | `fn_800A1BCC` |
-| `0x804D9B60` | 0.6 | 0.12 | `fn_800168EC` (lit rooms only; the unlit branch needs a hook) |
+**Verified in-game** (`LM_HM_FORCE=1` sets the flag; `LM_START_MAP` jumps to a boss map):
+`map2u` loads and the foyer works; darker rooms; mirrored picture with unmirrored HUD and
+correct stick direction; Boolossus movement mode (position log `LM_HM_TRACE_LUIGI=1` shows
+momentum vs US); Chauncey fight runs with the ball/horse rules applied; Bowser fight runs
+with the alternation applied; US variant logs no PAL rule.
 
-Integration: call `hm::syncConstants()` once per retrace (`frame.cpp`).
+**Not done yet:**
+* GBH map mirroring (`fn_80029A74`, `fn_80029DD4`, `fn_8002A01C`, `fn_8002A5A0`, `fn_8002A74C`,
+  `fn_8002AE74`): the map screen is not mirrored, so it does not match the mirrored mansion.
+* Stereo swap: `hm::mirrorStereo()` is ready for when audio is emulated.
+* The rest of the `0x8034BB48` enemy strategy (`fn_8006CFBC`, `fn_8006D0DC`, `fn_8006D4B8`,
+  `fn_8006E414`: early exit below 130, colour words, extra parameters).
+* PAL's deferred `URALUIGI` (only matters for scene-change edge cases).
 
-### 3. Mirror at the HLE level (helpers in the prototype)
+## E. Gadd's lab menu (both Hidden Mansions)
 
-Rather than copying PAL's flipped-texcoord quad, flip the perspective projection in the GX
-HLE (`hm::mirrorProjection` in `GXSetProjection`) and swap front/back culling
-(`hm::mirrorCullMode` in `GXSetCullMode`). Orthographic 2D/HUD stays unmirrored, which is
-what PAL produces, and the GBH map's 3D view is mirrored for free (PAL mirrors it
-explicitly). The stereo swap belongs in the host audio mixer (`hm::mirrorStereo`) once audio
-is emulated. Still needed as hooks: stick X for Luigi's input (3 functions), projected HUD
-X (`fn_80041214`), iris wipe centre (`fn_80055C54`), GBH map markers (3 functions).
-Validate against Dolphin running the PAL disc: anything PAL draws into the 3D pass with an
-orthographic projection would not be mirrored by this method.
+**Where it is.** The destination menu is event script `text/event08.txt` in
+`/Event/event08.szp`, not code. Its choice list is the `<CHOICE>` command:
 
-### 4. Hooks for the remaining behaviour
+```
+<CHECKFLAG>(5)"5on""5off"
+<CASE>"5on"   <CHOICE>"back"(3)"urayasiki"(38)"minigame"(1)"gallary"(2)<LISTEND>
+<CASE>"5off"  <CHOICE>"back"(3)"minigame"(1)"gallary"(2)<LISTEND>
+```
 
-These need a hook that runs the original US function and then adjusts a value, or adds a
-branch. `tools/recomp/hooks.txt` + `HLE(name)` today *replaces* a function and cannot call the
-translated original, so the recommended prerequisite is a small `recomp.py` change: emit each
-hooked body as `f_XXXXXXXX_orig(Ctx&)` and let the hook call it (`hleCallOriginal`). With that:
+Each entry is a case label plus a line index into the same archive's message table
+`message/message8.csv` (line 0 "Where will you go, Luigi?", 1 "The Training Room", 2 "The
+Gallery", 3 "The Mansion", 38 "The Hidden Mansion"). Game flag 5 (Hidden Mansion unlocked)
+selects the 4-entry list. The `"urayasiki"` case plays the send-off line and runs
+`<URALUIGI>`, which sets the RAM hidden-mansion flag (`0x804D80C0`); `"back"` runs
+`<OMOTELUIGI>`. Game flags live in a bitfield read by `getFlagValue__FUc` (`0x80065FA4`):
+flag n is bit (n & 7) of byte `0x803D2D40 + 0x659 + n/8`; that block is part of the save
+data, so flag 5 persists, while the hidden-mansion flag itself is RAM-only and is set again
+each time the player picks the Hidden Mansion in the lab (PAL additionally mirrors it in save
+flag 8).
 
-| Hook (US) | Behaviour to add when `hm::palActive()` |
-|-----------|-----------------------------------------|
-| `fn_8000BF38` / event `URALUIGI` | Optional: PAL's deferred flag set (only matters for scene-change edge cases) |
-| `fn_800E70BC`, `fn_800E7698` | Threshold 1000 instead of 400 |
-| `fn_800B41E0` | Damaging-floor pattern (5 of 8 frames) |
-| `fn_800168EC` | Ambient x0.2 on the unlit branch (the lit branch is a constant patch) |
-| `fn_8009F1DC`, `fn_8009FCA8`, `fn_8009FD54` | Chauncey tuning (700 / +0xD8 = 2.0 / 40) |
-| `fn_800A184C` | `KtEnMoku` hidden-only branches (study PAL `800A48E4` first) |
-| `fn_800A441C` | Bowser +0x1EE toggle |
-| `fn_800B783C` | Map 11 frame counter (needs 5 bytes of state kept by the hook, since the US Luigi object has no +0x134C field) |
-| `fn_8006CFBC`, `fn_8006D0DC`, `fn_8006D1B8`, `fn_8006D4B8`, `fn_8006E414` | Enemy strategy timers/colours (identify the enemy first) |
-| `fn_8007F9B8`, `fn_800807EC`, `fn_800809CC` | Negate stick X |
-| `fn_80041214`, `fn_80055C54`, `fn_80029A74`, `fn_8002A5A0`, `fn_8002A74C`, `fn_8002AE74` | Mirror fix-ups for HUD, wipe and GBH map |
-
-Each hook is written from the behaviour described here, not translated from either binary.
-Verify each one by playing the same input recording in Dolphin (PAL disc, hidden mansion) and
-in the port, and comparing per-frame state.
-
-### Order of work
-
-1. Wire the overlay into `hle_dvd.cpp` (gives PAL ghosts, Boos, treasure and Boo gates).
-2. Mirror via GX projection/culling, then the input and HUD fix-ups.
-3. `recomp.py` call-original support, then the tuning hooks from the table above.
-4. Constant patches stay as they are (no hooks needed).
+**Adding the PAL entry.** No game build uses more than four `<CHOICE>` entries, so the safe
+form is a follow-up question rather than a fifth entry: in the `"urayasiki"` case, ask
+`<CHOICE>"ura_us"(N)"ura_pal"(N+1)<LISTEND>` with two new lines appended to `message8.csv`
+("Hidden Mansion (USA)", "Hidden Mansion (PAL)"), and in `"ura_pal"` run `<FLAGON>(F)`
+before `<URALUIGI>` (`<FLAGOFF>(F)` in `"ura_us"`), where F is a flag no script or code uses
+(e.g. 240; scripts use flags up to 198 plus 255). The host then derives the variant from flag
+F (read it the same way as `getFlagValue`) instead of the command line, so the choice persists
+with the save. All of this is a script + message-table patch that `tools/hidden_mansion_data.py`
+can apply to the US `event08.szp` (it already rewrites that archive). A true fifth entry needs
+checking the `<CHOICE>` handler's capacity in `fn_8006385C` first.

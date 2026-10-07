@@ -3,12 +3,16 @@
 // from an overlay the user builds from their own discs, and adjusts a few literals.
 #include "recomp/hidden_mansion.h"
 
+#include "port/options.h"
 #include "recomp/hle.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <mutex>
@@ -21,11 +25,29 @@ namespace {
 constexpr u32 kUraFlag = 0x804D80C0;  // PAL 0x804C5784
 constexpr u32 kCurMapNo = 0x804D80C8;  // sCurMapNo; PAL 0x804C578C
 
+// LM_HM_OVERLAY, else the first orig/hidden_mansion found walking up from the working
+// directory (same search as the disc image).
 std::string overlayDir() {
-    const char* env = std::getenv("LM_HM_OVERLAY");
-    std::string d = env && *env ? env : "orig/hidden_mansion";
-    if (!d.empty() && d.back() != '/' && d.back() != '\\') d += '/';
-    return d;
+    static const std::string dir = [] {
+        const char* env = std::getenv("LM_HM_OVERLAY");
+        std::filesystem::path d;
+        if (env && *env) {
+            d = env;
+        } else {
+            for (auto p = std::filesystem::current_path();; p = p.parent_path()) {
+                if (std::filesystem::exists(p / "orig" / "hidden_mansion" / "manifest.txt")) {
+                    d = p / "orig" / "hidden_mansion";
+                    break;
+                }
+                if (p == p.parent_path()) {
+                    d = "orig/hidden_mansion";
+                    break;
+                }
+            }
+        }
+        return d.generic_string() + "/";
+    }();
+    return dir;
 }
 
 struct Redirect {
@@ -95,30 +117,65 @@ constexpr ConstPatch kConstPatches[] = {
     {0x804DB278, 1.8f, 3.6f, false, "rocking horse scale"},
     // KtEnMoku2, US fn_800A1BCC / PAL fn_800A4DC4: value passed to fn_8008907C 50 -> 100.
     {0x804DB2B0, 50.0f, 100.0f, false, "rocking horse (2) fn_8008907C argument"},
-    // Room ambient colour, US fn_800168EC / PAL fn_800179F8: PAL multiplies by 0.2 in the
-    // hidden mansion. Only the lit-room branch uses this literal; the other branch needs a hook.
-    {0x804D9B60, 0.6f, 0.6f * 0.2f, true, "room ambient (lit rooms)"},
+    // (Room ambient x0.2 is a hook on fn_800168EC: hidden_mansion_hooks.cpp.)
 };
 
 u32 fbits(float f) { return std::bit_cast<u32>(f); }
 
 }  // namespace
 
-Mode mode() {
-    static const Mode m = [] {
-        const char* env = std::getenv("LM_HIDDEN_MANSION");
-        const bool pal = env && (std::strcmp(env, "pal") == 0 || std::strcmp(env, "PAL") == 0);
-        if (pal) log("[hm] PAL Hidden Mansion rules enabled (overlay %s)", overlayDir().c_str());
-        return pal ? Mode::Pal : Mode::Us;
-    }();
-    return m;
+namespace {
+Variant initialVariant() {
+    const char* env = std::getenv("LM_HIDDEN_MANSION_VARIANT");
+    if (!env || !*env) env = std::getenv("LM_HIDDEN_MANSION");
+    std::string v = env && *env ? env : port::options().hiddenMansion;
+    for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch)));
+    const bool pal = v != "us";
+    const bool have = std::filesystem::exists(overlayDir() + "manifest.txt");
+    log("[hm] Hidden Mansion variant: %s (overlay %s%s)", pal ? "PAL" : "USA", overlayDir().c_str(),
+        have ? "" : ": missing, run tools/hidden_mansion_data.py; PAL data unavailable");
+    return pal ? Variant::Pal : Variant::Us;
+}
+std::atomic<int> sVariant{-1};
+}  // namespace
+
+Variant variant() {
+    int v = sVariant.load();
+    if (v < 0) {
+        int want = int(initialVariant());
+        sVariant.compare_exchange_strong(v, want);
+        v = sVariant.load();
+    }
+    return Variant(v);
+}
+
+void setVariant(Variant v) {
+    if (sVariant.exchange(int(v)) != int(v)) log("[hm] Hidden Mansion variant -> %s", v == Variant::Pal ? "PAL" : "USA");
 }
 
 bool hiddenActive() { return rd32(kUraFlag) != 0; }
-bool palActive() { return mode() == Mode::Pal && hiddenActive(); }
+
+void onFrame() {
+    // LM_HM_FORCE=1: keep the hidden-mansion flag set (testing without a cleared save).
+    static const bool sForce = [] {
+        const char* env = std::getenv("LM_HM_FORCE");
+        return env && *env == '1';
+    }();
+    if (sForce && !hiddenActive()) {
+        log("[hm] LM_HM_FORCE: setting the hidden-mansion flag");
+        wr32(kUraFlag, 1);
+    }
+    static bool sWas = false;
+    if (hiddenActive() != sWas) {
+        sWas = hiddenActive();
+        log("[hm] hidden-mansion flag %s (%s variant)", sWas ? "set" : "cleared", variant() == Variant::Pal ? "PAL" : "USA");
+    }
+    syncConstants();
+}
+bool palActive() { return variant() == Variant::Pal && hiddenActive(); }
 
 std::optional<std::string> redirect(const char* guestPath) {
-    if (mode() != Mode::Pal || !guestPath) return std::nullopt;
+    if (variant() != Variant::Pal || !guestPath) return std::nullopt;
     for (const Redirect& r : kRedirects) {
         if (!samePath(guestPath, r.guestPath)) continue;
         if (r.onlyWhileHidden && !(hiddenActive() && rd32(kCurMapNo) == 2)) return std::nullopt;
@@ -165,7 +222,6 @@ s32 overlayRead(s32 entry, void* dst, s32 length, s32 offset) {
 }
 
 void syncConstants() {
-    if (mode() != Mode::Pal) return;
     static bool sApplied = false;
     static bool sChecked = false, sOk = true;
     if (!sChecked) {  // refuse to touch memory that does not hold the expected US literal
@@ -178,13 +234,19 @@ void syncConstants() {
         }
     }
     if (!sOk) return;
-    const bool want = hiddenActive();
+    const bool want = palActive();  // switching variant or leaving the hidden mansion restores US values
     if (want == sApplied) return;
     for (const ConstPatch& p : kConstPatches) wr32(p.addr, fbits(want ? p.palValue : p.usValue));
     sApplied = want;
 }
 
-bool mirrorActive() { return palActive(); }
+bool mirrorActive() {
+    static const bool sOff = [] {  // LM_HM_MIRROR=0 disables the mirror (debugging)
+        const char* env = std::getenv("LM_HM_MIRROR");
+        return env && *env == '0';
+    }();
+    return !sOff && palActive();
+}
 
 void mirrorProjection(float m[4][4], bool perspective) {
     if (!perspective || !mirrorActive()) return;

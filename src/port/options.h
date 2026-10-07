@@ -26,6 +26,10 @@ struct Options {
     int wsBackgrounds = 0;
     std::uint32_t windowWidth = 0, windowHeight = 0;  // --window <w>x<h>
     bool fullscreen = false;                          // --fullscreen
+    // --hidden-mansion-variant pal|us (alias --hidden-mansion): initial Hidden Mansion variant,
+    // i.e. which release's rules apply while the game's hidden-mansion flag is set (default
+    // pal; docs/HIDDEN_MANSION.md).
+    std::string hiddenMansion = "pal";
 };
 
 Options& options();
