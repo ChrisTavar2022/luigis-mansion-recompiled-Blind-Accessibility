@@ -8,31 +8,38 @@
 
 #include "port/crash_handler.h"
 #include "port/dol.h"
+#include "port/install.h"
 #include "port/options.h"
 #include "port/settings.h"
 #include "recomp/frame.h"
 #include "recomp/menu.h"
 #include "recomp/hle.h"
+#include "recomp/module_loader.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
 #include "recomp/widescreen.h"
+#ifndef LM_STATIC_MODULE
+#include "setup/setup.h"
+#endif
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <thread>
 #include <chrono>
 
 namespace recomp {
+#ifdef LM_STATIC_MODULE
+extern const GameModule kGameModule;  // generated func_table.cpp, linked in (lmrecomp)
+#endif
 namespace vi {
 void startTimer();
 void stopTimer();
 }  // namespace vi
 
 namespace {
-
-constexpr u32 kInitRegisters = 0x800031F0;  // __init_registers: lis/ori pairs for r1, r2, r13
 
 void loadDol(const u8* dol) {
     auto be = [&](u32 off) { return u32(dol[off]) << 24 | u32(dol[off + 1]) << 16 | u32(dol[off + 2]) << 8 | dol[off + 3]; };
@@ -44,9 +51,10 @@ void loadDol(const u8* dol) {
     }
 }
 
-// Reads the `lis rD, hi; ori rD, rD, lo` pairs of __init_registers.
+// Reads the `lis rD, hi; ori rD, rD, lo` pairs of __init_registers (r1, r2, r13).
 void initRegisters(Ctx& c) {
-    for (u32 pc = kInitRegisters; pc < kInitRegisters + 0x18; pc += 8) {
+    const u32 start = guestSymbol("__init_registers");
+    for (u32 pc = start; pc < start + 0x18; pc += 8) {
         const u32 hi = rd32(pc), lo = rd32(pc + 4);
         const u32 reg = (hi >> 21) & 31;
         c.r[reg] = (hi << 16) | (lo & 0xFFFF);
@@ -86,14 +94,28 @@ void logCallback(AuroraLogLevel level, const char* module, const char* message, 
     }
 }
 
-std::string findDisc() {
+#ifdef LM_STATIC_MODULE
+std::string findDisc(const char* gameId) {
     if (!port::options().disc.empty()) return port::options().disc;
     for (auto dir = std::filesystem::current_path();; dir = dir.parent_path()) {
-        const auto candidate = dir / "orig" / "GLME01.iso";
+        const auto candidate = dir / "orig" / (std::string(gameId) + ".iso");
         if (std::filesystem::exists(candidate)) return candidate.string();
         if (dir == dir.parent_path()) return {};
     }
 }
+#else
+bool hasArg(int argc, char** argv, const char* name) {
+    for (int i = 1; i < argc; i++)
+        if (std::strcmp(argv[i], name) == 0) return true;
+    return false;
+}
+
+std::string argValue(int argc, char** argv, const char* name) {
+    for (int i = 1; i + 1 < argc; i++)
+        if (std::strcmp(argv[i], name) == 0) return argv[i + 1];
+    return {};
+}
+#endif
 
 }  // namespace
 }  // namespace recomp
@@ -102,6 +124,7 @@ int main(int argc, char* argv[]) {
     using namespace recomp;
     port::installCrashHandler();
     port::parseOptions(argc, argv);
+    port::setLaunchArgs(argc, argv);
 
     AuroraConfig config{};
     config.appName = "Luigi's Mansion PC";
@@ -122,14 +145,45 @@ int main(int argc, char* argv[]) {
     aurora_initialize(argc, argv, &config);
     ws::init();
 
-    const std::string disc = findDisc();
+#ifdef LM_STATIC_MODULE
+    // lmrecomp (developer build): the game was recompiled at build time and linked in.
+    setGameModule(&kGameModule);
+    const char* wantId = kGameModule.gameId;
+    const std::string disc = findDisc(wantId);
+    {
+        auto& inst = port::install();
+        inst.staticBuild = true;
+        inst.running = std::strcmp(wantId, "GLMP01") == 0 ? port::GameVersion::PAL : port::GameVersion::USA;
+        inst.usReady = inst.running == port::GameVersion::USA;
+        inst.palReady = inst.running == port::GameVersion::PAL;
+        inst.hmOverlayReady = inst.running == port::GameVersion::USA;  // dev: orig/hidden_mansion
+    }
+#else
+    // LuigisMansionRecomp: set up from the user's discs (first run, or after changes).
+    setup::Options so;
+    so.forceUi = hasArg(argc, argv, "--setup");
+    so.autoStart = hasArg(argc, argv, "--setup-auto");
+    so.usDisc = argValue(argc, argv, "--us-disc");
+    so.palDisc = argValue(argc, argv, "--pal-disc");
+    setup::LaunchInfo launch;
+    if (!setup::run(so, launch)) {
+        aurora_shutdown();
+        std::_Exit(0);
+    }
+    const std::string disc = launch.disc;
+    const char* wantId = port::gameId(launch.version);
+#endif
     if (disc.empty() || !aurora_dvd_open(disc.c_str())) {
         std::fprintf(stderr, "Could not open a Luigi's Mansion disc image. Pass --disc <path to .iso/.rvz>.\n");
         aurora_shutdown();
         return 1;
     }
-    if (port::dol::load() != port::dol::Version::GLME01) {
-        std::fprintf(stderr, "This build was recompiled from Luigi's Mansion USA (GLME01); the disc does not match.\n");
+    const port::dol::Version discVersion = port::dol::load();
+    const char* discId = discVersion == port::dol::Version::GLME01   ? "GLME01"
+                         : discVersion == port::dol::Version::GLMP01 ? "GLMP01"
+                                                                     : "unknown";
+    if (std::strcmp(discId, wantId) != 0) {
+        std::fprintf(stderr, "The game was recompiled from Luigi's Mansion %s; the disc is %s.\n", wantId, discId);
         aurora_shutdown();
         return 1;
     }
@@ -139,10 +193,23 @@ int main(int argc, char* argv[]) {
     menu::init();
     g_mem = static_cast<u8*>(std::calloc(1, kHostMemSize));
     loadDol(dol);
+    if (port::install().running == port::GameVersion::PAL) {
+        // The PAL release's language (.sdata 0x804BD658: 1 English, 2 German, 3 French,
+        // 4 Spanish, 5 Italian; docs/SETUP.md). The game reads it when it loads text.
+        const int lang = port::settings().enhancements.palLanguage;
+        wr32(0x804BD658, u32(lang >= 1 && lang <= 5 ? lang : 1));
+    }
     initTimeBase();
     initTrace();
     initWatch();
-    std::printf("Opened %s\n", disc.c_str());
+#ifndef LM_STATIC_MODULE
+    if (std::string err; !loadGameModule(launch.module, err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        aurora_shutdown();
+        return 1;
+    }
+#endif
+    std::printf("Opened %s (%s)\n", disc.c_str(), discId);
 
     frame::start(&boot);
     if (std::getenv("LM_WATCHDOG")) {

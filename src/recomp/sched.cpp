@@ -3,6 +3,7 @@
 #include "recomp/hle.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <string>
@@ -13,9 +14,21 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <timeapi.h>
+#pragma comment(lib, "winmm.lib")
+#endif
+
 namespace recomp {
 
-std::atomic<bool> g_irqPending{false};
+namespace {
+bool sIrqPendingFlag = false;
+std::atomic_ref<bool> irqPending() { return std::atomic_ref<bool>(sIrqPendingFlag); }
+}  // namespace
+bool* g_irqPending = &sIrqPendingFlag;  // read by guest code (Ctx::poll)
 bool g_shutdown = false;
 
 struct GuestThread {
@@ -121,7 +134,7 @@ void runIrqs() {
         {
             std::lock_guard lk(sIrqM);
             if (sIrqs.empty()) {
-                g_irqPending.store(false);
+                irqPending().store(false);
                 break;
             }
             fn = std::move(sIrqs.front());
@@ -298,7 +311,7 @@ void sleepOn(u32 queue) {
     self->waitQueue = queue;
     writeState(self, kStateWaiting);
     GuestThread* next = pick(nullptr);
-    if (!next && g_irqPending.load()) {
+    if (!next && irqPending().load()) {
         // Going idle with interrupts queued: service them on this host thread.
         sRunning = &sIrqMarker;
         for (;;) {
@@ -330,7 +343,7 @@ void postIrq(std::function<void(Ctx&)> fn) {
     {
         std::lock_guard lk(sIrqM);
         sIrqs.push_back(std::move(fn));
-        g_irqPending.store(true);
+        irqPending().store(true);
     }
     // An idle CPU is serviced by the poster itself.
     std::unique_lock lk(sM);
@@ -351,7 +364,7 @@ void postIrq(std::function<void(Ctx&)> fn) {
 void dumpThreads() {
     std::lock_guard lk(sM);
     log("[sched] running=%08X irqPending=%d", sRunning == &sIrqMarker ? 0xFFFFFFFF : sRunning ? sRunning->guest : 0,
-        int(g_irqPending.load()));
+        int(irqPending().load()));
     for (auto* t : sThreads) {
         log("[sched]   %08X prio %d suspend %d state %d wait %08X lr %08X fn %08X", t->guest, t->priority,
             t->suspendCount, int(t->st), t->waitQueue, t->ctx.lr, t->ctx.lastFn);
@@ -381,6 +394,9 @@ std::multimap<std::chrono::steady_clock::time_point, std::function<void(Ctx&)>> 
 std::thread sTimerThread;
 
 void timerMain() {
+#ifdef _WIN32
+    timeBeginPeriod(1);  // 1 ms scheduler resolution for timed interrupts
+#endif
     std::unique_lock lk(sTimerM);
     while (!g_shutdown) {
         if (sTimed.empty()) {
@@ -388,8 +404,17 @@ void timerMain() {
             continue;
         }
         const auto when = sTimed.begin()->first;
-        if (std::chrono::steady_clock::now() < when) {
-            sTimerCv.wait_until(lk, when);
+        if (const auto now = std::chrono::steady_clock::now(); now < when) {
+            // Waits are only as precise as the OS timer (15.6 ms on Windows by default), too
+            // coarse for the PAL release's frame alarms: sleep coarsely, then yield.
+            constexpr auto kSpin = std::chrono::milliseconds(3);
+            if (when - now > kSpin) {
+                sTimerCv.wait_until(lk, when - kSpin);
+            } else {
+                lk.unlock();
+                std::this_thread::yield();
+                lk.lock();
+            }
             continue;
         }
         auto fn = std::move(sTimed.begin()->second);

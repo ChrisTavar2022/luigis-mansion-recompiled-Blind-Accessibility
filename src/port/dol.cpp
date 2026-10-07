@@ -25,7 +25,9 @@ uint32_t read_be32(const uint8_t* p) {
     return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
 }
 
-// Minimal SHA-1 (FIPS 180-1) used only to identify the retail DOL.
+}  // namespace
+
+// Minimal SHA-1 (FIPS 180-1) used to identify the retail DOL and to key setup's caches.
 std::array<uint8_t, 20> sha1(const uint8_t* data, size_t len) {
     uint32_t h[5] = {0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0};
     const uint64_t bitLen = uint64_t(len) * 8;
@@ -67,13 +69,23 @@ std::array<uint8_t, 20> sha1(const uint8_t* data, size_t len) {
     return out;
 }
 
+namespace {
+
 // SHA-1 of each supported retail main.dol (from decomp/config/*/config.yml).
 constexpr uint8_t kShaGLME01[20] = {0x77, 0xd4, 0x92, 0x25, 0xe7, 0xd2, 0x8b, 0x97, 0x77, 0x91,
                                     0x6c, 0xdb, 0xe5, 0x80, 0x93, 0x45, 0xc5, 0x70, 0xec, 0xbc};
-constexpr uint8_t kShaGLMP01[20] = {0xa1, 0xe2, 0xbd, 0x82, 0x81, 0x37, 0x87, 0xd9, 0x4f, 0x1b,
-                                    0xa5, 0xb2, 0xc5, 0x7b, 0x96, 0x6e, 0xcd, 0x7f, 0x94, 0xf1};
+constexpr uint8_t kShaGLMP01[20] = {0xa1, 0xe2, 0xbd, 0x82, 0x81, 0x37, 0x87, 0xcf, 0xe0, 0xb1,
+                                    0x1a, 0xfb, 0x5d, 0x13, 0x8f, 0x08, 0xfd, 0xbd, 0x94, 0xf1};
 
 }  // namespace
+
+Version identify(const uint8_t* dol, size_t size) {
+    if (!dol || size < 0x100) return Version::Unknown;
+    const auto digest = sha1(dol, size);
+    if (std::memcmp(digest.data(), kShaGLME01, 20) == 0) return Version::GLME01;
+    if (std::memcmp(digest.data(), kShaGLMP01, 20) == 0) return Version::GLMP01;
+    return Version::Unknown;
+}
 
 Version load() {
     s32 size = 0;
@@ -87,14 +99,9 @@ Version load() {
     for (size_t i = 0; i < sSections.size(); ++i) {
         sSections[i] = {read_be32(sDol + i * 4), read_be32(sDol + 0x48 + i * 4), read_be32(sDol + 0x90 + i * 4)};
     }
-    const auto digest = sha1(sDol, sDolSize);
-    if (std::memcmp(digest.data(), kShaGLME01, 20) == 0) {
-        sVersion = Version::GLME01;
-    } else if (std::memcmp(digest.data(), kShaGLMP01, 20) == 0) {
-        sVersion = Version::GLMP01;
-    } else {
+    sVersion = identify(sDol, sDolSize);
+    if (sVersion == Version::Unknown)
         OSReport("[dol] main.dol does not match a supported retail build (GLME01/GLMP01 rev 0)\n");
-    }
     return sVersion;
 }
 
