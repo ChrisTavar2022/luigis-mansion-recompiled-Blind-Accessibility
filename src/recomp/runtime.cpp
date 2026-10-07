@@ -59,6 +59,7 @@ void initTrace() {
 }
 
 void trace_enter(u32 addr, Ctx& c) {
+    c.lastFn = addr;
     tRing[tRingPos % kRingSize] = addr;
     tRingLr[tRingPos % kRingSize] = c.lr;
     tRingPos++;

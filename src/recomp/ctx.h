@@ -132,6 +132,7 @@ struct Ctx {
     u32 gqr[8]{};
     u32 msr = 0x8000;  // external interrupts enabled
     GuestThread* thread = nullptr;
+    u32 lastFn = 0;  // last guest function entered (only maintained while tracing)
 
     // --- condition register ---
     bool crbit(int n) const { return (cr[n >> 2] >> (3 - (n & 3))) & 1; }

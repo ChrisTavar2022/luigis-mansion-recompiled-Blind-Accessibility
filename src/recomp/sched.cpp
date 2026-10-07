@@ -32,6 +32,9 @@ struct GuestThread {
 
 }  // namespace recomp
 
+namespace recomp {
+u32 viRetraceCount();
+}
 namespace recomp::sched {
 namespace {
 
@@ -293,6 +296,18 @@ void sleepOn(u32 queue) {
     self->waitQueue = queue;
     writeState(self, kStateWaiting);
     GuestThread* next = pick(nullptr);
+    if (!next && g_irqPending.load()) {
+        // Going idle with interrupts queued: service them on this host thread.
+        sRunning = &sIrqMarker;
+        for (;;) {
+            lk.unlock();
+            runIrqs();
+            lk.lock();
+            std::lock_guard ilk(sIrqM);
+            if (sIrqs.empty()) break;
+        }
+        next = pick(nullptr);
+    }
     handOff(next);
     waitForCpu(lk, self);
 }
@@ -319,9 +334,15 @@ void postIrq(std::function<void(Ctx&)> fn) {
     std::unique_lock lk(sM);
     if (sRunning != nullptr || g_shutdown) return;
     sRunning = &sIrqMarker;
-    lk.unlock();
-    runIrqs();
-    lk.lock();
+    for (;;) {
+        lk.unlock();
+        runIrqs();
+        lk.lock();
+        // An interrupt posted while we were finishing saw the CPU busy and left it
+        // to us; check under sM so it cannot be stranded.
+        std::lock_guard ilk(sIrqM);
+        if (sIrqs.empty()) break;
+    }
     handOff(pick(nullptr));
 }
 
@@ -330,8 +351,11 @@ void dumpThreads() {
     log("[sched] running=%08X irqPending=%d", sRunning == &sIrqMarker ? 0xFFFFFFFF : sRunning ? sRunning->guest : 0,
         int(g_irqPending.load()));
     for (auto* t : sThreads)
-        log("[sched]   %08X prio %d suspend %d state %d wait %08X lr %08X", t->guest, t->priority, t->suspendCount,
-            int(t->st), t->waitQueue, t->ctx.lr);
+        log("[sched]   %08X prio %d suspend %d state %d wait %08X lr %08X fn %08X", t->guest, t->priority,
+            t->suspendCount, int(t->st), t->waitQueue, t->ctx.lr, t->ctx.lastFn);
+    log("[sched]   mq 803A3608: used %u base %u interval %u retrace %u", rd32(0x803A3608 + 0x1C), rd32(0x803A3600),
+        rd32(0x803A3604), viRetraceCount());
+    log("[sched]   irq ctx: lr %08X fn %08X, queued %zu", sIrqCtx.lr, sIrqCtx.lastFn, sIrqs.size());
 }
 
 namespace {
