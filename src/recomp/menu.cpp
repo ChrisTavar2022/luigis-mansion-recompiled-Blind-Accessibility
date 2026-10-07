@@ -102,7 +102,7 @@ void soundTab() {
 }
 
 // Gameplay / difficulty (port::GameplaySettings, src/recomp/gameplay_hooks.cpp). All neutral by
-// default; each slider has a "reset" by double-click (ctrl+click to type a value).
+// default (ctrl+click a slider to type a value).
 void gameplaySection() {
     auto& g = port::settings().gameplay;
     ImGui::TextDisabled("Neutral by default: the original game is unchanged until you move something.");
@@ -119,6 +119,7 @@ void gameplaySection() {
     sDirty |= ImGui::SliderFloat("Poltergust strength", &g.vacuumStrength, 0.25f, 4.0f, "%.2fx");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("How fast the vacuum drains a captured ghost's HP");
     sDirty |= ImGui::Checkbox("Disable recovery hearts", &g.noHeartDrops);
+    ImGui::SeparatorText("Movement");
     sDirty |= ImGui::Checkbox("Always ride the Poltergust", &g.alwaysRide);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Luigi glides with momentum everywhere (the PAL Boolossus-fight movement)");
     if (ImGui::Button("Reset gameplay options")) {
@@ -182,7 +183,7 @@ void unusedContentTab() {
 }
 
 // Gameplay toggles, difficulty and cheats.
-void gameplayTab() { ImGui::TextDisabled("Difficulty and gameplay options will appear here."); }
+void gameplayTab() { gameplaySection(); }
 
 // Debug features left in the game, warps and viewers.
 void debugTab() { ImGui::TextDisabled("Debug menus, area warps and the model viewer will appear here."); }

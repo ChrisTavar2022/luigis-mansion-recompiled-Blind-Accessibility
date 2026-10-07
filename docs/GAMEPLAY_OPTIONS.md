@@ -40,7 +40,9 @@ original). Light sources (candles, lamps, flashlight) are not ambient and are un
 it clamps to [0, max (+0xFFC)] and plays the hurt/heal reactions. All damage (ghost
 attacks, bombs, floors, the Hidden Mansion's x2 in `fn_800B9680`) reaches it as a lower value,
 so the hook rescales the difference; healing passes through. Non-zero multipliers never round
-a hit down to 0.
+a hit down to 0. Calls from Luigi's message handler (`fn_800AEEA8`, script/event commands that
+*set* health, e.g. on arriving in the mansion) are not damage and are passed through, except
+that a scripted "full health" of 100 becomes the scaled full health.
 
 **Luigi's health.** Luigi's constructor (`fn_800AD5AC`) sets health = max = 100; the hook
 scales both. `fn_800AE1A4` restores health/max from the state carried between maps; the hook
@@ -85,6 +87,7 @@ Luigi's position and riding mode). Tested with a scratch `APPDATA` and `LM_CARD_
 | Option | Test | Result |
 |--------|------|--------|
 | Luigi's health x2 | new game → Chauncey (map 10) | HUD shows 200; `Luigi starts with 200`, `restored Luigi max 200` |
+| Luigi's health x1.5 + damage x2 | new game → foyer | HUD shows 150 (the arrival script's health set is not treated as damage) |
 | Damage x0 | Chauncey's ball hits Luigi | `hit 5 -> 0`, health stays 200 |
 | Ghost health x2 | map 10 | `ghost HP x2.00: 100 -> 200` |
 | Darkness everywhere / ambient 1.5 | normal-mansion foyer | foyer visibly darker / brighter than original |

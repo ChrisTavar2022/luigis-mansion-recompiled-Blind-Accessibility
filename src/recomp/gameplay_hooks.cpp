@@ -112,7 +112,19 @@ using gameplay::rds16;
 // floors, bombs, the hidden mansion's x2) arrives here as a lower value, so the damage taken is
 // rescaled here; healing passes through.
 HLE(fn_800B9488) {
-    const float k = current().damageScale;
+    // Calls from Luigi's message handler (fn_800AEEA8: event/script commands such as "set
+    // health", e.g. the new game's health = 100 on arriving in the mansion) are not damage.
+    static const u32 sMsg = guestSymbol("fn_800AEEA8");
+    const bool scripted = c.lr >= sMsg && c.lr < sMsg + 0x2884;  // US size of fn_800AEEA8
+    const port::GameplaySettings g = current();
+    if (scripted) {
+        if (g.healthScale != 1.0f && s16(c.r[4]) == 100) {  // "full health" (100) -> scaled full health
+            c.r[4] = u32(std::clamp(s32(std::lround(100 * g.healthScale)), 1, 999));
+            GP_FIRST("health x%.2f: scripted full health -> %d", g.healthScale, s32(c.r[4]));
+        }
+        return callOriginal(c, "fn_800B9488");
+    }
+    const float k = g.damageScale;
     if (k != 1.0f) {
         const u32 luigi = c.r[3];
         const s32 cur = rds16(luigi + 0xFC);
