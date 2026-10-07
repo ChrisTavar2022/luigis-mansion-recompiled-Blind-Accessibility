@@ -894,6 +894,8 @@ class Recompiler:
         addrs = sorted(self.funcs)
         header = ["#pragma once", "#include \"recomp/ctx.h\"", "namespace recomp {"]
         header += [f"void {self.fname(a)}(Ctx& c);" for a in addrs]
+        hooked = [a for a in addrs if a not in self.hle and self.funcs[a][0] in self.hooks]
+        header += [f"void {self.fname(a)}_orig(Ctx& c);" for a in hooked]
         header += ["}"]
         (out / "funcs.h").write_text("\n".join(header) + "\n")
 
@@ -913,8 +915,12 @@ class Recompiler:
                     lines.append(f"    if (s) {{ s(c); }} else {{ hleMissing(\"{name}\", 0x{a:08X}u, c); }}")
                 else:
                     if name in self.hooks:
+                        # The translated body lives in f_X_orig so a hook can call it.
                         lines.append(f"    static const HleFn hook = hleLookup(\"{name}\");")
                         lines.append("    if (hook) { hook(c); return; }")
+                        lines.append(f"    {self.fname(a)}_orig(c);")
+                        lines.append("}")
+                        lines.append(f"void {self.fname(a)}_orig(Ctx& c) {{")
                     lines += FuncEmitter(self, a, size, name).translate()
                 lines.append("}")
             name = f"funcs_{i // FUNCS_PER_FILE:03d}.cpp"
@@ -927,7 +933,10 @@ class Recompiler:
         table += ["};", f"extern const unsigned kFuncTableSize = {len(addrs)};"]
         table += ["extern const SymEntry kSymTable[] = {"]
         table += [f'    {{"{self.funcs[a][0]}", 0x{a:08X}u}},' for a in addrs]
-        table += ["};", f"extern const unsigned kSymTableSize = {len(addrs)};", "}"]
+        table += ["};", f"extern const unsigned kSymTableSize = {len(addrs)};"]
+        table += ["extern const FuncEntry kOrigTable[] = {"]
+        table += [f"    {{0x{a:08X}u, &{self.fname(a)}_orig}}," for a in hooked] or ["    {0, nullptr},"]
+        table += ["};", f"extern const unsigned kOrigTableSize = {len(hooked)};", "}"]
         (out / "func_table.cpp").write_text("\n".join(table) + "\n")
         (out / "files.txt").write_text("\n".join(files + ["func_table.cpp"]) + "\n")
         return files

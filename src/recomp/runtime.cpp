@@ -197,6 +197,20 @@ u32 guestSymbol(const char* name) {
     return it->second;
 }
 
+extern const FuncEntry kOrigTable[];
+extern const unsigned kOrigTableSize;
+
+void callOriginal(Ctx& c, const char* name) {
+    const u32 addr = guestSymbol(name);
+    for (unsigned i = 0; i < kOrigTableSize; i++) {
+        if (kOrigTable[i].addr == addr) {
+            kOrigTable[i].fn(c);
+            return;
+        }
+    }
+    fatal("callOriginal: %s is not listed in tools/recomp/hooks.txt", name);
+}
+
 u32 guestCall(Ctx& c, u32 fn, u32 a0, u32 a1, u32 a2, u32 a3) {
     const u32 savedLr = c.lr;
     c.r[3] = a0;

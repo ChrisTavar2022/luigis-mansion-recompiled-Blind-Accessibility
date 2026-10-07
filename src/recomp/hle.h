@@ -27,6 +27,10 @@ u32 guestSymbol(const char* name);
 inline const char* gstr(u32 a) { return reinterpret_cast<const char*>(hostp(a)); }
 inline u32 stackArg(const Ctx& c, int n) { return rd32(c.r[1] + 8 + 4 * n); }  // n-th argument past r10
 
+// From inside a hook (tools/recomp/hooks.txt): runs the hooked function's original
+// translated body with the current registers, so a hook can wrap it.
+void callOriginal(Ctx& c, const char* name);
+
 // Calls a guest function with up to 4 integer arguments; returns r3.
 u32 guestCall(Ctx& c, u32 fn, u32 a0 = 0, u32 a1 = 0, u32 a2 = 0, u32 a3 = 0);
 
