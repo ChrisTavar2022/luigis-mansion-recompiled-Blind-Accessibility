@@ -3,6 +3,7 @@
 // from an overlay the user builds from their own discs, and adjusts a few literals.
 #include "recomp/hidden_mansion.h"
 
+#include "port/install.h"
 #include "port/options.h"
 #include "port/settings.h"
 #include "recomp/hle.h"
@@ -26,7 +27,8 @@ namespace {
 constexpr u32 kUraFlag = 0x804D80C0;  // PAL 0x804C5784
 constexpr u32 kCurMapNo = 0x804D80C8;  // sCurMapNo; PAL 0x804C578C
 
-// LM_HM_OVERLAY, else the first orig/hidden_mansion found walking up from the working
+// LM_HM_OVERLAY, else the overlay setup built in the data directory, else the first
+// orig/hidden_mansion (tools/hidden_mansion_data.py) found walking up from the working
 // directory (same search as the disc image).
 std::string overlayDir() {
     static const std::string dir = [] {
@@ -34,6 +36,8 @@ std::string overlayDir() {
         std::filesystem::path d;
         if (env && *env) {
             d = env;
+        } else if (std::filesystem::exists(port::hiddenMansionOverlayDir() / "manifest.txt")) {
+            d = port::hiddenMansionOverlayDir();  // built by setup (docs/SETUP.md)
         } else {
             for (auto p = std::filesystem::current_path();; p = p.parent_path()) {
                 if (std::filesystem::exists(p / "orig" / "hidden_mansion" / "manifest.txt")) {

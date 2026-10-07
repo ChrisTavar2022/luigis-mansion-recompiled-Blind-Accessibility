@@ -3,6 +3,7 @@
 #include "recomp/hle.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <string>
@@ -15,7 +16,11 @@
 
 namespace recomp {
 
-std::atomic<bool> g_irqPending{false};
+namespace {
+bool sIrqPendingFlag = false;
+std::atomic_ref<bool> irqPending() { return std::atomic_ref<bool>(sIrqPendingFlag); }
+}  // namespace
+bool* g_irqPending = &sIrqPendingFlag;  // read by guest code (Ctx::poll)
 bool g_shutdown = false;
 
 struct GuestThread {
@@ -121,7 +126,7 @@ void runIrqs() {
         {
             std::lock_guard lk(sIrqM);
             if (sIrqs.empty()) {
-                g_irqPending.store(false);
+                irqPending().store(false);
                 break;
             }
             fn = std::move(sIrqs.front());
@@ -298,7 +303,7 @@ void sleepOn(u32 queue) {
     self->waitQueue = queue;
     writeState(self, kStateWaiting);
     GuestThread* next = pick(nullptr);
-    if (!next && g_irqPending.load()) {
+    if (!next && irqPending().load()) {
         // Going idle with interrupts queued: service them on this host thread.
         sRunning = &sIrqMarker;
         for (;;) {
@@ -330,7 +335,7 @@ void postIrq(std::function<void(Ctx&)> fn) {
     {
         std::lock_guard lk(sIrqM);
         sIrqs.push_back(std::move(fn));
-        g_irqPending.store(true);
+        irqPending().store(true);
     }
     // An idle CPU is serviced by the poster itself.
     std::unique_lock lk(sM);
@@ -351,7 +356,7 @@ void postIrq(std::function<void(Ctx&)> fn) {
 void dumpThreads() {
     std::lock_guard lk(sM);
     log("[sched] running=%08X irqPending=%d", sRunning == &sIrqMarker ? 0xFFFFFFFF : sRunning ? sRunning->guest : 0,
-        int(g_irqPending.load()));
+        int(irqPending().load()));
     for (auto* t : sThreads) {
         log("[sched]   %08X prio %d suspend %d state %d wait %08X lr %08X fn %08X", t->guest, t->priority,
             t->suspendCount, int(t->st), t->waitQueue, t->ctx.lr, t->ctx.lastFn);
