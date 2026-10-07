@@ -2,7 +2,7 @@
 
 ## Goals
 - Native PC port of Luigi's Mansion (GameCube), in the style of Dusklight (TP port), on the Aurora engine (`extern/aurora`, WebGPU/Dawn + SDL3).
-- Base: USA disc **GLME01 rev 0**. Bring in the **PAL (GLMP01) Hidden Mansion** features, including its boss mechanics (Chauncey patterns, Boolossus vacuum-riding, harder Bowser), not just stat/data changes (docs/HIDDEN_MANSION.md).
+- Base: USA disc **GLME01 rev 0**. Bring in the **PAL (GLMP01) Hidden Mansion** features, including its boss mechanics (Chauncey patterns, Boolossus vacuum-riding, harder Bowser), not just stat/data changes (docs/HIDDEN_MANSION.md). It is an *additional* runtime-selectable variant: E. Gadd's lab menu will offer both "Hidden Mansion (USA)" and "Hidden Mansion (PAL)" once unlocked (menu UI later).
 - Enhancements: high frame rate via interpolation (logic stays 30 Hz), arbitrary resolution, widescreen + ultrawide, faithful advanced effects (EFB copies, fog, lighting, indirect).
 
 ## Hard rules
