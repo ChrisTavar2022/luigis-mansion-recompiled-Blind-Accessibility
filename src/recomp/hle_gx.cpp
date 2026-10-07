@@ -8,6 +8,7 @@
 // closed before the next GX call.
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
+#include "recomp/interp.h"
 #include "recomp/runtime.h"
 #include "recomp/widescreen.h"
 
@@ -94,6 +95,7 @@ struct {
 bool sProjSet = false;              // the guest has set a projection
 bool sProjDirty = false;            // guest projection not yet sent to Aurora
 ProjMode sProjEmitted = ProjMode::None;
+int sProjEmittedAnchor = 0;         // HUD anchor the emitted projection was built for
 
 struct {
     f32 left = 0, wd = kLogicalWidth;
@@ -102,33 +104,62 @@ struct {
     u32 x = 0, y = 0, w = 640, h = 480;
 } sScissor;
 bool sScissorPillar = false;  // Aurora currently has the centered-4:3 version of the guest scissor
+int sScissorAnchor = 0;
 // Draws written straight into the FIFO by game code (J3D inlines its display-list
 // calls and matrix loads) bypass the HLE draw entry points, so the projection for
 // them is brought up to date before the first raw FIFO write after any change.
 bool sRawCheck = true;
 
+// HUD anchor for the draw being prepared: a held draw keeps the one from its GXBegin.
+int sHeldAnchor = 0;
+bool sInHeldPrepare = false;
+int hudAnchor() { return sInHeldPrepare ? sHeldAnchor : 0; }
+
 bool viewportFull() { return sVp.left <= 1.0f && sVp.left + sVp.wd >= kLogicalWidth - 1.0f; }
+
+// Frame interpolation blends the matrices of 3D draws only: 2D (under an
+// orthographic projection) is often drawn with one scratch matrix reused per
+// glyph or element, so its loads don't line up between frames.
+u32 mark3D() { return sProj.type == GX_PERSPECTIVE ? interp::mark() : ~0u; }
 
 void emitProjection(ProjMode mode) {
     f32 m[4][4];
     std::memcpy(m, sProj.m, sizeof(m));
-    if (mode == ProjMode::Scaled) {
+    int anchor = 0;
+    if (mode == ProjMode::Scaled && sProj.type == GX_PERSPECTIVE) {
+        // Field of view: the vertical FOV times fovScale, then Hor+ for the width.
+        const f32 r = ws::fovRatio(m[1][1]);
         const f32 s = ws::factor();
+        for (int j = 0; j < 4; j++) {
+            m[0][j] *= s * r;
+            m[1][j] *= r;
+        }
+    } else if (mode == ProjMode::Scaled) {
+        // 2D at 4:3, centered; HUD elements anchored to a side move to that edge.
+        const f32 s = ws::factor();
+        anchor = hudAnchor();
         for (int j = 0; j < 4; j++) m[0][j] *= s;
+        m[0][3] += f32(anchor) * (1.0f - s);
     } else if (mode == ProjMode::Zoom) {
         const f32 s = ws::factor();
         for (int j = 0; j < 4; j++) m[1][j] /= s;
     }
+    const u32 at = mark3D();
     GXSetProjection(m, sProj.type);
+    interp::note(at, interp::Kind::Projection, 0, 0, 6);
     sProjEmitted = mode;
+    sProjEmittedAnchor = anchor;
     sProjDirty = false;
 }
 
 void emitScissor(bool pillar) {
+    sScissorAnchor = 0;
     if (pillar) {
         const f32 s = ws::factor(), mid = kLogicalWidth * 0.5f;
-        const f32 l = mid + (f32(sScissor.x) - mid) * s;
-        const f32 r = mid + (f32(sScissor.x + sScissor.w) - mid) * s;
+        sScissorAnchor = hudAnchor();
+        const f32 shift = f32(sScissorAnchor) * (1.0f - s) * mid;
+        const f32 l = std::max(0.0f, mid + (f32(sScissor.x) - mid) * s + shift);
+        const f32 r = std::min(kLogicalWidth, mid + (f32(sScissor.x + sScissor.w) - mid) * s + shift);
         const u32 li = u32(std::max(0.0f, std::floor(l)));
         GXSetScissor(li, sScissor.y, u32(std::ceil(r)) - li, sScissor.h);
     } else {
@@ -140,8 +171,9 @@ void emitScissor(bool pillar) {
 // Projection mode for a draw. `ortho2D` is what an orthographic draw into the
 // full-screen viewport gets: Scaled (centered 4:3) or Plain (stretched).
 ProjMode drawMode(ProjMode ortho2D) {
-    if (!ws::active() || !viewportFull()) return ProjMode::Plain;
-    return sProj.type == GX_PERSPECTIVE ? ProjMode::Scaled : ortho2D;
+    if (!viewportFull()) return ProjMode::Plain;
+    if (sProj.type == GX_PERSPECTIVE) return ws::adjusting() ? ProjMode::Scaled : ProjMode::Plain;
+    return ws::active() ? ortho2D : ProjMode::Plain;
 }
 
 // LM_WS_TRACE=1: per frame, a summary of the widescreen decisions (draw path,
@@ -164,10 +196,11 @@ void traceNote(const char* fmt, ...) {
 void prepareDraw(ProjMode mode, const char* what = "draw") {
     traceNote("%s %s vp(%.0f,+%.0f) -> %s", what, sProj.type == GX_PERSPECTIVE ? "persp" : "ortho", sVp.left,
               sVp.wd, mode == ProjMode::Scaled ? "scaled" : mode == ProjMode::Zoom ? "zoom" : "plain");
-    if (sProjSet && (sProjDirty || mode != sProjEmitted)) emitProjection(mode);
-    const bool pillar = mode == ProjMode::Scaled && sProj.type == GX_ORTHOGRAPHIC &&
-                        (sScissor.x > 0 || sScissor.x + sScissor.w < 640);
-    if (pillar != sScissorPillar) emitScissor(pillar);
+    const bool hud = mode == ProjMode::Scaled && sProj.type == GX_ORTHOGRAPHIC;
+    if (sProjSet && (sProjDirty || mode != sProjEmitted || (hud && hudAnchor() != sProjEmittedAnchor)))
+        emitProjection(mode);
+    const bool pillar = hud && (sScissor.x > 0 || sScissor.x + sScissor.w < 640);
+    if (pillar != sScissorPillar || (pillar && hudAnchor() != sScissorAnchor)) emitScissor(pillar);
 }
 
 // Mirror of the vertex layout state that immediate-mode 2D draws use, so a
@@ -254,6 +287,9 @@ bool samplesPicture() {
     return false;
 }
 
+f32 sHeldLo = 0, sHeldHi = 0;  // NDC x extent of the last decoded held draw
+bool sHeldDecoded = false;
+bool sHeldHud = false;  // the held draw belongs to the in-game HUD (ws::inHud)
 bool coversScreen() {
     const int fmt = sHeld.fmt;
     const size_t n = sHeld.verts;
@@ -292,6 +328,9 @@ bool coversScreen() {
         lo = std::min(lo, ndc);
         hi = std::max(hi, ndc);
     }
+    sHeldLo = lo;
+    sHeldHi = hi;
+    sHeldDecoded = true;
     return lo <= -0.98f && hi >= 0.98f;
 }
 
@@ -303,7 +342,12 @@ bool coversScreen() {
 //    picture): per --ws-backgrounds, centered by default;
 //  - anything else is HUD: centered 4:3.
 ProjMode classifyHeld() {
-    if (!coversScreen()) return ProjMode::Scaled;
+    sHeldDecoded = false;
+    if (!coversScreen()) {
+        // In-game HUD: a draw in the outer part of the 4:3 frame moves to that edge.
+        if (sHeldDecoded && sHeldHud) sHeldAnchor = ws::hudAnchorFor(sHeldLo, sHeldHi);
+        return ProjMode::Scaled;
+    }
     traceNote("full-screen 2D, %s", samplesPicture() ? "picture" : "fill/copy");
     if (!samplesPicture()) return ProjMode::Plain;
     switch (ws::backgroundMode()) {
@@ -343,7 +387,9 @@ void gx::endPendingDraw() {
     sInBegin = false;
     if (sHeld.active) {
         sHeld.active = false;
+        sInHeldPrepare = true;
         prepareDraw(classifyHeld(), "held");
+        sInHeldPrepare = false;
         sRawCheck = true;
         GXBegin(sHeld.prim, sHeld.fmt, sHeld.verts);
         for (u32 w : sHeld.writes) {
@@ -455,9 +501,11 @@ GXHLE(GXBegin) {
     sInBegin = true;
     if (ws::active() && sProj.type == GX_ORTHOGRAPHIC && viewportFull()) {
         sHeld.active = true;
+        sHeldAnchor = 0;
         sHeld.prim = GXPrimitive(c.r[3]);
         sHeld.fmt = GXVtxFmt(c.r[4]);
         sHeld.verts = u16(c.r[5]);
+        sHeldHud = ws::inHud();
         sHeld.bytes.clear();
         sHeld.writes.clear();
         return;
@@ -473,11 +521,13 @@ GXHLE(GXCallDisplayList) {
 }
 GXHLE(GXBeginDisplayList) {
     sInDisplayList = true;
+    interp::suspendForDisplayList();
     GXBeginDisplayList(hostp(c.r[3]), c.r[4]);
 }
 GXHLE(GXEndDisplayList) {
     sInDisplayList = false;
     c.r[3] = GXEndDisplayList();
+    interp::resumeAfterDisplayList();
 }
 
 GXHLE(GXDrawSphere1) {
@@ -511,7 +561,7 @@ GXHLE(GXSetProjection) {
     sProj.type = GXProjectionType(c.r[4]);
     sProjDirty = sProjSet = sRawCheck = true;
     traceNote("projection %s from %08X", c.r[4] ? "ortho" : "persp", c.lr);
-    if (!ws::active()) emitProjection(ProjMode::Plain);
+    if (!ws::adjusting()) emitProjection(ProjMode::Plain);
 }
 GXHLE(GXLoadPosMtxImm) {
     const Mtx<3, 4> m(c.r[3]);
@@ -519,27 +569,37 @@ GXHLE(GXLoadPosMtxImm) {
         std::memcpy(sPosMtx[id / 3], m.m, sizeof(m.m));
         sPosMtxValid[id / 3] = true;
     }
+    const u32 at = mark3D();
     GXLoadPosMtxImm(m.m, c.r[4]);
+    interp::note(at, interp::Kind::PosMtx, c.r[3], c.r[4], 12);
 }
 GXHLE(GXLoadNrmMtxImm) {
     const Mtx<3, 4> m(c.r[3]);
+    const u32 at = mark3D();
     GXLoadNrmMtxImm(m.m, c.r[4]);
+    interp::note(at, interp::Kind::NrmMtx, c.r[3], c.r[4], 9);
 }
 GXHLE(GXLoadNrmMtxImm3x3) {
     const Mtx<3, 3> m3(c.r[3]);
     f32 m[3][4] = {};
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++) m[i][j] = m3.m[i][j];
+    const u32 at = mark3D();
     GXLoadNrmMtxImm(m, c.r[4]);
+    interp::note(at, interp::Kind::NrmMtx, c.r[3], c.r[4], 9);
 }
 GXHLE(GXLoadTexMtxImm) {
     const GXTexMtxType type = GXTexMtxType(c.r[5]);
     if (type == GX_MTX2x4) {
         const Mtx<2, 4> m(c.r[3]);
+        const u32 at = mark3D();
         GXLoadTexMtxImm(m.m, c.r[4], type);
+        interp::note(at, interp::Kind::TexMtx, c.r[3], c.r[4], sizeof(m.m) / 4);
     } else {
         const Mtx<3, 4> m(c.r[3]);
+        const u32 at = mark3D();
         GXLoadTexMtxImm(m.m, c.r[4], type);
+        interp::note(at, interp::Kind::TexMtx, c.r[3], c.r[4], sizeof(m.m) / 4);
     }
 }
 GXHLE(GXSetCurrentMtx) {

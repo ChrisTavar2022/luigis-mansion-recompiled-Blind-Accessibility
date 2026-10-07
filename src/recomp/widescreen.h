@@ -27,6 +27,21 @@ void beginFrame();    // host thread, before the guest runs a frame: picks up wi
 float factor();
 inline bool active() { return factor() < 0.9999f; }
 
+// Field of view (settings().video.fovScale): the factor by which a perspective
+// projection with this m[1][1] (= cot(fovY/2)) is scaled in x and y so its
+// vertical FOV becomes fovY * fovScale. 1 when the scale is 1.
+float fovRatio(float m11);
+// True if full-screen 3D projections need adjusting (widescreen or FOV).
+bool adjusting();
+
+// HUD anchoring (settings().video.hudKeep4x3 off, widescreen): true while the
+// game may be drawing in-game HUD (guest thread). For a 2D draw of the HUD with this
+// NDC x extent in the 4:3 frame, -1/0/+1: move it to the left edge, keep it
+// centered, move it to the right edge. The GX HLE shifts it by (1 - factor())
+// of the half-width.
+bool inHud();
+int hudAnchorFor(float lo, float hi);
+
 // Full-screen 2D pictures (title backdrops, menu backgrounds), --ws-backgrounds.
 enum class Background { Pillarbox, Stretch, Zoom };
 Background backgroundMode();
