@@ -13,6 +13,11 @@ namespace {
 
 Settings sSettings;
 
+std::vector<SettingsExtension>& extensions() {
+    static std::vector<SettingsExtension> sExtensions;
+    return sExtensions;
+}
+
 // One ini key bound to a setting, with text conversion both ways.
 struct Field {
     const char* section;
@@ -115,6 +120,8 @@ std::vector<Field> fields() {
 
 Settings& settings() { return sSettings; }
 
+void addSettingsExtension(const SettingsExtension& ext) { extensions().push_back(ext); }
+
 std::string settingsPath() {
 #ifdef _WIN32
     const char* base = std::getenv("APPDATA");
@@ -128,6 +135,7 @@ std::string settingsPath() {
 }
 
 void loadSettings() {
+    for (auto& ext : extensions()) ext.reset();
     std::ifstream in(settingsPath());
     if (!in) return;
     auto table = fields();
@@ -142,8 +150,14 @@ void loadSettings() {
         const auto eq = line.find('=');
         if (eq == std::string::npos) continue;
         const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
+        bool known = false;
         for (auto& f : table)
-            if (section == f.section && key == f.key) f.set(value);
+            if (section == f.section && key == f.key) {
+                f.set(value);
+                known = true;
+            }
+        if (!known)
+            for (auto& ext : extensions()) ext.load(section, key, value);
     }
 }
 
@@ -158,6 +172,7 @@ void saveSettings() {
         }
         out << f.key << '=' << f.get() << '\n';
     }
+    for (auto& ext : extensions()) ext.save(out);
 }
 
 }  // namespace port

@@ -2,6 +2,7 @@
 // User settings, edited in the in-game overlay menu (F1) and saved to
 // %APPDATA%\Luigi's Mansion PC\settings.ini. Read them wherever they apply;
 // changes take effect immediately unless noted.
+#include <iosfwd>
 #include <string>
 
 namespace port {
@@ -95,5 +96,15 @@ Settings& settings();
 void loadSettings();
 void saveSettings();
 std::string settingsPath();
+
+// Ini sections owned by another module (e.g. controller bindings, src/recomp/controls.cpp).
+// reset() runs before every load, load() gets each key the table above does not know,
+// save() appends the module's own sections. Register from a static initializer.
+struct SettingsExtension {
+    void (*reset)();
+    void (*load)(const std::string& section, const std::string& key, const std::string& value);
+    void (*save)(std::ostream& out);
+};
+void addSettingsExtension(const SettingsExtension& ext);
 
 }  // namespace port
