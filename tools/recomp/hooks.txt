@@ -119,3 +119,6 @@ getValue__Q24Koga8ToolDataCFiPCcPf
 # keeps the tracking code from running; 1 = far mode (swaying, smooth), 2 = close mode (accurate).
 patch 1 8004472C 38000001
 patch 2 8004472C 38000002
+# Cut E3 Game Boy Horror clock + radar screen (TCRF): GBH screen mode 1 draws it once the mode
+# switch in fn_8003CFC0 branches to it (0x8003D544 b +0xBC -> b +0xD8).
+patch 3 8003D544 480000D8

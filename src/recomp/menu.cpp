@@ -291,6 +291,8 @@ void unusedContentTab() {
     ImGui::Separator();
     sDirty |= ImGui::Checkbox("Game Boy Horror camera", &e.gbhCamera);
     pending("D-pad Up in game");
+    sDirty |= ImGui::Checkbox("Game Boy Horror E3 clock", &e.gbhClock);
+    pending("D-pad Left in game");
     sDirty |= ImGui::Checkbox("Game Boy Horror ghost tracker", &e.gbhTracker);
     pending("D-pad Down: off / far / close");
     {

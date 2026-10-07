@@ -101,6 +101,7 @@ std::vector<Field> fields() {
         num("enhancements", "pal_language", e.palLanguage),
         flag("enhancements", "gbh_camera", e.gbhCamera),
         flag("enhancements", "gbh_tracker", e.gbhTracker),
+        flag("enhancements", "gbh_clock", e.gbhClock),
         flag("enhancements", "early_ghost_lighting", e.earlyGhostLighting),
         flag("enhancements", "beta_skybox", e.betaSkybox),
         flag("enhancements", "heart_door", e.heartDoor),

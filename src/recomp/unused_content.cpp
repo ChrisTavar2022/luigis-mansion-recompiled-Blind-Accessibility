@@ -32,9 +32,11 @@ bool envFlag(const char* name) {
 #define kGbhScreenMode VA(0x804D846C)
 constexpr u32 kGbhModeCamera = 2;
 constexpr u32 kGbhModeNormal = 4;
+constexpr u32 kGbhModeClock = 1;  // cut E3 clock + radar
 
 bool sGbhCamOn = envFlag("LM_GBH_CAM");  // test aid: start with the camera on
 u16 sPrevButtons = 0;
+bool sGbhClockOn = envFlag("LM_GBH_CLOCK");  // test aid: start with the clock on
 
 }  // namespace
 
@@ -47,8 +49,18 @@ HLE(fn_8003CFC0) {
         sGbhCamOn = false;
     } else if ((buttons & PAD_BUTTON_UP) && !(sPrevButtons & PAD_BUTTON_UP)) {
         sGbhCamOn = !sGbhCamOn;
+        if (sGbhCamOn) sGbhClockOn = false;
         log("[unused] Game Boy Horror camera %s", sGbhCamOn ? "on" : "off");
     }
+    // Cut E3 clock/radar screen (GBH mode 1): D-pad Left; exclusive with the camera.
+    if (!port::settings().enhancements.gbhClock && !envFlag("LM_GBH_CLOCK")) {
+        sGbhClockOn = false;
+    } else if ((buttons & PAD_BUTTON_LEFT) && !(sPrevButtons & PAD_BUTTON_LEFT)) {
+        sGbhClockOn = !sGbhClockOn;
+        if (sGbhClockOn) sGbhCamOn = false;
+        log("[unused] Game Boy Horror clock %s", sGbhClockOn ? "on" : "off");
+    }
+    setPatch(3, sGbhClockOn);
     // Unused ghost tracker: D-pad Down cycles off -> far mode -> close mode (patch switches 1/2).
     static u32 sTracker = 0;
     if (!port::settings().enhancements.gbhTracker) {
@@ -71,11 +83,11 @@ HLE(fn_8003CFC0) {
         c = saved;
         if (p >= 0x80000000u && p < 0x81800000u) wr8(p + 0x55, 1);
     }
+    // Screen mode: camera (2) / clock (1) / normal (4); E. Gadd's call screen (3) is left alone.
     const u32 mode = rd32(kGbhScreenMode);
-    if (sGbhCamOn && mode == kGbhModeNormal) {
-        wr32(kGbhScreenMode, kGbhModeCamera);  // leaves the call screen (mode 3) alone
-    } else if (!sGbhCamOn && mode == kGbhModeCamera) {
-        wr32(kGbhScreenMode, kGbhModeNormal);
+    if (mode == kGbhModeNormal || mode == kGbhModeCamera || mode == kGbhModeClock) {
+        const u32 want = sGbhCamOn ? kGbhModeCamera : sGbhClockOn ? kGbhModeClock : kGbhModeNormal;
+        if (mode != want) wr32(kGbhScreenMode, want);
     }
     callOriginal(c, "fn_8003CFC0");
     testStateFrame(c);

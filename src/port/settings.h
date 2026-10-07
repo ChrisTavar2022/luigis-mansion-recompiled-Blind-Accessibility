@@ -61,6 +61,7 @@ struct EnhancementSettings {
     bool skipIntroLogos = false;
     bool hiddenMansionPal = true;  // Hidden Mansion uses the PAL release's rules (until the lab menu offers both)
     int palLanguage = 1;           // PAL game only: 1 English, 2 German, 3 French, 4 Spanish, 5 Italian (next launch)
+    bool gbhClock = false;         // cut E3 GBH clock/radar screen, toggled in game with D-pad Left
     bool gbhTracker = false;       // unused GBH ghost tracker, cycled in game with D-pad Down (off/far/close)
     bool gbhCamera = false;        // unused Game Boy Horror live camera, toggled in game with D-pad Up (docs/UNUSED_CONTENT.md)
     bool betaSkybox = false;            // unused sky in the game archive (iwamoto/vrbox) on map 2
