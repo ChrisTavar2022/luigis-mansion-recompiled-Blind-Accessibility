@@ -1,0 +1,208 @@
+// PAL Hidden Mansion rules on the US recompiled build -- prototype (see hidden_mansion.h and
+// docs/HIDDEN_MANSION.md). Original port code: it reads the game's own flag, serves files
+// from an overlay the user builds from their own discs, and adjusts a few literals.
+#include "recomp/hidden_mansion.h"
+
+#include "recomp/hle.h"
+
+#include <algorithm>
+#include <bit>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iterator>
+#include <mutex>
+#include <vector>
+
+namespace recomp::hm {
+namespace {
+
+// US (GLME01) guest addresses, found with tools/pal_diff.py (`var pal 804C5784`).
+constexpr u32 kUraFlag = 0x804D80C0;  // PAL 0x804C5784
+constexpr u32 kCurMapNo = 0x804D80C8;  // sCurMapNo; PAL 0x804C578C
+
+std::string overlayDir() {
+    const char* env = std::getenv("LM_HM_OVERLAY");
+    std::string d = env && *env ? env : "orig/hidden_mansion";
+    if (!d.empty() && d.back() != '/' && d.back() != '\\') d += '/';
+    return d;
+}
+
+struct Redirect {
+    const char* guestPath;  // as the game spells it
+    const char* overlayFile;
+    bool onlyWhileHidden;  // map data: only while the ura flag is set
+};
+
+// Mirrors the manifest written by tools/hidden_mansion_data.py.
+constexpr Redirect kRedirects[] = {
+    {"/Map/map2.szp", "Map/map2u.szp", true},  // PAL MissionMode::init: "%s%du.szp" when ura && map 2
+    {"/Event/event08.szp", "Event/event08.szp", false},
+    {"/Event/event16.szp", "Event/event16.szp", false},
+    {"/Event/event73.szp", "Event/event73.szp", false},
+};
+
+bool samePath(const char* a, const char* b) {
+    // DVD paths are case-insensitive; the game sometimes omits the leading slash.
+    if (*a == '/') ++a;
+    if (*b == '/') ++b;
+    for (; *a && *b; ++a, ++b) {
+        char x = *a, y = *b;
+        if (x >= 'A' && x <= 'Z') x = char(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = char(y - 'A' + 'a');
+        if (x != y) return false;
+    }
+    return *a == *b;
+}
+
+struct OverlayFile {
+    std::string hostPath;
+    std::vector<u8> bytes;
+    bool loaded = false;
+};
+constexpr s32 kEntryBase = 0x40000000;  // well above any real FST entry
+std::mutex sOverlayMutex;
+std::vector<OverlayFile> sOverlay;
+
+OverlayFile* entryFile(s32 entry) {
+    const s32 i = entry - kEntryBase;
+    return (i >= 0 && i < s32(sOverlay.size())) ? &sOverlay[size_t(i)] : nullptr;
+}
+
+bool ensureLoaded(OverlayFile& f) {
+    if (f.loaded) return !f.bytes.empty();
+    f.loaded = true;
+    std::ifstream in(f.hostPath, std::ios::binary);
+    if (!in) {
+        log("[hm] overlay file missing: %s (run tools/hidden_mansion_data.py)", f.hostPath.c_str());
+        return false;
+    }
+    f.bytes.assign(std::istreambuf_iterator<char>(in), {});
+    return !f.bytes.empty();
+}
+
+// ---- constant patches ----
+struct ConstPatch {
+    u32 addr;      // US .sdata2 literal, referenced by exactly one function
+    float usValue;
+    float palValue;
+    bool partial;  // PAL also changes a code path that has no literal to patch (needs a hook)
+    const char* what;
+};
+
+constexpr ConstPatch kConstPatches[] = {
+    // KtEnMoku (Chauncey's rocking horses), US fn_800A09D0 / PAL fn_800A3A50: scale x2.
+    {0x804DB278, 1.8f, 3.6f, false, "rocking horse scale"},
+    // KtEnMoku2, US fn_800A1BCC / PAL fn_800A4DC4: value passed to fn_8008907C 50 -> 100.
+    {0x804DB2B0, 50.0f, 100.0f, false, "rocking horse (2) fn_8008907C argument"},
+    // Room ambient colour, US fn_800168EC / PAL fn_800179F8: PAL multiplies by 0.2 in the
+    // hidden mansion. Only the lit-room branch uses this literal; the other branch needs a hook.
+    {0x804D9B60, 0.6f, 0.6f * 0.2f, true, "room ambient (lit rooms)"},
+};
+
+u32 fbits(float f) { return std::bit_cast<u32>(f); }
+
+}  // namespace
+
+Mode mode() {
+    static const Mode m = [] {
+        const char* env = std::getenv("LM_HIDDEN_MANSION");
+        const bool pal = env && (std::strcmp(env, "pal") == 0 || std::strcmp(env, "PAL") == 0);
+        if (pal) log("[hm] PAL Hidden Mansion rules enabled (overlay %s)", overlayDir().c_str());
+        return pal ? Mode::Pal : Mode::Us;
+    }();
+    return m;
+}
+
+bool hiddenActive() { return rd32(kUraFlag) != 0; }
+bool palActive() { return mode() == Mode::Pal && hiddenActive(); }
+
+std::optional<std::string> redirect(const char* guestPath) {
+    if (mode() != Mode::Pal || !guestPath) return std::nullopt;
+    for (const Redirect& r : kRedirects) {
+        if (!samePath(guestPath, r.guestPath)) continue;
+        if (r.onlyWhileHidden && !(hiddenActive() && rd32(kCurMapNo) == 2)) return std::nullopt;
+        return overlayDir() + r.overlayFile;
+    }
+    return std::nullopt;
+}
+
+s32 overlayEntry(const char* guestPath) {
+    const auto host = redirect(guestPath);
+    if (!host) return -1;
+    std::lock_guard lock(sOverlayMutex);
+    for (size_t i = 0; i < sOverlay.size(); ++i)
+        if (sOverlay[i].hostPath == *host) return kEntryBase + s32(i);
+    sOverlay.push_back({*host, {}, false});
+    if (!ensureLoaded(sOverlay.back())) {
+        sOverlay.pop_back();
+        return -1;  // fall back to the US disc file
+    }
+    log("[hm] %s -> %s", guestPath, host->c_str());
+    return kEntryBase + s32(sOverlay.size() - 1);
+}
+
+bool isOverlayEntry(s32 entry) {
+    std::lock_guard lock(sOverlayMutex);
+    return entryFile(entry) != nullptr;
+}
+
+u32 overlayLength(s32 entry) {
+    std::lock_guard lock(sOverlayMutex);
+    const OverlayFile* f = entryFile(entry);
+    return f ? u32(f->bytes.size()) : 0;
+}
+
+s32 overlayRead(s32 entry, void* dst, s32 length, s32 offset) {
+    std::lock_guard lock(sOverlayMutex);
+    const OverlayFile* f = entryFile(entry);
+    if (!f || offset < 0 || length < 0 || size_t(offset) > f->bytes.size()) return -1;
+    const size_t n = std::min(size_t(length), f->bytes.size() - size_t(offset));
+    std::memcpy(dst, f->bytes.data() + offset, n);
+    // Disc reads are padded to 32 bytes; zero the tail like a read past EOF would.
+    if (n < size_t(length)) std::memset(static_cast<u8*>(dst) + n, 0, size_t(length) - n);
+    return s32(n);
+}
+
+void syncConstants() {
+    if (mode() != Mode::Pal) return;
+    static bool sApplied = false;
+    static bool sChecked = false, sOk = true;
+    if (!sChecked) {  // refuse to touch memory that does not hold the expected US literal
+        sChecked = true;
+        for (const ConstPatch& p : kConstPatches) {
+            if (rd32(p.addr) != fbits(p.usValue)) {
+                log("[hm] unexpected literal at %08X (%s); constant patches disabled", p.addr, p.what);
+                sOk = false;
+            }
+        }
+    }
+    if (!sOk) return;
+    const bool want = hiddenActive();
+    if (want == sApplied) return;
+    for (const ConstPatch& p : kConstPatches) wr32(p.addr, fbits(want ? p.palValue : p.usValue));
+    sApplied = want;
+}
+
+bool mirrorActive() { return palActive(); }
+
+void mirrorProjection(float m[4][4], bool perspective) {
+    if (!perspective || !mirrorActive()) return;
+    for (int i = 0; i < 4; ++i) m[0][i] = -m[0][i];
+}
+
+u32 mirrorCullMode(u32 gxCullMode) {
+    if (!mirrorActive()) return gxCullMode;
+    if (gxCullMode == 1) return 2;  // GX_CULL_FRONT -> GX_CULL_BACK
+    if (gxCullMode == 2) return 1;
+    return gxCullMode;
+}
+
+float mirrorScreenX(float x, float width) { return mirrorActive() ? width - x : x; }
+
+void mirrorStereo(s16* interleavedStereo, std::size_t frames) {
+    if (!mirrorActive() || !interleavedStereo) return;
+    for (std::size_t i = 0; i < frames; ++i) std::swap(interleavedStereo[2 * i], interleavedStereo[2 * i + 1]);
+}
+
+}  // namespace recomp::hm
