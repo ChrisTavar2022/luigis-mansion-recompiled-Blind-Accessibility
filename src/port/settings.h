@@ -101,7 +101,14 @@ struct GameplaySettings {
 // Hardware-accuracy rendering features (F1 > Visuals > Rendering). Every costly accuracy
 // feature gets a flag here, ON by default (best quality); weaker PCs can turn them off.
 struct RenderingSettings {
-    bool placeholder = true;  // remove once the first real accuracy toggle lands
+    // Integer TEV: the color combiner computes with the hardware's 8-bit inputs, signed 11-bit
+    // registers and per-stage rounding instead of floats (Aurora GX_AURORA_ACCURACY_INT_TEV).
+    bool integerTev = true;
+    // EFB color depth: pixels are stored the way the game's RGBA6 framebuffer stores them,
+    // 6 bits per channel with the ordered dither the game enables (GX_AURORA_ACCURACY_EFB_DEPTH).
+    bool efbColorDepth = true;
+    // Display copy filter: the vertical filter (and gamma) GXCopyDisp applies on the way to the TV.
+    bool displayCopyFilter = true;
 };
 
 struct Settings {

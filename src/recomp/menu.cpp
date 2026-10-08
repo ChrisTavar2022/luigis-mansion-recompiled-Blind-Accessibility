@@ -2,6 +2,7 @@
 // Drawn with Aurora's Dear ImGui on the host thread between the guest's present
 // and aurora_end_frame. While it is open the game receives neutral pad input.
 #include "recomp/menu.h"
+#include "recomp/gx_bridge.h"
 
 #include "port/install.h"
 #include "port/settings.h"
@@ -144,6 +145,19 @@ void renderingTab() {
     ImGui::TextDisabled("Hardware-accurate rendering. Everything is on by default for the best quality;");
     ImGui::TextDisabled("turn features off only if your PC needs the speed.");
     ImGui::Separator();
+    auto& r = port::settings().rendering;
+    sDirty |= ImGui::Checkbox("Integer-accurate TEV", &r.integerTev);
+    ImGui::SetItemTooltip(
+        "Color combiner math as on the GameCube: 8-bit inputs, signed 11-bit registers and rounding\n"
+        "after every stage. Slightly darker multi-stage shading and exact overflow; tiny GPU cost.");
+    sDirty |= ImGui::Checkbox("EFB color depth (6-bit + dither)", &r.efbColorDepth);
+    ImGui::SetItemTooltip(
+        "The game renders into a 6-bit-per-channel framebuffer with an ordered dither, like the\n"
+        "console. Off: smooth 8-bit color (less banding/dither grain in dark rooms). No real cost.");
+    sDirty |= ImGui::Checkbox("Display copy filter", &r.displayCopyFilter);
+    ImGui::SetItemTooltip(
+        "The vertical filter (and gamma) the console applies when copying the frame to the TV\n"
+        "image: slightly softer vertical detail, smooths the dither. One extra full-screen pass.");
 }
 
 void visualsTab() {
@@ -413,6 +427,7 @@ void handleEvent(const SDL_Event& ev) {
 
 void draw() {
     skip::drawOverlay();
+    recomp::gx::applyAccuracySettings();
     recomp::crt::update();
     if (port::settings().enhancements.showFps) fpsOverlay();
     recomp::dev::drawOverlays();
