@@ -112,29 +112,6 @@ HLE(fn_8003CFC0) {
     }
 }
 
-// Sub-view clear (only used for view 1, i.e. the GBH screen, from fn_800115F8). It draws a
-// black quad (fn_8000B014) with Z texture REPLACE from an all-0xFFFFFF Z24X8 texture to reset
-// depth to the far plane. Aurora does not implement GXSetZTexture, so depth would come from
-// the quad itself (z = -900, lbl_804D99AC; nothing behind it survives the depth test and the
-// screen stays black). The quad is moved onto the far plane for the call, which gives the same
-// depth without a Z texture. The European LMDefaultOrthoView has its far plane at 4096
-// instead of 1000, so the far-plane depth there is -4096.
-// The European clear is fn_8000B7CC (it also builds the Z texture object itself); the function
-// the matcher pairs with the USA one (PAL 0x8000B928) is a different, full-screen clear, so the
-// European hook is listed by address (palfn_8000B7CC in hooks.txt).
-namespace {
-void subViewClear(Ctx& c, const char* name) {
-    const u32 quadZ = VA(0x804D99AC);  // .sdata2 literal read only by fn_8000B014
-    const u32 saved = rd32(quadZ);
-    // Just inside the far plane of LMDefaultOrthoView (USA far 1000, European far 4096).
-    wr32(quadZ, std::bit_cast<u32>(ver::pal() ? -4095.9f : -999.99f));
-    callOriginal(c, name);
-    wr32(quadZ, saved);
-}
-}  // namespace
-HLE(fn_8000B228) { subViewClear(c, "fn_8000B228"); }
-HLE(palfn_8000B7CC) { subViewClear(c, "palfn_8000B7CC"); }
-
 // Actor draw pass. r3 selects the pass: (r3 & 0x30) == 0x10 draws normal actors into the
 // scene, 0x30 draws ghosts (type flag 8) into the separate ghost layer that is later added
 // back at half resolution weighted by the ghost's alpha (fn_8000C2D0, fn_8005F280). Pass 0

@@ -271,6 +271,12 @@ void generalEnhancementsTab() {
     }
     sDirty |= ImGui::Checkbox("Hold Tab to fast-forward", &e.fastForwardKey);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("While Tab is held the game runs as fast as it can, muted.");
+    sDirty |= ImGui::Checkbox("Fix rooms vanishing near doorways", &e.portalClipFix);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The game hides a whole room behind a doorway when the camera gets so close\n"
+                          "to the doorway that part of it is behind the camera (an original bug, e.g.\n"
+                          "the upper foyer during the cutscene when Luigi first enters). On: the doorway\n"
+                          "is clipped properly and the room stays visible. Off: original behaviour.");
     ImGui::Separator();
     {
         // Switching mid-visit would leave PAL data/patches half applied, so only allow it outside.

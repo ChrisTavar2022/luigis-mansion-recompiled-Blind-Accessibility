@@ -369,10 +369,18 @@ void rawFifoWrite(u32 v, int size) {
 
 }  // namespace
 
+static FILE* dlTraceFile() {
+    static FILE* f = [] { const char* p = std::getenv("LM_DL_TRACE"); return p ? std::fopen(p, "w") : nullptr; }();
+    return f;
+}
+static u32 sDlFrame = 0;
+
 u32 copyDispCount();
 void gx::endFrame() {
     endPendingDraw();
     efbcopy::onFrame(copyDispCount());
+    if (FILE* f = dlTraceFile()) std::fprintf(f, "
+F%u", sDlFrame++), std::fflush(f);
     if (!sTrace) return;
     static u32 frameNo = 0;
     if (sTraceFrame != sTraceLast) {
@@ -519,6 +527,15 @@ GXHLE(GXBegin) {
 }
 
 GXHLE(GXCallDisplayList) {
+    if (FILE* f = dlTraceFile()) {
+        std::fprintf(f, " %08X:%X@%08X", c.r[3], c.r[4], c.lr);
+        u32 sp = c.r[1];
+        for (int i = 0; i < 10 && sp >= 0x80000000u && sp < 0x81800000u; i++) {
+            sp = rd32(sp);
+            if (sp < 0x80000000u || sp >= 0x81800000u) break;
+            std::fprintf(f, "<%08X", rd32(sp + 4));
+        }
+    }
     if (dropDraw()) return;
     prepareDraw(drawMode(ProjMode::Scaled), "dlist");
     GXCallDisplayList(hostp(c.r[3]), c.r[4]);

@@ -72,6 +72,7 @@ struct EnhancementSettings {
     bool earlyGhostLighting = false;  // "Ghost shading: Beta" = the known beta-shading cheat (fn_800581E8 channel setup)
     bool skipCutscenes = false;  // START skips cutscenes (src/recomp/skip.cpp)
     bool fastForwardKey = true;  // holding Tab runs the game at high speed (src/recomp/skip.cpp)
+    bool portalClipFix = true;   // rooms behind a doorway near the camera don't vanish (src/recomp/portal_fix.cpp)
     // Debug: the game's own compiled-in debug switches (src/recomp/dev_tools.cpp)
     bool dbgParticleReport = false;  // particle manager JUTReport text
     bool dbgDepthBlur = false;       // unused depth blur screen pass
