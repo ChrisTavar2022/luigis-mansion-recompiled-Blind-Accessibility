@@ -379,8 +379,7 @@ u32 copyDispCount();
 void gx::endFrame() {
     endPendingDraw();
     efbcopy::onFrame(copyDispCount());
-    if (FILE* f = dlTraceFile()) std::fprintf(f, "
-F%u", sDlFrame++), std::fflush(f);
+    if (FILE* f = dlTraceFile()) std::fprintf(f, "\nF%u", sDlFrame++), std::fflush(f);
     if (!sTrace) return;
     static u32 frameNo = 0;
     if (sTraceFrame != sTraceLast) {
