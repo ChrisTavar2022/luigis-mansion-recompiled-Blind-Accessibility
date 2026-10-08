@@ -49,11 +49,9 @@ fn_80009148
 fn_80055C54 us pal
 set__7JUTRectFiiii
 # Unused content (src/recomp/unused_content.cpp, docs/UNUSED_CONTENT.md): Game Boy Horror
-# HUD update (live camera screen mode), its sub-view clear, and the actor draw pass
+# HUD update (live camera screen mode) and the actor draw pass
 # (early ghost shading).
 fn_8003CFC0 us pal
-fn_8000B228
-palfn_8000B7CC pal
 fn_80060E70 us pal
 # Gameplay / difficulty options (src/recomp/gameplay_hooks.cpp, docs/GAMEPLAY_OPTIONS.md):
 # damage, Luigi health, ghost HP, vacuum strength, recovery hearts.
