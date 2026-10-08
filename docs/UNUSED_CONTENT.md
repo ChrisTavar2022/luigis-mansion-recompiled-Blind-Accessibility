@@ -2,7 +2,7 @@
 
 Everything here also works on the European game (GLMP01): addresses go through `VA()` and
 the hooks are tagged `us pal` (docs/SETUP.md, *Version-aware code*). European differences:
-the GBH sub-view clear is `fn_8000B7CC` there; the end-of-frame hook is the European
+the GBH sub-view clear is `fn_8000B7CC` there (no hook needed); the end-of-frame hook is the European
 `LMChangeFrameBuffer` (`fn_80007940`).
 
 Two pre-release features are still in the US `main.dol`. Both are switched on from
@@ -66,11 +66,10 @@ the game's own code. Test aids: `LM_GBH_CAM=1` starts with the camera on, withou
 setting. `LM_GBH_CAM=2` also forces the GBH HUD up (player +0x55) before Luigi has the
 Game Boy Horror, so the opening foyer can be used.
 
-Port fix it needed: the view-1 clear `fn_8000B228` resets depth with
-`GXSetZTexture(GX_ZT_REPLACE)` from an all-0xFFFFFF Z24X8 texture. Aurora leaves
-`GXSetZTexture` as a TODO, so the clear quad (z = -900, literal `lbl_804D99AC`) wrote its own
-depth and the whole screen failed the depth test (black). `HLE(fn_8000B228)` moves that
-literal onto the far plane (-999.99) for the call. The visual result is the same.
+Depth reset: the view-1 clear `fn_8000B228` resets depth with
+`GXSetZTexture(GX_ZT_REPLACE)` from an all-0xFFFFFF Z24X8 texture. Aurora now implements Z
+textures (patch 0008, docs/RENDERING.md), so the game's own clear works; the earlier
+workaround hook (moving the clear quad onto the far plane) is gone.
 
 Verified: in the foyer (`LM_GBH_CAM=2`, foyer at ~2 min under load), the GBH screen shows
 Luigi's view of the staircase and dresser, and D-pad Up from the scripted input toggles it

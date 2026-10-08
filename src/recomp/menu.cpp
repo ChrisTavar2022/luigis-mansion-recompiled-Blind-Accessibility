@@ -4,6 +4,7 @@
 #include "recomp/menu.h"
 
 #include "port/install.h"
+#include "port/options.h"
 #include "port/settings.h"
 #include "recomp/controls.h"
 #include "recomp/crt.h"
@@ -53,7 +54,11 @@ void applyWindowSettings() {
     const auto& v = port::settings().video;
     applyResolution();
     if (SDL_Window* w = aurora_get_window()) SDL_SetWindowFullscreen(w, v.fullscreen);
-    aurora_set_pause_on_focus_lost(port::settings().enhancements.pauseOnFocusLoss);
+    // Automated runs (scripted --input, or LM_BACKGROUND=1) never pause when another window
+    // takes focus, so several test instances can run side by side.
+    static const bool sBackground = !port::options().inputScript.empty() || std::getenv("LM_BACKGROUND") != nullptr;
+    aurora_set_pause_on_focus_lost(port::settings().enhancements.pauseOnFocusLoss && !sBackground);
+    if (sBackground) aurora_set_background_input(true);
 }
 
 template <typename E>
