@@ -90,3 +90,61 @@ or as IA8 would read swapped bytes. Luigi's Mansion never feeds a copy to `GXSet
 it does make EFB depth copies: `fn_8005D8CC` copies Z16 (640x480, with clear) and the code
 around `0x8005EA5C` copies Z8. How those textures are sampled (and so whether the Z16 byte
 order matters) has not been checked yet.
+
+## Rooms vanishing behind doorways (foyer entry flicker)
+
+**Symptom.** In the cutscene when Luigi first enters the foyer, on the close-up of Luigi with
+the staircase behind him, the upper wall and glass ceiling above the stairs disappear (black)
+for about 8 frames, then pop back (user frames `docs/issues/foyer_flicker_1.webp` OK,
+`_2.webp` missing). Same at Original 30 and at 4:3, so not interpolation or widescreen.
+
+**Not a renderer bug.** A per-frame display-list log (`LM_DL_TRACE=<file>`, below) shows the
+game itself stops calling `GXCallDisplayList` for every part of two models (the room behind
+the stairs, `0x80EF3D00..0x80EF7D40`, and its furniture, `0x8078A180..0x8078D980`) in exactly
+the frames where the block is missing. Aurora's vertex-array sizing/sharing (patch 0002),
+`GX_CULL_ALL` (0004), draw merging, scissor and viewport were therefore not involved.
+
+**How the game picks rooms.** `fn_80012EE0` walks the portal graph each frame: for every
+doorway of a visible room, `fn_8001333C(portal, outRect, parentRect)` gets the doorway's four
+corners (`fn_80018238`), multiplies them by the camera's projection*view matrix
+(`lbl_803A3C98 + 0x258`, built by `fn_80014228`), divides by w, maps to the screen rectangle
+at `lbl_803A3C98 + 0..6`, takes the bounding box (one pixel margin) and intersects it with the
+parent rectangle (`fn_80013200`). A non-empty rectangle adds the room behind the doorway to
+the draw list with that scissor (`fn_800130BC` -> `fn_8001792C`; drawn by `fn_8001798C`).
+
+**The bug (original game code).** There is no near-plane clipping. The only check is that
+not all four corners are behind the camera. With the camera close to the doorway into the
+room behind the stairs, two corners have w < 0; dividing by a negative w mirrors them, all four
+projected corners land right of the screen (x = 750..1300) and the intersection with the
+parent is empty, so the whole room is skipped. Logged in the bad frames: corners
+`(985,211) (967,-45) (751,456) (1191,-175)`, 1/w = `0.001, -0.003, -0.002, 0.002`.
+The recompiled code computes what the console would (`fctiwz` saturation and the 16-bit
+stores match, and the inputs are plain game math), so this most likely happens on hardware
+too; it is fixed as an enhancement.
+
+**Fix.** `src/recomp/portal_fix.cpp` wraps `fn_8001333C` (hook `us pal`; the PAL function
+differs only in relocations). After the original runs, if the doorway straddles the near plane
+(some corners with z + w < 0 in GX clip space, but not all), it replaces the rectangle with the
+box of the doorway clipped to z + w >= 0 (corners in front plus the plane crossings of every
+corner pair), mapped and intersected with the parent the same way. Doorways fully in front or
+fully behind keep the game's result, and a closed door (`fn_8001B278`) stays empty. Setting:
+F1 > Enhancements > General > "Fix rooms vanishing near doorways" (`portal_clip_fix`, on by
+default); `LM_PORTAL_FIX=0/1` overrides it for A/B tests. Cost: negligible (only doorways that
+straddle the camera are recomputed).
+
+Verified: the whole foyer-entry cutscene captured frame by frame (no missing room in any
+frame; with `LM_PORTAL_FIX=0` the 8-frame gap returns), and title, file select, a training
+map, foyer gameplay and the Nursery look the same with the fix on and off. Patch 0008 (color
+texgen / missing vertex color) does not affect it: with 0008 merged and `LM_PORTAL_FIX=0` the
+room still drops out for the same 8 frames (the newly visible flashlight beam on that shot
+makes the black block easy to miss). The other display-list gaps left in that cutscene are
+frames where the clipped doorway is genuinely off screen.
+
+**Debug aid.** `LM_DL_TRACE=<file>` writes one line per frame (`F<n>`) listing every
+`GXCallDisplayList` as `addr:size@caller<caller...` (guest stack back chain). Diffing the sets
+of consecutive frames finds draws that drop out for a few frames.
+
+**Side observation (not the cause, not changed).** Patch 0002 shares dynamically sized array
+uploads per frame by pointer (`sDynamicUploads`); `GXInvalidateVtxCache` clears each array's
+`cachedRange` but not that map, so an array the CPU rewrites in place mid-frame would reuse the
+frame's earlier upload. Nothing in this cutscene does that.
