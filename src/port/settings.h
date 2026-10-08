@@ -101,7 +101,10 @@ struct GameplaySettings {
 // Hardware-accuracy rendering features (F1 > Visuals > Rendering). Every costly accuracy
 // feature gets a flag here, ON by default (best quality); weaker PCs can turn them off.
 struct RenderingSettings {
-    bool placeholder = true;  // remove once the first real accuracy toggle lands
+    // GXCopyTex results also exist as GX-format bytes in main memory, so textures that read a
+    // copy with another format/size (Luigi's self-shadow depth map) and CPU reads see what the
+    // console sees (docs/RENDERING.md). Off: copies stay GPU-only textures.
+    bool efbCopyToRam = true;
 };
 
 struct Settings {

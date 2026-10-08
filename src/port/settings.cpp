@@ -61,6 +61,7 @@ std::vector<Field> fields() {
         num("video", "msaa", v.msaa),
         flag("video", "hud_keep_4x3", v.hudKeep4x3),
         flag("video", "pal60", v.pal60),
+        flag("rendering", "efb_copy_to_ram", sSettings.rendering.efbCopyToRam),
         flag("crt", "enabled", c.enabled),
         enm("crt", "preset", c.preset),
         enm("crt", "scanlines", c.scanlines),

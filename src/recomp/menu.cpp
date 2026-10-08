@@ -149,6 +149,14 @@ void renderingTab() {
     ImGui::TextDisabled("Hardware-accurate rendering. Everything is on by default for the best quality;");
     ImGui::TextDisabled("turn features off only if your PC needs the speed.");
     ImGui::Separator();
+    auto& r = port::settings().rendering;
+    sDirty |= ImGui::Checkbox("EFB copies to RAM (accurate)", &r.efbCopyToRam);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Screen copies also exist in console memory format, like on the GameCube.\n"
+                          "Textures that read a copy in another format (Luigi's shadow depth map is\n"
+                          "read as an IA8 texture) get the console's exact bytes, and memory the game\n"
+                          "overwrites stops showing a stale copy. Aimed at the rare Luigi mouth/hose flicker.\n"
+                          "Off: copies stay GPU-only textures (saves ~0.6 ms CPU per frame).");
 }
 
 void visualsTab() {
