@@ -6,6 +6,7 @@
 // writes) arrive through the write-gather pipe and are appended to Aurora's
 // FIFO unchanged. The console needs no GXEnd; Aurora does, so an open draw is
 // closed before the next GX call.
+#include "recomp/efb_copy.h"
 #include "recomp/frame.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
@@ -409,8 +410,17 @@ void gx::applyAccuracySettings() {
     if (flags != GXGetAuroraAccuracy()) GXSetAuroraAccuracy(flags);
 }
 
+static FILE* dlTraceFile() {
+    static FILE* f = [] { const char* p = std::getenv("LM_DL_TRACE"); return p ? std::fopen(p, "w") : nullptr; }();
+    return f;
+}
+static u32 sDlFrame = 0;
+
+u32 copyDispCount();
 void gx::endFrame() {
     endPendingDraw();
+    efbcopy::onFrame(copyDispCount());
+    if (FILE* f = dlTraceFile()) std::fprintf(f, "\nF%u", sDlFrame++), std::fflush(f);
     if (!sTrace) return;
     static u32 frameNo = 0;
     if (sTraceFrame != sTraceLast) {
@@ -576,6 +586,15 @@ GXHLE(GXBegin) {
 }
 
 GXHLE(GXCallDisplayList) {
+    if (FILE* f = dlTraceFile()) {
+        std::fprintf(f, " %08X:%X@%08X", c.r[3], c.r[4], c.lr);
+        u32 sp = c.r[1];
+        for (int i = 0; i < 10 && sp >= 0x80000000u && sp < 0x81800000u; i++) {
+            sp = rd32(sp);
+            if (sp < 0x80000000u || sp >= 0x81800000u) break;
+            std::fprintf(f, "<%08X", rd32(sp + 4));
+        }
+    }
     if (dropDraw()) return;
     prepareDraw(drawMode(ProjMode::Scaled), "dlist");
     GXCallDisplayList(hostp(c.r[3]), c.r[4]);
@@ -728,6 +747,7 @@ GXHLE(GXLoadLightObjImm) { GXLoadLightObjImm(light(c.r[3]), GXLightID(c.r[4])); 
 
 // --- textures ------------------------------------------------------------------------------
 
+void diagTexInit(const char* kind, u32 obj, u32 image, u32 w, u32 h, u32 fmt, u32 lr);
 static void noteTexImage(u32 obj, u32 image) {
     const u32 idx = rd32(obj + 4);
     if (idx >= sTexImage.size()) sTexImage.resize(idx + 1);
@@ -737,11 +757,13 @@ GXHLE(GXInitTexObj) {
     GXInitTexObj(sTex.forInit(c.r[3], kTexTag), ptr(c.r[4]), u16(c.r[5]), u16(c.r[6]), GXTexFmt(c.r[7]),
                  GXTexWrapMode(c.r[8]), GXTexWrapMode(c.r[9]), GXBool(c.r[10]));
     noteTexImage(c.r[3], c.r[4]);
+    diagTexInit("INIT", c.r[3], c.r[4], c.r[5], c.r[6], c.r[7], c.lr);
 }
 GXHLE(GXInitTexObjCI) {
     GXInitTexObjCI(sTex.forInit(c.r[3], kTexTag), ptr(c.r[4]), u16(c.r[5]), u16(c.r[6]), GXCITexFmt(c.r[7]),
                    GXTexWrapMode(c.r[8]), GXTexWrapMode(c.r[9]), GXBool(c.r[10]), stackArg(c, 0));
     noteTexImage(c.r[3], c.r[4]);
+    diagTexInit("INITCI", c.r[3], c.r[4], c.r[5], c.r[6], c.r[7], c.lr);
 }
 GXHLE(GXInitTexObjLOD) {
     gxAudit("GXInitTexObjLOD min=%u mag=%u lod=%.2f..%.2f bias=%.2f clamp=%u edge=%u aniso=%u", c.r[4], c.r[5], farg(c, 1), farg(c, 2), farg(c, 3), c.r[6], c.r[7], c.r[8]);
@@ -901,6 +923,25 @@ GXHLE(GXInitFogAdjTable) {
 
 // --- copies ---------------------------------------------------------------------------------------
 
+// Current texture-copy setup (LM_COPY_LOG and the LM_FRAME_DUMP restore), copies by frame for the log.
+static struct { u32 x, y, w, h, dw, dh, fmt, mip; } sCopyDiag;
+static const bool sCopyLog = std::getenv("LM_COPY_LOG") != nullptr;
+static u32 sDiagFrame = 0;
+u32 copyDispCount() { return sDiagFrame; }
+struct DiagCopy { u32 dest, size, fmt, w, h, frame; };
+static std::vector<DiagCopy> sDiagCopies;
+void diagTexInit(const char* kind, u32 obj, u32 image, u32 w, u32 h, u32 fmt, u32 lr) {
+    if (!sCopyLog) return;
+    const u32 im = phys(image);
+    const u32 sz = GXGetTexBufferSize(u16(w), u16(h), fmt, GX_FALSE, 0);
+    for (const auto& d : sDiagCopies) {
+        if (im < d.dest + d.size && d.dest < im + sz) {
+            log("[copydiag] f%u %s obj=%08X img=%08X %ux%u fmt=%u size=%X lr=%08X  overlaps copy %08X %ux%u fmt=%u (f%u)%s",
+                sDiagFrame, kind, obj, image, w, h, fmt, sz, lr, d.dest, d.w, d.h, d.fmt, d.frame,
+                (im == d.dest && w == d.w && h == d.h && fmt == d.fmt) ? " [same]" : " [DIFFERENT]");
+        }
+    }
+}
 GXHLE(GXSetCopyClear) { GXSetCopyClear(color(c.r[3]), c.r[4]); }
 GXHLE(GXSetDispCopySrc) {
     gxAudit("GXSetDispCopySrc %u %u %u %u", c.r[3], c.r[4], c.r[5], c.r[6]);
@@ -947,15 +988,39 @@ GXHLE(GXSetCopyFilter) {
     GXSetCopyFilter(GXBool(c.r[3]), pattern, GXBool(c.r[5]), vfilter);
 }
 GXHLE(GXCopyDisp) {
+    sDiagFrame++;
+    if (void* dump = dropDraw() ? nullptr : efbcopy::dumpTarget(sDiagFrame)) {
+        // LM_FRAME_DUMP: copy the finished EFB through the copy-to-RAM path, then restore
+        // the game's texture-copy setup.
+        GXSetTexCopySrc(0, 0, 640, 480);
+        GXSetTexCopyDst(640, 480, GX_TF_RGBA8, GX_FALSE);
+        GXCopyTex(dump, GX_FALSE);
+        GXSetTexCopySrc(u16(sCopyDiag.x), u16(sCopyDiag.y), u16(sCopyDiag.w), u16(sCopyDiag.h));
+        GXSetTexCopyDst(u16(sCopyDiag.dw), u16(sCopyDiag.dh), GXTexFmt(sCopyDiag.fmt), GXBool(sCopyDiag.mip));
+    }
     if (!dropDraw()) GXCopyDisp(hostp(c.r[3]), GXBool(c.r[4]));
     if (frame::presentOnCopy()) frame::present(c, c.r[3], frame::viBlack());  // PAL release (frame.h)
 }
 GXHLE(GXSetTexCopySrc) {
+    sCopyDiag.x = c.r[3]; sCopyDiag.y = c.r[4]; sCopyDiag.w = c.r[5]; sCopyDiag.h = c.r[6];
     traceNote("copy src (%u,%u %ux%u)", c.r[3], c.r[4], c.r[5], c.r[6]);
     GXSetTexCopySrc(u16(c.r[3]), u16(c.r[4]), u16(c.r[5]), u16(c.r[6]));
 }
-GXHLE(GXSetTexCopyDst) { GXSetTexCopyDst(u16(c.r[3]), u16(c.r[4]), GXTexFmt(c.r[5]), GXBool(c.r[6])); }
+GXHLE(GXSetTexCopyDst) {
+    sCopyDiag.dw = c.r[3]; sCopyDiag.dh = c.r[4]; sCopyDiag.fmt = c.r[5]; sCopyDiag.mip = c.r[6];
+    GXSetTexCopyDst(u16(c.r[3]), u16(c.r[4]), GXTexFmt(c.r[5]), GXBool(c.r[6]));
+}
 GXHLE(GXCopyTex) {
+    if (sCopyLog) {
+        const u32 sz = GXGetTexBufferSize(u16(sCopyDiag.dw), u16(sCopyDiag.dh), sCopyDiag.fmt, GX_FALSE, 0);
+        log("[copydiag] f%u COPY dest=%08X src=(%u,%u %ux%u) dst=%ux%u fmt=%u mip=%u clear=%u size=%X lr=%08X%s",
+            sDiagFrame, c.r[3], sCopyDiag.x, sCopyDiag.y, sCopyDiag.w, sCopyDiag.h, sCopyDiag.dw, sCopyDiag.dh,
+            sCopyDiag.fmt, sCopyDiag.mip, c.r[4], sz, c.lr, dropDraw() ? " DROPPED" : "");
+        bool found = false;
+        for (auto& d : sDiagCopies)
+            if (d.dest == phys(c.r[3])) { d = {phys(c.r[3]), sz, sCopyDiag.fmt, sCopyDiag.dw, sCopyDiag.dh, sDiagFrame}; found = true; }
+        if (!found) sDiagCopies.push_back({phys(c.r[3]), sz, sCopyDiag.fmt, sCopyDiag.dw, sCopyDiag.dh, sDiagFrame});
+    }
     if (dropDraw()) return;
     if (!isCopyDest(phys(c.r[3]))) {
         if (sCopyDests.size() >= 64) sCopyDests.erase(sCopyDests.begin());

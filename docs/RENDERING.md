@@ -1,0 +1,264 @@
+# Rendering notes
+
+GX features the game needs and how the port's Aurora implements them. Aurora changes live in
+`patches/aurora/*.patch`.
+
+<!-- Sections below: flashlight cone (color texgen) and Z textures. Other agents add their own
+     sections; keep each feature in its own top-level section. -->
+
+## Flashlight cone: color texgen (GX_TG_SRTG) and missing vertex colors
+
+**Symptom.** In gameplay the flashlight lit the walls but its visible beam did not draw. The
+intro cutscene uses a different model (`opwf_cone`, drawn by the game's S3D code) and was fine.
+
+**The draw.** Gameplay uses the J3D model `handlight_ef.bmd` with the texture-scroll animation
+`handlight_ef.btk`, both from the static archive (`kt_static/`), loaded by `fn_800AA128`
+(names at `0x80359750`/`0x80359764`). Its three materials (read from the BMD's MAT3 section):
+
+| Material | Stages | Texgens | Notes |
+|----------|--------|---------|-------|
+| `hl_mat_hlc_a` (core) | 3 | TEX0 x TEXMTX0 (2x4, btk scroll); POS x TEXMTX1 (3x4, view projection map); **SRTG from COLOR0** | stage 0 color = lerp(C0, C1, TEXC) with C0 = (255,255,100) yellow; alpha = TEXA x TEXA x TEXA(SRTG) |
+| `hl_mat_hlin` | 4 | same plus TEX1 x TEXMTX2 | |
+| `hl_mat_hlout` | 4 | same | |
+
+All three: one color channel, COLOR0 lit by light 7 only (mask 0x80) with clamp diffuse and
+spot attenuation (the flashlight light), additive blend (SRCALPHA, ONE), Z compare LEQUAL
+without update, Z compare before texturing, no alpha test, no fog, no indirect, K colors white.
+The core material takes its material color from the vertex (`matSrc` = vertex) although the
+model has no vertex colors.
+
+Two Aurora gaps hid it:
+
+1. **Color texgen used the wrong source.** `GX_TG_SRTG` (XF texgen types 2/3) sets s,t to the
+   R,G of the *lit* color channel result (COLOR0 or COLOR1). Aurora read the raw vertex color
+   attribute instead, which this model does not have, so every lookup hit texel (0,0), the
+   alpha that multiplies the beam was 0 and the additive blend added nothing. Now the texgen
+   reads the channel's lighting output (`out.cc0`/`cc1` in the vertex shader), the color
+   channel is computed even when no TEV stage uses RASC/RASA, and, like on hardware, the
+   texture matrix, post-transform matrix and normalization are not applied (they only apply to
+   regular texgens). The beam's brightness now follows the spot light's falloff.
+2. **Missing vertex color = black.** With `matSrc` = vertex and no color in the vertex, Aurora
+   used (0,0,0,0), so the core material's lit color was 0 and the core vanished. On hardware
+   the color of the last vertex that had one lingers (see Dolphin issue 13783); that history
+   is not tracked, so the port now uses white, which is what Dolphin does. Checked which draws
+   this changes: from boot through the foyer only the flashlight core and one 5-stage material
+   whose missing COLOR1 RGB is never read by its TEV, so nothing else changes.
+
+Before/after (`LM_TEST_STATE=poltergust LM_START_MAP=2 LM_START_APPEAR=1`, the nursery, Luigi
+turned to face the camera with scripted stick-down taps): before, only the bulb glows; after,
+the beam fans out with its yellow core, and from the side it is the familiar soft cone.
+
+Cost: none (shader generation only).
+
+## Z textures (GXSetZTexture)
+
+`GXSetZTexture(op, fmt, bias)` writes BP `0xF4` (24-bit bias) and `0xF5` (format bits 0-1:
+0 = Z8, 1 = Z16, 2 = Z24X8; op bits 2-3: 0 disable, 1 add, 2 replace). With an op set, the
+texel fetched by the **last TEV stage** (whether or not the TEV uses its color) is read as an
+unsigned depth value, the bias is added, and the sum either replaces the rasterized depth or
+is added to it, wrapping at 24 bits. Depth testing then happens after texturing.
+
+Implementation (Aurora patch `0008-color-texgen-and-z-textures.patch`):
+- `GXSetZTexture` emits the two BP registers; `regs.cpp` decodes them (so display lists that
+  write them directly work too) into `GXState::zTexOp/zTexFmt/zTexBias`.
+- The pipeline config carries the op and format when the last stage has a texture and
+  texcoord; the shader then samples that texture and writes `@builtin(frag_depth)`.
+  The bias is a uniform (changing it does not create pipelines).
+- Texel interpretation follows the hardware texture unit, which only sees the low 4 format
+  bits: Z8 data is read as I8 (z = I), Z16 as IA8 (z = A << 8 | I, A being the first,
+  high-order byte), Z24X8 as RGBA8 (z = R << 16 | G << 8 | B). The texture-object load maps the
+  Z formats to those formats, so the data decodes like any other texture.
+- The 24-bit result is converted to Aurora's depth convention (reversed Z:
+  `1 - z / 0xFFFFFF`); for ADD the rasterized depth is first converted to the 24-bit value.
+
+**Uses in Luigi's Mansion.** `LM_TRACE=801F828C` (the game's `GXSetZTexture`) and the
+disassembly show one user: `fn_8000B228` (European `fn_8000B7CC`), the sub-viewport clear of
+the Game Boy Horror screen (view 1). It draws a black quad with `GXSetZMode(on, ALWAYS, on)`
+and `GXSetZTexture(REPLACE, Z24X8, 0)` from an all-0xFFFFFF texture, resetting that rectangle
+to the far plane, then disables the Z texture (`GXInit` also disables it). The port used to
+move the quad onto the far plane in a hook (`HLE(fn_8000B228)`/`palfn_8000B7CC`); that
+workaround is removed, and the live GBH camera (`LM_GBH_CAM=2`, foyer) renders through the
+real Z texture path.
+
+Cost: only draws with a Z texture get the extra sample and depth write (one quad per frame
+while the GBH camera is on), so there is no Rendering toggle.
+
+Not covered: Z textures built from EFB depth copies would depend on the copy's encoding.
+Aurora's Z16 copy conversion stores the high byte in I and the low byte in A (the opposite of
+the IA8 view the hardware gives a Z16 texture), so a game sampling such a copy as a Z texture
+or as IA8 would read swapped bytes. Luigi's Mansion never feeds a copy to `GXSetZTexture`, but
+it does make EFB depth copies: `fn_8005D8CC` copies Z16 (640x480, with clear) and the code
+around `0x8005EA5C` copies Z8. How those textures are sampled (and so whether the Z16 byte
+order matters) has not been checked yet.
+
+*Update (EFB copies to RAM, below):* the Z16 copy is Luigi's self-shadow map, read only as an
+IA8 texture by a TEV `GR16` compare. The game's own depth-ramp LUT and swap tables make that
+compare consistent only if the IA8 view of the copy has I = depth bits 23..16 and A = bits
+15..8, i.e. the console stores a Z16 copy low byte first (the reverse of an ordinary big-endian
+16-bit texel). That is what Aurora's conversion and the copy-to-RAM encoder produce. A Z16
+*Z texture* built from such a copy would then presumably compose z from I (high) and A (low);
+nothing in LM does that.
+
+## Rooms vanishing behind doorways (foyer entry flicker)
+
+**Symptom.** In the cutscene when Luigi first enters the foyer, on the close-up of Luigi with
+the staircase behind him, the upper wall and glass ceiling above the stairs disappear (black)
+for about 8 frames, then pop back (user frames `docs/issues/foyer_flicker_1.webp` OK,
+`_2.webp` missing). Same at Original 30 and at 4:3, so not interpolation or widescreen.
+
+**Not a renderer bug.** A per-frame display-list log (`LM_DL_TRACE=<file>`, below) shows the
+game itself stops calling `GXCallDisplayList` for every part of two models (the room behind
+the stairs, `0x80EF3D00..0x80EF7D40`, and its furniture, `0x8078A180..0x8078D980`) in exactly
+the frames where the block is missing. Aurora's vertex-array sizing/sharing (patch 0002),
+`GX_CULL_ALL` (0004), draw merging, scissor and viewport were therefore not involved.
+
+**How the game picks rooms.** `fn_80012EE0` walks the portal graph each frame: for every
+doorway of a visible room, `fn_8001333C(portal, outRect, parentRect)` gets the doorway's four
+corners (`fn_80018238`), multiplies them by the camera's projection*view matrix
+(`lbl_803A3C98 + 0x258`, built by `fn_80014228`), divides by w, maps to the screen rectangle
+at `lbl_803A3C98 + 0..6`, takes the bounding box (one pixel margin) and intersects it with the
+parent rectangle (`fn_80013200`). A non-empty rectangle adds the room behind the doorway to
+the draw list with that scissor (`fn_800130BC` -> `fn_8001792C`; drawn by `fn_8001798C`).
+
+**The bug (original game code).** There is no near-plane clipping. The only check is that
+not all four corners are behind the camera. With the camera close to the doorway into the
+room behind the stairs, two corners have w < 0; dividing by a negative w mirrors them, all four
+projected corners land right of the screen (x = 750..1300) and the intersection with the
+parent is empty, so the whole room is skipped. Logged in the bad frames: corners
+`(985,211) (967,-45) (751,456) (1191,-175)`, 1/w = `0.001, -0.003, -0.002, 0.002`.
+The recompiled code computes what the console would (`fctiwz` saturation and the 16-bit
+stores match, and the inputs are plain game math), so this most likely happens on hardware
+too; it is fixed as an enhancement.
+
+**Fix.** `src/recomp/portal_fix.cpp` wraps `fn_8001333C` (hook `us pal`; the PAL function
+differs only in relocations). After the original runs, if the doorway straddles the near plane
+(some corners with z + w < 0 in GX clip space, but not all), it replaces the rectangle with the
+box of the doorway clipped to z + w >= 0 (corners in front plus the plane crossings of every
+corner pair), mapped and intersected with the parent the same way. Doorways fully in front or
+fully behind keep the game's result, and a closed door (`fn_8001B278`) stays empty. Setting:
+F1 > Enhancements > General > "Fix rooms vanishing near doorways" (`portal_clip_fix`, on by
+default); `LM_PORTAL_FIX=0/1` overrides it for A/B tests. Cost: negligible (only doorways that
+straddle the camera are recomputed).
+
+Verified: the whole foyer-entry cutscene captured frame by frame (no missing room in any
+frame; with `LM_PORTAL_FIX=0` the 8-frame gap returns), and title, file select, a training
+map, foyer gameplay and the Nursery look the same with the fix on and off. Patch 0008 (color
+texgen / missing vertex color) does not affect it: with 0008 merged and `LM_PORTAL_FIX=0` the
+room still drops out for the same 8 frames (the newly visible flashlight beam on that shot
+makes the black block easy to miss). The other display-list gaps left in that cutscene are
+frames where the clipped doorway is genuinely off screen.
+
+**Debug aid.** `LM_DL_TRACE=<file>` writes one line per frame (`F<n>`) listing every
+`GXCallDisplayList` as `addr:size@caller<caller...` (guest stack back chain). Diffing the sets
+of consecutive frames finds draws that drop out for a few frames.
+
+**Side observation (not the cause, not changed).** Patch 0002 shares dynamically sized array
+uploads per frame by pointer (`sDynamicUploads`); `GXInvalidateVtxCache` clears each array's
+`cachedRange` but not that map, so an array the CPU rewrites in place mid-frame would reuse the
+frame's earlier upload. Nothing in this cutscene does that.
+
+## EFB copies to RAM
+
+Toggle: **EFB copies to RAM (accurate)** (`[rendering] efb_copy_to_ram`, default on;
+`LM_EFB_RAM=0/1` overrides). Code: Aurora patch `patches/aurora/0007-efb-copy-to-ram.patch`
+(`lib/gfx/efb_ram.{hpp,cpp}`, C API `include/aurora/efb_ram.h`) and `src/recomp/efb_copy.cpp`.
+
+### Console behaviour
+
+`GXCopyTex` writes the EFB rectangle into main memory as a texture in the format given to
+`GXSetTexCopyDst` (tiled: 4 bpp in 8x8 blocks, 8 bpp in 8x4, 16 bpp in 4x4, RGBA8/Z24X8 as
+4x4 blocks of 64 bytes with the AR pairs followed by the GB pairs; big-endian texels). Anything
+that later reads that memory, a texture of any format/size/offset, the CPU, or DMA, sees those
+bytes; anything that writes it replaces them.
+
+### What Aurora did
+
+Copies stay GPU-only: the copy is resolved into a texture (at the upscaled render resolution)
+keyed by the destination pointer, and any texture whose data pointer equals that key samples it,
+whatever format and size it was created with. Memory is never written, and the association lives
+until the pointer is copied to again, even after the game frees the buffer and loads something
+else there.
+
+### What Luigi's Mansion does with its copies (US, measured with `LM_COPY_LOG=1`)
+
+| Destination | Copy | Read as | Code |
+|---|---|---|---|
+| shadow buffer (heap, 0x96000) | Z16 640x480, every frame | **IA8 640x480** texture (TEV `GR16` compare against a 256x256 IA8 depth ramp: Luigi's self-shadow) | `fn_8005D8CC` copy, `fn_8005D41C` texture, `fn_8005DD50` TEV setup |
+| `lbl_804D86BC` (0x8021E000) | RGB565 640x480, twice per frame | RGB565 same size | `fn_8005F518` / `fn_8005F8B8` |
+| `lbl_804D86B8` (0x802B4000) | RGBA8 320x240 (box-filtered) | RGBA8 same size | `fn_8005F498` |
+| 0x803A4D00 | RGB565 70x100 from (250,140 140x200) | same | `fn_80025C98` |
+| transition captures | RGB565 640x480 | same | `fn_800081A8` (LMDisplayUtil) |
+| title/file select | 4 x RGB565 148x116 | same | `fn_800494E4` |
+
+- The shadow buffer is the one copy read with a different format. It and the two screen
+  buffers are also reused as scratch memory for ARAM/DVD loads (Game Boy Horror archive,
+  `fn_80121884`; `fn_80066DB8`, `fn_8005336C`), i.e. written by DMA/CPU between copies.
+- After the screen-buffer copies the game calls `GXPixModeSync` + `DCInvalidateRange` on them
+  (cache hygiene before reusing the memory, no CPU reads of the pixels were found). No GXPeek
+  calls exist.
+- The 148x116 title buffers are freed after the menu and the memory is reused for other textures
+  (e.g. Luigi's IA8 textures at +0x540/+0xD60) at different pointers.
+
+### What the port does now
+
+1. **Every copy** of a supported format (all of Aurora's copy conversions plus RGBA8/RGB5A3) is
+   recorded as a memory range `[dest, dest + GXGetTexBufferSize)` with a hash of the memory
+   there (`efb_ram::on_copy`, FIFO thread).
+2. **Textures** (`resolve_sampled_textures`): a texture overlapping a recorded copy
+   - exactly matching it (pointer, format, size) keeps Aurora's fast copy texture (upscaled:
+     the enhancement on top of the accurate base);
+   - otherwise (different format, size or offset, or spanning several copies) is **decoded from
+     the copy's GX bytes**: a compute pass encodes the copy texture into the exact console bytes
+     (native resolution, tiling, byte order: `EncodeShader`), and a fragment pass decodes them
+     as the requested format (`DecodeShader`, same conventions as Aurora's CPU decoders). Both
+     run before the render pass that samples the texture, in the same frame, with no CPU sync.
+     Partial overlaps start from the memory under the texture and lay each copy's bytes over it
+     in copy order. Palette (C4/C8/C14X2) and CMPR reads keep Aurora's existing paths.
+   - Luigi's shadow map is the case that takes this path in LM: the Z16 copy is read as IA8.
+3. **CPU/DMA writes**: when a texture is resolved over a recorded copy, the memory is re-hashed
+   (once per frame per copy); if it changed, the copy is dropped and Aurora's pointer association
+   evicted, so the texture comes from memory. (Fixes stale copies shown for reused heap memory
+   with the same pointer.)
+4. **CPU reads**: copies into ranges the game `DCInvalidateRange`s (how GameCube code makes
+   GPU-written memory visible to the CPU) are encoded and read back into guest memory. The
+   readback is asynchronous: the bytes are written at the next guest frame boundary after the GPU
+   finishes the frame (1-2 frames after the copy), and only if the memory is unchanged since the
+   copy (or still holds our previous writeback), so a CPU write after the copy is never clobbered.
+   A same-frame synchronous readback would need a mid-frame GPU submit/stall, which Aurora's
+   single-encoder frame model doesn't support; LM never reads copy pixels with the CPU, so this
+   is not needed here. `LM_EFB_READBACK_ALL=1` reads back every copy (test aid).
+
+Encoded copy semantics follow Aurora's copy conversions (`tex_copy_conv.cpp`): e.g. Z16 = depth
+bits 23..16 in the IA8 intensity byte and 15..8 in the alpha byte, which is how LM's shadow TEV
+(swap tables + `GR16` compare) expects it.
+
+### Results
+
+- Bit-exactness check: in the intro (copies on vs off, 2x internal resolution, 550 frames dumped
+  at native resolution) the frames are identical, i.e. the GPU encode/decode of the shadow map
+  gives the same image as Aurora's direct Z16 sampling there. (Feeding the decode deliberately
+  shifted bytes also left the intro door scene unchanged: the self-shadow receiver doesn't affect
+  those shots.) The mouth flicker itself is rare and random and was not reproduced; this feature
+  removes the copy-related differences from hardware (native-resolution, byte-exact reinterpretation
+  of the shadow map, stale-copy eviction). Re-check if the flicker is still reported.
+- Regression run (title, file select, intro, foyer with HUD, Game Boy Horror map screen) renders
+  correctly with the toggle on.
+
+### Cost (foyer gameplay, 2x internal resolution, Original 30)
+
+- CPU in efb_ram (hashing, resolves, writebacks): ~0.6 ms per guest frame (~5 MB hashed per
+  frame: 5 copies + writeback checks), on the FIFO/host threads. Whole-process CPU over 25 s:
+  33.6 / 33.2 % of a core on vs 30.4 / 33.1 % off (within noise).
+- GPU: one compute encode + one fullscreen decode of the 640x480 shadow map per frame, plus
+  encodes of the two DCInvalidateRange'd screen buffers (~1.5 MB/frame read back). Negligible next
+  to the scene.
+
+### Test aids
+
+- `LM_COPY_LOG=1`: every GXCopyTex (frame, dest, rects, format, caller LR), textures created
+  over copied memory (same/different format), and efb_ram counters every 300 frames.
+- `LM_FRAME_DUMP=<dir>,<first>,<last>[,<step>]`: writes guest frames `<first>..<last>` as
+  native-resolution `.ppm` files, captured through the copy-to-RAM path (works with the toggle
+  off too). Frame numbers count GXCopyDisp calls; runs drift a few frames apart, so align by
+  content when comparing.
+- `LM_EFB_RAM=0/1`, `LM_EFB_READBACK_ALL=1`.

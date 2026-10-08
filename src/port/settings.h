@@ -72,6 +72,7 @@ struct EnhancementSettings {
     bool earlyGhostLighting = false;  // "Ghost shading: Beta" = the known beta-shading cheat (fn_800581E8 channel setup)
     bool skipCutscenes = false;  // START skips cutscenes (src/recomp/skip.cpp)
     bool fastForwardKey = true;  // holding Tab runs the game at high speed (src/recomp/skip.cpp)
+    bool portalClipFix = true;   // rooms behind a doorway near the camera don't vanish (src/recomp/portal_fix.cpp)
     // Debug: the game's own compiled-in debug switches (src/recomp/dev_tools.cpp)
     bool dbgParticleReport = false;  // particle manager JUTReport text
     bool dbgDepthBlur = false;       // unused depth blur screen pass
@@ -109,6 +110,10 @@ struct RenderingSettings {
     bool efbColorDepth = true;
     // Display copy filter: the vertical filter (and gamma) GXCopyDisp applies on the way to the TV.
     bool displayCopyFilter = true;
+    // GXCopyTex results also exist as GX-format bytes in main memory, so textures that read a
+    // copy with another format/size (Luigi's self-shadow depth map) and CPU reads see what the
+    // console sees (docs/RENDERING.md). Off: copies stay GPU-only textures.
+    bool efbCopyToRam = false;  // TEMP off: intermittent crash (CreateBuffer on the FIFO thread in efb_ram.cpp); turn back on when fixed
 };
 
 struct Settings {

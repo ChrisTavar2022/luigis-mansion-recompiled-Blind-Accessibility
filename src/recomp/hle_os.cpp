@@ -2,6 +2,7 @@
 // the small debug/serial units.
 #include "port/install.h"
 #include "port/settings.h"
+#include "recomp/efb_copy.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
@@ -320,7 +321,7 @@ HLE(DCFlushRange) {}
 HLE(DCFlushRangeNoSync) {}
 HLE(DCStoreRange) {}
 HLE(DCStoreRangeNoSync) {}
-HLE(DCInvalidateRange) {}
+HLE(DCInvalidateRange) { efbcopy::cpuRead(c.r[3], c.r[4]); }  // EFB copies the CPU reads
 HLE(ICInvalidateRange) {}
 HLE(DCZeroRange) { std::memset(hostp(c.r[3] & ~31u), 0, (c.r[4] + 31) & ~31u); }
 HLE(LCEnable) {}

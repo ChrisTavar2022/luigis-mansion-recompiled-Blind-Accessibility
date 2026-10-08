@@ -5,6 +5,7 @@
 #include "recomp/gx_bridge.h"
 
 #include "port/install.h"
+#include "port/options.h"
 #include "port/settings.h"
 #include "recomp/controls.h"
 #include "recomp/crt.h"
@@ -54,7 +55,11 @@ void applyWindowSettings() {
     const auto& v = port::settings().video;
     applyResolution();
     if (SDL_Window* w = aurora_get_window()) SDL_SetWindowFullscreen(w, v.fullscreen);
-    aurora_set_pause_on_focus_lost(port::settings().enhancements.pauseOnFocusLoss);
+    // Automated runs (scripted --input, or LM_BACKGROUND=1) never pause when another window
+    // takes focus, so several test instances can run side by side.
+    static const bool sBackground = !port::options().inputScript.empty() || std::getenv("LM_BACKGROUND") != nullptr;
+    aurora_set_pause_on_focus_lost(port::settings().enhancements.pauseOnFocusLoss && !sBackground);
+    if (sBackground) aurora_set_background_input(true);
 }
 
 template <typename E>
@@ -158,6 +163,13 @@ void renderingTab() {
     ImGui::SetItemTooltip(
         "The vertical filter (and gamma) the console applies when copying the frame to the TV\n"
         "image: slightly softer vertical detail, smooths the dither. One extra full-screen pass.");
+    sDirty |= ImGui::Checkbox("EFB copies to RAM (accurate)", &r.efbCopyToRam);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Screen copies also exist in console memory format, like on the GameCube.\n"
+                          "Textures that read a copy in another format (Luigi's shadow depth map is\n"
+                          "read as an IA8 texture) get the console's exact bytes, and memory the game\n"
+                          "overwrites stops showing a stale copy. Aimed at the rare Luigi mouth/hose flicker.\n"
+                          "Off: copies stay GPU-only textures (saves ~0.6 ms CPU per frame).");
 }
 
 void visualsTab() {
@@ -272,6 +284,12 @@ void generalEnhancementsTab() {
     }
     sDirty |= ImGui::Checkbox("Hold Tab to fast-forward", &e.fastForwardKey);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("While Tab is held the game runs as fast as it can, muted.");
+    sDirty |= ImGui::Checkbox("Fix rooms vanishing near doorways", &e.portalClipFix);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The game hides a whole room behind a doorway when the camera gets so close\n"
+                          "to the doorway that part of it is behind the camera (an original bug, e.g.\n"
+                          "the upper foyer during the cutscene when Luigi first enters). On: the doorway\n"
+                          "is clipped properly and the room stays visible. Off: original behaviour.");
     ImGui::Separator();
     {
         // Switching mid-visit would leave PAL data/patches half applied, so only allow it outside.
