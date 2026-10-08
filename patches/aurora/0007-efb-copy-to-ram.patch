@@ -1,3 +1,15 @@
+diff --git a/cmake/aurora_core.cmake b/cmake/aurora_core.cmake
+index bb88ba9..5647ce3 100644
+--- a/cmake/aurora_core.cmake
++++ b/cmake/aurora_core.cmake
+@@ -84,6 +84,7 @@ if (AURORA_ENABLE_GX)
+             lib/webgpu/gpu.cpp
+             lib/webgpu/gpu_cache.cpp
+             lib/webgpu/gpu_prof.cpp
++            lib/webgpu/postfx.cpp
+             lib/dawn/BackendBinding.cpp
+             lib/dawn/TracyPlatform.cpp
+     )
 diff --git a/cmake/aurora_gx.cmake b/cmake/aurora_gx.cmake
 index 02a96af..ed94d61 100644
 --- a/cmake/aurora_gx.cmake
@@ -64,6 +76,189 @@ index 0000000..f4a1caf
 +#endif
 +
 +#endif
+diff --git a/include/aurora/postfx.h b/include/aurora/postfx.h
+new file mode 100644
+index 0000000..1d9c72d
+--- /dev/null
++++ b/include/aurora/postfx.h
+@@ -0,0 +1,76 @@
++#ifndef AURORA_POSTFX_H
++#define AURORA_POSTFX_H
++
++// Optional post-process chain applied to the game image when it is presented
++// (after the EFB/XFB is final, before ImGui is drawn on top, so UI stays crisp).
++//
++// A chain is one WGSL module plus up to AURORA_POSTFX_MAX_PASSES fullscreen passes.
++// Aurora prepends a prelude to the module that declares:
++//
++//   struct AuroraPostFx {
++//     output_size: vec2f,   // this pass's render target size in pixels
++//     source_size: vec2f,   // game frame size in pixels (render resolution)
++//     viewport: vec4f,      // present viewport in surface pixels (x, y, w, h)
++//     surface_size: vec2f,  // swapchain size in pixels
++//     frame: u32,           // increments once per presented frame
++//   };
++//   @group(0) @binding(0) var<uniform> aurora_postfx: AuroraPostFx;
++//   @group(0) @binding(2) var aurora_linear: sampler;      // bilinear, clamp to edge
++//   struct AuroraPostFxVertex { @builtin(position) position: vec4f, @location(0) uv: vec2f };
++//   @vertex fn aurora_postfx_vs(...)                        // fullscreen triangle, uv 0..1 over the target
++//
++// The module itself declares the user uniform block at @binding(1) (contents set with
++// aurora_postfx_set_uniforms) and the pass inputs as texture_2d<f32> at @binding(3 + i).
++// The last pass renders into the present viewport of the swapchain (surface format,
++// write gamma-encoded values); its @builtin(position) is in surface pixels.
++// Earlier passes render into intermediate textures sized by `width`/`height`.
++
++#ifdef __cplusplus
++#include <cstdint>
++extern "C" {
++#else
++#include <stdbool.h>
++#include <stdint.h>
++#endif
++
++#define AURORA_POSTFX_MAX_PASSES 16
++#define AURORA_POSTFX_MAX_INPUTS 4
++#define AURORA_POSTFX_MAX_UNIFORM_SIZE 4096
++
++typedef enum {
++  AURORA_POSTFX_SIZE_VIEWPORT = 0, // value * present viewport extent
++  AURORA_POSTFX_SIZE_SOURCE = 1,   // value * game frame extent
++  AURORA_POSTFX_SIZE_INPUT = 2,    // value * extent of the pass's first input
++  AURORA_POSTFX_SIZE_ABSOLUTE = 3, // value pixels
++  AURORA_POSTFX_SIZE_ASPECT = 4,   // value * other axis * game frame aspect (keeps the source aspect)
++} AuroraPostFxSizeMode;
++
++typedef struct {
++  AuroraPostFxSizeMode mode;
++  float value;
++} AuroraPostFxSize;
++
++typedef struct {
++  const char* entryPoint;     // fragment entry point in the chain's module
++  AuroraPostFxSize width;     // ignored for the last pass
++  AuroraPostFxSize height;    // ignored for the last pass
++  bool hdr;                   // RGBA16Float target instead of the surface format (ignored for the last pass)
++  uint32_t inputCount;        // number of textures bound at @binding(3)..
++  uint32_t inputs[AURORA_POSTFX_MAX_INPUTS]; // 0 = game frame, n = output of pass n-1
++} AuroraPostFxPass;
++
++// Replaces the chain. Passing passCount 0 (or wgsl NULL) disables post-processing.
++// The module is compiled on the render thread at the next present; when compilation
++// or validation fails the error is logged and the chain is disabled until replaced.
++// Calling again with an identical chain is cheap (nothing is rebuilt).
++void aurora_postfx_set_chain(const char* wgsl, const AuroraPostFxPass* passes, uint32_t passCount);
++// Contents of the user uniform block (@binding(1)), shared by all passes.
++void aurora_postfx_set_uniforms(const void* data, uint32_t size);
++// True while a chain is set and has not failed to compile.
++bool aurora_postfx_active();
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/include/dolphin/gx/GXAurora.h b/include/dolphin/gx/GXAurora.h
+index 1a312fb..fe40f9f 100644
+--- a/include/dolphin/gx/GXAurora.h
++++ b/include/dolphin/gx/GXAurora.h
+@@ -173,6 +173,20 @@ void GXCreateFrameBuffer(u32 width, u32 height);
+  */
+ void GXRestoreFrameBuffer(void);
+ 
++/**
++ * Command capture, for replaying a frame's commands later (e.g. frame interpolation).
++ * While capturing, GX commands issued on the calling thread are written to `buf`
++ * instead of the FIFO, and GXDrawDone/AuroraGXSync on that thread don't wait.
++ * Other threads keep using the FIFO normally.
++ */
++void AuroraCaptureBegin(void* buf, u32 size);
++/** Ends the capture on the calling thread; returns the bytes written (32-byte padded). */
++u32 AuroraCaptureEnd(void);
++/** Bytes written so far by the current capture on the calling thread. */
++u32 AuroraCapturePos(void);
++/** Submits captured commands to the FIFO (inside an open frame). */
++void AuroraReplay(const void* data, u32 size);
++
+ #if __cplusplus
+ }
+ #endif
+diff --git a/lib/aurora.cpp b/lib/aurora.cpp
+index 122262c..8003176 100644
+--- a/lib/aurora.cpp
++++ b/lib/aurora.cpp
+@@ -13,6 +13,7 @@
+ #include "imgui.hpp"
+ #include "webgpu/gpu.hpp"
+ #include "webgpu/gpu_prof.hpp"
++#include "webgpu/postfx.hpp"
+ #include <webgpu/webgpu_cpp.h>
+ #endif
+ 
+@@ -214,6 +215,7 @@ void shutdown() noexcept {
+   rmlui::shutdown();
+ #endif
+   imgui::shutdown();
++  webgpu::postfx::shutdown();
+   gfx::shutdown();
+   webgpu::shutdown();
+ #endif
+@@ -308,9 +310,11 @@ void end_frame() noexcept {
+     const bool canPresent = currentTexture && currentView;
+     if (canPresent) {
+       wgpu::BindGroup presentBindGroup;
++      // Post-process chain (if any) reads the game frame directly; the UI passes below stay unfiltered.
++      const bool postfx = !(rmlBindGroup && !rmlOverlay) && webgpu::postfx::prepare(encoder, viewport);
+       if (rmlBindGroup && !rmlOverlay) {
+         presentBindGroup = rmlBindGroup;
+-      } else {
++      } else if (!postfx) {
+         const auto& resampledSource = webgpu::resample_present_source(encoder, viewport);
+         presentBindGroup = webgpu::create_copy_bind_group(resampledSource);
+       }
+@@ -330,12 +334,15 @@ void end_frame() noexcept {
+         };
+         const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
+         // Copy EFB -> XFB (swapchain)
+-        pass.SetPipeline(webgpu::g_CopyPipeline);
+-        pass.SetBindGroup(0, presentBindGroup, 0, nullptr);
+         set_present_viewport(pass, viewport, webgpu::g_graphicsConfig.surfaceConfiguration.width,
+                              webgpu::g_graphicsConfig.surfaceConfiguration.height);
+-
+-        pass.Draw(3);
++        if (postfx) {
++          webgpu::postfx::draw(pass);
++        } else {
++          pass.SetPipeline(webgpu::g_CopyPipeline);
++          pass.SetBindGroup(0, presentBindGroup, 0, nullptr);
++          pass.Draw(3);
++        }
+         if (rmlBindGroup && rmlOverlay) {
+           pass.SetPipeline(webgpu::g_CopyPremultipliedAlphaPipeline);
+           pass.SetBindGroup(0, rmlBindGroup, 0, nullptr);
+diff --git a/lib/dolphin/gx/GXAurora.cpp b/lib/dolphin/gx/GXAurora.cpp
+index 85a4285..1513ec0 100644
+--- a/lib/dolphin/gx/GXAurora.cpp
++++ b/lib/dolphin/gx/GXAurora.cpp
+@@ -46,6 +46,18 @@ void AuroraGetRenderSize(u32* width, u32* height) {
+   }
+ }
+ 
++void AuroraCaptureBegin(void* buf, u32 size) {
++  aurora::gx::fifo::begin_display_list(static_cast<u8*>(buf), size);
++}
++
++u32 AuroraCaptureEnd() { return aurora::gx::fifo::end_display_list(); }
++
++u32 AuroraCapturePos() { return aurora::gx::fifo::display_list_pos(); }
++
++void AuroraReplay(const void* data, u32 size) {
++  aurora::gx::fifo::replay(static_cast<const u8*>(data), size);
++}
++
+ void AuroraGXSync() {
+   GXFlush();
+   aurora::gx::fifo::drain();
 diff --git a/lib/dolphin/gx/GXFrameBuffer.cpp b/lib/dolphin/gx/GXFrameBuffer.cpp
 index 8a3d428..18ee339 100644
 --- a/lib/dolphin/gx/GXFrameBuffer.cpp
@@ -88,10 +283,10 @@ index 8a3d428..18ee339 100644
    ++handle.revision;
 diff --git a/lib/gfx/efb_ram.cpp b/lib/gfx/efb_ram.cpp
 new file mode 100644
-index 0000000..14a70af
+index 0000000..b4bb1b7
 --- /dev/null
 +++ b/lib/gfx/efb_ram.cpp
-@@ -0,0 +1,882 @@
+@@ -0,0 +1,920 @@
 +#include "efb_ram.hpp"
 +
 +#include "frame_packet.hpp"
@@ -334,6 +529,23 @@ index 0000000..14a70af
 +// whatever thread services Dawn callbacks; writebacks run on the caller of apply().
 +// ---------------------------------------------------------------------------------------------
 +
++// A GPU buffer recorded on the FIFO thread but created and used only on the render worker
++// (Dawn device calls from the FIFO thread race with the render worker).
++struct LazyBuffer {
++  wgpu::Buffer buffer;
++  uint64_t size = 0;
++  wgpu::BufferUsage usage = wgpu::BufferUsage::None;
++  const char* label = "";
++  const wgpu::Buffer& get() {
++    if (!buffer) {
++      const wgpu::BufferDescriptor desc{.label = label, .usage = usage, .size = size};
++      buffer = g_device.CreateBuffer(&desc);
++    }
++    return buffer;
++  }
++};
++using LazyBufferRef = std::shared_ptr<LazyBuffer>;
++
 +struct Entry {
 +  const uint8_t* dest = nullptr;
 +  uint32_t size = 0;
@@ -341,7 +553,7 @@ index 0000000..14a70af
 +  uint32_t width = 0;
 +  uint32_t height = 0;
 +  TextureHandle copy;   // the copy's GPU texture (Aurora's, possibly upscaled)
-+  wgpu::Buffer bytes;   // GX-format bytes of the copy
++  LazyBufferRef bytes;  // GX-format bytes of the copy
 +  uint64_t seq = 0;
 +  uint64_t encodedSeq = 0;
 +  HashType ramHash = 0; // memory contents we expect (pre-copy, or our writeback)
@@ -349,7 +561,8 @@ index 0000000..14a70af
 +};
 +
 +struct Readback {
-+  wgpu::Buffer buffer;
++  wgpu::Buffer buffer;        // render worker / map callback only
++  std::vector<uint8_t> data;  // filled by the map callback
 +  const uint8_t* dest = nullptr;
 +  uint32_t size = 0;
 +  GXTexFmt fmt = GX_TF_I8;
@@ -380,11 +593,12 @@ index 0000000..14a70af
 +std::atomic_bool g_enabled{true};
 +std::atomic_bool g_readbackAll{false};
 +std::vector<Entry> g_entries; // oldest first
-+absl::flat_hash_map<uint64_t, wgpu::Buffer> g_bytePool; // (dest ^ size) -> bytes buffer, reused per range
++absl::flat_hash_map<uint64_t, LazyBufferRef> g_bytePool; // (dest ^ size) -> bytes buffer, reused per range
 +absl::flat_hash_map<DecodedKey, Decoded> g_decoded;
 +std::vector<std::pair<const uint8_t*, uint32_t>> g_cpuReadRanges;
 +std::vector<std::pair<const uint8_t*, uint32_t>> g_watchRanges; // read back even when disabled
 +std::deque<std::shared_ptr<Readback>> g_landed;
++std::mutex g_poolMutex;  // readback buffer pool: render worker + map callbacks
 +std::vector<wgpu::Buffer> g_readbackPool;
 +absl::flat_hash_map<const uint8_t*, std::pair<uint32_t, HashType>> g_written; // our last writeback per dest
 +uint64_t g_seq = 0;
@@ -411,20 +625,20 @@ index 0000000..14a70af
 +
 +uint32_t align4(uint32_t v) { return (v + 3u) & ~3u; }
 +
-+wgpu::Buffer bytes_buffer(const uint8_t* dest, uint32_t size) {
++LazyBufferRef bytes_buffer(const uint8_t* dest, uint32_t size) {
 +  const uint64_t key = reinterpret_cast<uintptr_t>(dest) ^ (static_cast<uint64_t>(size) << 40);
 +  auto& buf = g_bytePool[key];
 +  if (!buf) {
-+    const wgpu::BufferDescriptor desc{
-+        .label = "EFB copy RAM bytes",
-+        .usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopySrc | wgpu::BufferUsage::CopyDst,
++    buf = std::make_shared<LazyBuffer>(LazyBuffer{
 +        .size = align4(size),
-+    };
-+    buf = g_device.CreateBuffer(&desc);
++        .usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopySrc | wgpu::BufferUsage::CopyDst,
++        .label = "EFB copy RAM bytes",
++    });
 +  }
 +  return buf;
 +}
 +
++// Render worker only.
 +wgpu::Buffer params_buffer(const Params& params) {
 +  const wgpu::BufferDescriptor desc{
 +      .label = "EFB copy RAM params",
@@ -507,17 +721,17 @@ index 0000000..14a70af
 +PassOp make_encode_op(Entry& e) {
 +  e.encodedSeq = e.seq;
 +  ++g_stats.encodes;
-+  const auto paramsBuf = params_buffer(Params{
++  const Params params{
 +      .fmt = static_cast<uint32_t>(e.fmt),
 +      .width = e.width,
 +      .height = e.height,
 +      .srcWidth = e.copy->size.width,
 +      .srcHeight = e.copy->size.height,
 +      .byteSize = e.size,
-+  });
++  };
 +  return [copy = e.copy, bytes = e.bytes, fmt = e.fmt, w = e.width, h = e.height, size = e.size,
-+          paramsBuf](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
-+    run_encode(cmd, copy, bytes, fmt, w, h, size, paramsBuf);
++          params](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
++    run_encode(cmd, copy, bytes->get(), fmt, w, h, size, params_buffer(params));
 +  };
 +}
 +
@@ -536,7 +750,9 @@ index 0000000..14a70af
 +  }
 +}
 +
++// Render worker only.
 +wgpu::Buffer acquire_readback_buffer(uint32_t size) {
++  std::lock_guard lock{g_poolMutex};
 +  for (auto it = g_readbackPool.begin(); it != g_readbackPool.end(); ++it) {
 +    if (it->GetSize() >= size) {
 +      auto buf = std::move(*it);
@@ -628,8 +844,11 @@ index 0000000..14a70af
 +  g_entries.clear();
 +  g_bytePool.clear();
 +  g_decoded.clear();
++  {
++    std::lock_guard poolLock{g_poolMutex};
++    g_readbackPool.clear();
++  }
 +  g_landed.clear();
-+  g_readbackPool.clear();
 +  g_encodePipeline = {};
 +  g_encodeLayout = {};
 +  g_decodePipeline = {};
@@ -695,7 +914,6 @@ index 0000000..14a70af
 +  ++g_stats.readbacks;
 +  auto encode = make_encode_op(e);
 +  auto rb = std::make_shared<Readback>(Readback{
-+      .buffer = acquire_readback_buffer(size),
 +      .dest = dest,
 +      .size = size,
 +      .fmt = fmt,
@@ -707,18 +925,31 @@ index 0000000..14a70af
 +  return [encode = std::move(encode), bytes = e.bytes, rb](const wgpu::CommandEncoder& cmd,
 +                                                           detail::FramePacket& frame) {
 +    encode(cmd, frame);
-+    cmd.CopyBufferToBuffer(bytes, 0, rb->buffer, 0, align4(rb->size));
++    rb->buffer = acquire_readback_buffer(rb->size);
++    cmd.CopyBufferToBuffer(bytes->get(), 0, rb->buffer, 0, align4(rb->size));
 +    frame.afterSubmitCallbacks.emplace_back([rb] {
-+      rb->buffer.MapAsync(wgpu::MapMode::Read, 0, align4(rb->size), wgpu::CallbackMode::AllowSpontaneous,
-+                          [rb](wgpu::MapAsyncStatus status, wgpu::StringView message) {
-+                            rb->ok = status == wgpu::MapAsyncStatus::Success;
-+                            if (!rb->ok && status != wgpu::MapAsyncStatus::CallbackCancelled &&
-+                                status != wgpu::MapAsyncStatus::Aborted) {
-+                              Log.warn("readback map failed: {}", magic_enum::enum_name(status));
-+                            }
-+                            std::lock_guard lock{g_mutex};
-+                            g_landed.push_back(rb);
-+                          });
++      rb->buffer.MapAsync(
++          wgpu::MapMode::Read, 0, align4(rb->size), wgpu::CallbackMode::AllowSpontaneous,
++          [rb](wgpu::MapAsyncStatus status, wgpu::StringView) {
++            rb->ok = status == wgpu::MapAsyncStatus::Success;
++            if (rb->ok) {
++              const auto* mapped = static_cast<const uint8_t*>(rb->buffer.GetConstMappedRange(0, align4(rb->size)));
++              rb->ok = mapped != nullptr;
++              if (rb->ok) {
++                rb->data.assign(mapped, mapped + rb->size);
++              }
++              rb->buffer.Unmap();
++              std::lock_guard lock{g_poolMutex};
++              if (g_readbackPool.size() < 16) {
++                g_readbackPool.push_back(std::move(rb->buffer));
++              }
++            } else if (status != wgpu::MapAsyncStatus::CallbackCancelled && status != wgpu::MapAsyncStatus::Aborted) {
++              Log.warn("readback map failed: {}", magic_enum::enum_name(status));
++            }
++            rb->buffer = {};
++            std::lock_guard lock{g_mutex};
++            g_landed.push_back(rb);
++          });
 +    });
 +  };
 +}
@@ -806,7 +1037,7 @@ index 0000000..14a70af
 +      ops.push_back(make_encode_op(*e));
 +    }
 +  }
-+  wgpu::Buffer src;
++  LazyBufferRef src;
 +  uint32_t srcSize = 0;
 +  uint32_t srcOffset = 0;
 +  const auto* single = parts.size() == 1 && parts[0]->dest <= data && data + texSize <= parts[0]->dest + parts[0]->size
@@ -818,15 +1049,27 @@ index 0000000..14a70af
 +    srcOffset = static_cast<uint32_t>(data - single->dest);
 +  } else {
 +    // Memory under the texture, then each copy's bytes over it in copy order.
-+    const wgpu::BufferDescriptor desc{
-+        .label = "EFB copy RAM staging",
-+        .usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst,
++    src = std::make_shared<LazyBuffer>(LazyBuffer{
 +        .size = align4(texSize),
-+        .mappedAtCreation = true,
-+    };
-+    src = g_device.CreateBuffer(&desc);
-+    std::memcpy(src.GetMappedRange(0, align4(texSize)), data, texSize);
-+    src.Unmap();
++        .usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst,
++        .label = "EFB copy RAM staging",
++    });
++    auto mem = std::make_shared<std::vector<uint8_t>>(data, data + texSize);
++    mem->resize(align4(texSize));
++    ops.push_back([src, mem](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
++      // Through a mapped-at-creation copy buffer recorded into the same encoder, so the upload is
++      // ordered with the copies below (queue.WriteBuffer would land before the whole frame).
++      const wgpu::BufferDescriptor desc{
++          .label = "EFB copy RAM staging upload",
++          .usage = wgpu::BufferUsage::CopySrc,
++          .size = mem->size(),
++          .mappedAtCreation = true,
++      };
++      const auto upload = g_device.CreateBuffer(&desc);
++      std::memcpy(upload.GetMappedRange(0, mem->size()), mem->data(), mem->size());
++      upload.Unmap();
++      cmd.CopyBufferToBuffer(upload, 0, src->get(), 0, mem->size());
++    });
 +    srcSize = texSize;
 +    for (auto* e : parts) {
 +      const uint8_t* lo = std::max(e->dest, data);
@@ -835,19 +1078,19 @@ index 0000000..14a70af
 +      const auto to = static_cast<uint32_t>(lo - data) & ~3u;
 +      const auto len = align4(static_cast<uint32_t>(hi - lo));
 +      ops.push_back([bytes = e->bytes, src, from, to, len](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
-+        cmd.CopyBufferToBuffer(bytes, from, src, to, len);
++        cmd.CopyBufferToBuffer(bytes->get(), from, src->get(), to, len);
 +      });
 +    }
 +  }
-+  const auto paramsBuf = params_buffer(Params{
++  const Params params{
 +      .fmt = fmt,
 +      .width = width,
 +      .height = height,
 +      .byteSize = srcSize,
 +      .byteOffset = srcOffset,
-+  });
-+  ops.push_back([src, srcSize, paramsBuf, dst = dec.handle](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
-+    run_decode(cmd, src, srcSize, paramsBuf, dst);
++  };
++  ops.push_back([src, srcSize, params, dst = dec.handle](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
++    run_decode(cmd, src->get(), srcSize, params_buffer(params), dst);
 +  });
 +  if (!queue_pre_pass_ops(std::move(ops))) {
 +    return {};
@@ -933,8 +1176,7 @@ index 0000000..14a70af
 +      const auto prev = g_written.find(rb->dest);
 +      const bool ours = prev != g_written.end() && prev->second.first == rb->size && prev->second.second == now;
 +      if (now == rb->preHash || ours) {
-+        const auto* mapped = static_cast<const uint8_t*>(rb->buffer.GetConstMappedRange(0, align4(rb->size)));
-+        std::memcpy(dest, mapped, rb->size);
++        std::memcpy(dest, rb->data.data(), rb->size);
 +        const aurora::HashType h = hash_range(dest, rb->size);
 +        g_written[rb->dest] = {rb->size, h};
 +        for (auto& e : g_entries) {
@@ -947,15 +1189,6 @@ index 0000000..14a70af
 +        wrote = true;
 +      } else {
 +        ++g_stats.skipped;
-+      }
-+    }
-+    if (rb->buffer.GetMapState() == wgpu::BufferMapState::Mapped) {
-+      rb->buffer.Unmap();
-+    }
-+    {
-+      std::lock_guard lock{g_mutex};
-+      if (g_readbackPool.size() < 16) {
-+        g_readbackPool.push_back(std::move(rb->buffer));
 +      }
 +    }
 +    if (wrote && g_writebackFn != nullptr) {
@@ -1098,10 +1331,15 @@ index 564e2f0..0d38a4e 100644
    RenderTargetLayout target_layout() const noexcept;
    bool has_consumer() const { return resolveTarget || snapshotColorDst || snapshotDepthDst || snapshotNormalDst; }
 diff --git a/lib/gfx/recording.cpp b/lib/gfx/recording.cpp
-index 67c57a8..78b1ca1 100644
+index 9d1df79..78b1ca1 100644
 --- a/lib/gfx/recording.cpp
 +++ b/lib/gfx/recording.cpp
-@@ -70,6 +70,7 @@ struct FrameRecorder {
+@@ -1,3 +1,4 @@
++#include "../gx/command_processor.hpp"
+ #include "recording.hpp"
+ 
+ #include "encoding.hpp"
+@@ -69,6 +70,7 @@ struct FrameRecorder {
  };
  
  FrameRecorder g_recorder;
@@ -1109,7 +1347,15 @@ index 67c57a8..78b1ca1 100644
  
  std::string pass_label(std::string_view kind) {
  #ifdef AURORA_GFX_DEBUG_GROUPS
-@@ -842,6 +843,10 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
+@@ -603,6 +605,7 @@ RecordedFrame end_recording() {
+   for (auto& array : gx::g_gxState.arrays) {
+     array.cachedRange = {};
+   }
++  gx::fifo::reset_dynamic_arrays();
+ #if defined(AURORA_GFX_DEBUG_GROUPS)
+   if (!g_recorder.debugGroupStack.empty()) {
+     for (auto& item : std::ranges::reverse_view(g_recorder.debugGroupStack)) {
+@@ -840,6 +843,10 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
        .opaqueAlpha = !gx::efb_has_alpha(sourceFormat),
    };
    prevPass.resolveUniformRange = push_uniform(uniforms);
@@ -1120,7 +1366,7 @@ index 67c57a8..78b1ca1 100644
    enqueue_pass(current_frame_packet(), g_recorder.currentRenderPass);
  
    // Populate new render pass from previous
-@@ -914,6 +919,22 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
+@@ -912,6 +919,22 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
    push_command(CommandType::SetScissor, Command::Data{.setScissor = g_recorder.cachedScissor});
  }
  
@@ -1165,6 +1411,279 @@ index c1b4a7d..8a9f256 100644
  uint32_t align_uniform(uint32_t value);
  Vec2<uint32_t> get_render_target_size() noexcept;
  void set_viewport(const Viewport& viewport) noexcept;
+diff --git a/lib/gfx/resources.hpp b/lib/gfx/resources.hpp
+index 3fdc0ee..add7909 100644
+--- a/lib/gfx/resources.hpp
++++ b/lib/gfx/resources.hpp
+@@ -5,9 +5,9 @@
+ namespace aurora::gfx {
+ inline constexpr bool UseTextureBuffer = true;
+ inline constexpr uint64_t UniformBufferSize = 25165824; // 24 MiB
+-inline constexpr uint64_t VertexBufferSize = 5242880;   // 5 MiB
+-inline constexpr uint64_t IndexBufferSize = 2097152;    // 2 MiB
+-inline constexpr uint64_t StorageBufferSize = 8388608;  // 8 MiB
++inline constexpr uint64_t VertexBufferSize = 33554432;  // 32 MiB
++inline constexpr uint64_t IndexBufferSize = 8388608;    // 8 MiB
++inline constexpr uint64_t StorageBufferSize = 67108864; // 64 MiB
+ inline constexpr uint64_t TextureUploadSize = 25165824; // 24 MiB
+ 
+ namespace detail {
+diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
+index 9c6ffa1..c890683 100644
+--- a/lib/gx/command_processor.cpp
++++ b/lib/gx/command_processor.cpp
+@@ -1,5 +1,7 @@
+ #include "command_processor.hpp"
+ 
++#include <unordered_map>
++
+ #include "../gfx/depth_peek.hpp"
+ #include "../gfx/recording.hpp"
+ #include "../internal.hpp"
+@@ -263,7 +265,7 @@ ProcessResult process(const u8* data, u32 size) noexcept {
+       const u32 srcOffset = static_cast<u32>(srcArrayIdx) * array.stride;
+       const u32 srcSize = static_cast<u32>(len) * sizeof(u32);
+       AURORA_ASSERT(array.data != nullptr, "indexed XF load from unmapped array {}", arrayType);
+-      AURORA_ASSERT(srcOffset <= array.size && srcSize <= array.size - srcOffset,
++      AURORA_ASSERT(array.size == 0 || (srcOffset <= array.size && srcSize <= array.size - srcOffset),
+                     "indexed XF load outside array {}: offset={}, size={}, array size={}", arrayType, srcOffset,
+                     srcSize, array.size);
+       auto const* srcData = static_cast<const u8*>(array.data) + srcOffset;
+@@ -384,13 +386,18 @@ static void push_gx_draw(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Rang
+   auto& state = g_gxState;
+   auto& cache = sDrawCache;
+ 
++  // GX_CULL_ALL rejects every triangle; lines and points are not culled.
++  if (state.cullMode == GX_CULL_ALL && prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS) {
++    return;
++  }
++
+   DrawImmediateData immediates{.vtxStart = vertRange.offset, .currentPnMtx = state.currentPnMtx};
+   for (int i = GX_VA_POS; i <= GX_VA_TEX7; ++i) {
+     if (state.vtxDesc[i] != GX_INDEX8 && state.vtxDesc[i] != GX_INDEX16) {
+       continue;
+     }
+     auto& array = state.arrays[i];
+-    if (array.cachedRange.size == 0) {
++    if (array.cachedRange.size == 0 && array.size != 0) {
+       array.cachedRange = gfx::push_storage(static_cast<const uint8_t*>(array.data), array.size);
+     }
+     immediates.arrayStart[i - GX_VA_POS] = array.cachedRange.offset;
+@@ -488,6 +495,64 @@ static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, g
+   push_gx_draw(prim, fmt, vtxCount, vertRange, idxRange, numIndices);
+ }
+ 
++// Arrays registered with size 0 have an unknown extent (e.g. set by recompiled
++// console code, which never passes sizes). Size them from the largest index the
++// draw actually references, growing the uploaded range when a later draw needs more.
++static std::unordered_map<const void*, gfx::Range> sDynamicUploads;
++
++void reset_dynamic_arrays() noexcept { sDynamicUploads.clear(); }
++
++static void size_dynamic_arrays(GXVtxFmt fmt, const u8* vtx, u16 vtxCount, u32 vtxSize) noexcept {
++  const auto& vtxFmt = g_gxState.vtxFmts[fmt];
++  u32 offset = 0;
++  for (int i = GX_VA_PNMTXIDX; i <= GX_VA_TEX7; ++i) {
++    const auto& attrFmt = vtxFmt.attrs[i];
++    const auto type = g_gxState.vtxDesc[i];
++    if (type == GX_NONE) {
++      continue;
++    }
++    if (type == GX_DIRECT) {
++      const auto attr = static_cast<GXAttr>(i);
++      offset += comp_type_size(attr, attrFmt.type) * comp_cnt_count(attr, attrFmt.cnt);
++      continue;
++    }
++    const bool nbt3 = i == GX_VA_NRM && attrFmt.cnt == GX_NRM_NBT3;
++    const u32 idxSize = type == GX_INDEX16 ? 2 : 1;
++    const u32 width = nbt3 ? idxSize * 3 : idxSize;
++    auto& array = g_gxState.arrays[i];
++    if (array.size == 0 && array.data != nullptr) {
++      u32 maxIdx = 0;
++      bool any = false;
++      for (u32 v = 0; v < vtxCount; ++v) {
++        const u8* p = vtx + v * vtxSize + offset;
++        for (u32 k = 0; k < width; k += idxSize) {
++          const u32 idx = idxSize == 2 ? (u32(p[k]) << 8 | p[k + 1]) : p[k];
++          if (idx == (idxSize == 2 ? 0xFFFFu : 0xFFu)) {
++            continue;
++          }
++          maxIdx = std::max(maxIdx, idx);
++          any = true;
++        }
++      }
++      const u32 stride = array.stride != 0 ? array.stride : 1;
++      const u32 needed = any ? (maxIdx + 1) * stride + (nbt3 ? 2 * stride : 0) : 0;
++      if (needed > array.cachedRange.size) {
++        // Share uploads between arrays/draws using the same memory this frame, and
++        // grow geometrically so a slowly increasing index range isn't re-uploaded per draw.
++        auto& shared = sDynamicUploads[array.data];
++        if (needed > shared.size) {
++          u32 size = 256;
++          while (size < needed) size *= 2;
++          shared = gfx::push_storage(static_cast<const uint8_t*>(array.data), size);
++        }
++        array.cachedRange = shared;
++        g_gxState.dirty |= DirtyImmediates;
++      }
++    }
++    offset += width;
++  }
++}
++
+ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader& reader) noexcept {
+   ZoneScoped;
+   u32 vtxSize;
+@@ -500,6 +565,8 @@ static void draw_prim(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, ByteReader&
+   if (totalVtxBytes > reader.remaining())
+     UNLIKELY { handle_draw_overrun(totalVtxBytes, reader); }
+ 
++  size_dynamic_arrays(fmt, reader.data() + reader.offset(), vtxCount, vtxSize);
++
+   const bool cleanState = g_gxState.dirty == 0 && fmt == sDrawCache.lastDrawFmt && sDrawCache.lineMode == 0 &&
+                           prim != GX_LINES && prim != GX_LINESTRIP && prim != GX_POINTS;
+   auto* lastDraw = cleanState ? gfx::get_last_draw_command<DrawData>() : nullptr;
+diff --git a/lib/gx/command_processor.hpp b/lib/gx/command_processor.hpp
+index fb9fe15..b5b5656 100644
+--- a/lib/gx/command_processor.hpp
++++ b/lib/gx/command_processor.hpp
+@@ -14,5 +14,7 @@ struct ProcessResult {
+ // Process GX FIFO commands until the next draw done event or end of buffer
+ ProcessResult process(const uint8_t* data, uint32_t size) noexcept;
+ void clear_draw_cache() noexcept;
++// Forgets this frame's uploads of dynamically sized vertex arrays (see size_dynamic_arrays).
++void reset_dynamic_arrays() noexcept;
+ 
+ } // namespace aurora::gx::fifo
+diff --git a/lib/gx/fifo.cpp b/lib/gx/fifo.cpp
+index bcaba60..2f68795 100644
+--- a/lib/gx/fifo.cpp
++++ b/lib/gx/fifo.cpp
+@@ -16,10 +16,10 @@ namespace detail {
+ uint8_t* sBufferData = nullptr;
+ uint32_t sBufferSize = 0;
+ uint32_t sBufferCapacity = 0;
+-bool sInDisplayList = false;
+-uint8_t* sDlBuffer = nullptr;
+-uint32_t sDlSize = 0;
+-uint32_t sDlWritePos = 0;
++thread_local bool sInDisplayList = false;
++thread_local uint8_t* sDlBuffer = nullptr;
++thread_local uint32_t sDlSize = 0;
++thread_local uint32_t sDlWritePos = 0;
+ } // namespace detail
+ 
+ namespace {
+@@ -231,8 +231,22 @@ uint32_t end_display_list() {
+ 
+ bool in_display_list() { return detail::sInDisplayList; }
+ 
++uint32_t display_list_pos() { return detail::sDlWritePos; }
++
++void replay(const uint8_t* data, uint32_t size) {
++  AURORA_ASSERT(!detail::sInDisplayList, "fifo::replay: called while recording");
++  if (size <= detail::sBufferCapacity - detail::sBufferSize) {
++    std::memcpy(detail::sBufferData + detail::sBufferSize, data, size);
++    detail::sBufferSize += size;
++  } else {
++    write_data_grow(data, size);
++  }
++  publish();
++}
++
+ void drain() {
+-  if (detail::sBufferSize == 0) {
++  // A thread that is recording has nothing of its own in the FIFO.
++  if (detail::sInDisplayList || detail::sBufferSize == 0) {
+     return;
+   }
+ 
+diff --git a/lib/gx/fifo.hpp b/lib/gx/fifo.hpp
+index 0d6a5d8..0f706a7 100644
+--- a/lib/gx/fifo.hpp
++++ b/lib/gx/fifo.hpp
+@@ -10,10 +10,12 @@ namespace detail {
+ extern uint8_t* sBufferData;
+ extern uint32_t sBufferSize;
+ extern uint32_t sBufferCapacity;
+-extern bool sInDisplayList;
+-extern uint8_t* sDlBuffer;
+-extern uint32_t sDlSize;
+-extern uint32_t sDlWritePos;
++// Per thread, so one thread can record (a display list, or a capture) while
++// another submits to the FIFO.
++extern thread_local bool sInDisplayList;
++extern thread_local uint8_t* sDlBuffer;
++extern thread_local uint32_t sDlSize;
++extern thread_local uint32_t sDlWritePos;
+ } // namespace detail
+ 
+ enum class ProcessingMode : uint8_t {
+@@ -103,6 +105,11 @@ DrawDoneCallback set_draw_done_callback(DrawDoneCallback callback) noexcept;
+ void begin_display_list(uint8_t* buf, uint32_t size);
+ uint32_t end_display_list();
+ bool in_display_list();
++uint32_t display_list_pos();
++
++// Appends recorded commands to the FIFO and publishes them (bypasses the
++// calling thread's display-list redirection).
++void replay(const uint8_t* data, uint32_t size);
+ 
+ // Ensure all buffered commands have been processed.
+ void drain();
+diff --git a/lib/gx/gx.cpp b/lib/gx/gx.cpp
+index 1fec701..0d4fa37 100644
+--- a/lib/gx/gx.cpp
++++ b/lib/gx/gx.cpp
+@@ -205,6 +205,8 @@ wgpu::PrimitiveState to_primitive_state(GXCullMode gx_cullMode) {
+   auto cullMode = wgpu::CullMode::None;
+   switch (gx_cullMode) {
+     DEFAULT_FATAL("unsupported cull mode {}", underlying(gx_cullMode));
++  case GX_CULL_ALL: // triangle draws are dropped before reaching the GPU (push_gx_draw)
++    break;
+   case GX_CULL_FRONT:
+     cullMode = wgpu::CullMode::Front;
+     break;
+diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
+index 9dfbdac..9054080 100644
+--- a/lib/gx/shader.cpp
++++ b/lib/gx/shader.cpp
+@@ -1106,8 +1106,18 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+         return fmt::format("tev_overflow_f32({})", value);
+       };
+       std::string_view outReg = regName[stage.alphaOp.outReg];
++      // The R8/GR16/BGR24 compare modes compare the stage's *color* inputs A and B even
++      // in the alpha unit; only the last mode (A8) compares the alpha inputs.
++      const auto aop = stage.alphaOp.op;
++      const bool colorCompare = aop >= GX_TEV_COMP_R8_GT && aop <= GX_TEV_COMP_BGR24_EQ;
++      const auto cmp_arg = [&](GXTevColorArg carg, GXTevAlphaArg aarg) {
++        if (!colorCompare) return alpha_arg(aarg);
++        auto value = color_arg_reg(carg, idx, config, stage);
++        return fmt::format("vec3f({})", value);
++      };
+       std::string op = tev_alpha_op(stage.alphaOp.op, tev_bias(stage.alphaOp.bias), tev_scale(stage.alphaOp.scale),
+-                                    stage.alphaOp.clamp, alpha_arg(stage.alphaPass.a), alpha_arg(stage.alphaPass.b),
++                                    stage.alphaOp.clamp, cmp_arg(stage.colorPass.a, stage.alphaPass.a),
++                                    cmp_arg(stage.colorPass.b, stage.alphaPass.b),
+                                     alpha_arg(stage.alphaPass.c), alpha_arg_reg(stage.alphaPass.d, idx, config, stage));
+       fragmentFn += fmt::format("\n    {0}.a = {1};", outReg, op);
+       alphaNormalized[stage.alphaOp.outReg] = stage.alphaOp.clamp;
+@@ -1248,6 +1258,15 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+       vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0);", i, nbt_slice_local(NbtSlice::B));
+     } else if (tcg.src == GX_TG_TANGENT) {
+       vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f({}, 1.0);", i, nbt_slice_local(NbtSlice::T));
++    } else if (tcg.src == GX_MAX_TEXGENSRC) {
++      // A TEV stage samples a texcoord that has no texgen (beyond numTexGens). Hardware yields
++      // undefined coordinates rather than failing; use (0, 0) and warn once.
++      static bool sWarned = false;
++      if (!sWarned) {
++        sWarned = true;
++        Log.warn("TEV samples texcoord {} without a texgen; using (0, 0)", i);
++      }
++      vtxXfrAttrs += fmt::format("\n    var tc{} = vec4f(0.0, 0.0, 1.0, 1.0);", i);
+     } else
+       UNLIKELY FATAL("unhandled tcg src {}", underlying(tcg.src));
+     if (tcg.type == GX_TG_MTX2x4 || tcg.type == GX_TG_MTX3x4) {
 diff --git a/lib/gx/texture.cpp b/lib/gx/texture.cpp
 index a56709a..a778ece 100644
 --- a/lib/gx/texture.cpp
@@ -1183,3 +1702,532 @@ index a56709a..a778ece 100644
      const auto copyIt = g_gxState.copyTextures.find(obj.data);
      const GXState::CopyTextureRef* copyRef = copyIt != g_gxState.copyTextures.end() ? &copyIt->second : nullptr;
      if (is_palette_format(obj.format())) {
+diff --git a/lib/webgpu/postfx.cpp b/lib/webgpu/postfx.cpp
+new file mode 100644
+index 0000000..00e5f52
+--- /dev/null
++++ b/lib/webgpu/postfx.cpp
+@@ -0,0 +1,505 @@
++// Post-process chain applied at present time. See include/aurora/postfx.h.
++#include "postfx.hpp"
++
++#include <aurora/postfx.h>
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstring>
++#include <map>
++#include <mutex>
++#include <string>
++#include <tuple>
++#include <vector>
++
++#include <webgpu/webgpu_cpp.h>
++
++#include "../internal.hpp"
++#include "gpu_prof.hpp"
++
++namespace aurora::webgpu::postfx {
++namespace {
++Module Log("aurora::postfx");
++
++constexpr uint32_t BuiltinSlotStride = 256; // minUniformBufferOffsetAlignment upper bound
++
++struct BuiltinBlock {
++  float outputSize[2];
++  float sourceSize[2];
++  float viewport[4];
++  float surfaceSize[2];
++  uint32_t frame;
++  uint32_t pad;
++};
++static_assert(sizeof(BuiltinBlock) == 48);
++
++constexpr std::string_view Prelude = R"(
++struct AuroraPostFx {
++    output_size: vec2f,
++    source_size: vec2f,
++    viewport: vec4f,
++    surface_size: vec2f,
++    frame: u32,
++};
++@group(0) @binding(0) var<uniform> aurora_postfx: AuroraPostFx;
++@group(0) @binding(2) var aurora_linear: sampler;
++struct AuroraPostFxVertex {
++    @builtin(position) position: vec4f,
++    @location(0) uv: vec2f,
++};
++@vertex
++fn aurora_postfx_vs(@builtin(vertex_index) vtx: u32) -> AuroraPostFxVertex {
++    let p = vec2f(f32((vtx << 1u) & 2u), f32(vtx & 2u));
++    var out: AuroraPostFxVertex;
++    out.position = vec4f(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
++    out.uv = p;
++    return out;
++}
++)";
++
++struct PassDesc {
++  std::string entryPoint;
++  AuroraPostFxSize width;
++  AuroraPostFxSize height;
++  bool hdr;
++  uint32_t inputCount;
++  std::array<uint32_t, AURORA_POSTFX_MAX_INPUTS> inputs;
++
++  bool operator==(const PassDesc& o) const {
++    return entryPoint == o.entryPoint && width.mode == o.width.mode && width.value == o.width.value &&
++           height.mode == o.height.mode && height.value == o.height.value && hdr == o.hdr &&
++           inputCount == o.inputCount && inputs == o.inputs;
++  }
++};
++
++// Shared between the API (any thread) and the render worker.
++std::mutex g_mutex;
++std::string g_pendingSource;
++std::vector<PassDesc> g_pendingPasses;
++uint64_t g_pendingGeneration = 0;
++std::vector<uint8_t> g_pendingUniforms;
++uint64_t g_uniformGeneration = 0;
++bool g_failed = false;
++
++// Render worker state.
++struct Target {
++  wgpu::Texture texture;
++  wgpu::TextureView view;
++  uint32_t width = 0;
++  uint32_t height = 0;
++  wgpu::TextureFormat format = wgpu::TextureFormat::Undefined;
++};
++struct BuiltPass {
++  PassDesc desc;
++  wgpu::RenderPipeline pipeline;
++  wgpu::BindGroupLayout layout;
++  Target target;
++};
++uint64_t g_builtGeneration = 0;
++uint64_t g_builtUniformGeneration = 0;
++std::string g_moduleSource;
++wgpu::ShaderModule g_module;
++std::map<std::tuple<std::string, uint32_t, wgpu::TextureFormat>, std::pair<wgpu::RenderPipeline, wgpu::BindGroupLayout>>
++    g_pipelineCache;
++std::vector<BuiltPass> g_passes;
++bool g_ready = false;
++wgpu::Sampler g_linearSampler;
++wgpu::Buffer g_builtinBuffer;
++wgpu::Buffer g_userBuffer;
++uint64_t g_userBufferSize = 0;
++std::vector<uint8_t> g_uniformScratch;
++wgpu::BindGroup g_finalBindGroup;
++uint32_t g_frame = 0;
++
++wgpu::TextureFormat target_format(const PassDesc& desc, bool last) {
++  if (!last && desc.hdr) {
++    return wgpu::TextureFormat::RGBA16Float;
++  }
++  return g_graphicsConfig.surfaceConfiguration.format;
++}
++
++bool wait_error_scope(const char* what) {
++  bool ok = true;
++  std::string message;
++  const auto future = g_device.PopErrorScope(
++      wgpu::CallbackMode::WaitAnyOnly,
++      [&](wgpu::PopErrorScopeStatus status, wgpu::ErrorType type, wgpu::StringView msg) {
++        if (status == wgpu::PopErrorScopeStatus::Success && type != wgpu::ErrorType::NoError) {
++          ok = false;
++          message = std::string(msg.data, msg.length);
++        }
++      });
++  g_instance.WaitAny(future, UINT64_MAX);
++  if (!ok) {
++    Log.error("{} failed: {}", what, message);
++  }
++  return ok;
++}
++
++std::pair<wgpu::RenderPipeline, wgpu::BindGroupLayout> get_pipeline(const PassDesc& desc, wgpu::TextureFormat format) {
++  const auto key = std::make_tuple(desc.entryPoint, desc.inputCount, format);
++  if (const auto it = g_pipelineCache.find(key); it != g_pipelineCache.end()) {
++    return it->second;
++  }
++  std::vector<wgpu::BindGroupLayoutEntry> entries{
++      wgpu::BindGroupLayoutEntry{
++          .binding = 0,
++          .visibility = wgpu::ShaderStage::Fragment | wgpu::ShaderStage::Vertex,
++          .buffer = {.type = wgpu::BufferBindingType::Uniform, .minBindingSize = sizeof(BuiltinBlock)},
++      },
++      wgpu::BindGroupLayoutEntry{
++          .binding = 1,
++          .visibility = wgpu::ShaderStage::Fragment,
++          .buffer = {.type = wgpu::BufferBindingType::Uniform},
++      },
++      wgpu::BindGroupLayoutEntry{
++          .binding = 2,
++          .visibility = wgpu::ShaderStage::Fragment,
++          .sampler = {.type = wgpu::SamplerBindingType::Filtering},
++      },
++  };
++  for (uint32_t i = 0; i < desc.inputCount; ++i) {
++    entries.push_back(wgpu::BindGroupLayoutEntry{
++        .binding = 3 + i,
++        .visibility = wgpu::ShaderStage::Fragment,
++        .texture = {.sampleType = wgpu::TextureSampleType::Float, .viewDimension = wgpu::TextureViewDimension::e2D},
++    });
++  }
++  const wgpu::BindGroupLayoutDescriptor layoutDesc{
++      .label = "PostFx bind group layout",
++      .entryCount = entries.size(),
++      .entries = entries.data(),
++  };
++  auto layout = g_device.CreateBindGroupLayout(&layoutDesc);
++  const wgpu::PipelineLayoutDescriptor pipelineLayoutDesc{
++      .bindGroupLayoutCount = 1,
++      .bindGroupLayouts = &layout,
++  };
++  const auto pipelineLayout = g_device.CreatePipelineLayout(&pipelineLayoutDesc);
++  const wgpu::ColorTargetState colorTarget{.format = format, .writeMask = wgpu::ColorWriteMask::All};
++  const wgpu::FragmentState fragment{
++      .module = g_module,
++      .entryPoint = desc.entryPoint.c_str(),
++      .targetCount = 1,
++      .targets = &colorTarget,
++  };
++  const wgpu::RenderPipelineDescriptor pipelineDesc{
++      .label = "PostFx pipeline",
++      .layout = pipelineLayout,
++      .vertex = {.module = g_module, .entryPoint = "aurora_postfx_vs"},
++      .primitive = {.topology = wgpu::PrimitiveTopology::TriangleList},
++      .multisample = {.count = 1, .mask = UINT32_MAX},
++      .fragment = &fragment,
++  };
++  auto pipeline = g_device.CreateRenderPipeline(&pipelineDesc);
++  auto result = std::make_pair(std::move(pipeline), std::move(layout));
++  g_pipelineCache.emplace(key, result);
++  return result;
++}
++
++bool build(const std::string& source, const std::vector<PassDesc>& passes) {
++  g_passes.clear();
++  if (source.empty() || passes.empty()) {
++    return false;
++  }
++  if (!g_linearSampler) {
++    const wgpu::SamplerDescriptor samplerDesc{
++        .label = "PostFx linear sampler",
++        .addressModeU = wgpu::AddressMode::ClampToEdge,
++        .addressModeV = wgpu::AddressMode::ClampToEdge,
++        .addressModeW = wgpu::AddressMode::ClampToEdge,
++        .magFilter = wgpu::FilterMode::Linear,
++        .minFilter = wgpu::FilterMode::Linear,
++        .mipmapFilter = wgpu::MipmapFilterMode::Nearest,
++    };
++    g_linearSampler = g_device.CreateSampler(&samplerDesc);
++    const wgpu::BufferDescriptor bufferDesc{
++        .label = "PostFx builtin uniforms",
++        .usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::Uniform,
++        .size = BuiltinSlotStride * AURORA_POSTFX_MAX_PASSES,
++    };
++    g_builtinBuffer = g_device.CreateBuffer(&bufferDesc);
++  }
++  for (size_t i = 0; i < passes.size(); ++i) {
++    for (uint32_t j = 0; j < passes[i].inputCount; ++j) {
++      if (passes[i].inputs[j] > i) {
++        Log.error("Pass {} ({}) reads the output of pass {}, which has not run yet", i, passes[i].entryPoint,
++                  passes[i].inputs[j] - 1);
++        return false;
++      }
++    }
++  }
++
++  g_device.PushErrorScope(wgpu::ErrorFilter::Validation);
++  if (source != g_moduleSource || !g_module) {
++    g_pipelineCache.clear();
++    std::string code{Prelude};
++    code += source;
++    wgpu::ShaderSourceWGSL wgsl{};
++    wgsl.code = code.c_str();
++    const wgpu::ShaderModuleDescriptor moduleDesc{.nextInChain = &wgsl, .label = "PostFx module"};
++    g_module = g_device.CreateShaderModule(&moduleDesc);
++    g_moduleSource = source;
++  }
++  for (size_t i = 0; i < passes.size(); ++i) {
++    const auto format = target_format(passes[i], i + 1 == passes.size());
++    auto [pipeline, layout] = get_pipeline(passes[i], format);
++    g_passes.push_back({.desc = passes[i], .pipeline = pipeline, .layout = layout});
++  }
++  if (!wait_error_scope("PostFx shader/pipeline creation")) {
++    g_module = {};
++    g_moduleSource.clear();
++    g_pipelineCache.clear();
++    g_passes.clear();
++    return false;
++  }
++  Log.info("Post-process chain ready ({} passes)", g_passes.size());
++  return true;
++}
++
++uint32_t resolve_extent(const AuroraPostFxSize& size, uint32_t viewportExtent, uint32_t sourceExtent,
++                        uint32_t inputExtent) {
++  double v = 0.0;
++  switch (size.mode) {
++  case AURORA_POSTFX_SIZE_VIEWPORT:
++    v = size.value * viewportExtent;
++    break;
++  case AURORA_POSTFX_SIZE_SOURCE:
++  default:
++    v = size.value * sourceExtent;
++    break;
++  case AURORA_POSTFX_SIZE_INPUT:
++    v = size.value * inputExtent;
++    break;
++  case AURORA_POSTFX_SIZE_ABSOLUTE:
++    v = size.value;
++    break;
++  }
++  return static_cast<uint32_t>(std::clamp(std::lround(v), 1l, 8192l));
++}
++
++void ensure_target(Target& target, uint32_t width, uint32_t height, wgpu::TextureFormat format) {
++  if (target.texture && target.width == width && target.height == height && target.format == format) {
++    return;
++  }
++  const wgpu::TextureDescriptor desc{
++      .label = "PostFx target",
++      .usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding,
++      .size = {width, height, 1},
++      .format = format,
++  };
++  target.texture = g_device.CreateTexture(&desc);
++  target.view = target.texture.CreateView();
++  target.width = width;
++  target.height = height;
++  target.format = format;
++}
++
++wgpu::BindGroup make_bind_group(const BuiltPass& pass, uint32_t index, const std::vector<wgpu::TextureView>& views) {
++  std::vector<wgpu::BindGroupEntry> entries{
++      wgpu::BindGroupEntry{
++          .binding = 0,
++          .buffer = g_builtinBuffer,
++          .offset = uint64_t{index} * BuiltinSlotStride,
++          .size = sizeof(BuiltinBlock),
++      },
++      wgpu::BindGroupEntry{.binding = 1, .buffer = g_userBuffer, .size = g_userBufferSize},
++      wgpu::BindGroupEntry{.binding = 2, .sampler = g_linearSampler},
++  };
++  for (uint32_t i = 0; i < pass.desc.inputCount; ++i) {
++    entries.push_back(wgpu::BindGroupEntry{.binding = 3 + i, .textureView = views[pass.desc.inputs[i]]});
++  }
++  const wgpu::BindGroupDescriptor desc{
++      .label = "PostFx bind group",
++      .layout = pass.layout,
++      .entryCount = entries.size(),
++      .entries = entries.data(),
++  };
++  return g_device.CreateBindGroup(&desc);
++}
++
++} // namespace
++
++bool prepare(const wgpu::CommandEncoder& encoder, const Viewport& viewport) {
++  std::vector<uint8_t> uniforms;
++  bool uniformsChanged = false;
++  {
++    std::lock_guard lock{g_mutex};
++    if (g_builtGeneration != g_pendingGeneration) {
++      g_builtGeneration = g_pendingGeneration;
++      g_ready = build(g_pendingSource, g_pendingPasses);
++      g_failed = !g_ready && !g_pendingPasses.empty();
++    }
++    if (g_builtUniformGeneration != g_uniformGeneration) {
++      g_builtUniformGeneration = g_uniformGeneration;
++      uniforms = g_pendingUniforms;
++      uniformsChanged = true;
++    }
++  }
++  if (uniformsChanged || !g_userBuffer) {
++    const uint64_t size = std::max<uint64_t>(16, (uniforms.size() + 15) & ~uint64_t{15});
++    if (!g_userBuffer || size != g_userBufferSize) {
++      const wgpu::BufferDescriptor desc{
++          .label = "PostFx user uniforms",
++          .usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::Uniform,
++          .size = size,
++      };
++      g_userBuffer = g_device.CreateBuffer(&desc);
++      g_userBufferSize = size;
++    }
++    uniforms.resize(size, 0);
++    g_queue.WriteBuffer(g_userBuffer, 0, uniforms.data(), uniforms.size());
++  }
++  g_finalBindGroup = {};
++  if (!g_ready || g_passes.empty() || viewport.width < 1.f || viewport.height < 1.f) {
++    return false;
++  }
++
++  const auto& source = present_source();
++  const uint32_t srcW = source.size.width;
++  const uint32_t srcH = source.size.height;
++  const uint32_t vpW = std::max(1u, static_cast<uint32_t>(std::lround(viewport.width)));
++  const uint32_t vpH = std::max(1u, static_cast<uint32_t>(std::lround(viewport.height)));
++  const double srcAspect = srcH ? static_cast<double>(srcW) / srcH : 1.0;
++
++  std::vector<wgpu::TextureView> views{source.view};
++  std::vector<std::pair<uint32_t, uint32_t>> sizes{{srcW, srcH}};
++  g_uniformScratch.assign(BuiltinSlotStride * g_passes.size(), 0);
++  for (size_t i = 0; i < g_passes.size(); ++i) {
++    auto& pass = g_passes[i];
++    const bool last = i + 1 == g_passes.size();
++    uint32_t w = vpW;
++    uint32_t h = vpH;
++    if (!last) {
++      const auto in = pass.desc.inputCount > 0 ? sizes[pass.desc.inputs[0]] : sizes[0];
++      const auto& dw = pass.desc.width;
++      const auto& dh = pass.desc.height;
++      if (dw.mode == AURORA_POSTFX_SIZE_ASPECT && dh.mode == AURORA_POSTFX_SIZE_ASPECT) {
++        w = srcW;
++        h = srcH;
++      } else if (dw.mode == AURORA_POSTFX_SIZE_ASPECT) {
++        h = resolve_extent(dh, vpH, srcH, in.second);
++        w = resolve_extent({AURORA_POSTFX_SIZE_ABSOLUTE, static_cast<float>(dw.value * h * srcAspect)}, 0, 0, 0);
++      } else if (dh.mode == AURORA_POSTFX_SIZE_ASPECT) {
++        w = resolve_extent(dw, vpW, srcW, in.first);
++        h = resolve_extent({AURORA_POSTFX_SIZE_ABSOLUTE, static_cast<float>(dh.value * w / srcAspect)}, 0, 0, 0);
++      } else {
++        w = resolve_extent(dw, vpW, srcW, in.first);
++        h = resolve_extent(dh, vpH, srcH, in.second);
++      }
++      ensure_target(pass.target, w, h, target_format(pass.desc, false));
++      views.push_back(pass.target.view);
++    }
++    sizes.emplace_back(w, h);
++    const BuiltinBlock block{
++        .outputSize = {static_cast<float>(w), static_cast<float>(h)},
++        .sourceSize = {static_cast<float>(srcW), static_cast<float>(srcH)},
++        .viewport = {viewport.left, viewport.top, viewport.width, viewport.height},
++        .surfaceSize = {static_cast<float>(g_graphicsConfig.surfaceConfiguration.width),
++                        static_cast<float>(g_graphicsConfig.surfaceConfiguration.height)},
++        .frame = g_frame,
++    };
++    std::memcpy(g_uniformScratch.data() + i * BuiltinSlotStride, &block, sizeof(block));
++  }
++  g_queue.WriteBuffer(g_builtinBuffer, 0, g_uniformScratch.data(), g_uniformScratch.size());
++  ++g_frame;
++
++  for (size_t i = 0; i + 1 < g_passes.size(); ++i) {
++    const auto& pass = g_passes[i];
++    const auto bindGroup = make_bind_group(pass, static_cast<uint32_t>(i), views);
++    const wgpu::RenderPassColorAttachment attachment{
++        .view = pass.target.view,
++        .loadOp = wgpu::LoadOp::Clear,
++        .storeOp = wgpu::StoreOp::Store,
++    };
++    const wgpu::RenderPassDescriptor passDesc{
++        .label = "PostFx pass",
++        .colorAttachmentCount = 1,
++        .colorAttachments = &attachment,
++        .timestampWrites = gpu_prof::pass_writes("PostFx"),
++    };
++    const auto rp = encoder.BeginRenderPass(&passDesc);
++    rp.SetPipeline(pass.pipeline);
++    rp.SetBindGroup(0, bindGroup, 0, nullptr);
++    rp.Draw(3);
++    rp.End();
++  }
++  g_finalBindGroup = make_bind_group(g_passes.back(), static_cast<uint32_t>(g_passes.size() - 1), views);
++  return true;
++}
++
++void draw(const wgpu::RenderPassEncoder& pass) {
++  pass.SetPipeline(g_passes.back().pipeline);
++  pass.SetBindGroup(0, g_finalBindGroup, 0, nullptr);
++  pass.Draw(3);
++}
++
++void shutdown() {
++  g_passes.clear();
++  g_pipelineCache.clear();
++  g_module = {};
++  g_moduleSource.clear();
++  g_linearSampler = {};
++  g_builtinBuffer = {};
++  g_userBuffer = {};
++  g_finalBindGroup = {};
++  g_ready = false;
++  g_builtGeneration = 0;
++  g_builtUniformGeneration = 0;
++}
++
++} // namespace aurora::webgpu::postfx
++
++void aurora_postfx_set_chain(const char* wgsl, const AuroraPostFxPass* passes, uint32_t passCount) {
++  using namespace aurora::webgpu::postfx;
++  std::string source = wgsl != nullptr ? wgsl : "";
++  std::vector<PassDesc> descs;
++  if (!source.empty() && passes != nullptr) {
++    passCount = std::min<uint32_t>(passCount, AURORA_POSTFX_MAX_PASSES);
++    for (uint32_t i = 0; i < passCount; ++i) {
++      const auto& p = passes[i];
++      PassDesc d{
++          .entryPoint = p.entryPoint != nullptr ? p.entryPoint : "",
++          .width = p.width,
++          .height = p.height,
++          .hdr = p.hdr,
++          .inputCount = std::min<uint32_t>(p.inputCount, AURORA_POSTFX_MAX_INPUTS),
++          .inputs = {},
++      };
++      for (uint32_t j = 0; j < d.inputCount; ++j) {
++        d.inputs[j] = p.inputs[j];
++      }
++      descs.push_back(std::move(d));
++    }
++  }
++  if (descs.empty()) {
++    source.clear();
++  }
++  std::lock_guard lock{g_mutex};
++  if (source == g_pendingSource && descs == g_pendingPasses) {
++    return;
++  }
++  g_pendingSource = std::move(source);
++  g_pendingPasses = std::move(descs);
++  g_failed = false;
++  ++g_pendingGeneration;
++}
++
++void aurora_postfx_set_uniforms(const void* data, uint32_t size) {
++  using namespace aurora::webgpu::postfx;
++  size = std::min<uint32_t>(size, AURORA_POSTFX_MAX_UNIFORM_SIZE);
++  const auto* bytes = static_cast<const uint8_t*>(data);
++  std::lock_guard lock{g_mutex};
++  if (g_pendingUniforms.size() == size && (size == 0 || std::memcmp(g_pendingUniforms.data(), bytes, size) == 0)) {
++    return;
++  }
++  g_pendingUniforms.assign(bytes, bytes + size);
++  ++g_uniformGeneration;
++}
++
++bool aurora_postfx_active() {
++  using namespace aurora::webgpu::postfx;
++  std::lock_guard lock{g_mutex};
++  return !g_pendingPasses.empty() && !g_failed;
++}
+diff --git a/lib/webgpu/postfx.hpp b/lib/webgpu/postfx.hpp
+new file mode 100644
+index 0000000..2cb9da1
+--- /dev/null
++++ b/lib/webgpu/postfx.hpp
+@@ -0,0 +1,12 @@
++#pragma once
++
++#include "gpu.hpp"
++
++namespace aurora::webgpu::postfx {
++// Render worker only. Runs the intermediate passes of the post-process chain into
++// `encoder`; returns false when no chain is active (present the frame normally).
++bool prepare(const wgpu::CommandEncoder& encoder, const Viewport& viewport);
++// Draws the chain's last pass into `pass` (viewport/scissor already set to the present viewport).
++void draw(const wgpu::RenderPassEncoder& pass);
++void shutdown();
++} // namespace aurora::webgpu::postfx
