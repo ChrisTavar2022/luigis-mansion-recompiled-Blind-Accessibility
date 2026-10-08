@@ -262,3 +262,34 @@ bits 23..16 in the IA8 intensity byte and 15..8 in the alpha byte, which is how 
   off too). Frame numbers count GXCopyDisp calls; runs drift a few frames apart, so align by
   content when comparing.
 - `LM_EFB_RAM=0/1`, `LM_EFB_READBACK_ALL=1`.
+
+## GX accuracy audit (TEV, EFB format, copy filter, fog, lighting, textures)
+
+Aurora patch `0012-gx-hardware-accuracy.patch`; host side in `src/recomp/hle_gx.cpp`
+(`gx::applyAccuracySettings`, display copy state) and `src/recomp/crt.cpp` (present chain);
+toggles in F1 > Visuals > Rendering. What the game uses was traced with `AURORA_GX_AUDIT=1`
+(each distinct pipeline feature, logged once) and `LM_GX_AUDIT=1` (state calls with arguments)
+from boot through the title, the foyer (dark, flashlight) and the lab/training room. Test aids:
+`LM_ACCURACY=<mask>` (1 integer TEV, 2 EFB color depth) and `LM_ACCURACY_AB=<s>` (alternate
+configured/all-off every s seconds and log fps per phase, for A/B screenshots of one run).
+
+| Area | What LM uses | Aurora before | Status |
+|------|--------------|---------------|--------|
+| EFB pixel format | `GXSetPixelFmt(RGBA6_Z24)`, dither toggled per draw | 8-bit target, no dither | **Fixed** (toggle "EFB color depth", on): output quantized to 6 bits/channel with a 2x2 ordered dither when the draw has dither on, expanded back to 8 bits; blended draws quantize color only (alpha stays the blend factor; the blend itself is still 8-bit). Verified A/B in the lab: mean -0.9 levels; a dark area goes from ~98 to ~25 distinct levels (dither grain/banding as on hardware) |
+| TEV arithmetic | ADD/SUB, unclamped regs, scale x2, GR16 compare, K0-K3 selects, swap tables, up to 8 stages, `GXSetTevColorS10` | float lerp, [-4,4] clamp, k/8 konsts | **Fixed** (toggle "Integer-accurate TEV", on): 8-bit A/B/C (low byte of a register), s11 D/registers, C widened by C>>7, per-stage rounding, clamp 0..255 / -1024..1023, konst k/8 = k*32, HALF = 128, 8-bit vertex colors, rounded indirect texels, 8-bit fog blend. Verified: lab scene changes ~50% of pixels by exactly 1 level, unbiased, no breakage. SUB/DIVIDE_2 rounding is a model (+-1 LSB) |
+| Display copy | `GXSetCopyFilter(aa=0, vf=1, {6,0,20,12,20,0,6})`, gamma 1.0, clamp top+bottom, Y scale 1.0, 640x480 | GXSetCopyFilter/Gamma no-ops; YScale returned 0 | **Fixed** (toggle "Display copy filter", on): present-time pass with the game's taps (0-1 line above, 2-4 this line, 5-6 line below = 6/52/6 of 64) in EFB lines (scales with resolution), edge clamp, gamma 1.0/1.7/2.2, before the CRT filter. `GXSetDispCopyYScale` returns the XFB line count. Not applied to texture copies (EFB copy code) |
+| Early Z + alpha test | `GXSetZCompLoc(1)` with alpha compare GREATER 0 and Z update | Z written only for passing pixels | **Verified, unchanged**: emulating "Z written before the alpha test" (depth prepass) broke Luigi's face decals and pillars, so the hardware evidently does not write Z for alpha-rejected pixels here. Experiment removed |
+| Fog | only `GX_FOG_NONE` seen; range adjust enabled (center 0), `GXInitFogAdjTable` once | range factor from a guessed NDC formula (much weaker than the table) | **Fixed model**: LUT built from the table (entry i = 256x factor at 32(i+1) EFB px from center, interpolated, 1.0 at center, last entry beyond), in EFB pixels at any resolution. Not visible in tested scenes (fog off) |
+| Texture filtering | min LINEAR/NEAR, edge LOD, no mips | hw min-filter decode had NEAR_MIP_LIN/LIN_MIP_NEAR swapped | **Fixed** decode table (raw-BP texture setups). LOD bias/edge LOD fine |
+| Lighting | spot (clamp diffuse), specular (shininess form), dist-attn fns, SRTG from COLOR0 | per-vertex, same formulas | **Reviewed, no change** (SRTG lit-color fix is in 0008). Open: Aurora normalizes transformed normals; hardware may not |
+| Indirect | ghost layer (`fn_8005FDD4`, `GXSetTevIndWarp`), J3D indirect materials | float offsets | Texel rounding added in integer mode. **Pending**: no ghost/vacuum scene reached in automated runs |
+| Lines/points | width 6 (1 px), viewport jitter field=1 only | width/6, perpendicular expansion | No change needed for LM (hardware widens along x/y; noted) |
+| Logic ops, dst alpha | no logic op; dst alpha used | fine | No change |
+
+Performance (RTX 3090 Ti, 5120x3840 render, uncapped interpolation, GPU shared with other runs
+so noisy): frame rate stays at the 120 Hz cap in both modes; GPU utilization ~+6 points with
+everything on (copy filter ~+1, TEV + EFB format the rest).
+
+Pending: ghost/vacuum (indirect) verification, GBH screen A/B, copy filter on texture copies,
+normal normalization question. The final merged build was only smoke-tested (renders, no
+shader errors).
