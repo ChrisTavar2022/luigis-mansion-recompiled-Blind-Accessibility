@@ -21,6 +21,10 @@ DiplSec__FUl us pal
 # Camera culling planes: widened for the Hor+ widescreen projection (src/recomp/widescreen.cpp).
 fn_80008D58 us pal
 
+# Room portal rectangle: re-done with near-plane clipping when the doorway straddles the
+# camera, so the room behind it doesn't vanish (src/recomp/portal_fix.cpp, docs/RENDERING.md).
+fn_8001333C us pal
+
 # PAL Hidden Mansion tuning (src/recomp/hidden_mansion_hooks.cpp, docs/HIDDEN_MANSION.md):
 # each wraps the original and only changes behaviour while the PAL rules are active.
 fn_800E70BC us pal

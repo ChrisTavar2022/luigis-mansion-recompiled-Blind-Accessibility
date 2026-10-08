@@ -110,6 +110,7 @@ std::vector<Field> fields() {
         flag("enhancements", "unused_portrait_models", e.unusedPortraitModels),
         flag("enhancements", "skip_cutscenes", e.skipCutscenes),
         flag("enhancements", "fast_forward_key", e.fastForwardKey),
+        flag("enhancements", "portal_clip_fix", e.portalClipFix),
         flag("gameplay", "pal_darkness_everywhere", g.palDarknessEverywhere),
         num("gameplay", "ambient_scale", g.ambientScale),
         num("gameplay", "damage_scale", g.damageScale),
