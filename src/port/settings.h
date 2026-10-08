@@ -98,8 +98,15 @@ struct GameplaySettings {
     bool alwaysRide = false;             // Luigi always uses the Poltergust-riding movement (PAL Boolossus mode)
 };
 
+// Hardware-accuracy rendering features (F1 > Visuals > Rendering). Every costly accuracy
+// feature gets a flag here, ON by default (best quality); weaker PCs can turn them off.
+struct RenderingSettings {
+    bool placeholder = true;  // remove once the first real accuracy toggle lands
+};
+
 struct Settings {
     VideoSettings video;
+    RenderingSettings rendering;
     CrtSettings crt;
     AudioSettings audio;
     EnhancementSettings enhancements;

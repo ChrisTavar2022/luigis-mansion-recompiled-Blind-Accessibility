@@ -137,6 +137,15 @@ void gameTab() {
         ImGui::TextDisabled("Used for a new save; an existing save keeps its language (in-game Options).");
 }
 
+// Hardware-accuracy toggles (all on by default). Each entry: checkbox bound to
+// settings().rendering.<flag>, sDirty |= ..., and a tooltip saying what changes visually
+// and roughly what it costs.
+void renderingTab() {
+    ImGui::TextDisabled("Hardware-accurate rendering. Everything is on by default for the best quality;");
+    ImGui::TextDisabled("turn features off only if your PC needs the speed.");
+    ImGui::Separator();
+}
+
 void visualsTab() {
     auto& v = port::settings().video;
     static const char* kFrameRates[] = {"Original (30 fps)", "Interpolated 60 fps (experimental)", "Interpolated, unlimited (experimental)"};
@@ -415,7 +424,17 @@ void draw() {
         ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.45f);
         if (ImGui::BeginTabBar("tabs")) {
             if (tab("Visuals")) {
-                visualsTab();
+                if (ImGui::BeginTabBar("visuals")) {
+                    if (ImGui::BeginTabItem("General")) {
+                        visualsTab();
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("Rendering")) {
+                        renderingTab();
+                        ImGui::EndTabItem();
+                    }
+                    ImGui::EndTabBar();
+                }
                 ImGui::EndTabItem();
             }
             if (tab("Sound")) {
