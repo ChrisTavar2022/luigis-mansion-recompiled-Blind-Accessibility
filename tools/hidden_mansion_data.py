@@ -11,6 +11,9 @@ Hidden Mansion mode is selected (see docs/HIDDEN_MANSION.md):
   Event/eventNN.szp    the US archive with only text/eventNN.txt (the language-neutral event
                        script) swapped for the PAL script (stored as literal-only Yay0). The US English message table stays,
                        so no PAL text (and no PAL language layout) is involved.
+  Event/event08.szp    E. Gadd's lab: the US archive with the PAL script, plus a follow-up
+                       choice "The Hidden Mansion (USA)" / "(PAL)" (two message lines appended);
+                       served always ([always]), whichever version is selected.
   manifest.txt         one "guest path -> overlay file [condition]" line per redirect.
 
 and the reverse, the USA Hidden Mansion for the European (PAL) game (docs/SETUP.md):
@@ -103,6 +106,67 @@ def rarc_replace(arc: bytes, member: str, new: bytes) -> bytes:
     return bytes(out)
 
 
+# E. Gadd's lab menu choice between both Hidden Mansions (docs/HIDDEN_MANSION.md, *E. Gadd's
+# lab menu*). Picking "The Hidden Mansion" asks a follow-up <CHOICE> between two new message
+# lines; the branch taken sets (PAL) or clears (USA) game flag 8, the PAL release's own
+# hidden-mansion save flag, right before <URALUIGI>. The port reads the variant from it.
+LAB_FLAG_PAL = 8
+LAB_HIDDEN_LINE = 38   # "The Hidden Mansion" in message8.csv / book1.txt (every language)
+LAB_SUFFIX = (b" (USA)", b" (PAL)")
+LAB_SUFFIX_JP = ("（ＵＳＡ）".encode("shift_jis"), "（ＰＡＬ）".encode("shift_jis"))
+
+
+def lab_table(table: bytes, n: int, japanese: bool) -> bytes:
+    """A message table (CRLF-terminated entries, LF inside an entry) with entries n and n+1
+    = "<Hidden Mansion line> (USA)" / "(PAL)" appended; shorter tables are padded with empty
+    entries so the indices match in every language."""
+    entries = table.split(b"\r\n")
+    while entries and entries[-1] == b"":
+        entries.pop()
+    assert len(entries) <= n and len(entries) > LAB_HIDDEN_LINE
+    base = entries[LAB_HIDDEN_LINE].rstrip(b". ")
+    entries += [b""] * (n - len(entries))
+    entries += [base + s for s in (LAB_SUFFIX_JP if japanese else LAB_SUFFIX)]
+    return b"\r\n".join(entries) + b"\r\n\r\n"
+
+
+def lab_entries(table: bytes) -> int:
+    entries = table.split(b"\r\n")
+    while entries and entries[-1] == b"":
+        entries.pop()
+    return len(entries)
+
+
+def lab_script(script: bytes, n: int) -> bytes:
+    """event08 script with the "urayasiki" case turned into a USA/PAL follow-up choice."""
+    lines = script.split(b"\r\n")
+    start = lines.index(b'<CASE>"urayasiki"')
+    end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith(b"<END>"))
+    body = [ln for ln in lines[start + 1:end + 1] if not ln.startswith((b"<FLAGON>(8)", b"<FLAGOFF>(8)"))]
+    ura = body.index(b"<URALUIGI>")
+
+    def branch(label, pal):
+        flags = [(b"<FLAGON>(%d)" if pal else b"<FLAGOFF>(%d)") % LAB_FLAG_PAL]
+        return [b'<CASE>"%s"' % label] + body[:ura] + flags + body[ura:]
+
+    new = [b'<CASE>"urayasiki"', b'<CHOICE>"ura_us"(%d)"ura_pal"(%d)<LISTEND>' % (n, n + 1), b"<ANYKEY>"]
+    new += branch(b"ura_us", False) + branch(b"ura_pal", True)
+    return b"\r\n".join(lines[:start] + new + lines[end + 1:])
+
+
+def lab_archive(arc: bytes, pal_script: bytes) -> bytes:
+    """event08 archive (either release, every language it has) with the lab choice."""
+    files = dict(rarc.rarc_files(arc))
+    tables = [k for k in files if k.startswith("message/")]
+    n = max(lab_entries(files[k]) for k in tables)
+    out = rarc_replace(arc, "text/event08.txt", lab_script(pal_script, n))
+    for k in tables:
+        out = rarc_replace(out, k, lab_table(files[k], n, "japanese" in k))
+    check = dict(rarc.rarc_files(out))
+    assert set(check) == set(files) and all(check[k] == v for k, v in files.items() if k not in tables and k != "text/event08.txt")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--us", default=str(DUMPS / "Luigis Mansion US"))
@@ -128,6 +192,15 @@ def main():
             u = rarc.decompress((base_dir / "Event" / name).read_bytes())
             p = dict(rarc.rarc_files(rarc.decompress((from_dir / "Event" / name).read_bytes())))
             cur = dict(rarc.rarc_files(u))
+            if ev == "08":
+                # The lab menu: served whichever version is chosen, so it can ask. Its script is
+                # the European one (which keeps flag 8 in step) on both games.
+                pal_script = (p if prefix == "" else cur)[member]
+                packed = yay0_store(lab_archive(u, pal_script))
+                (dest / "Event" / name).write_bytes(packed)
+                manifest.append(f"/Event/{name} -> {prefix}Event/{name} [always]")
+                print(f"{prefix}{name}: lab menu with both Hidden Mansions")
+                continue
             if cur.get(member) == p[member]:
                 print(f"{prefix}{name}: script identical, skipped")
                 continue

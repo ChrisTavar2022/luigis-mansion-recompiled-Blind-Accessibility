@@ -67,13 +67,14 @@ struct Redirect {
     const char* guestPath;  // as the game spells it
     const char* overlayFile;
     bool onlyWhileHidden;  // map data: only while the ura flag is set
+    bool labMenu = false;  // E. Gadd's lab (event08): served whichever variant applies, so it can ask
 };
 
 // Mirrors the manifest written by tools/hidden_mansion_data.py / setup (hm_overlay.cpp).
 // PAL rules on the USA game:
 constexpr Redirect kRedirects[] = {
     {"/Map/map2.szp", "Map/map2u.szp", true},  // PAL MissionMode::init: "%s%du.szp" when ura && map 2
-    {"/Event/event08.szp", "Event/event08.szp", false},
+    {"/Event/event08.szp", "Event/event08.szp", false, true},
     {"/Event/event16.szp", "Event/event16.szp", false},
     {"/Event/event73.szp", "Event/event73.szp", false},
 };
@@ -81,7 +82,7 @@ constexpr Redirect kRedirects[] = {
 // the European event archives with the USA scripts.
 constexpr Redirect kRedirectsUsa[] = {
     {"/Map/map2u.szp", "usa/Map/map2.szp", true},
-    {"/Event/event08.szp", "usa/Event/event08.szp", false},
+    {"/Event/event08.szp", "usa/Event/event08.szp", false, true},
     {"/Event/event16.szp", "usa/Event/event16.szp", false},
     {"/Event/event73.szp", "usa/Event/event73.szp", false},
 };
@@ -147,10 +148,35 @@ u32 fbits(float f) { return std::bit_cast<u32>(f); }
 }  // namespace
 
 namespace {
+// The event interpreter object; game flag n is bit n&7 of byte +0x659 + n/8
+// (getFlagValue__FUc, same layout in both releases). Saved with the file.
+#define kEventFlags (VA(0x803D2D40) + 0x659)
+bool gameFlag(unsigned n) { return (rd8(kEventFlags + n / 8) >> (n % 8)) & 1; }
+void setGameFlag(unsigned n, bool on) {
+    const u32 a = kEventFlags + n / 8;
+    const u8 bit = u8(1u << (n % 8));
+    wr8(a, on ? u8(rd8(a) | bit) : u8(rd8(a) & ~bit));
+}
+
+// Overlays built with the lab choice mark event08 "[always]" in their manifest (format 3);
+// older ones only had the variant's own script, served while that variant was selected.
+bool labOverlay() {
+    static const bool sLab = [] {
+        std::ifstream in(overlayDir() + (usBase() ? "manifest.txt" : "usa/manifest.txt"));
+        for (std::string line; std::getline(in, line);)
+            if (line.find("event08.szp") != std::string::npos && line.find("[always]") != std::string::npos) return true;
+        return false;
+    }();
+    return sLab;
+}
+
+// The default (F1 > Enhancements > Hidden Mansion version) or a testing override.
+bool sForced = false;  // --hidden-mansion-variant / LM_HIDDEN_MANSION_VARIANT given: beats the lab's choice
 Variant initialVariant() {
     const char* env = std::getenv("LM_HIDDEN_MANSION_VARIANT");
     if (!env || !*env) env = std::getenv("LM_HIDDEN_MANSION");
     std::string v = env && *env ? env : port::options().hiddenMansion;
+    sForced = !v.empty();
     if (v.empty()) v = port::settings().enhancements.hiddenMansionPal ? "pal" : "us";
     for (char& ch : v) ch = char(std::tolower(static_cast<unsigned char>(ch)));
     // A single-disc install only has its own release's rules (port::hiddenMansionPal/Us).
@@ -158,14 +184,14 @@ Variant initialVariant() {
     if (pal && port::hiddenMansionPal() != port::Avail::Yes) pal = false;
     if (!pal && port::hiddenMansionUs() != port::Avail::Yes) pal = true;
     const bool have = std::filesystem::exists(overlayDir() + (usBase() ? "manifest.txt" : "usa/manifest.txt"));
-    log("[hm] Hidden Mansion variant: %s on the %s game (overlay %s%s)", pal ? "PAL" : "USA", usBase() ? "USA" : "European",
-        overlayDir().c_str(), have || pal != usBase() ? "" : ": missing, run tools/hidden_mansion_data.py");
+    log("[hm] Hidden Mansion variant: %s on the %s game%s (overlay %s%s%s)", pal ? "PAL" : "USA", usBase() ? "USA" : "European",
+        sForced ? ", forced" : "", overlayDir().c_str(), have || pal != usBase() ? "" : ": missing, run tools/hidden_mansion_data.py",
+        have && !labOverlay() ? "; old format without the lab menu choice, rebuild it" : "");
     return pal ? Variant::Pal : Variant::Us;
 }
 std::atomic<int> sVariant{-1};
-}  // namespace
 
-Variant variant() {
+Variant defaultVariant() {
     int v = sVariant.load();
     if (v < 0) {
         int want = int(initialVariant());
@@ -174,9 +200,29 @@ Variant variant() {
     }
     return Variant(v);
 }
+}  // namespace
+
+bool labChoiceAvailable() {
+    return labOverlay() && port::hiddenMansionPal() == port::Avail::Yes && port::hiddenMansionUs() == port::Avail::Yes;
+}
+
+// The lab's two Hidden Mansion branches set or clear game flag 8 right before <URALUIGI>: the
+// European release's own "in the hidden mansion" flag, which its scripts already keep in step
+// (cleared again when the lab is entered) and which is saved with the file.
+std::optional<Variant> labChoice() {
+    if (!labChoiceAvailable()) return std::nullopt;
+    return gameFlag(kLabFlagPal) ? Variant::Pal : Variant::Us;
+}
+
+Variant variant() {
+    const Variant def = defaultVariant();
+    if (sForced) return def;
+    if (const auto lab = labChoice()) return *lab;
+    return def;
+}
 
 void setVariant(Variant v) {
-    if (sVariant.exchange(int(v)) != int(v)) log("[hm] Hidden Mansion variant -> %s", v == Variant::Pal ? "PAL" : "USA");
+    if (sVariant.exchange(int(v)) != int(v)) log("[hm] Hidden Mansion default variant -> %s", v == Variant::Pal ? "PAL" : "USA");
 }
 
 namespace {
@@ -223,11 +269,14 @@ void onFrame() {
     if (sForce && !hiddenActive()) {
         log("[hm] LM_HM_FORCE: setting the hidden-mansion flag");
         wr32(kUraFlag, 1);
+        // With the lab menu the variant is whatever the lab recorded; force the default.
+        if (labChoiceAvailable()) setGameFlag(kLabFlagPal, defaultVariant() == Variant::Pal);
     }
     static bool sWas = false;
     if (hiddenActive() != sWas) {
         sWas = hiddenActive();
-        log("[hm] hidden-mansion flag %s (%s variant)", sWas ? "set" : "cleared", variant() == Variant::Pal ? "PAL" : "USA");
+        log("[hm] hidden-mansion flag %s (%s variant%s)", sWas ? "set" : "cleared", variant() == Variant::Pal ? "PAL" : "USA",
+            sForced ? ", forced" : labChoice() ? ", chosen in the lab" : "");
     }
     syncConstants();
 }
@@ -237,11 +286,14 @@ bool palRulesActive() { return variant() == Variant::Pal && hiddenActive(); }
 
 std::optional<std::string> redirect(const char* guestPath) {
     if (!guestPath) return std::nullopt;
-    // Only the variant that is not the running game's own needs data from the other disc.
+    // Only the variant that is not the running game's own needs data from the other disc,
+    // except the lab menu, which offers both.
     const bool reverse = !usBase();
-    if (variant() == (reverse ? Variant::Pal : Variant::Us)) return std::nullopt;
+    const bool own = variant() == (reverse ? Variant::Pal : Variant::Us);
     for (const Redirect& r : reverse ? std::span<const Redirect>(kRedirectsUsa) : std::span<const Redirect>(kRedirects)) {
         if (!samePath(guestPath, r.guestPath)) continue;
+        if (r.labMenu && labChoiceAvailable()) return overlayDir() + r.overlayFile;
+        if (own) return std::nullopt;
         if (r.onlyWhileHidden && !(hiddenActive() && rd32(kCurMapNo) == 2)) return std::nullopt;
         return overlayDir() + r.overlayFile;
     }
