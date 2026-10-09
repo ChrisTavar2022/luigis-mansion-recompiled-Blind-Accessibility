@@ -194,7 +194,7 @@ HLE(fn_8002B6D4) {
     if (!sVisit || !port::settings().enhancements.dbgWarpSkipEvents) return;
     bool held = false;
     for (u32 t : sSuppressed) held |= t == trig;
-    if (!held && c.r[3] == 1 && sSetupFrames < kEntryWindow && rd32(trig + 0x10) != 0x8002C364u) {
+    if (!held && c.r[3] == 1 && sSetupFrames < kEntryWindow && rd32(trig + 0x10) != VA(0x8002C364)) {
         sSuppressed.push_back(trig);
         log("[dev] warp: entry event %d held back (map %d)", s32(s16(rd16(trig + 0x38))), s32(rd32(kCurMapNo)));
         held = true;

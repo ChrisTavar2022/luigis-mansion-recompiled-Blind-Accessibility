@@ -93,7 +93,7 @@ fn_8000B4A0 us pal
 fn_801D7114 us pal
 LMChangeFrameBuffer__Fv us pal
 # Warp arrivals hold back the destination's entry events (event trigger condition check).
-fn_8002B6D4
+fn_8002B6D4 us pal
 # USA Hidden Mansion rules on the European game (src/recomp/hidden_mansion_hooks.cpp,
 # docs/SETUP.md): European functions whose hidden-mansion code is PAL-only run with the flag
 # hidden; those where the USA game reads it too see the real flag; Luigi's state update

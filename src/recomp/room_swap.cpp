@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <bit>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -44,7 +45,8 @@ constexpr s32 kEntryBase = 0x48000000;  // virtual FST entries (hidden_mansion.c
 
 std::mutex sM;
 std::atomic<int> sActive{-1};
-bool sArrived = false, sInRoom = false;
+bool sArrived = false;
+int sStartRoom = -1;  // the game's current-room id where Luigi was placed (not the archive index)
 bool sAltShown = false;  // alternate model selected (alternate visits)
 std::vector<u8> sBytes;  // served file for the active swap
 int sBuilt = -1;
@@ -147,6 +149,13 @@ void end(const char* why) {
 
 // fn_800129FC(room, n): selects alternate model n of a map-2 room (0 = retail) and reloads it
 // if it is loaded.
+// Test aid: LM_DEV_ROOM_RETAIL=1 makes visits place Luigi without swapping the model (for
+// comparing the leftover with the retail room).
+const bool sRetailOnly = [] {
+    const char* v = std::getenv("LM_DEV_ROOM_RETAIL");
+    return v && *v == '1';
+}();
+
 void selectAlternate(Ctx& c, int room, int alt) { gu::call(c, GU_SYM("fn_800129FC"), {u32(room), u32(alt)}); }
 
 }  // namespace
@@ -162,7 +171,8 @@ void visit(int index) {
     dev::requestWarp(r.map, 0);  // ends any other visit first
     {
         std::lock_guard lk(sM);
-        sArrived = sInRoom = sAltShown = false;
+        sArrived = sAltShown = false;
+        sStartRoom = -1;
         sSpawnPending = r.spawn[0] != 0.0f || r.spawn[1] != 0.0f || r.spawn[2] != 0.0f;
         std::memcpy(sSpawn, r.spawn, sizeof(sSpawn));
     }
@@ -196,14 +206,16 @@ void onFrame(Ctx& c, bool inGame, bool luigi, int map, int room) {
         sLuigiEntry = -1;
     }
     if (map != r.map) return end("left the map");
-    if (r.alternate > 0 && !sAltShown && luigi) {
+    if (r.alternate > 0 && !sAltShown && luigi && !sRetailOnly) {
         sAltShown = true;
         selectAlternate(c, r.room, r.alternate);
         log("[rooms] %s: room %d alternate model %d selected", r.name, r.room, r.alternate);
     }
-    if (r.room >= 0) {
-        if (room == r.room) sInRoom = true;
-        else if (sInRoom) {
+    // The current-room id (0x803A3CA0 +0xC) is not the archive index (the breaker room, archive
+    // 67, reads 69), so "left the room" is a change from the room Luigi was placed in.
+    if (r.room >= 0 && luigi) {
+        if (sStartRoom < 0) sStartRoom = room;
+        else if (room != sStartRoom) {
             if (sAltShown) selectAlternate(c, r.room, 0);
             end("left the room");
         }
@@ -212,7 +224,7 @@ void onFrame(Ctx& c, bool inGame, bool luigi, int map, int room) {
 
 s32 overlayEntry(const char* guestPath) {
     const int i = sActive.load();
-    if (i < 0 || !kRooms[i].target || std::strcmp(guestPath, kRooms[i].target) != 0) return -1;
+    if (i < 0 || sRetailOnly || !kRooms[i].target || std::strcmp(guestPath, kRooms[i].target) != 0) return -1;
     std::lock_guard lk(sM);
     return build(i) ? kEntryBase + i : -1;
 }
