@@ -262,3 +262,16 @@ bits 23..16 in the IA8 intensity byte and 15..8 in the alpha byte, which is how 
   off too). Frame numbers count GXCopyDisp calls; runs drift a few frames apart, so align by
   content when comparing.
 - `LM_EFB_RAM=0/1`, `LM_EFB_READBACK_ALL=1`.
+
+## Debug draw overrides (Aurora patch 0010)
+
+`patches/aurora/0010-wireframe-override.patch`, used only by the model viewer
+(docs/UNUSED_CONTENT.md, "Model viewer"): `GXSetWireframeAurora(enable, rgba)` draws every
+triangle-type draw (also the display-list optimiser's `GX_AURORA_DRAW_INDEXED` draws) as a
+line list of its triangle edges in one colour (no culling, no depth bias, no draw merging
+while on; WebGPU has no polygon fill mode), and `GXSetCullOverrideAurora(twoSided)` forces
+GX_CULL_NONE. Both are FIFO commands (`GX_AURORA_SET_WIREFRAME` 0x0050,
+`GX_AURORA_SET_CULL_OVERRIDE` 0x0051), so they stay in order with the draws and in the
+interpolation tape. The game never issues them: pipelines and shaders are unchanged unless a
+viewer turns them on (`ShaderConfig::wireframe` uses a former padding bit, so the pipeline
+cache keys of existing pipelines do not change).

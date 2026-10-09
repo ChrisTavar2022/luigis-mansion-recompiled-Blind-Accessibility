@@ -432,28 +432,145 @@ JMP roominfo row and collision), and the breaker-room door/collision mismatch ch
 
 ## Model viewer
 
-Debug tab "Model viewer" (F4). Lists the archives under `/model`, `/Game`, `/Kawano` and
-`/Ajioka` (Aurora's disc reader; Yay0/Yaz0 and RARC are parsed host-side and nested `.arc`
-files expanded, so `game_usa.szp`'s `model/luige.arc` etc. appear), and every `.mdl` model and
-`.key` animation inside. The selected model is drawn by the game's own model code:
+Debug tab "Model viewer" (F4), `src/recomp/model_viewer.cpp`. Everything is drawn by the game's
+own code at the end of every game frame (`LMChangeFrameBuffer__Fv` hook), so it works on any
+screen (title, menus, in game) and in every frame-rate mode.
 
-- the bytes are copied into a private `JKRExpHeap` built with
-  `__ct__10JKRExpHeapFPvUlP7JKRHeapb` at guest 0x81812000-0x81FF0000 (host-backed memory above
-  the 24 MiB the game uses; the system/current heap globals are restored afterwards);
-- `fn_80061B40` relocates the `.mdl`, `fn_80061A24` the `.key`, `__ct__8S3DModelFll` builds the
-  S3DModel (its matrix arrays come from the viewer heap), `fn_8005AA3C` sets the animation;
-- drawing follows the US file-select screen's Luigi (`fn_800494E4`): lighting mode 0 of
-  `fn_80057F90`, `fn_8005AA34` frame, `fn_800589B0` joints, `fn_80059710` view, `fn_80059C54`
-  opaque and `fn_80059F6C` translucent passes, after a full-screen fill at the far plane;
-- it runs at the end of every game frame (`LMChangeFrameBuffer__Fv` hook), so it works on any
-  screen (title, menus, in game) and in every frame-rate mode.
+### Catalogue: every model on the disc
 
-Orbit camera (drag / wheel or sliders), auto-spin, play/pause, speed and frame scrubbing. The
-default animation is the archive's "wait" key. Not supported: J3D `.bmd` models (effects,
-`kt_static`) and room `.bin` models. Some characters get their materials from game code at run
-time (Luigi's textures are bound by the player code), so Luigi is drawn untextured; ghosts
-such as Chauncey (`/model/baby.szp`) are complete. "(no animation)" uses a key with every
-channel at its default, which collapses skinned models.
+On first open the viewer scans the whole disc (a few files per frame, progress bar):
+every `.szp`/`.arc`/`.bin`/`.mdl`/`.bmd`/`.bdl` file is read with Aurora's disc reader,
+Yay0/Yaz0 are decompressed and RARC archives are expanded at any depth (members that are
+archives themselves, e.g. `game_usa.szp`'s `model/*.arc` and `Nakamura/gallery.bin`, are
+opened too). Each file is classified by its contents, not its name:
 
-Test aid: `LM_DEV_VIEWER=<archive>[#<model name part>][|<key name part>]`, e.g.
-`/model/baby.szp|akubi` or `/Game/game_usa.szp#luige|wait`.
+| Kind | Detection | Where | Count (US) |
+|------|-----------|-------|-----------|
+| `mdl` S3DModel | magic `04B40000` | `/model` characters, ghosts, items; `/Ajioka/ADemo` cutscenes; `/Kawano` menus; `/Nakamura` gallery portraits; `/Effect/door.mdl` | 718 |
+| `bin` room renderer | `.bin`, version byte 2, node table | rooms and furniture (`/Iwamoto/mapN/*`), doors (`iwamoto/door`) | 630 |
+| `bmd` J3D | `J3D2bmd3`/`J3D2bdl4` | effects and items (`/Map/mapN.szp` `j3d_effect`), `kt_static`, sky boxes | 110 |
+
+1458 models in 579 of the disc's 694 candidate files. Archives of ghost actors are marked
+"ghost" in the list; that set comes from the game's tables (actor types `lbl_8033B590`, 0x1C
+each: model id, flags; flag 8 = drawn in the ghost layer by `fn_80060E70`; model archives
+`lbl_8034E46C`, 0x34 each), minus archives that non-ghost types also use (Luigi's).
+
+### How each kind is set up and drawn
+
+Files are copied into a private `JKRExpHeap` (`__ct__10JKRExpHeapFPvUlP7JKRHeapb`) at guest
+0x81812000-0x83FF0000, host-backed memory above the 24 MiB the game uses. The host window for
+guest addresses is 64 MiB for this (`ctx.h` `kHostMemSize`, module ABI 3): a whole mansion
+with its furniture needs about 22 MiB. Game code that allocates (`operator new`) runs with
+the viewer heap as `JKRHeap::sCurrentHeap`.
+
+- **mdl**: `fn_80061B40` relocates the model, `fn_80061A24` the `.key`, `__ct__8S3DModelFll`
+  builds the S3DModel, `fn_8005AA3C` sets the animation; drawn like the US file-select Luigi
+  (`fn_800494E4`): lighting mode 0 of `fn_80057F90`, `fn_8005AA34` frame, `fn_800589B0`
+  joints, `fn_80059710` view, `fn_80059C54` opaque / `fn_80059F6C` translucent.
+  "(no animation)" is the **bind pose**: joint = inverse of the model's inverse-bind matrix
+  (`PSMTXInverse`), envelopes from those (`fn_80058850`, the second half of calcJoints), and
+  a placeholder key because `fn_80059C54` draws nothing without one. Parts bound at a
+  vanishing scale (the portrait ghosts' `oba??g?` effect meshes are bound at 1/100000 and only
+  grown by their animation) get unit scale.
+- **bin** (rooms, furniture, doors): a 0x7C graph object (`fn_8001CF64`), `fn_8001D3F4`
+  (relocation + node matrices), drawn by `fn_80015CF4` passes 0/1 (opaque) and 2
+  (translucent) with the camera in `lbl_803A4168`, as rooms (`fn_8001798C`) and furniture
+  (`fn_8001F098`/`fn_8001F138`) are drawn, but without the portal list `lbl_803A4470` and its
+  scissor rectangles. Room materials light channel 0 with the light mask `lbl_804D0044`
+  (GX_LIGHT0) and the ambient register, both set by the room light code in play; the viewer
+  loads its own ambient level and a light at the camera (Maps tab sliders).
+- **bmd** (J3D): `load__22J3DModelLoaderDataBaseFPCvUl` (flags 0x54020000, as the map effects
+  in `fn_801730C4`), `__ct__8J3DModelFP12J3DModelDataUlUl`, two `J3DDrawBuffer`s
+  (`fn_801BFF44`); per frame calc `fn_801C7814` (its joint calc also enters the packets; do
+  not call the entry `fn_801C79A0` as well: materials that share a display list then link
+  their shape packets into a loop), `viewCalc`, `J3DSys::drawInit`, the game's J3D light
+  `fn_800AAF5C`, draw buffers `fn_801C043C` in modes 3/4 and `fn_801C0050`. `j3dSys`+0x50 (the
+  draw mode mask `J3DMatPacket::draw` tests) is forced to all bits during the draw: the game
+  changes it per pass, which made models blink in and out. Joints whose rest scale in `JNT1`
+  is 0 (effects grown only by their `.bck`: `doki_b`, `lg_icestate`, `ftc`) get unit scale.
+
+### No culling
+
+Nothing in these paths culls by distance, frustum or level of detail, and the viewer skips
+the room portal list. What made models "partly vanish when the camera is moderately far" was
+the viewer itself: the full-screen backdrop that clears the picture was drawn at 99.9% of the
+depth range, so every part of a model further away than about 1000 times the near plane was
+behind it. The backdrop now sits exactly on the far plane, and the near/far planes are fitted
+around the model's bounds (vertices and joints at frame 0, or the room shells for maps) with
+wide margins. "Back faces" turns off back-face culling as well (Aurora patch 0010, below), to
+see sky domes and rooms from outside.
+
+### Ghost effects
+
+"Ghost effects" (default on for ghost archives) draws the ghost through the game's own ghost
+layer instead of as a plain opaque model, exactly as `fn_8000C2D0` does in the game scene:
+`fn_8005F518` copies the scene and clears the EFB, the ghost is drawn with ghost lighting
+(`fn_800581E8`, ambient from the actor's colour +0xE9) and its alpha (+0xE3) as destination
+alpha, `fn_8005F498` copies the layer at half resolution, `fn_8005F5B0` restores the scene and
+`fn_8005F280` adds the layer weighted by its alpha (blend SRCALPHA, ONE): soft, glowing,
+see-through. The layer buffers (`lbl_804D86B8`/`BC`) are swapped for viewer-heap ones during
+the draw (the game only has them in the game scene). Defaults are the values measured in play
+(colour 404040FF, alpha FF for a fully visible ghost); both are adjustable.
+
+### Wireframe (Aurora patch 0010)
+
+`patches/aurora/0010-wireframe-override.patch` adds two debug draw commands:
+`GXSetWireframeAurora(enable, rgba)` (`GX_AURORA_SET_WIREFRAME`): every triangle-type draw,
+including the display-list optimiser's pre-indexed draws, gets an index buffer of its
+triangle edges and a line-list pipeline (WebGPU has no polygon fill mode) whose fragment
+shader outputs the line colour; no culling and no depth bias (not allowed on lines).
+`GXSetCullOverrideAurora(twoSided)` (`GX_AURORA_SET_CULL_OVERRIDE`) forces GX_CULL_NONE.
+The viewer's "Wireframe" combo: Off / Over model (the filled pass is pushed back with
+`GX2SetPolygonOffset`, then the edges) / Only.
+
+### Maps
+
+The Maps tab lists the 14 maps and their rooms from the game's map descriptors
+(`lbl_802FF218[map]`: u8 room count, +4 table of room file paths, indexed like
+`room_no`). A room is its file's `room.bin` (or the `.bin` itself) plus its furniture from
+`/Map/mapN.szp` `jmp/furnitureinfo` (`dmd_name` + `.bin` from the room's archive, placed with
+`pos`, `dir` in degrees and scale as T * Rz * Ry * Rx * S through the node matrix functions
+`fn_8001D96C`/`fn_8001CFB4` under a root matrix). "(whole map)" loads every room: the whole
+mansion is 706 models (one furniture model, named in the table, is missing from its room
+archive). Fly camera: drag to look, WASD to move, Q/E down/up, Shift faster, wheel changes
+the speed.
+
+### Verification: every model loads and draws
+
+`LM_DEV_VIEWER_SWEEP=<path filter>[@<frames>]` loads every catalogued model in turn and logs
+one line per model with how much of the picture differs from the backdrop; an empty picture
+is retried a few frames later (Aurora compiles new pipelines in the background and skips
+their draws until ready), then in the bind pose (some animations start with parts scaled to
+nothing), then with back faces. `LM_DEV_VIEWER_SHOTS=<dir>` writes a 160x120 thumbnail per
+model (`efbcopy::requestNamedDump`), `LM_DEV_VIEWER_SWEEP_START=<n>` resumes,
+`LM_DEV_VIEWER_SWEEP_EXIT=1` quits at the end.
+
+Last full run (US): 1432 drawn, 26 with an empty picture, 0 failures; all 1458 load without
+errors. What does not draw is empty by design:
+
+- placeholders with no visible geometry: `dummy.mdl`/`dummy2.mdl` (all vertices at the origin;
+  `/model` and both `game*.szp`), `Nakamura` `oba23ge0`/`oba23gp0` (portrait 23's effect
+  mesh, all 170 vertices within 0.3 units), and six 416/544-byte room-renderer stubs
+  (`room_00` `ot.bin`/`ozou.bin`, `room_21` `o_e1.bin`, `room_33` `bednul.bin`,
+  `room_41` `room.bin`, `room_47` `onuno.bin`: one node and a single batch that draws nothing visible);
+- J3D effects whose colour or alpha only comes from their animation (`ef_ash_bomb`,
+  `sentaku`, `oryap`, `snet_b`, `doki_a`, `babyp`, `kek_a`, `warp`): drawn, but invisible
+  at rest. With "Wireframe: Only" every one of them shows its geometry (a wireframe sweep of
+  all 76 `j3d_effect` models and `warp.bmd` finds nothing empty).
+
+108 animated models were empty in their first animation frames (parts grown by the
+animation) and are drawn in their bind pose instead.
+
+Test aids: `LM_DEV_VIEWER=<archive>[#<model name part>][|<key name part>]` (`|-` = bind pose),
+e.g. `/model/baby.szp|akubi`, `/Game/game_usa.szp#luige|wait`, `/Map/map2.szp#gold`;
+`LM_DEV_VIEWER_MAP=<map>[:<room>]` (e.g. `2` = whole mansion, `2:61` = cold storage);
+`LM_DEV_VIEWER_WIRE=1|2` (over model / only); `LM_DEV_VIEWER_GHOSTFX=0`;
+`LM_DEV_VIEWER_NOTEX=1`.
+
+Known limits: J3D models are static (their `.bck`/`.btk`/`.brk` animations are not played),
+so effects whose colour or alpha only comes from an animation stay invisible or faint;
+furniture animations (`anm/`) are not played either. Framing uses the file's vertex positions
+and the joints at frame 0, so a few cutscene models are framed loosely. Some characters get
+their materials from game code at run time (Luigi's textures are bound by the player code),
+so they are drawn untextured. Not checked on the European game (the addresses are mapped
+with `VA()`, the functions by name).
