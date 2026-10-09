@@ -265,7 +265,7 @@ bits 23..16 in the IA8 intensity byte and 15..8 in the alpha byte, which is how 
 
 ## GX accuracy audit (TEV, EFB format, copy filter, fog, lighting, textures)
 
-Aurora patch `0012-gx-hardware-accuracy.patch`; host side in `src/recomp/hle_gx.cpp`
+Aurora patch `0010-gx-hardware-accuracy.patch` (incremental on 0001..0009); host side in `src/recomp/hle_gx.cpp`
 (`gx::applyAccuracySettings`, display copy state) and `src/recomp/crt.cpp` (present chain);
 toggles in F1 > Visuals > Rendering. What the game uses was traced with `AURORA_GX_AUDIT=1`
 (each distinct pipeline feature, logged once) and `LM_GX_AUDIT=1` (state calls with arguments)
@@ -282,14 +282,50 @@ configured/all-off every s seconds and log fps per phase, for A/B screenshots of
 | Fog | only `GX_FOG_NONE` seen; range adjust enabled (center 0), `GXInitFogAdjTable` once | range factor from a guessed NDC formula (much weaker than the table) | **Fixed model**: LUT built from the table (entry i = 256x factor at 32(i+1) EFB px from center, interpolated, 1.0 at center, last entry beyond), in EFB pixels at any resolution. Not visible in tested scenes (fog off) |
 | Texture filtering | min LINEAR/NEAR, edge LOD, no mips | hw min-filter decode had NEAR_MIP_LIN/LIN_MIP_NEAR swapped | **Fixed** decode table (raw-BP texture setups). LOD bias/edge LOD fine |
 | Lighting | spot (clamp diffuse), specular (shininess form), dist-attn fns, SRTG from COLOR0 | per-vertex, same formulas | **Reviewed, no change** (SRTG lit-color fix is in 0008). Open: Aurora normalizes transformed normals; hardware may not |
-| Indirect | ghost layer (`fn_8005FDD4`, `GXSetTevIndWarp`), J3D indirect materials | float offsets | Texel rounding added in integer mode. **Pending**: no ghost/vacuum scene reached in automated runs |
+| Indirect | ghost layer (`fn_8005FDD4`, `GXSetTevIndWarp`; only drawn while `r13+0x768` holds its 128x128 warp texture, which the per-map setup table at `0x803002C4` creates for one map), J3D indirect materials | float offsets | Texel rounding added in integer mode; the rest of the indirect path is unchanged. **Not exercised by LM in any tested scene**: `AURORA_GX_AUDIT=1` logged no indirect stage and `LM_TRACE=8005FDD4` no call through boot, title, file select, lab, training room (gold ghost), Portrificationizer, foyer, nursery, gallery (map 6), GBH scan/map/inventory screens. Ghosts (gold ghost in the training room) are not drawn with indirect warping |
 | Lines/points | width 6 (1 px), viewport jitter field=1 only | width/6, perpendicular expansion | No change needed for LM (hardware widens along x/y; noted) |
 | Logic ops, dst alpha | no logic op; dst alpha used | fine | No change |
 
-Performance (RTX 3090 Ti, 5120x3840 render, uncapped interpolation, GPU shared with other runs
-so noisy): frame rate stays at the 120 Hz cap in both modes; GPU utilization ~+6 points with
-everything on (copy filter ~+1, TEV + EFB format the rest).
+### Toggles (F1 > Visuals > Rendering, all on by default, persisted in settings.ini `[rendering]`)
 
-Pending: ghost/vacuum (indirect) verification, GBH screen A/B, copy filter on texture copies,
-normal normalization question. The final merged build was only smoke-tested (renders, no
-shader errors).
+| Toggle (ini key) | What it does | Visible effect | Cost (measured below) |
+|---|---|---|---|
+| Integer-accurate TEV (`integer_tev`) | TEV stages evaluated in integer WGSL (8-bit A/B/C, s11 D/registers, per-stage rounding/clamp) | +-1 level on ~40-45% of pixels, unbiased (mean +0.06); nothing structural | see table |
+| EFB color depth (`efb_color_depth`) | fragment output quantized to the EFB format (RGBA6 / RGB565) with the PE's 2x2 dither when the draw enables it | ~1.4 levels darker on average (LM draws much of the scene with dither off, where the PE truncates), 6-bit banding rings in smooth gradients (flashlight pool on the floor), dither grain where dither is on | see table |
+| Display copy filter (`display_copy_filter`) | present-time pass (`dcopy_filter` in crt.cpp, ahead of the CRT chain) with the game's GXSetCopyFilter taps + GXSetDispCopyGamma | ~5% less vertical high-frequency detail (6/52/6 of 64), no color shift (mean 0.2 levels); only runs when the taps/gamma change the picture | see table |
+
+The fog range LUT and the texture min-filter decode are plain correctness fixes with no
+toggle (no runtime cost: the LUT is rebuilt only when the fog range state changes; LM never
+enables fog).
+
+### Verification (merged build, US, `LM_FRAME_DUMP` at 1x internal resolution)
+
+Deterministic runs (`LM_INPUT_CLOCK=frames`, nursery `LM_START_APPEAR=1`,
+`LM_TEST_STATE=poltergust`, flashlight sweeps, X/B for the GBH) with all toggles off, TEV only,
+EFB only and all on produce frame-identical scenes, so the same dump frame can be diffed:
+- TEV only vs off: mean |d| 0.2; 0.3-2% of pixels differ by more than one level, at most
+  3-12 levels on a handful of isolated pixels at the flashlight beam's edges; flashlight
+  cone, beam core, Luigi's self-shadow (Z16 copy read as IA8, GR16 compare), GBH HUD, coins,
+  bear/ball/door models identical by eye.
+- EFB only vs off: mean |d| 1.4, max 8-11 levels; 93-97% of dumped pixels are
+  exact 6-bit expansions (the rest come from blended draws, whose blend result is still 8-bit:
+  WebGPU cannot quantize after fixed-function blending).
+- Title screen, file select, lab dialogue, foyer (web, flashlight), Portrificationizer, training
+  room with a gold ghost, gallery, GBH scan view (sub-viewport 3D + EFB copies), GBH map and
+  inventory screens: rendered with all toggles on, no shader errors, no broken colors.
+
+### Performance
+
+RTX 3090 Ti, 5120x3840 internal (resolution scale 8), Original 30, nursery gameplay;
+`LM_ACCURACY_AB=10` alternates each configuration with everything off and GPU utilization is
+sampled with nvidia-smi (other test instances shared the GPU, so these are averages over ~5
+on/off phase pairs):
+
+PERF_TABLE
+
+At normal resolutions none of the toggles changes the frame rate (60 fps capped in all A/B
+runs at 2880p with interpolation).
+
+Remaining: blended draws are not quantized after blending; copy filter not applied to texture
+copies (GXCopyTex); whether hardware normalizes transformed normals; fog range LUT with
+widescreen is untested (LM never enables fog).

@@ -462,7 +462,7 @@ void draw() {
                         visualsTab();
                         ImGui::EndTabItem();
                     }
-                    if (ImGui::BeginTabItem("Rendering")) {
+                    if (ImGui::BeginTabItem("Rendering", nullptr, envTab("Rendering"))) {
                         renderingTab();
                         ImGui::EndTabItem();
                     }
