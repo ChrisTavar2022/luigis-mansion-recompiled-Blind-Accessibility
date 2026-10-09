@@ -13,8 +13,9 @@
 //     logical screen width: fills (fades) and blits of EFB copies stay
 //     stretched to the window so they line up with the stretched frame; 4:3
 //     background pictures follow backgroundMode().
-//   - Draws into a partial viewport (render-to-texture, picture-in-picture) are
-//     left alone, so EFB copies of those regions keep matching what was drawn.
+//   - Draws into a partial viewport (render-to-texture) are left alone, so EFB
+//     copies of those regions keep matching what was drawn. Partial viewports set
+//     by a HUD element (picture-in-picture, see AnchorScope) follow its 2D instead.
 #include "recomp/ctx.h"
 
 namespace recomp::ws {
@@ -34,13 +35,31 @@ float fovRatio(float m11);
 // True if full-screen 3D projections need adjusting (widescreen or FOV).
 bool adjusting();
 
-// HUD anchoring (settings().video.hudKeep4x3 off, widescreen): true while the
-// game may be drawing in-game HUD (guest thread). For a 2D draw of the HUD with this
-// NDC x extent in the 4:3 frame, -1/0/+1: move it to the left edge, keep it
-// centered, move it to the right edge. The GX HLE shifts it by (1 - factor())
-// of the half-width.
-bool inHud();
-int hudAnchorFor(float lo, float hi);
+// HUD elements (guest thread). The game functions that draw one in-game HUD element
+// (the Game Boy Horror with everything on its screen, the health meter, ...) are hooked
+// and run inside an AnchorScope, so the element moves as one unit:
+//   - every 2D draw in the scope gets the same anchor: -1/0/+1 = moved to the left edge,
+//     kept centered, moved to the right edge (the centered 4:3 projection shifted by
+//     (1 - factor()) of the half-width). Only with settings().video.hudKeep4x3 off;
+//   - a viewport smaller than the screen set in a scope (the GBH's live 3D view) gets the
+//     same transform as the 2D around it, and so do the scissors set while that viewport
+//     is current (the room portals drawn into it). This also applies with the HUD kept at
+//     4:3 (anchor 0), where it keeps the 3D view inside the centered GBH frame.
+// Everything else (menus, the GBH map screen, dialogue, markers placed at projected 3D
+// positions) stays centered.
+struct AnchorScope {
+    explicit AnchorScope(int anchor);
+    ~AnchorScope();
+    AnchorScope(const AnchorScope&) = delete;
+    AnchorScope& operator=(const AnchorScope&) = delete;
+};
+// A scope whose element is made of separate pieces on both sides (the room name: floor at
+// the top right, name at the top left): each 2D draw goes to the edge on its own side.
+constexpr int kAnchorBySide = 2;
+// Anchor of the innermost scope (-1/0/+1 or kAnchorBySide); 0 outside scopes or with
+// anchoring off.
+int hudAnchor();
+bool inHudScope();   // inside any scope (widescreen active)
 
 // Full-screen 2D pictures (title backdrops, menu backgrounds), --ws-backgrounds.
 enum class Background { Pillarbox, Stretch, Zoom };

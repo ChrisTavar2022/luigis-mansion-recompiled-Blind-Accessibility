@@ -23,6 +23,10 @@
 #include <string>
 #include <vector>
 
+namespace recomp {
+void unusedModelsMapSetup();  // unused_models.cpp: unused model variants chosen per map
+}
+
 namespace recomp::dev {
 namespace {
 
@@ -34,6 +38,7 @@ namespace {
 #define kCurMapNo VA(0x804D80C8)         // sCurMapNo
 #define kAppearPoint VA(0x804D872C)      // sGlobalLuigiAppearPoint (SETLUIGI)
 #define kRoomState VA(0x803A3CA0)        // +0xC: current room number in the top byte
+#define kEventCursor (VA(0x803D2D40) + 0xC)  // event interpreter +0x0C: script cursor, 0 = idle
 
 // Compiled-in debug switches that nothing in the retail game sets (docs/UNUSED_CONTENT.md).
 #define kParticleReportFlag VA(0x804D8E04)  // byte; fn_80160138 prints emitter/particle counts
@@ -61,24 +66,34 @@ const MapInfo kMaps[] = {
     {13, "Graveyard (Bogmire)", true, true, nullptr},
 };
 
-// map2 jmp/characterinfo "luige" entries (appear_point -> room_no, position).
+// map2 jmp/characterinfo "luige" entries (appear_point -> room_no); names as the game shows them on arrival.
 const AppearPoint kAppear[] = {
     {0, 2, "Foyer (new game / default)"},
     {6, 2, "Foyer, by the front door"},
-    {2, 16, "1F, west side"},
+    {2, 16, "Graveyard (outside the 1F west wing)"},
     {9, 70, "Secret Altar (basement)"},
-    {1, 24, "2F, west side"},
-    {7, 36, "2F, east side"},
-    {4, 56, "3F, centre"},
-    {5, 59, "3F, north"},
-    {8, 48, "3F, west side"},
-    {3, 60, "Roof level"},
+    {1, 24, "Nursery (2F)"},
+    {7, 36, "Sealed Room (2F)"},
+    {4, 56, "Clockwork Room (3F)"},
+    {5, 59, "Balcony (3F)"},
+    {8, 48, "3F west hallway"},
+    {3, 60, "Roof"},
 };
 
 std::atomic<int> sWarpMap{-1};
 std::atomic<int> sWarpAppear{0};
 u32 sGameScene = 0xFFFFFFFF;  // scene id the game scene setup ran under
 u32 sLuigi = 0;                // Luigi's actor, seen by his update this frame
+u32 sLuigiFrames = 0;          // consecutive frames Luigi's update ran since the last map setup
+u32 sSetupFrames = 0;          // frames since the last map setup
+
+// Entry events of a warp's destination (see fn_8002B6D4 below). A warp sets sArrivalPending;
+// the next map setup turns it into a visit whose window lasts kEntryWindow frames. Event triggers whose condition holds in that window are recorded and
+// kept from starting for the rest of the visit (until the next map setup).
+constexpr u32 kEntryWindow = 150;
+bool sArrivalPending = false;
+bool sVisit = false;
+std::vector<u32> sSuppressed;  // trigger records (0x58 bytes each, array lbl_804D8370)
 
 // Values sampled on the guest thread for the host-side overlays.
 struct Status {
@@ -149,6 +164,7 @@ void noteLuigi(unsigned guestActor) {
 // loads map n instead of the mansion the first time map 2 loads; LM_START_APPEAR=<p> picks the
 // mansion appear point.
 HLE(fn_8000C188) {
+    recomp::unusedModelsMapSetup();
     static const int sMap = envInt("LM_START_MAP", -1);
     static const int sAppear = envInt("LM_START_APPEAR", 0);
     static bool sDone = false;
@@ -161,18 +177,49 @@ HLE(fn_8000C188) {
         if (sAppear > 0) wr32(kAppearPoint, u32(sAppear));
     }
     sGameScene = rd32(kReqSceneId);
+    sLuigiFrames = 0;
+    sSetupFrames = 0;
+    sSuppressed.clear();
+    sVisit = sArrivalPending;  // reached by a warp: its entry events are held back
+    sArrivalPending = false;
+    rooms::onMapSetup();
     callOriginal(c, "fn_8000C188");
+}
+
+// Event trigger conditions (trigger record): fn_8002B7BC asks this every frame for each
+// jmp/eventinfo trigger that is idle; 1 starts the trigger's event (eventNN.txt). It checks
+// the trigger's flags and then its EventIf condition callback (+0x10): 0 always, 2..6 Luigi
+// within EventArea in the trigger's room, 1 (fn_8002C364) the same plus A pressed facing it.
+// After a warp, automatic triggers (everything but A-to-talk) that would fire on arrival are
+// entry cutscenes (E. Gadd's lab and Portrificationizer talks, boss intros, King Boo at the
+// Secret Altar, the training room explanation): they are held back for that visit.
+HLE(fn_8002B6D4) {
+    const u32 trig = c.r[3];
+    callOriginal(c, "fn_8002B6D4");
+    if (!sVisit || !port::settings().enhancements.dbgWarpSkipEvents) return;
+    bool held = false;
+    for (u32 t : sSuppressed) held |= t == trig;
+    if (!held && c.r[3] == 1 && sSetupFrames < kEntryWindow && rd32(trig + 0x10) != VA(0x8002C364)) {
+        sSuppressed.push_back(trig);
+        log("[dev] warp: entry event %d held back (map %d)", s32(s16(rd16(trig + 0x38))), s32(rd32(kCurMapNo)));
+        held = true;
+    }
+    if (held) c.r[3] = 0;
 }
 
 // Scene manager, once per main-loop iteration. A queued warp is applied exactly like the
 // event command <WARP>(n): next map = n and the current scene id cleared, so the manager
-// tears the game scene down and sets it up again for the new map on this call.
+// tears the game scene down and sets it up again for the new map on this call. Only while
+// the scene is settled: two seconds after the map setup, Luigi running for a second where
+// there is one (tearing a map down while it is still being set up crashes), and no event script.
 HLE(fn_8000B4A0) {
     const int map = sWarpMap.load();
     if (map >= 0) {
         const u32 scene = rd32(kCurSceneId);
-        if (scene == sGameScene && rd32(kReqSceneId) == scene && rd32(kSceneChanging) == 0) {
+        if (scene == sGameScene && rd32(kReqSceneId) == scene && rd32(kSceneChanging) == 0 && sSetupFrames >= 60 &&
+            (sLuigiFrames >= 30 || sSetupFrames >= 300) && rd32(kEventCursor) == 0) {
             sWarpMap = -1;
+            sArrivalPending = true;
             log("[dev] warp to map %d (appear point %d)", map, sWarpAppear.load());
             wr32(kAppearPoint, u32(sWarpAppear.load()));
             wr32(kNextMapNo, u32(map));
@@ -269,11 +316,14 @@ HLE(LMChangeFrameBuffer__Fv) {
     ++sFrames;
     for (const auto& w : sEnvWarps)
         if (u32(w[0]) == sFrames) requestWarp(w[1], w[2]);
-    // Test aid: LM_DEV_ROOM=<leftover room index>@<frame> starts a leftover-room visit.
+    // Test aid: LM_DEV_ROOM=<leftover room index>@<frame>,... starts leftover-room visits.
     static const char* sEnvRoom = std::getenv("LM_DEV_ROOM");
-    if (sEnvRoom) {
+    for (const char* p = sEnvRoom; p && *p;) {
         int idx = 0, frame = 0;
-        if (std::sscanf(sEnvRoom, "%d@%d", &idx, &frame) == 2 && u32(frame) == sFrames) rooms::visit(idx);
+        if (std::sscanf(p, "%d@%d", &idx, &frame) == 2 && u32(frame) == sFrames) rooms::visit(idx);
+        const char* comma = std::strchr(p, ',');
+        if (!comma) break;
+        p = comma + 1;
     }
 
     Status s;
@@ -287,8 +337,20 @@ HLE(LMChangeFrameBuffer__Fv) {
             for (int i = 0; i < 3; i++) s.pos[i] = gu::rdf(luigi + 0x44 + 4 * i);
     }
     sStatus = s;
-    rooms::onFrame(s.inGame, s.map, s.room);
+    rooms::onFrame(c, s.inGame, sLuigi != 0, s.map, s.room);
+    // Test aid: LM_DEV_STATUS_LOG=<n> logs the warp-relevant state every n frames (scene, map,
+    // room, Luigi's position, event script cursor, HUD-off and Luigi-stopped flags).
+    static const int sStatusLog = envInt("LM_DEV_STATUS_LOG", 0);
+    if (sStatusLog > 0 && sFrames % u32(sStatusLog) == 0) {
+        const u32 luigi = sLuigi;
+        const u32 lflags = gu::inMem1(luigi) ? rd32(luigi + 0x40) : 0;
+        log("[dev] f%u scene %u ingame %d map %d room %d pos %.0f %.0f %.0f event %08X hudoff %u luigiflags %08X", sFrames,
+            s.scene, s.inGame ? 1 : 0, s32(rd32(kCurMapNo)), s32(rd32(kRoomState + 0xC) >> 24), s.pos[0], s.pos[1],
+            s.pos[2], rd32(kEventCursor), rd32(kSceneChanging), lflags);
+    }
 
+    sLuigiFrames = sLuigi ? sLuigiFrames + 1 : 0;
+    ++sSetupFrames;
     sLuigi = 0;
     sReportShown.swap(sReportBuild);
     sReportBuild.clear();
@@ -457,6 +519,12 @@ void debugSection() {
     if (dirty) port::saveSettings();
 
     ImGui::SeparatorText("Visit area");
+    if (ImGui::Checkbox("Skip entry cutscenes", &e.dbgWarpSkipEvents)) port::saveSettings();
+    helpMarker("A warp does not start the cutscene or event the destination plays on arrival\n"
+               "(E. Gadd in the lab and the Portrificationizer room, the training explanation,\n"
+               "boss intros, King Boo at the Secret Altar), so Luigi can walk around freely.\n"
+               "Events started later by walking somewhere, talking (A) or story flags play as usual.\n"
+               "Normal play is unchanged.");
     mapTable("allmaps", false);
     if (ImGui::TreeNode("Mansion entry points")) {
         ImGui::BeginDisabled(!sStatus.inGame);

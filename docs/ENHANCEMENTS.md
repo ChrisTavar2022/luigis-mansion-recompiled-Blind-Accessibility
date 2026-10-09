@@ -73,9 +73,10 @@ next frame.
    and matrix loads. Before the first raw FIFO write after a projection or viewport
    change, `hw::fifoWrite` brings the projection up to date (`sRawCheck`).
 3. **Choose per draw.**
-   - Draws into a viewport that does not cover the logical width (render-to-texture,
-     picture-in-picture) are *plain*. They then stay consistent with the EFB copy that
-     reads them back.
+   - Draws into a viewport that does not cover the logical width (render-to-texture)
+     are *plain*. They then stay consistent with the EFB copy that reads them back.
+     Partial viewports set by a HUD element (picture-in-picture: the GBH views, see
+     *HUD anchoring*) are moved and narrowed like the 2D around them instead.
    - Perspective draws into the full-width viewport are *scaled* (Hor+).
    - Orthographic immediate-mode draws into the full-width viewport are **held**:
      `GXBegin` and the FIFO writes that follow are buffered until the draw ends. Then
@@ -111,19 +112,50 @@ sides by the inverse, using the camera's `fovY` (`+0x90`).
 ### HUD anchoring
 
 With "Keep HUD at 4:3" off, the in-game HUD moves to the display edges instead of the 4:3
-safe area. Menus (title, file select, options) are J2DScreens and keep their layout. The
-gameplay HUD is either drawn by two game functions as J2DScreens (`fn_80056F64`,
-`fn_8003E3D0`), or as panes and pictures that game code draws without a screen. The health
-meter and the room name are in the second group. `J2DScreen::draw` is hooked to know which
-case applies (`ws::inHud()`).
+safe area. Anchoring works per HUD *element*, not per draw, so a box and its text, or the
+Game Boy Horror and everything on its screen, always move as one unit
+(`ws::AnchorScope`, `src/recomp/widescreen.cpp`).
 
-For those draws, the held-draw decoder already knows the NDC x extent in the 4:3 frame.
-A draw entirely in the outer 30% on one side gets its centered projection shifted by
-`±(1 - s)`, which moves it to that edge of the display. The scissor moves with it.
-HUD pieces are small and well inside one band, so an icon and its digits stay together.
+The in-game HUD is drawn once per frame by `fn_8003E3D0`, which calls one function per
+element. The element functions (and a few related ones) are hooked; each runs the original
+inside an anchor scope:
 
-An earlier per-element approach (anchoring J2D pane subtrees) split menu layouts apart
-and missed the meter, which is not inside a screen. It was dropped.
+| Hook | Element | Anchor |
+|---|---|---|
+| `fn_8003D634` | Game Boy Horror: frame, LEDs, its screen's J2DScreen (money tally, E. Gadd's call, E3 clock) | right |
+| `fn_8003BE9C` | static noise over the GBH screen (from the HUD and from the GBH view pass) | right |
+| `fn_800417F8` | health meter | left |
+| `fn_80041214` (inside it) | health shown over Luigi at his projected position (training room) | centered |
+| `fn_80045BDC` | room name: floor (top right) and name (top left) | each draw to its own side |
+| `fn_800115F8` | frame-loop view setup; view 1 = GBH live camera view | view 1 right, others centered |
+| `fn_80114E18` | event portrait renderer (`<PDEMO>`); E. Gadd's call portrait on the GBH screen | right during the call (GBH mode `lbl_804D846C` = 3), else centered |
+
+Everything else stays centered as one unit: the element meter, dialogue/message windows
+(`fn_80044138`), menus, the GBH map and item screens, the GBH first-person (X) view, markers
+placed at projected 3D positions.
+
+Inside a scope the GX HLE gives every orthographic draw the same anchor: the centered 4:3
+projection is shifted by `±(1 - s)` (a held draw keeps the anchor of its `GXBegin`, since it
+is only sent at the next GX call). A partial scissor moves with it.
+
+**Picture-in-picture 3D.** A viewport smaller than the screen that is set inside a scope is
+sent to Aurora moved and narrowed exactly like the 2D around it
+(`x' = 320 + (x - 320)s + a(1 - s)320`, `w' = ws`), and every scissor set while that viewport
+is current (the room portals drawn into it) gets the same transform. The projection is left
+alone, so the image keeps the aspect of the game's rectangle. This applies with the HUD kept
+at 4:3 too (anchor 0), where it keeps the 3D inside the centered frame. Covered: the GBH live
+camera (view 1, 110x82), E. Gadd's call portrait (110x84), the small main view inside the GBH
+frame in first-person/scan mode (`r13+0x200`, 416x312). None of these is read back through an
+EFB copy; the render-to-texture views the game does copy (e.g. 140x200 at 250,140, copied to
+70x100) are not set inside a scope and stay *plain*.
+
+Test aid: `LM_HUD_TRACE=<first>,<last>[,<step>]` logs, for those frames (GXCopyDisp count),
+every 2D draw with its NDC x extent and anchor, every viewport/scissor/texture copy, with the
+guest call chain, which is how the element functions were identified.
+
+An earlier per-draw rule (a 2D draw in the outer 30% of the frame moves to that edge) split
+dialogue boxes from their text and treated the GBH map screen as HUD; an even earlier
+per-pane approach split menu layouts. Both were dropped.
 
 ### Screenshots
 
@@ -140,19 +172,18 @@ under `build/` and are not committed:
 
 ### Known limitations and next steps
 
-- **HUD anchoring.** This is per draw, so a single HUD text that straddles the 30% band
-  boundary would split. Nothing in the HUD does that so far. The Game Boy Horror and
-  dialogue screens have not been checked yet.
+- **HUD anchoring.** HUD elements not in the table above are centered. A new element
+  that should sit at an edge needs its draw function hooked. The J2DScreen at
+  `lbl_803CE2D8+0xE4` (drawn last by `fn_8003E3D0`, a 24 px piece at the right edge) showed
+  nothing in the tested scenes and is left centered.
 - **Partial EFB copies computed from 3D positions.** No such copy has been seen so far.
   If one turns up (for example a copy of a rectangle around an object), its source rect
   is in stretched logical space, while the object was drawn Hor+. Fix it by moving the
   copy rect through the `s` transform in `GXSetTexCopySrc` whenever the last full-width
   perspective draw was *scaled*.
-- **Embedded 3D in UI.** 3D drawn into a partial viewport (picture-in-picture) is
-  stretched horizontally. The fix is to pillar-transform such viewports when the
-  surrounding 2D is centered, but render-to-texture viewports must stay put, because
-  their copy rect has to match. The two cases could be told apart by whether a
-  `GXCopyTex` of that rect follows before the next `GXCopyDisp`/present.
+- **Embedded 3D in UI.** Picture-in-picture viewports follow their HUD element only when
+  set inside an anchor scope. One set elsewhere would still be stretched (none known). If a
+  scoped view is ever copied with `GXCopyTex`, its copy rect must get the same transform.
 - **Classification relies on the mirrored vertex state.** If a display list changes the
   vertex descriptor or VAT before an immediate 2D draw, `coversScreen()` gives up when
   the computed stride does not match, and the draw is treated as HUD. That fallback is
@@ -164,11 +195,12 @@ under `build/` and are not committed:
 
 ### As built (`src/recomp/interp.*`, `src/recomp/frame.cpp`, Aurora patch 0005)
 
-The setting is F1 > Visuals > Frame rate:
+Current state (frame-rate slider, vertex-array copies, pairing by draw, rotation blending,
+lights/texture matrices/CPU-built vertices, test mode and measurements): **docs/INTERPOLATION.md**.
+The notes below describe the first version; where they differ, INTERPOLATION.md is current.
 
-- **Original (30 fps)** is the lockstep path, unchanged.
-- **Interpolated 60 fps** and **Interpolated, unlimited** use the design below, simplified
-  where the measurements allowed it.
+The setting is F1 > Visuals > Frame rate: 30 fps (lockstep, unchanged) up to 320 fps, or the
+display's refresh rate; above 30 the design below is used.
 
 **Capture instead of snapshotting.**
 - Aurora patch `0005-capture-and-replay` makes the FIFO's display-list redirection

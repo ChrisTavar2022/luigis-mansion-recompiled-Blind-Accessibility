@@ -18,6 +18,8 @@
 // the final pass only (2-4 bilinear taps per channel plus the mask math).
 #include "recomp/crt.h"
 
+#include "recomp/gx_bridge.h"
+
 #include "port/settings.h"
 
 #include <aurora/postfx.h>
@@ -26,6 +28,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 namespace recomp::crt {
 namespace {
@@ -39,11 +42,28 @@ struct Crt {
     conv_rg: vec4f,  // red x/y, green x/y (game px / lines)
     conv_b: vec4f,   // blue x/y, any convergence, -
     gamma: vec4f,    // gamma in, gamma out, curvature, corner radius
+    dcopy: vec4f,    // display copy filter weights: line above, this line, line below; -
+    dcopy2: vec4f,   // display copy gamma, EFB lines, -, -
 };
 @group(0) @binding(1) var<uniform> crt: Crt;
 @group(0) @binding(3) var tex0: texture_2d<f32>;
 @group(0) @binding(4) var tex1: texture_2d<f32>;
 @group(0) @binding(5) var tex2: texture_2d<f32>;
+
+// ---- pass: the display copy (GXCopyDisp) as the console's pixel engine does it: the
+// vertical filter of GXSetCopyFilter over the line above / this line / the line below (in EFB
+// lines, so it scales with the render resolution; edge lines repeat, as with the copy clamp),
+// then the GXSetDispCopyGamma curve.
+@fragment
+fn dcopy_filter(in: AuroraPostFxVertex) -> @location(0) vec4f {
+    let dy = 1.0 / max(crt.dcopy2.y, 1.0);
+    let above = textureSampleLevel(tex0, aurora_linear, in.uv - vec2f(0.0, dy), 0.0).rgb;
+    let here = textureSampleLevel(tex0, aurora_linear, in.uv, 0.0).rgb;
+    let below = textureSampleLevel(tex0, aurora_linear, in.uv + vec2f(0.0, dy), 0.0).rgb;
+    var col = above * crt.dcopy.x + here * crt.dcopy.y + below * crt.dcopy.z;
+    col = pow(clamp(col, vec3f(0.0), vec3f(1.0)), vec3f(1.0 / crt.dcopy2.x));
+    return vec4f(col, 1.0);
+}
 
 // ---- pass: average the game frame over each scanline band, decode to linear light
 @fragment
@@ -320,33 +340,39 @@ struct Uniforms {
     float convRg[4];
     float convB[4];
     float gamma[4];
+    float dcopy[4];
+    float dcopy2[4];
 };
 
 int lineCount(port::CrtScanlines s) { return s == port::CrtScanlines::DoubleStrike240 ? 240 : 480; }
 
-int sAppliedLines = -1;  // -1 = chain disabled
+int sAppliedKey = -1;  // -1 = chain disabled
 
-void setChain(int lines) {
-    if (lines == sAppliedLines) return;
-    sAppliedLines = lines;
-    if (lines < 0) {
+// lines < 0: no CRT passes. filter: the display copy filter pass runs first (alone when the
+// CRT filter is off), and every CRT pass input moves up by one.
+void setChain(int lines, bool filter) {
+    const int key = lines < 0 && !filter ? -1 : (std::max(lines, 0) * 2 + (filter ? 1 : 0));
+    if (key == sAppliedKey) return;
+    sAppliedKey = key;
+    if (key < 0) {
         aurora_postfx_set_chain(nullptr, nullptr, 0);
         return;
     }
     const auto rel = [](AuroraPostFxSizeMode m, float v) { return AuroraPostFxSize{m, v}; };
     const AuroraPostFxSize same = rel(AURORA_POSTFX_SIZE_INPUT, 1.0f), half = rel(AURORA_POSTFX_SIZE_INPUT, 0.5f);
-    const AuroraPostFxPass passes[] = {
-        {"crt_linearize", rel(AURORA_POSTFX_SIZE_ASPECT, 1.0f), rel(AURORA_POSTFX_SIZE_ABSOLUTE, float(lines)), true, 1, {0}},
-        {"crt_hsoft", same, same, true, 1, {1}},
-        {"crt_blur_h", half, half, true, 1, {2}},
-        {"crt_blur_v", same, same, true, 1, {3}},
-        {"crt_blur_h", half, half, true, 1, {4}},
-        {"crt_blur_v", same, same, true, 1, {5}},
-        {"crt_blur_h", half, half, true, 1, {6}},
-        {"crt_blur_v", same, same, true, 1, {7}},
-        {"crt_final", {}, {}, false, 3, {2, 4, 8}},
-    };
-    aurora_postfx_set_chain(kShader, passes, uint32_t(sizeof(passes) / sizeof(passes[0])));
+    std::vector<AuroraPostFxPass> passes;
+    const uint32_t o = filter ? 1 : 0;
+    if (filter) passes.push_back({"dcopy_filter", rel(AURORA_POSTFX_SIZE_SOURCE, 1.0f), rel(AURORA_POSTFX_SIZE_SOURCE, 1.0f), false, 1, {0}});
+    if (lines >= 0) {
+        passes.push_back({"crt_linearize", rel(AURORA_POSTFX_SIZE_ASPECT, 1.0f), rel(AURORA_POSTFX_SIZE_ABSOLUTE, float(lines)), true, 1, {o}});
+        passes.push_back({"crt_hsoft", same, same, true, 1, {o + 1}});
+        for (uint32_t i = 0; i < 3; i++) {
+            passes.push_back({"crt_blur_h", half, half, true, 1, {o + 2 + 2 * i}});
+            passes.push_back({"crt_blur_v", same, same, true, 1, {o + 3 + 2 * i}});
+        }
+        passes.push_back({"crt_final", {}, {}, false, 3, {o + 2, o + 4, o + 8}});
+    }
+    aurora_postfx_set_chain(kShader, passes.data(), uint32_t(passes.size()));
 }
 
 bool sliderF(const char* label, float& v, float lo, float hi, const char* fmt = "%.2f") {
@@ -440,12 +466,29 @@ void update() {
         }
     }
     const auto& s = port::settings().crt;
+    // Display copy filter (GXSetCopyFilter vertical filter + GXSetDispCopyGamma), skipped
+    // when it would not change the picture.
+    const auto& dc = recomp::gx::displayCopy();
+    const float above = float(dc.vfilter[0] + dc.vfilter[1]) / 64.0f;
+    const float here = float(dc.vfilter[2] + dc.vfilter[3] + dc.vfilter[4]) / 64.0f;
+    const float below = float(dc.vfilter[5] + dc.vfilter[6]) / 64.0f;
+    const float gamma = dc.gamma == 1 ? 1.7f : dc.gamma == 2 ? 2.2f : 1.0f;
+    const bool filter = port::settings().rendering.displayCopyFilter &&
+                        (above != 0.0f || below != 0.0f || here != 1.0f || gamma != 1.0f);
+    const float dcopy[4] = {above, here, below, 0.0f};
+    const float dcopy2[4] = {gamma, float(dc.efbHeight), 0.0f, 0.0f};
     if (!s.enabled) {
-        setChain(-1);
+        if (filter) {
+            Uniforms u{};
+            std::memcpy(u.dcopy, dcopy, sizeof(dcopy));
+            std::memcpy(u.dcopy2, dcopy2, sizeof(dcopy2));
+            aurora_postfx_set_uniforms(&u, sizeof(u));
+        }
+        setChain(-1, filter);
         return;
     }
     const bool conv = std::any_of(std::begin(s.convergence), std::end(s.convergence), [](float v) { return v != 0.0f; });
-    const Uniforms u{
+    Uniforms u{
         {s.beamMinSigma, std::max(s.beamMaxSigma, s.beamMinSigma), s.beamSpotPower, s.horizontalSoftness},
         {s.beamMinShape, std::max(s.beamMaxShape, s.beamMinShape), s.beamShapePower, 0.0f},
         {float(int(s.mask)), s.maskSize, s.mask == port::CrtMask::None ? 0.0f : s.maskStrength,
@@ -455,8 +498,10 @@ void update() {
         {s.convergence[4], s.convergence[5], conv ? 1.0f : 0.0f, 0.0f},
         {s.gammaIn, s.gammaOut, s.curvature, s.cornerRadius},
     };
+    std::memcpy(u.dcopy, dcopy, sizeof(dcopy));
+    std::memcpy(u.dcopy2, dcopy2, sizeof(dcopy2));
     aurora_postfx_set_uniforms(&u, sizeof(u));
-    setChain(lineCount(s.scanlines));
+    setChain(lineCount(s.scanlines), filter);
 }
 
 bool drawMenu() {

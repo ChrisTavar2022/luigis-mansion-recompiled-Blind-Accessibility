@@ -219,10 +219,10 @@ How the retail code uses them:
 Port (`src/recomp/nozzles.cpp`, hook on `fn_800B36B8`, US code only): the selector runs
 unchanged; afterwards, with the option on, the nozzle is re-typed through the game's own
 `fn_800B9064`: mode 3 (water) → 8 `wpwater`, mode 6 (air) → 9 `wpair`; when the mode leaves
-them (or the option is turned off) it goes back to 6/7 as in retail. D-pad Right toggles an
-"air nozzle" selection: while Luigi carries an element, the selector sees +0x1184 = 1 for the
-duration of its call, so L blows air with `wpair` and the element is kept. With the option
-off the hook only calls the original (types stay 6/7, D-pad Right does nothing).
+them (or the option is turned off) it goes back to 6/7 as in retail. Vacuum, fire and ice
+keep `vhead`, the flashlight `wplight`. The option is a plain on/off switch (no button: the
+D-pad is kept for the early Game Boy Horror modes). With the option off the hook only calls
+the original (types stay 6/7).
 
 The models have to be loaded first. Character models live in the registry `lbl_8034E46C`
 (0x34 per model: +0 file name, +8 relocated `.mdl` once loaded, +0x30 load state; the type
@@ -240,8 +240,8 @@ long like `vhead`, with the same three joints and key names.
 
 Verified (`build/nozzles_side.png`, native guest frames from `LM_FRAME_DUMP`, Nursery,
 `LM_START_MAP=2 LM_START_APPEAR=1`, Luigi turned sideways with the stick): retail water
-(`vhead`), water with `wpwater` (blue), air with `wpair` (red), and air with `wpair` after
-D-pad Right while carrying water. The nozzles sit in Luigi's hands like `vhead` and the water
+(`vhead`), water with `wpwater` (blue), air with `wpair` (red). The nozzles sit in Luigi's
+hands like `vhead` and the water
 stream and air puffs come out of their tips. Test aids: `LM_NOZZLES=1` (force on),
 `LM_NOZZLE_DUMP=1` (logs mode/element/meter/nozzle type on change, plus the Poltergust
 controller `[Luigi+0x7E4]` +0x310/+0x314/+0x334 and its 0x50-byte input block).
@@ -256,6 +256,162 @@ What the game itself never finished:
 - Air and water behave exactly as with `vhead` (same effects, same element meter); nothing
   in the code gives the dedicated nozzles different gameplay.
 - Luigi's other character types (1/0xB3) have 0xB8/0xB9 entries too; the port leaves them alone.
+
+### Unused model swaps (`src/recomp/unused_models.cpp`)
+
+Character models are loaded per map into the registry `lbl_8034E46C` (0x34 per model: +0 file
+name, +4 archive, +8 relocated `.mdl`, +0xC key count, +0x10 key list, +0x30 load state) from
+the resident game archive when it has `model/<name>.arc`, otherwise from the loose disc file
+`/model/<name>.szp`. `fn_80061C94(archive, entry)` sets each one up: the `/key` files into the
+key list in archive order (relocated by `fn_80061A24`), then the `.mdl` into +8 (relocated by
+`fn_80061B40`). It runs for resident archives directly from map setup (`fn_8006227C`) and for
+disc archives from the DVD callback (`fn_800620CC`). The port hooks it (US code only): after it
+finishes, for an enabled swap the entry gets a relocated host-loaded copy of the unused `.mdl`
+(read from the disc with the port's RARC/Yay0 reader, copied into `hleAlloc` memory, relocated
+by the game's own `fn_80061B40`), and each key slot the unused archive's key for the same
+action. Actors built afterwards use it like any other model. Takes effect at the next map load.
+
+#### Early Poltergust 3000 ("Early Poltergust 3000")
+
+Two `vbody` models exist. Retail uses `model/vbody.arc` from the resident `game_usa.szp`
+(34808-byte `.mdl`, the rounded red tank with the big silver wheel); `/model/vbody.szp`
+(25764-byte `.mdl`) is the E3 2001 Poltergust, a red canister with dark end caps and silver
+knobs on a base with four black wheels (yellow hubs). The loose file is never read because the
+registry's `/model/vbody.szp` name resolves to the resident `.arc` first. Both have 4 joints.
+The E3 archive's keys have the same names as the retail ones except that it has no
+`lght_vby.key` (flashlight pose), so that slot keeps the retail key; the other six are the
+E3 ones (its `h_vbody` idle is a one-frame pose instead of retail's 30-frame wobble).
+
+Verified (`build/early_poltergust.png`, Nursery, guest frames): retail tank from the side, the
+E3 canister from the back (four wheels) and from both sides. It sits upright on Luigi's back on
+the retail attachment; the hose (drawn by the player code between the tank and the nozzle)
+starts at the top of the canister and still lines up. Vacuuming works as before. Test aid:
+`LM_EARLY_POLTERGUST=1`.
+
+Not finished in the game: nothing references the E3 model any more; how it was meant to sit
+on Luigi's back (upright, as the retail keys and its own keys place it) can't be checked against
+E3 footage here.
+
+#### Early Bogmire ("Early Bogmire model")
+
+`/model/shadow.szp` (registry model 129) is the early Bogmire; no character type uses it.
+Retail Bogmire is type 213 `bfire` (model 130, `/model/bfire.szp`, a disc file loaded for
+map 13, the cemetery boss arena, and listed in map 2's `characterinfo`). The two skeletons
+differ (shadow 42 joints, bfire 41), so bfire's keys can't drive the early model; every bfire key
+slot gets the shadow key for the same action: `appear` -> `syutugen` (appear), `dappear` ->
+`kieru` (vanish), `wait`/`dwait` -> `wait`, `nigeru`/`nigeru2` (pulling against the vacuum) ->
+`kinko` (the 12-frame tug of war, same length as `nigeru`), `biribiri` and `suikomi` by name.
+The early archive's `kogeki` (attack), `kuyasi` (frustrated) and `tyakasu` keys have no retail
+slot and are not used. The retail `geb/bfire.geb` and `.bas` (sound timing) files stay in use.
+
+Verified: model viewer (`build/bogmire_viewer.png`: `bfire` above, `shadow` below with the
+longer wings and thin hanging flaps, the defined chin and the wavy skirt) and the map 13 intro
+(`build/bogmire_intro.png`, `LM_START_MAP=13`, same guest frames retail/early). The fight runs
+with the early model (60 s with `LM_SKIP_CUTSCENES`, shadow clones and Bogmire's appearances,
+no errors). Not checked: whether any Bogmire effect is attached to a joint by index (with one
+more joint, such an effect could sit on a different body part); the Portrificationizer and the
+gallery never use `bfire` (portrait scenes use their own models, the gallery a painting).
+Test aid: `LM_EARLY_BOGMIRE=1`.
+
+### Green Toad ("Green Toad (kinopio2)")
+
+Types 42 `kinopio` and 43 `kinopio2` both use model 0x49 (`/model/kinopio.szp`); kinopio2 is
+never placed. The archive has two texture patterns (`txp/kinopio1.txp`, `kinopio2.txp`, loaded
+per model by `fn_80187B24` into the list at `lbl_80389B68 + model*0x40`); a type's +0x10 picks
+one when an actor is set up (`fn_80067B04`/`fn_80067F84` -> `fn_80187974` -> S3DModel +0xA4):
+kinopio 0, kinopio2 1 (green spots). TCRF's NTSC-U code `0433BA28 00000049`,
+`0033BA31 00000002`, `0433BA38 00000001` writes kinopio's model index, its +9 byte and +0x10;
+on GLME01 rev 0 the first two already hold those values, so the effect is kinopio +0x10 = 1.
+
+Port: that value is written at every map setup (`fn_8000C188` hook), and because Toad's archive
+is a disc file loaded asynchronously (the Toads placed at map load are set up before their
+`.txp` files exist, so the code alone leaves them red), every live Toad's S3DModel +0xA4 is set
+to the green pattern once it is loaded (GBH HUD hook, every gameplay frame). Dialogue icon:
+`fn_80041DB8` loads 19 speaker icons named by `lbl_80305148 + 0x360` into 0x18-byte sprites at
+`lbl_803CE7D0 + 0xA90` (+0x10 = texture object). Despite the names, every Toad uses entry 16,
+`kino_ri.bti` (red), and entry 15, `kino_icon.bti`, is a green-capped Toad that is loaded but
+never shown; the option points sprite 16 at sprite 15's texture. Everything is put back when
+the option is turned off. The addresses go through `VA()`, so it also works on the European
+game (tables checked in the PAL DOL: same layout, kinopio/kinopio2 at types 42/43, icons 15/16).
+
+Verified (`build/green_toad.png`): the Washroom Toad (`LM_START_MAP=2`,
+`LM_TELEPORT=-2210,0,-4150,100`, A presses) talking, retail vs green: model and dialogue icon
+both green. Test aid: `LM_GREEN_TOAD=1`.
+
+### Early Luigi model ("Early Luigi model")
+
+The disc root's `/model/luige.szp` (TCRF: the early Luigi) is never loaded. The model
+registry `lbl_8034E46C` (0x34 per model) has `/model/luige.szp` as entry 0, but map setup
+(`fn_8006227C`) first asks the resident game archive for the same name with `.arc`
+(`game_usa.szp` → `model/luige.arc`) and reads the disc file only when that is missing.
+`fn_80061C94` then fills the entry from the archive: every `/key`, `/sls`, `/slk` and `/txp`
+file (keys are stored by archive order, 0x8D slots), the per-model tables of `fn_80187B24`,
+and last the `/model` `.mdl`, relocated by `fn_80061B40` into entry +8.
+
+Comparison (archives extracted from the user's disc):
+- Skeleton: identical. 65 joints, 55 envelopes, the same node graph, inverse bind matrices
+  and skin weights, so every retail animation drives the early mesh unchanged.
+- Animations: early 121 keys, retail 141, 87 names in common (63 byte-identical). Early-only:
+  squat set (`squ_*`, `k_squ_*`), `l_tdm01-07`/`l_sdm01-04` (the lab cutscene keys that
+  retail moved to `dluige01`/`dluige03`), `turi09_1-3`/`turi11`/`turi12` (hose-pull
+  variants), `wait2`, `walk1`, `walk2`, `b_kam_wt`, `bibi_kam`, `bibi_set`, `ldr_wt_e`.
+  Retail-only: the `ac_*` actions (knock, call, punch, ...), burn/ice/poison/bite reactions,
+  elevator, `get_*`, `lookheat`, `dmydr_*` and others. The game indexes keys by archive
+  order, so the early key set cannot be swapped in; the retail set is kept.
+- Mesh: same vertex counts per type except texture coordinates (0x5FA vs 0x5F6); 19
+  materials vs 16, 20 textures vs 21, 26 samplers vs 30. Visible differences: the face
+  (bigger, rounder nose; fuller lower face and chin), ears, the hair at the back and its
+  texture (texture 4), cap shape (`build/early_luigi_viewer_heads.png`).
+- Eyes: the `.txp` texture patterns (blinks, expressions) store *sampler* indices. Retail
+  eye textures 10, 14-18 exist pixel-identical in the early model under other indices; retail
+  19 (looking eye, used by `lookheat`/`ac_call`/`doku_lp`) and 20 (the dark "poisoned" eye of
+  `doku_*`) do not exist (`build/early_luigi_eye_textures.png`). The early model's own extra
+  eye (its texture 19) is pixel-identical to retail 18.
+
+Port (`src/recomp/early_luigi.cpp`, hook on `fn_80061C94`, US code only): the original runs
+unchanged; then, if entry +8 is a relocated `.mdl` with exactly the early model's skeleton
+(counts, node graph, inverse binds), +8 is pointed at an early copy built for it. The copy
+is the early `.mdl` (read once from the disc with the host RARC/Yay0 reader, `rarc.h`) with
+a new sampler table laid out like the target model's: each target sampler points at the
+early texture with identical pixels, or at a copy of the target's texture appended to the
+early file (retail 19 and 20, and the unused retail 4); the early materials are re-pointed
+at matching entries, so the retail `.txp` files show the same eyes. The game's own
+`fn_80061B40` relocates it. Copies live in host-backed memory above MEM1
+(0x81F00000-0x81FF0000, taken from the end of the model viewer's heap), one per target
+layout. Everything else (keys, `.txp`, `.slk`/`.sls`, the per-model tables) is retail.
+Takes effect on the next map load (the registry is rebuilt at every map setup); with the
+option off the hook only calls the original. Test aid: `LM_EARLY_LUIGI=1`.
+
+Which Luigis change:
+- Gameplay Luigi (registry entry 0) in every map, including the in-engine event scenes in
+  the mansion and the lab that use him.
+- `dluige03` (the lab cutscene Luigi with the Poltergust, map 4/1 events) and `dluige01`:
+  same skeleton and bind pose, loaded through the same registry; each gets its own copy
+  (`dluige03` has 22 textures, so texture 21 is appended too). Verified for `dluige03`;
+  `dluige01` was not reached in testing but takes the same path.
+- Not changed: `dluige02` (ending; same graph but different inverse binds) and the demo
+  scenes under `/Ajioka/ADemo` (opening forest/gate: `opwf_luigi.mdl`/`entergate.mdl`, a
+  122-joint rig; ending: `db_luigi.mdl`, other bind pose). Those are separate models built
+  for their own animations, not variants of `luige.mdl`, so the early mesh cannot drive them.
+
+Verified (native guest frames from `LM_FRAME_DUMP`, Nursery with
+`LM_TEST_STATE=poltergust LM_START_MAP=2 LM_START_APPEAR=1`, same input script with the option
+on and off; lab with `LM_START_MAP=4`):
+- `build/early_luigi_nursery.png`: front (eyes, blink, scared mouth animation), side and
+  three-quarter views while walking with the flashlight; backpack, hose, nozzle, flashlight
+  and hands line up as in retail.
+- `build/early_luigi_vacuum.png`: vacuuming (mode 1, `LM_NOZZLE_DUMP=1`), side view.
+- `build/early_luigi_lab_cutscene.png`: E. Gadd's lab event scenes (`dluige03` and the
+  gameplay model).
+- `build/early_luigi_viewer_body.png`, `..._heads.png`: model viewer, early
+  (`LM_DEV_VIEWER=/model/luige.szp|wait0`) vs retail (`/Game/game_usa.szp#luige|wait0`),
+  front and side, with the new test aid `LM_DEV_VIEWER_CAM=<yaw>,<pitch>,<distance>` (fixed
+  camera, no spin).
+- Game Boy Horror map/screen opens normally. The self-shadow uses whatever model Luigi draws,
+  so it follows the early mesh (no artefacts seen; not inspected closely).
+
+Not checked in game: the retail-only expressions that use the appended eye textures
+(poisoned, `lookheat`) and the burn/ice reactions.
 
 ## Other leftovers noticed
 
@@ -339,18 +495,73 @@ Used maps for reference: 1 E. Gadd's lab, 2 mansion, 3 training room, 4 Portrifi
 as map 4), 13 graveyard (Bogmire).
 
 **Port:** the Unused content tab lists maps 0/5/7/8; the Debug tab "Visit area" lists all 14
-plus the ten mansion appear points (map2 `jmp/characterinfo` `luige` entries: 0 foyer, 1/7 2F,
-2 1F, 3 roof level, 4/5/8 3F, 6 foyer door, 9 Secret Altar). A warp is queued and applied in
-the `fn_8000B4A0` hook exactly like `<WARP>`, and only while the game scene is idle
-(`sCurSceneId` is the game scene and no scene change is pending, `lbl_804D8088 == 0`); during
-transitions, events that hold the scene and the pause/map screens it waits. Maps with entry
-events play them (map 4's E. Gadd explanation, map 9's Bowser intro, appear point 9's King
-Boo scene). An event that is already running keeps running in the new map, so warping out of
-the opening sequence continues the intro story there. Verified in Original30 and
-Interpolated60: maps 0, 2 (appear points 6 and 9), 3, 4, 5, 9, 13.
+plus the ten mansion appear points (map2 `jmp/characterinfo` `luige` entries, named as the game
+shows them on arrival: 0 Foyer, 6 Foyer by the front door, 2 Graveyard, 9 Secret Altar,
+1 Nursery, 7 Sealed Room, 4 Clockwork Room, 5 Balcony, 8 3F west hallway, 3 Roof). A warp is
+queued and applied in the `fn_8000B4A0` hook exactly like `<WARP>`, and only while the game
+scene is settled: `sCurSceneId` is the game scene, no scene change is pending
+(`lbl_804D8088 == 0`, also set while an event hides the HUD), no event script runs (event
+interpreter `0x803D2D40` +0x0C), at least 60 frames since the map setup and Luigi updated for
+30 frames (or 300 frames on a map without him). Tearing a map down while it is still being set
+up crashed (a warp queued during the lab's intro fired right after the event's own WARP to the
+training room: call through a garbage pointer in `fn_800BA9E0`).
+
+**Entry cutscenes are held back** (Debug tab "Skip entry cutscenes", on by default, setting
+`debug.warp_skip_events`). Map events come from `jmp/eventinfo`: `fn_8002DA34` turns each row
+into a 0x58-byte trigger (array `lbl_804D8370`, count `lbl_804D8374`; +0x10 condition callback
+chosen by `EventIf`, +0x38 event number), and `fn_8002B7BC` loads `eventNN.txt` when
+`fn_8002B6D4` (trigger flags, story-flag gates, then the condition) returns 1. EventIf 0 is
+"always" (`fn_8002C9E0`), 2..6 are "Luigi within EventArea in the trigger's room", 1
+(`fn_8002C364`) is the same plus A pressed facing it (talking). The `fn_8002B6D4` hook (US and
+European game): after a warp's map setup, every trigger except A-to-talk ones whose condition
+holds within 150 frames is recorded and answers 0 for the rest of that visit (until the next
+map setup). Events reached later by walking somewhere, talking or story flags play normally;
+normal play (no warp) is unchanged. Held back on arrival: map 1 event 8 (E. Gadd's lab talk),
+3 event 9 (training explanation), 4 event 2 (E. Gadd at the Portrificationizer), 9 event 75
+(Bowser intro), 10 event 64 (Chauncey), 11 event 72 (Boolossus), 12 event 52, 13 event 66
+(Bogmire), mansion appear point 9 events 6 and 74 (King Boo at the Secret Altar), point 7
+event 83 (Sealed Room), point 5 event 71 (Balcony Boos). Bosses stand idle (Bowser on the
+roof, the Boolossus Boos on the balcony); Luigi has control and the HUD is on.
+
+### Warp list status (US, verified 2026-10-09)
+
+Every entry was warped to in sequence from the foyer of a new game and from each other (maps
+0-13, then 2, 9, 1, 4, 2 again; the ten appear points; the six leftover rooms, then the lab and
+room01A again), with the stick pushed up/left/down after each arrival (`LM_DEV_STATUS_LOG`
+positions and frame dumps). No crash, no event on arrival, no letterbox or hidden HUD left
+over, Luigi moved and the camera followed everywhere. Contact sheets (not committed):
+`build/warps/warp_contact_sheet.png` (one frame per entry), `maps_arrive_walk.png`,
+`mansion_appear_points.png`, `leftover_rooms.png`, `breaker_old_vs_retail.png`,
+`leftover_retail_reference.png`.
+
+| Entry | Luigi placed at | Result |
+|-------|-----------------|--------|
+| Map 0 test map | (-86, 0, 496), the map's spawn | Works. The test `candle` fire actor drifts around the spawn and burns Luigi if he stays in it; Toad, Boos and the other test actors are there |
+| Map 1 E. Gadd's lab | (-3229, 50, -3) | Works, event 8 held back. No HUD (the lab never shows one); E. Gadd idle. The lab is normally left through its event menu, so the way out is another warp |
+| Map 2 mansion (appear point 0) | Foyer (-8, 0, 145) | Works |
+| Map 3 training room | (0, 0, -18) | Works, event 9 held back; no training session starts |
+| Map 4 Portrificationizer | (-960, 0, -70) | Works, event 2 held back. Luigi's `luige` entry is flagged invisible in the JMP table, but he is visible and controllable |
+| Map 5 statue hall (unused) | (2547, 0, -138) | Works |
+| Map 6 portrait gallery | (1952, 0, -57) | Works; E. Gadd's talk (A) and the portrait plaques are A-to-talk triggers and still work |
+| Map 7 long statue hall (unused) | (2547, 0, -138) | Works (rebuilt archive) |
+| Map 8 lantern hallway (unused) | (2547, 0, -138) | Works (rebuilt archive) |
+| Map 9 roof | (-247, 1780, -961) | Works, Bowser intro held back; Bowser stands idle |
+| Map 10 Chauncey's room | (0, 0, 250) | Works, intro held back; no fight |
+| Map 11 balcony | (0, 0, 0) | Works, intro held back; the Boolossus Boos float around and can hurt Luigi |
+| Map 12 Portrificationizer (after Bowser) | (0, 0, 0) | Works, event 52 held back |
+| Map 13 graveyard | (0, 0, 1000) | Works, Bogmire intro held back. The arena's own camera sits outside the fence, so Luigi is seen through the railings |
+| Appear 6 foyer door, 2 Graveyard, 1 Nursery, 4 Clockwork Room, 8 3F hallway | the appear point | Work |
+| Appear 9 Secret Altar | (2311, -550, -6724) | Works, King Boo's events 6/74 held back |
+| Appear 7 Sealed Room, 5 Balcony | the appear point | Work, events 83 / 71 held back (the Balcony Boos keep circling) |
+| Appear 3 Roof | (-11, 1800, -2087) | Works on arrival; walking north starts the roof's area event (not an entry event), which ends with Luigi in the Clockwork Room |
+| Leftover: lab E3 2001, Portrificationizer pre-E3 | the map's spawn | Work (old models shown) |
+| Leftover: breaker room, 1F / 2F hallway duplicates | see below | Work; Luigi starts in the room |
+| Leftover: Hidden Room alternate (room01A) | (-1800, 0, 100) | Works (see below) |
 
 Test aids: `LM_START_MAP=<n>` (new game starts in map n; moved here from the Hidden Mansion
-hooks), `LM_START_APPEAR=<p>`, `LM_DEV_WARPS=<map>[:<appear>]@<frame>,...`.
+hooks), `LM_START_APPEAR=<p>`, `LM_DEV_WARPS=<map>[:<appear>]@<frame>,...`,
+`LM_DEV_STATUS_LOG=<n>` (every n frames: scene, map, room id, Luigi's position, event cursor,
+HUD-off flag, Luigi's flags; bit 0x10 = Luigi stopped).
 
 ### Maps 7 and 8: why they crashed and how they load now
 
@@ -409,26 +620,51 @@ the mansion, with screenshots, F3 overlay for positions):
   over this hallway. So in this early build the event was a test hookup on E. Gadd, not a
   scene of his own.
 
-## Unused rooms (work in progress, paused)
+## Unused rooms
 
 Leftover room models on the disc: `/Iwamoto/map1/h_01.bin` (E3 2001 lab, extra robotic-arm
 stand), `/Iwamoto/map1/h_02.bin` (pre-E3 Portrificationizer room; retail is `map4/h_02.bin`),
 `/Iwamoto/map2/room_67.arc` member `b1_c_67.bin` (older breaker room), `room_07.arc` /
 `room_30.arc` member `room..bin` (duplicate 1F / foyer 2F hallways; room_07's differs from the
-retail `room.bin` by 42 bytes), `/Iwamoto/map2/room01A.bin` (no retail counterpart).
+retail `room.bin` by 42 bytes), `/Iwamoto/map2/room01A.bin`.
 
 `src/recomp/room_swap.cpp` (Unused content tab, "Unused rooms"): Go warps to the retail room's
-map and, for that visit only, `hle_dvd.cpp` serves the retail file rebuilt with the leftover
-model (RARC member replaced, or the whole `.bin`); collision, doors and objects stay retail.
-The swap ends when Luigi leaves the room/map or another warp is made. Test aid
-`LM_DEV_ROOM=<index>@<frame>`.
+map with Luigi standing in the room, and shows the leftover model for that visit only;
+collision, doors and objects stay retail. The swap ends when Luigi leaves the room he was
+placed in or the map, or another warp is made. Entry events are held back as for any warp.
 
-Status: the lab and Portrificationizer visits load the leftover models (logged and seen).
-The mansion rooms (67, 7, 30) need Luigi to start inside them; the spawn override
-(`findLuigiAppearIndex` + `ToolData::getValue` pos_x/y/z of Luigi's entry while a visit is
-pending) is implemented but not verified, and Luigi still started in the foyer in the last
-test. Not started: a dedicated room slot for room01A (would need a map-2 room table entry,
-JMP roominfo row and collision), and the breaker-room door/collision mismatch check.
+- **File swap** (lab, Portrificationizer, breaker room, hallways): `hle_dvd.cpp` serves the
+  retail file rebuilt with the leftover model (the whole `.bin`, or the RARC member replaced).
+  The member is written into the retail member's own space when it fits, so the archive keeps
+  its size: map 2 streams room archives through fixed-size buffers, and the breaker room's
+  archive with the old model appended (485 KB instead of 371 KB) overran them; the room's node
+  tree was overwritten and the room draw `fn_80015844` recursed forever (host stack exhausted).
+  All leftovers but room_30's `room..bin` (128 bytes larger, appended: 377 KB) fit in place.
+- **Spawn**: the map setup picks Luigi's `luige` entry for the appear point
+  (`findLuigiAppearIndex`) and reads `pos_x/y/z` with `ToolData::getValue`; while a visit's
+  spawn is armed (from the warp until Luigi is placed) those reads return the room's floor
+  point: breaker room (3350, -550, -1810), 1F hallway (-1250, 0, -5000), 2F hallway
+  (250, 550, -1000), Hidden Room (-1800, 0, 100). The game derives the starting room from the
+  position. The visit used to clear the spawn as soon as the current map was the visit's map,
+  which is already true when visiting a mansion room from the mansion, so the override was gone
+  before the warp happened (Luigi started in the foyer); arrival is now the warp's map setup.
+  The game's current-room id (`0x803A3CA0` +0xC) is not the archive index (breaker room
+  archive 67 reads 69, room 7 reads 20, room 30 reads 31), so "left the room" is a change from
+  the id Luigi started in.
+- **room01A** is not loose junk: map 2's descriptor (`lbl_8030377C` +0xC, table
+  `lbl_80301360`) lists alternate room models, room 28 -> `room_28A.arc` (switched by game code,
+  `fn_80037550` / `fn_800376A4`) and room 1 -> `room01A.bin`, which nothing selects. The room
+  loader (`fn_80011FDC`) uses a room's alternate when its slot +0x45 picks one; the visit calls
+  the game's own `fn_800129FC(1, 1)` once Luigi is placed (and `(1, 0)` when he leaves). Room 1
+  is the **Hidden Room**: room01A is a bare version of it (plain cracked walls and floor, no
+  curtains, rug or portraits). Its furniture models live in `room_01.arc`, which a bare `.bin`
+  alternate does not load, so the furniture is not drawn (its collision is still there).
+
+Comparison with the retail rooms (`LM_DEV_ROOM_RETAIL=1`, same input): the old breaker room has
+a pipe/door shape on the left wall where retail has stone, and lacks the pipes right of the
+breaker (`build/warps/breaker_old_vs_retail.png`); the hallway duplicates are near-identical,
+as the file sizes suggest. Test aids: `LM_DEV_ROOM=<index>@<frame>,...`,
+`LM_DEV_ROOM_RETAIL=1` (place Luigi without swapping the model).
 
 ## Model viewer
 
@@ -458,7 +694,8 @@ each: model id, flags; flag 8 = drawn in the ghost layer by `fn_80060E70`; model
 ### How each kind is set up and drawn
 
 Files are copied into a private `JKRExpHeap` (`__ct__10JKRExpHeapFPvUlP7JKRHeapb`) at guest
-0x81812000-0x83FF0000, host-backed memory above the 24 MiB the game uses. The host window for
+0x82000000-0x83FF0000, host-backed memory above the 24 MiB the game uses (0x81F00000-0x81FF0000
+below it holds early Luigi's model copies, `early_luigi.cpp`). The host window for
 guest addresses is 64 MiB for this (`ctx.h` `kHostMemSize`, module ABI 3): a whole mansion
 with its furniture needs about 22 MiB. Game code that allocates (`operator new`) runs with
 the viewer heap as `JKRHeap::sCurrentHeap`.
@@ -497,7 +734,7 @@ the viewer itself: the full-screen backdrop that clears the picture was drawn at
 depth range, so every part of a model further away than about 1000 times the near plane was
 behind it. The backdrop now sits exactly on the far plane, and the near/far planes are fitted
 around the model's bounds (vertices and joints at frame 0, or the room shells for maps) with
-wide margins. "Back faces" turns off back-face culling as well (Aurora patch 0010, below), to
+wide margins. "Back faces" turns off back-face culling as well (Aurora patch 0011, below), to
 see sky domes and rooms from outside.
 
 ### Ghost effects
@@ -512,9 +749,9 @@ see-through. The layer buffers (`lbl_804D86B8`/`BC`) are swapped for viewer-heap
 the draw (the game only has them in the game scene). Defaults are the values measured in play
 (colour 404040FF, alpha FF for a fully visible ghost); both are adjustable.
 
-### Wireframe (Aurora patch 0010)
+### Wireframe (Aurora patch 0011)
 
-`patches/aurora/0010-wireframe-override.patch` adds two debug draw commands:
+`patches/aurora/0011-wireframe-override.patch` adds two debug draw commands:
 `GXSetWireframeAurora(enable, rgba)` (`GX_AURORA_SET_WIREFRAME`): every triangle-type draw,
 including the display-list optimiser's pre-indexed draws, gets an index buffer of its
 triangle edges and a line-list pipeline (WebGPU has no polygon fill mode) whose fragment
@@ -565,7 +802,10 @@ Test aids: `LM_DEV_VIEWER=<archive>[#<model name part>][|<key name part>]` (`|-`
 e.g. `/model/baby.szp|akubi`, `/Game/game_usa.szp#luige|wait`, `/Map/map2.szp#gold`;
 `LM_DEV_VIEWER_MAP=<map>[:<room>]` (e.g. `2` = whole mansion, `2:61` = cold storage);
 `LM_DEV_VIEWER_WIRE=1|2` (over model / only); `LM_DEV_VIEWER_GHOSTFX=0`;
-`LM_DEV_VIEWER_NOTEX=1`.
+`LM_DEV_VIEWER_NOTEX=1`; `LM_DEV_VIEWER_CAM=<yaw>,<pitch>,<distance>` fixes the orbit camera
+(no spin), e.g. `0,0.1,0.8` front, `1.5708,0.1,0.8` side. From Git Bash, set
+`MSYS2_ENV_CONV_EXCL=LM_DEV_VIEWER` (or `MSYS_NO_PATHCONV=1`, or launch from PowerShell),
+otherwise the leading `/` is rewritten into a Windows path.
 
 Known limits: J3D models are static (their `.bck`/`.btk`/`.brk` animations are not played),
 so effects whose colour or alpha only comes from an animation stay invisible or faint;

@@ -7,12 +7,17 @@
 
 namespace port {
 
-enum class FrameRateMode { Original30, Interpolated60, InterpolatedUnlimited };
 enum class AspectMode { Original4x3, Auto, Wide16x9, Wide16x10, Ultra21x9, Ultra32x9 };
 enum class AudioOutput { Stereo, Mono, Surround };
 
+constexpr int kMinFps = 30, kMaxFps = 320;
+
 struct VideoSettings {
-    FrameRateMode frameRate = FrameRateMode::Original30;
+    // Presentation frame rate. 30 = the game's own rate, drawn directly (no interpolation);
+    // above 30 the frames in between are interpolated (src/recomp/interp.*). matchDisplay
+    // uses the refresh rate of the display the window is on instead of targetFps.
+    int targetFps = 30;         // kMinFps..kMaxFps
+    bool matchDisplay = false;
     AspectMode aspect = AspectMode::Auto;
     int resolutionScale = 0;    // internal render resolution: 0 = match window, N = N x 480p (aspect-widened)
     float fovScale = 1.0f;      // multiplies the game's vertical field of view
@@ -60,7 +65,7 @@ struct EnhancementSettings {
     bool showFps = false;
     bool pauseOnFocusLoss = true;
     bool skipIntroLogos = false;
-    bool hiddenMansionPal = true;  // Hidden Mansion uses the PAL release's rules (until the lab menu offers both)
+    bool hiddenMansionPal = true;  // default Hidden Mansion rules for saves that have not chosen in E. Gadd's lab
     int palLanguage = 1;           // PAL game only: 1 English, 2 German, 3 French, 4 Spanish, 5 Italian (next launch)
     bool gbhClock = false;         // cut E3 GBH clock/radar screen, toggled in game with D-pad Left
     bool gbhTracker = false;       // unused GBH ghost tracker, cycled in game with D-pad Down (off/far/close)
@@ -70,7 +75,11 @@ struct EnhancementSettings {
     bool starDoor = false;              // unused star door (type 08) on the Twins' room
     bool betaMapLuigi = false;          // unused full Luigi model on the Game Boy Horror map
     bool unusedPortraitModels = false;  // each ghost's own model in the Portrificationizer scene
-    bool airWaterNozzles = false;       // unused wpair/wpwater Poltergust nozzles; D-pad Right = air nozzle (src/recomp/nozzles.cpp)
+    bool earlyLuigi = false;            // unused early Luigi model /model/luige.szp (src/recomp/early_luigi.cpp)
+    bool airWaterNozzles = false;       // unused wpair/wpwater Poltergust nozzles (src/recomp/nozzles.cpp)
+    bool earlyPoltergust = false;       // E3 2001 Poltergust body /model/vbody.szp (src/recomp/unused_models.cpp)
+    bool earlyBogmire = false;          // early Bogmire model /model/shadow.szp (src/recomp/unused_models.cpp)
+    bool greenToad = false;             // Toads use kinopio2's green texture set (src/recomp/unused_models.cpp)
     bool earlyGhostLighting = false;  // "Ghost shading: Beta" = the known beta-shading cheat (fn_800581E8 channel setup)
     bool skipCutscenes = false;  // START skips cutscenes (src/recomp/skip.cpp)
     bool fastForwardKey = true;  // holding Tab runs the game at high speed (src/recomp/skip.cpp)
@@ -85,6 +94,7 @@ struct EnhancementSettings {
     int dbgHudTest = 0;              // 0 off, 1 icons, 2 numbers, 3 element meter
     bool dbgFontTest = false;        // font test screen text
     bool dbgFontTestLatin = false;   // PAL fix: last font-test line shows "alphabet 123"
+    bool dbgWarpSkipEvents = true;   // warps don't start the destination's entry cutscene/event
 };
 
 // Gameplay / difficulty options (F1 > Enhancements > Gameplay). Defaults are neutral: the
@@ -104,6 +114,14 @@ struct GameplaySettings {
 // Hardware-accuracy rendering features (F1 > Visuals > Rendering). Every costly accuracy
 // feature gets a flag here, ON by default (best quality); weaker PCs can turn them off.
 struct RenderingSettings {
+    // Integer TEV: the color combiner computes with the hardware's 8-bit inputs, signed 11-bit
+    // registers and per-stage rounding instead of floats (Aurora GX_AURORA_ACCURACY_INT_TEV).
+    bool integerTev = true;
+    // EFB color depth: pixels are stored the way the game's RGBA6 framebuffer stores them,
+    // 6 bits per channel with the ordered dither the game enables (GX_AURORA_ACCURACY_EFB_DEPTH).
+    bool efbColorDepth = true;
+    // Display copy filter: the vertical filter (and gamma) GXCopyDisp applies on the way to the TV.
+    bool displayCopyFilter = true;
     // GXCopyTex results also exist as GX-format bytes in main memory, so textures that read a
     // copy with another format/size (Luigi's self-shadow depth map) and CPU reads see what the
     // console sees (docs/RENDERING.md). Off: copies stay GPU-only textures.

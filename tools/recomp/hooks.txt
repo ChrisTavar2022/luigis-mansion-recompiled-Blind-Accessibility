@@ -34,6 +34,8 @@ fn_8009FCA8 us pal
 fn_8006D1B8 us pal
 fn_800168EC us pal
 fn_800B41E0 us pal
+# E. Gadd's lab menu with both Hidden Mansions: keep a wider choice box on screen.
+fn_80043104 us pal
 # PAL Hidden Mansion boss mechanics (same file): Boolossus movement mode, Chauncey balls and
 # rocking horses, Bowser bomb volleys.
 fn_800B783C us pal
@@ -66,9 +68,16 @@ fn_800C0F08 us pal
 fn_80081BCC us pal
 getValue__Q24Koga8ToolDataCFiPCcPPCc us pal
 fn_800D1458 us pal
-# J2D screen drawing: the in-game HUD anchored to the screen edges in
-# widescreen (src/recomp/widescreen.cpp).
-draw__9J2DScreenFiiPC14J2DGrafContext us pal
+# In-game HUD elements, anchored to the screen edges as units in widescreen
+# (src/recomp/widescreen.cpp): Game Boy Horror, its screen noise, the frame loop's view
+# setup (GBH live 3D view, the scan view's small main view), event portraits (E. Gadd's call
+# on the GBH screen), room name, health meter.
+fn_8003D634 us pal
+fn_8003BE9C us pal
+fn_800115F8 us pal
+fn_80114E18 us pal
+fn_80045BDC us pal
+fn_800417F8 us pal
 # Early ghost lighting (cheat-equivalent, src/recomp/unused_content.cpp)
 fn_8005A5D4 us pal
 
@@ -85,6 +94,10 @@ getResSize__10JKRArchiveCFPCv
 # selector, which re-types the nozzle actor.
 fn_800B36B8
 
+# Unused model swaps (src/recomp/unused_models.cpp, early_luigi.cpp): model archive setup
+# (registry entry); unused models / the early Luigi .mdl are swapped in after it.
+fn_80061C94
+
 # Developer tools (src/recomp/dev_tools.cpp, docs/UNUSED_CONTENT.md): map warps through the
 # scene manager (+ LM_START_MAP), the game's JUTReport queue (debug text overlay), and the
 # end-of-frame copy where debug switches are applied and the model viewer draws.
@@ -92,6 +105,8 @@ fn_8000C188 us pal
 fn_8000B4A0 us pal
 fn_801D7114 us pal
 LMChangeFrameBuffer__Fv us pal
+# Warp arrivals hold back the destination's entry events (event trigger condition check).
+fn_8002B6D4 us pal
 # USA Hidden Mansion rules on the European game (src/recomp/hidden_mansion_hooks.cpp,
 # docs/SETUP.md): European functions whose hidden-mansion code is PAL-only run with the flag
 # hidden; those where the USA game reads it too see the real flag; Luigi's state update

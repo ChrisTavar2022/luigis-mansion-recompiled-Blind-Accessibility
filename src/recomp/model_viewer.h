@@ -5,7 +5,7 @@
 // game's own code: S3DModel for .mdl (relocation, .key joint animation, materials, lighting,
 // the ghost layer for ghosts), the room/furniture renderer for .bin, J3D for .bmd.
 // Orbit camera for models, fly camera for maps; no culling of any kind; wireframe via
-// Aurora patch 0010. Details: docs/UNUSED_CONTENT.md ("Model viewer").
+// Aurora patch 0011. Details: docs/UNUSED_CONTENT.md ("Model viewer").
 #include "recomp/ctx.h"
 
 namespace recomp::viewer {

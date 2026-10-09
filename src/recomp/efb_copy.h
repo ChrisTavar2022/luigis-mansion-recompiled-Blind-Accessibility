@@ -12,4 +12,9 @@ void* dumpTarget(u32 frameNo);     // LM_FRAME_DUMP: host buffer to copy this fr
 // One-off dump of the next finished guest frame (model viewer sweep): `done` gets the 640x480
 // RGB pixels; `path` (optional) receives a .ppm downscaled by `shrink`.
 void requestNamedDump(const std::string& path, int shrink, std::function<void(const u8* rgb, u32 w, u32 h)> done);
+// Interpolation tests (LM_INTERP_TEST with LM_FRAME_DUMP): a buffer whose copy is written to
+// <dump dir>/<name>.ppm when its readback lands; namedDumpWritten tells when it did.
+void* namedDumpTarget(const char* name);
+bool namedDumpWritten(const void* target);
+void applyWritebacks();  // host thread, while the guest is held
 }  // namespace recomp::efbcopy

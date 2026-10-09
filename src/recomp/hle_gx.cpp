@@ -13,11 +13,14 @@
 #include "recomp/interp.h"
 #include "recomp/runtime.h"
 #include "recomp/widescreen.h"
+#include "port/settings.h"
 
 #include <dolphin/gx.h>
+#include <dolphin/gx/GXAurora.h>
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -25,6 +28,7 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace recomp {
@@ -102,6 +106,11 @@ int sProjEmittedAnchor = 0;         // HUD anchor the emitted projection was bui
 struct {
     f32 left = 0, wd = kLogicalWidth;
 } sVp;
+// A partial viewport set by a HUD element (ws::AnchorScope: the GBH's live 3D view) is sent
+// to Aurora moved and narrowed like the 2D around it, with this anchor; scissors set while
+// it is current follow it too.
+bool sVpFollow = false;
+int sVpAnchor = 0;
 struct {
     u32 x = 0, y = 0, w = 640, h = 480;
 } sScissor;
@@ -112,10 +121,23 @@ int sScissorAnchor = 0;
 // them is brought up to date before the first raw FIFO write after any change.
 bool sRawCheck = true;
 
-// HUD anchor for the draw being prepared: a held draw keeps the one from its GXBegin.
+// HUD anchor for the draw being prepared: a held draw keeps the one from its GXBegin (it
+// is only sent at the next GX call, which may come after the HUD element's scope ended).
 int sHeldAnchor = 0;
 bool sInHeldPrepare = false;
-int hudAnchor() { return sInHeldPrepare ? sHeldAnchor : 0; }
+// A by-side scope is resolved per held draw (classifyHeld); anything else in it stays centered.
+int scopeAnchor() {
+    const int a = ws::hudAnchor();
+    return a == ws::kAnchorBySide ? 0 : a;
+}
+int hudAnchor() { return sInHeldPrepare ? sHeldAnchor : scopeAnchor(); }
+
+// x of the centered (and anchored) 4:3 frame for logical x: what the scaled orthographic
+// projection does to 2D, in pixels.
+f32 pillarX(f32 x, int anchor) {
+    const f32 s = ws::factor(), mid = kLogicalWidth * 0.5f;
+    return mid + (x - mid) * s + f32(anchor) * (1.0f - s) * mid;
+}
 
 bool viewportFull() { return sVp.left <= 1.0f && sVp.left + sVp.wd >= kLogicalWidth - 1.0f; }
 
@@ -157,11 +179,9 @@ void emitProjection(ProjMode mode) {
 void emitScissor(bool pillar) {
     sScissorAnchor = 0;
     if (pillar) {
-        const f32 s = ws::factor(), mid = kLogicalWidth * 0.5f;
-        sScissorAnchor = hudAnchor();
-        const f32 shift = f32(sScissorAnchor) * (1.0f - s) * mid;
-        const f32 l = std::max(0.0f, mid + (f32(sScissor.x) - mid) * s + shift);
-        const f32 r = std::min(kLogicalWidth, mid + (f32(sScissor.x + sScissor.w) - mid) * s + shift);
+        sScissorAnchor = sVpFollow ? sVpAnchor : hudAnchor();
+        const f32 l = std::max(0.0f, pillarX(f32(sScissor.x), sScissorAnchor));
+        const f32 r = std::min(kLogicalWidth, pillarX(f32(sScissor.x + sScissor.w), sScissorAnchor));
         const u32 li = u32(std::max(0.0f, std::floor(l)));
         GXSetScissor(li, sScissor.y, u32(std::ceil(r)) - li, sScissor.h);
     } else {
@@ -201,8 +221,9 @@ void prepareDraw(ProjMode mode, const char* what = "draw") {
     const bool hud = mode == ProjMode::Scaled && sProj.type == GX_ORTHOGRAPHIC;
     if (sProjSet && (sProjDirty || mode != sProjEmitted || (hud && hudAnchor() != sProjEmittedAnchor)))
         emitProjection(mode);
-    const bool pillar = hud && (sScissor.x > 0 || sScissor.x + sScissor.w < 640);
-    if (pillar != sScissorPillar || (pillar && hudAnchor() != sScissorAnchor)) emitScissor(pillar);
+    const bool pillar = sVpFollow || (hud && (sScissor.x > 0 || sScissor.x + sScissor.w < 640));
+    const int anchor = sVpFollow ? sVpAnchor : hudAnchor();
+    if (pillar != sScissorPillar || (pillar && anchor != sScissorAnchor)) emitScissor(pillar);
 }
 
 // Mirror of the vertex layout state that immediate-mode 2D draws use, so a
@@ -291,7 +312,7 @@ bool samplesPicture() {
 
 f32 sHeldLo = 0, sHeldHi = 0;  // NDC x extent of the last decoded held draw
 bool sHeldDecoded = false;
-bool sHeldHud = false;  // the held draw belongs to the in-game HUD (ws::inHud)
+std::string sHeldChain;  // LM_HUD_TRACE
 bool coversScreen() {
     const int fmt = sHeld.fmt;
     const size_t n = sHeld.verts;
@@ -342,14 +363,14 @@ bool coversScreen() {
 //    so it lines up with the stretched EFB;
 //  - covers the width and samples an ordinary texture (a 4:3 background
 //    picture): per --ws-backgrounds, centered by default;
-//  - anything else is HUD: centered 4:3.
+//  - anything else is HUD: centered 4:3 (moved to an edge with its HUD element's anchor).
 ProjMode classifyHeld() {
     sHeldDecoded = false;
     if (!coversScreen()) {
-        // In-game HUD: a draw in the outer part of the 4:3 frame moves to that edge.
-        if (sHeldDecoded && sHeldHud) sHeldAnchor = ws::hudAnchorFor(sHeldLo, sHeldHi);
+        if (sHeldAnchor == ws::kAnchorBySide) sHeldAnchor = !sHeldDecoded ? 0 : sHeldLo + sHeldHi < 0.0f ? -1 : 1;
         return ProjMode::Scaled;
     }
+    if (sHeldAnchor == ws::kAnchorBySide) sHeldAnchor = 0;
     traceNote("full-screen 2D, %s", samplesPicture() ? "picture" : "fill/copy");
     if (!samplesPicture()) return ProjMode::Plain;
     switch (ws::backgroundMode()) {
@@ -359,6 +380,14 @@ ProjMode classifyHeld() {
     }
 }
 
+}  // namespace
+
+// Vertex layout for interp's vertex-array tracking (interp_vtx.cpp).
+int gx::vtxAttrSize(int fmt, int attr) { return fmt < GX_MAX_VTXFMT ? attrSize(fmt, attr) : -1; }
+u8 gx::vtxDesc(int attr) { return attr < GX_VA_MAX_ATTR ? sDesc[attr] : 0; }
+
+namespace {
+
 void rawFifoWrite(u32 v, int size) {
     switch (size) {
     case 1: GXCmd1u8(u8(v)); break;
@@ -367,7 +396,73 @@ void rawFifoWrite(u32 v, int size) {
     }
 }
 
+gx::DisplayCopy sDisplayCopy;
+
 }  // namespace
+
+const gx::DisplayCopy& gx::displayCopy() { return sDisplayCopy; }
+
+// F1 > Visuals > Rendering accuracy options -> Aurora. Test overrides: LM_ACCURACY=<mask>
+// (bit 0 integer TEV, bit 1 EFB color depth) and LM_ACCURACY_AB=<seconds> (alternate between
+// the configured options and all off every <seconds>, for A/B screenshots of one run).
+void gx::applyAccuracySettings() {
+    const auto& r = port::settings().rendering;
+    u32 flags = (r.integerTev ? GX_AURORA_ACCURACY_INT_TEV : 0) | (r.efbColorDepth ? GX_AURORA_ACCURACY_EFB_DEPTH : 0);
+    static const char* sMask = std::getenv("LM_ACCURACY");
+    if (sMask) flags = u32(std::strtoul(sMask, nullptr, 0));
+    static const double sAb = [] {
+        const char* e = std::getenv("LM_ACCURACY_AB");
+        return e ? std::atof(e) : 0.0;
+    }();
+    if (sAb > 0.0) {
+        static const auto sStart = std::chrono::steady_clock::now();
+        const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - sStart).count();
+        const long long phase = (long long)(t / sAb);
+        const bool off = phase % 2 == 1;
+        // Frame rate per phase (presented frames; use an uncapped frame rate to measure cost).
+        static long long sPhase = 0;
+        static int sFrames = 0;
+        if (phase != sPhase) {
+            const double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+            log("[accuracy] phase %lld (%s): %.1f fps, ended at %.1f", sPhase, sPhase % 2 ? "off" : "on", sFrames / sAb, now);
+            sPhase = phase;
+            sFrames = 0;
+        }
+        sFrames++;
+        static const bool sFilter = port::settings().rendering.displayCopyFilter;
+        if (off) flags = 0;
+        port::settings().rendering.displayCopyFilter = off ? false : sFilter;
+    }
+    if (flags != GXGetAuroraAccuracy()) GXSetAuroraAccuracy(flags);
+}
+
+// LM_HUD_TRACE=<first>,<last>[,<step>]: for those frames (GXCopyDisp count), every 2D draw, viewport,
+// scissor and texture copy with its guest call chain, to map HUD pieces to game functions.
+static u32 sDiagFrame = 0;
+static bool hudTraceOn() {
+    static const auto range = [] {
+        u32 a = ~0u, b = 0, step = 1;
+        if (const char* v = std::getenv("LM_HUD_TRACE")) std::sscanf(v, "%u,%u,%u", &a, &b, &step);
+        return std::tuple<u32, u32, u32>{a, b, step ? step : 1};
+    }();
+    const auto [first, last, step] = range;
+    return sDiagFrame >= first && sDiagFrame <= last && (sDiagFrame - first) % step == 0;
+}
+static std::string guestChain(const Ctx& c) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%08X", c.lr);
+    std::string s = buf;
+    u32 sp = c.r[1];
+    for (int i = 0; i < 12; i++) {
+        sp = rd32(sp);
+        if (sp < 0x80000000u || sp >= 0x81800000u) break;
+        std::snprintf(buf, sizeof(buf), "<%08X", rd32(sp + 4));
+        s += buf;
+    }
+    return s;
+}
+#define HUD_TRACE(fmt, ...) \
+    do { if (hudTraceOn()) log("[hud] f%u " fmt, sDiagFrame, __VA_ARGS__); } while (0)
 
 static FILE* dlTraceFile() {
     static FILE* f = [] { const char* p = std::getenv("LM_DL_TRACE"); return p ? std::fopen(p, "w") : nullptr; }();
@@ -399,8 +494,11 @@ void gx::endPendingDraw() {
     if (sHeld.active) {
         sHeld.active = false;
         sInHeldPrepare = true;
-        prepareDraw(classifyHeld(), "held");
+        const ProjMode mode = classifyHeld();
+        prepareDraw(mode, "held");
         sInHeldPrepare = false;
+        HUD_TRACE("held %s x[%.3f,%.3f] mode=%d anchor=%d %s", sHeldDecoded ? "dec" : "nodec", sHeldLo, sHeldHi,
+                  int(mode), sHeldAnchor, sHeldChain.c_str());
         sRawCheck = true;
         GXBegin(sHeld.prim, sHeld.fmt, sHeld.verts);
         for (u32 w : sHeld.writes) {
@@ -416,6 +514,7 @@ void gx::endPendingDraw() {
 
 void hw::fifoWrite(u32 v, int size) {
     if (dropDraw()) [[unlikely]] return;
+    if (interp::capturing()) interp::vtxBytes(v, size);
     if (sHeld.active) [[unlikely]] {
         const u32 off = u32(sHeld.bytes.size());
         for (int b = size - 1; b >= 0; b--) sHeld.bytes.push_back(u8(v >> (8 * b)));
@@ -437,6 +536,25 @@ void hw::fifoWrite(u32 v, int size) {
     }                                                     \
     static void gxImpl_##name([[maybe_unused]] ::recomp::Ctx& c)
 
+// GX state audit (LM_GX_AUDIT=1): logs each distinct argument combination of the state calls
+// that matter for hardware accuracy (copy filter, gamma, fog, lights, LOD...), once.
+static void gxAudit(const char* fmt, ...) {
+    static const bool on = [] {
+        const char* e = std::getenv("LM_GX_AUDIT");
+        return e && e[0] == '1';
+    }();
+    if (!on) return;
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    static std::vector<std::string> seen;
+    if (std::find(seen.begin(), seen.end(), buf) != seen.end()) return;
+    seen.emplace_back(buf);
+    log("[gx-audit] %s", buf);
+}
+
 // --- setup / sync ---------------------------------------------------------------
 
 GXHLE(GXInit) {
@@ -451,7 +569,10 @@ GXHLE(GXSetDrawDone) {}
 GXHLE(GXWaitDrawDone) {}
 GXHLE(GXPixModeSync) { GXPixModeSync(); }
 GXHLE(GXSetMisc) {}
-GXHLE(GXInvalidateVtxCache) { GXInvalidateVtxCache(); }
+GXHLE(GXInvalidateVtxCache) {
+    GXInvalidateVtxCache();
+    interp::invalidateVtxCache();
+}
 GXHLE(GXInvalidateTexAll) { GXInvalidateTexAll(); }
 
 // --- vertex format ----------------------------------------------------------------
@@ -504,19 +625,22 @@ GXHLE(GXSetArray) {
         sPosArray = c.r[4];
         sPosStride = u8(c.r[5]);
     }
+    const u32 at = interp::mark();
     GXSetArray(GXAttr(c.r[3]), ptr(c.r[4]), 0, u8(c.r[5]), false);
+    interp::arrayBase(at, c.r[3], c.r[4], u8(c.r[5]));
 }
 
 GXHLE(GXBegin) {
     if (dropDraw()) return;
     sInBegin = true;
+    if (interp::capturing()) interp::vtxBegin(c.r[3], c.r[4], c.r[5], sProj.type == GX_PERSPECTIVE);
     if (ws::active() && sProj.type == GX_ORTHOGRAPHIC && viewportFull()) {
         sHeld.active = true;
-        sHeldAnchor = 0;
+        sHeldAnchor = ws::hudAnchor();
         sHeld.prim = GXPrimitive(c.r[3]);
         sHeld.fmt = GXVtxFmt(c.r[4]);
         sHeld.verts = u16(c.r[5]);
-        sHeldHud = ws::inHud();
+        if (hudTraceOn()) sHeldChain = guestChain(c);
         sHeld.bytes.clear();
         sHeld.writes.clear();
         return;
@@ -536,8 +660,12 @@ GXHLE(GXCallDisplayList) {
         }
     }
     if (dropDraw()) return;
+    if (sProj.type == GX_ORTHOGRAPHIC || !viewportFull())
+        HUD_TRACE("dlist %s vp(%.0f,+%.0f) %s", sProj.type == GX_ORTHOGRAPHIC ? "ortho" : "persp", sVp.left, sVp.wd,
+                  guestChain(c).c_str());
     prepareDraw(drawMode(ProjMode::Scaled), "dlist");
     GXCallDisplayList(hostp(c.r[3]), c.r[4]);
+    if (interp::capturing()) interp::vtxDisplayList(c.r[3], hostp(c.r[3]), c.r[4]);
 }
 GXHLE(GXBeginDisplayList) {
     sInDisplayList = true;
@@ -626,30 +754,44 @@ GXHLE(GXSetCurrentMtx) {
     sCurPosMtx = c.r[3];
     GXSetCurrentMtx(c.r[3]);
 }
-GXHLE(GXSetViewport) {
+// Records the guest viewport; returns the x/width to send (moved and narrowed like the 2D
+// around it for a partial viewport set by a HUD element, see sVpFollow).
+static std::pair<f32, f32> setViewport(const Ctx& c) {
     sRawCheck = true;
     sVp.left = farg(c, 1);
     sVp.wd = farg(c, 3);
-    GXSetViewport(farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6));
+    sVpFollow = !viewportFull() && ws::inHudScope();
+    sVpAnchor = sVpFollow ? scopeAnchor() : 0;
+    HUD_TRACE("viewport %.1f %.1f %.1f %.1f%s %s", farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4),
+              sVpFollow ? " follow" : "", guestChain(c).c_str());
+    if (!sVpFollow) return {sVp.left, sVp.wd};
+    return {pillarX(sVp.left, sVpAnchor), sVp.wd * ws::factor()};
+}
+GXHLE(GXSetViewport) {
+    const auto [x, w] = setViewport(c);
+    GXSetViewport(x, farg(c, 2), w, farg(c, 4), farg(c, 5), farg(c, 6));
 }
 GXHLE(GXSetViewportJitter) {
-    sRawCheck = true;
-    sVp.left = farg(c, 1);
-    sVp.wd = farg(c, 3);
-    GXSetViewportJitter(farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6), c.r[3]);
+    gxAudit("GXSetViewportJitter field=%u", c.r[3]);
+    const auto [x, w] = setViewport(c);
+    GXSetViewportJitter(x, farg(c, 2), w, farg(c, 4), farg(c, 5), farg(c, 6), c.r[3]);
 }
 GXHLE(GXSetScissor) {
+    HUD_TRACE("scissor %u %u %u %u %s", c.r[3], c.r[4], c.r[5], c.r[6], guestChain(c).c_str());
     sScissor = {c.r[3], c.r[4], c.r[5], c.r[6]};
-    emitScissor(false);
+    emitScissor(sVpFollow);
 }
 GXHLE(GXSetClipMode) { GXSetClipMode(GXClipMode(c.r[3])); }
 
 // --- geometry state ------------------------------------------------------------------
 
 GXHLE(GXSetCullMode) { GXSetCullMode(GXCullMode(c.r[3])); }
-GXHLE(GXSetCoPlanar) { GXSetCoPlanar(GXBool(c.r[3])); }
-GXHLE(GXSetLineWidth) { GXSetLineWidth(u8(c.r[3]), GXTexOffset(c.r[4])); }
-GXHLE(GXSetPointSize) { GXSetPointSize(u8(c.r[3]), GXTexOffset(c.r[4])); }
+GXHLE(GXSetCoPlanar) {
+    gxAudit("GXSetCoPlanar %u", c.r[3]); GXSetCoPlanar(GXBool(c.r[3])); }
+GXHLE(GXSetLineWidth) {
+    gxAudit("GXSetLineWidth %u off=%u", c.r[3], c.r[4]); GXSetLineWidth(u8(c.r[3]), GXTexOffset(c.r[4])); }
+GXHLE(GXSetPointSize) {
+    gxAudit("GXSetPointSize %u off=%u", c.r[3], c.r[4]); GXSetPointSize(u8(c.r[3]), GXTexOffset(c.r[4])); }
 GXHLE(GXEnableTexOffsets) { GXEnableTexOffsets(GXTexCoordID(c.r[3]), GXBool(c.r[4]), GXBool(c.r[5])); }
 
 // --- lighting ----------------------------------------------------------------------------
@@ -666,16 +808,25 @@ GXHLE(GXSetChanMatColor) { GXSetChanMatColor(GXChannelID(c.r[3]), color(c.r[4]))
 GXHLE(GXSetChanAmbColor) { GXSetChanAmbColor(GXChannelID(c.r[3]), color(c.r[4])); }
 GXHLE(GXInitLightPos) { GXInitLightPos(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
 GXHLE(GXInitLightDir) { GXInitLightDir(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
-GXHLE(GXInitSpecularDir) { GXInitSpecularDir(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
+GXHLE(GXInitSpecularDir) {
+    gxAudit("GXInitSpecularDir"); GXInitSpecularDir(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
 GXHLE(GXInitLightColor) { GXInitLightColor(light(c.r[3]), color(c.r[4])); }
-GXHLE(GXInitLightSpot) { GXInitLightSpot(light(c.r[3]), farg(c, 1), GXSpotFn(c.r[4])); }
+GXHLE(GXInitLightSpot) {
+    gxAudit("GXInitLightSpot cutoff=%.1f fn=%u", farg(c, 1), c.r[4]); GXInitLightSpot(light(c.r[3]), farg(c, 1), GXSpotFn(c.r[4])); }
 GXHLE(GXInitLightDistAttn) {
+    gxAudit("GXInitLightDistAttn ref=%.1f bright=%.2f fn=%u", farg(c, 1), farg(c, 2), c.r[4]);
     GXInitLightDistAttn(light(c.r[3]), farg(c, 1), farg(c, 2), GXDistAttnFn(c.r[4]));
 }
 GXHLE(GXInitLightAttn) {
+    gxAudit("GXInitLightAttn a=%.3f %.3f %.3f k=%.4f %.4f %.6f", farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6));
     GXInitLightAttn(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6));
 }
-GXHLE(GXLoadLightObjImm) { GXLoadLightObjImm(light(c.r[3]), GXLightID(c.r[4])); }
+GXHLE(GXLoadLightObjImm) {
+    // Position and direction (view space) are blended by frame interpolation.
+    const u32 at = interp::mark();
+    GXLoadLightObjImm(light(c.r[3]), GXLightID(c.r[4]));
+    interp::note(at, interp::Kind::Light, c.r[3], std::countr_zero(c.r[4] | 0x100u), 6, 10);
+}
 
 // --- textures ------------------------------------------------------------------------------
 
@@ -698,6 +849,7 @@ GXHLE(GXInitTexObjCI) {
     diagTexInit("INITCI", c.r[3], c.r[4], c.r[5], c.r[6], c.r[7], c.lr);
 }
 GXHLE(GXInitTexObjLOD) {
+    gxAudit("GXInitTexObjLOD min=%u mag=%u lod=%.2f..%.2f bias=%.2f clamp=%u edge=%u aniso=%u", c.r[4], c.r[5], farg(c, 1), farg(c, 2), farg(c, 3), c.r[6], c.r[7], c.r[8]);
     if (GXTexObj* o = sTex.get(c.r[3], kTexTag))
         GXInitTexObjLOD(o, GXTexFilter(c.r[4]), GXTexFilter(c.r[5]), farg(c, 1), farg(c, 2), farg(c, 3),
                         GXBool(c.r[6]), GXBool(c.r[7]), GXAnisotropy(c.r[8]));
@@ -763,6 +915,7 @@ GXHLE(GXSetTevAlphaOp) {
 }
 GXHLE(GXSetTevColor) { GXSetTevColor(GXTevRegID(c.r[3]), color(c.r[4])); }
 GXHLE(GXSetTevColorS10) {
+    gxAudit("GXSetTevColorS10 reg=%u", c.r[3]);
     const u32 p = c.r[4];
     GXSetTevColorS10(GXTevRegID(c.r[3]), GXColorS10{s16(rd16(p)), s16(rd16(p + 2)), s16(rd16(p + 4)), s16(rd16(p + 6))});
 }
@@ -771,6 +924,7 @@ GXHLE(GXSetTevKColorSel) { GXSetTevKColorSel(GXTevStageID(c.r[3]), GXTevKColorSe
 GXHLE(GXSetTevKAlphaSel) { GXSetTevKAlphaSel(GXTevStageID(c.r[3]), GXTevKAlphaSel(c.r[4])); }
 GXHLE(GXSetTevSwapMode) { GXSetTevSwapMode(GXTevStageID(c.r[3]), GXTevSwapSel(c.r[4]), GXTevSwapSel(c.r[5])); }
 GXHLE(GXSetTevSwapModeTable) {
+    gxAudit("GXSetTevSwapModeTable %u %u%u%u%u", c.r[3], c.r[4], c.r[5], c.r[6], c.r[7]);
     GXSetTevSwapModeTable(GXTevSwapSel(c.r[3]), GXTevColorChan(c.r[4]), GXTevColorChan(c.r[5]),
                           GXTevColorChan(c.r[6]), GXTevColorChan(c.r[7]));
 }
@@ -808,17 +962,23 @@ GXHLE(GXSetTevIndirect) {
 GXHLE(GXSetColorUpdate) { GXSetColorUpdate(GXBool(c.r[3])); }
 GXHLE(GXSetAlphaUpdate) { GXSetAlphaUpdate(GXBool(c.r[3])); }
 GXHLE(GXSetZMode) { GXSetZMode(GXBool(c.r[3]), GXCompare(c.r[4]), GXBool(c.r[5])); }
-GXHLE(GXSetPixelFmt) { GXSetPixelFmt(GXPixelFmt(c.r[3]), GXZFmt16(c.r[4])); }
-GXHLE(GXSetDither) { GXSetDither(GXBool(c.r[3])); }
-GXHLE(GXSetZCompLoc) { GXSetZCompLoc(GXBool(c.r[3])); }
+GXHLE(GXSetPixelFmt) {
+    gxAudit("GXSetPixelFmt %u z=%u", c.r[3], c.r[4]); GXSetPixelFmt(GXPixelFmt(c.r[3]), GXZFmt16(c.r[4])); }
+GXHLE(GXSetDither) {
+    gxAudit("GXSetDither %u", c.r[3]); GXSetDither(GXBool(c.r[3])); }
+GXHLE(GXSetZCompLoc) {
+    gxAudit("GXSetZCompLoc %u", c.r[3]); GXSetZCompLoc(GXBool(c.r[3])); }
 GXHLE(GXSetBlendMode) {
+    gxAudit("GXSetBlendMode %u %u %u %u", c.r[3], c.r[4], c.r[5], c.r[6]);
     GXSetBlendMode(GXBlendMode(c.r[3]), GXBlendFactor(c.r[4]), GXBlendFactor(c.r[5]), GXLogicOp(c.r[6]));
 }
 GXHLE(GXSetDstAlpha) { GXSetDstAlpha(GXBool(c.r[3]), u8(c.r[4])); }
 GXHLE(GXSetFog) {
+    gxAudit("GXSetFog type=%u start=%.1f end=%.1f near=%.1f far=%.1f", c.r[3], farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4));
     GXSetFog(GXFogType(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), color(c.r[4]));
 }
 GXHLE(GXSetFogRangeAdj) {
+    gxAudit("GXSetFogRangeAdj en=%u center=%u", c.r[3], c.r[4]);
     GXFogAdjTable t{};
     if (c.r[5])
         for (int i = 0; i < 10; i++) t.r[i] = u16(rd16(c.r[5] + 2 * i));
@@ -849,7 +1009,6 @@ GXHLE(GXInitFogAdjTable) {
 // Current texture-copy setup (LM_COPY_LOG and the LM_FRAME_DUMP restore), copies by frame for the log.
 static struct { u32 x, y, w, h, dw, dh, fmt, mip; } sCopyDiag;
 static const bool sCopyLog = std::getenv("LM_COPY_LOG") != nullptr;
-static u32 sDiagFrame = 0;
 u32 copyDispCount() { return sDiagFrame; }
 struct DiagCopy { u32 dest, size, fmt, w, h, frame; };
 static std::vector<DiagCopy> sDiagCopies;
@@ -866,16 +1025,48 @@ void diagTexInit(const char* kind, u32 obj, u32 image, u32 w, u32 h, u32 fmt, u3
     }
 }
 GXHLE(GXSetCopyClear) { GXSetCopyClear(color(c.r[3]), c.r[4]); }
-GXHLE(GXSetDispCopySrc) { GXSetDispCopySrc(u16(c.r[3]), u16(c.r[4]), u16(c.r[5]), u16(c.r[6])); }
-GXHLE(GXSetDispCopyDst) { GXSetDispCopyDst(u16(c.r[3]), u16(c.r[4])); }
-GXHLE(GXSetDispCopyYScale) { c.r[3] = GXSetDispCopyYScale(farg(c, 1)); }
-GXHLE(GXSetDispCopyGamma) { GXSetDispCopyGamma(GXGamma(c.r[3])); }
-GXHLE(GXSetCopyClamp) {}
+GXHLE(GXSetDispCopySrc) {
+    gxAudit("GXSetDispCopySrc %u %u %u %u", c.r[3], c.r[4], c.r[5], c.r[6]);
+    if (c.r[6]) sDisplayCopy.efbHeight = u16(c.r[6]);
+    GXSetDispCopySrc(u16(c.r[3]), u16(c.r[4]), u16(c.r[5]), u16(c.r[6]));
+}
+GXHLE(GXSetDispCopyDst) {
+    gxAudit("GXSetDispCopyDst %u %u", c.r[3], c.r[4]);
+    GXSetDispCopyDst(u16(c.r[3]), u16(c.r[4]));
+}
+GXHLE(GXSetDispCopyYScale) {
+    // Returns the number of XFB lines the display copy writes for the copy source height
+    // (the SDK's formula for the 9-bit reciprocal scale register).
+    gxAudit("GXSetDispCopyYScale %.4f", farg(c, 1));
+    GXSetDispCopyYScale(farg(c, 1));
+    const u32 iScale = u32(256.0f / farg(c, 1)) & 0x1FF;
+    const u32 efbHeight = sDisplayCopy.efbHeight;
+    u32 lines = iScale ? (efbHeight - 1) * 256 / iScale + 1 : efbHeight;
+    if (iScale > 128 && iScale < 256) {
+        u32 s = iScale;
+        while ((s & 1) == 0) s >>= 1;
+        if (efbHeight % s == 0) lines++;
+    }
+    c.r[3] = std::min<u32>(lines, 1024);
+}
+GXHLE(GXSetDispCopyGamma) {
+    gxAudit("GXSetDispCopyGamma %u", c.r[3]);
+    sDisplayCopy.gamma = u8(std::min<u32>(c.r[3], 2));
+    GXSetDispCopyGamma(GXGamma(c.r[3]));
+}
+GXHLE(GXSetCopyClamp) {
+    gxAudit("GXSetCopyClamp %u", c.r[3]);
+    sDisplayCopy.clamp = u8(c.r[3] & 3);
+}
 GXHLE(GXSetCopyFilter) {
+    if (c.r[6]) gxAudit("GXSetCopyFilter aa=%u vf=%u vfilter=%u,%u,%u,%u,%u,%u,%u", c.r[3], c.r[5], rd8(c.r[6]), rd8(c.r[6] + 1), rd8(c.r[6] + 2), rd8(c.r[6] + 3), rd8(c.r[6] + 4), rd8(c.r[6] + 5), rd8(c.r[6] + 6));
     u8 pattern[12][2] = {};
     u8 vfilter[7] = {};
     if (c.r[4]) std::memcpy(pattern, hostp(c.r[4]), sizeof(pattern));
     if (c.r[6]) std::memcpy(vfilter, hostp(c.r[6]), sizeof(vfilter));
+    // With vf off the SDK loads the pass-through taps {0, 0, 21, 22, 21, 0, 0}.
+    static constexpr u8 kNoFilter[7] = {0, 0, 21, 22, 21, 0, 0};
+    for (int i = 0; i < 7; i++) sDisplayCopy.vfilter[i] = c.r[5] && c.r[6] ? u8(vfilter[i] & 0x3F) : kNoFilter[i];
     GXSetCopyFilter(GXBool(c.r[3]), pattern, GXBool(c.r[5]), vfilter);
 }
 GXHLE(GXCopyDisp) {
@@ -885,7 +1076,9 @@ GXHLE(GXCopyDisp) {
         // the game's texture-copy setup.
         GXSetTexCopySrc(0, 0, 640, 480);
         GXSetTexCopyDst(640, 480, GX_TF_RGBA8, GX_FALSE);
+        const u32 at = interp::mark();
         GXCopyTex(dump, GX_FALSE);
+        interp::noteDump(at, dump, sDiagFrame);
         GXSetTexCopySrc(u16(sCopyDiag.x), u16(sCopyDiag.y), u16(sCopyDiag.w), u16(sCopyDiag.h));
         GXSetTexCopyDst(u16(sCopyDiag.dw), u16(sCopyDiag.dh), GXTexFmt(sCopyDiag.fmt), GXBool(sCopyDiag.mip));
     }
@@ -902,6 +1095,8 @@ GXHLE(GXSetTexCopyDst) {
     GXSetTexCopyDst(u16(c.r[3]), u16(c.r[4]), GXTexFmt(c.r[5]), GXBool(c.r[6]));
 }
 GXHLE(GXCopyTex) {
+    HUD_TRACE("copytex src(%u,%u %ux%u) dst %ux%u fmt %u -> %08X %s", sCopyDiag.x, sCopyDiag.y, sCopyDiag.w, sCopyDiag.h,
+              sCopyDiag.dw, sCopyDiag.dh, sCopyDiag.fmt, c.r[3], guestChain(c).c_str());
     if (sCopyLog) {
         const u32 sz = GXGetTexBufferSize(u16(sCopyDiag.dw), u16(sCopyDiag.dh), sCopyDiag.fmt, GX_FALSE, 0);
         log("[copydiag] f%u COPY dest=%08X src=(%u,%u %ux%u) dst=%ux%u fmt=%u mip=%u clear=%u size=%X lr=%08X%s",

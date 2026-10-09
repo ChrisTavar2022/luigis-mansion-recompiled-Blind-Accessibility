@@ -15,7 +15,11 @@ bool runUntilPresent();       // false once the guest has exited
 // guest until it presents, or with frame interpolation on (settings), replays
 // the guest's recorded frames instead while the guest runs on its own.
 bool hostFrame();             // false once the guest has exited
-void pace();                  // after aurora_end_frame: frame-rate cap for "Interpolated 60"
+void pace();                  // after aurora_end_frame: caps interpolated presentation at targetFps()
+// Presentation target (F1 > Visuals > Frame rate): the slider, or the refresh rate of the
+// display the window is on. 30 = the game's own rate without interpolation.
+int targetFps();
+float displayRefreshHz();     // 0 if unknown; host (main) thread
 void stop();
 bool gamePaused();
 void setHostPaused(bool paused);  // host: window paused (no frames)

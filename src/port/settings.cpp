@@ -51,8 +51,10 @@ std::vector<Field> fields() {
     auto& e = sSettings.enhancements;
     auto& c = sSettings.crt;
     auto& g = sSettings.gameplay;
+    auto& r = sSettings.rendering;
     return {
-        enm("video", "frame_rate", v.frameRate),
+        num("video", "target_fps", v.targetFps),
+        flag("video", "match_display_refresh", v.matchDisplay),
         enm("video", "aspect", v.aspect),
         num("video", "resolution_scale", v.resolutionScale),
         num("video", "fov_scale", v.fovScale),
@@ -61,6 +63,9 @@ std::vector<Field> fields() {
         num("video", "msaa", v.msaa),
         flag("video", "hud_keep_4x3", v.hudKeep4x3),
         flag("video", "pal60", v.pal60),
+        flag("rendering", "integer_tev", r.integerTev),
+        flag("rendering", "efb_color_depth", r.efbColorDepth),
+        flag("rendering", "display_copy_filter", r.displayCopyFilter),
         flag("rendering", "efb_copy_to_ram", sSettings.rendering.efbCopyToRam),
         flag("crt", "enabled", c.enabled),
         enm("crt", "preset", c.preset),
@@ -109,7 +114,11 @@ std::vector<Field> fields() {
         flag("enhancements", "heart_door", e.heartDoor),
         flag("enhancements", "star_door", e.starDoor),
         flag("enhancements", "beta_map_luigi", e.betaMapLuigi),
+        flag("enhancements", "early_luigi", e.earlyLuigi),
         flag("enhancements", "air_water_nozzles", e.airWaterNozzles),
+        flag("enhancements", "early_poltergust", e.earlyPoltergust),
+        flag("enhancements", "early_bogmire", e.earlyBogmire),
+        flag("enhancements", "green_toad", e.greenToad),
         flag("enhancements", "unused_portrait_models", e.unusedPortraitModels),
         flag("enhancements", "skip_cutscenes", e.skipCutscenes),
         flag("enhancements", "fast_forward_key", e.fastForwardKey),
@@ -131,6 +140,7 @@ std::vector<Field> fields() {
         num("debug", "hud_test", e.dbgHudTest),
         flag("debug", "font_test", e.dbgFontTest),
         flag("debug", "font_test_latin", e.dbgFontTestLatin),
+        flag("debug", "warp_skip_events", e.dbgWarpSkipEvents),
     };
 }
 
@@ -168,6 +178,12 @@ void loadSettings() {
         const auto eq = line.find('=');
         if (eq == std::string::npos) continue;
         const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
+        if (section == "video" && key == "frame_rate") {  // before target_fps: 0 = 30, 1 = 60, 2 = unlimited
+            const int old = std::atoi(value.c_str());
+            sSettings.video.targetFps = old == 1 ? 60 : 30;
+            sSettings.video.matchDisplay = old == 2;
+            continue;
+        }
         bool known = false;
         for (auto& f : table)
             if (section == f.section && key == f.key) {
@@ -177,6 +193,8 @@ void loadSettings() {
         if (!known)
             for (auto& ext : extensions()) ext.load(section, key, value);
     }
+    auto& v = sSettings.video;
+    v.targetFps = v.targetFps < kMinFps ? kMinFps : v.targetFps > kMaxFps ? kMaxFps : v.targetFps;
 }
 
 void saveSettings() {

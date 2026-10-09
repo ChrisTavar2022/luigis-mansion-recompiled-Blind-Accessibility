@@ -66,7 +66,7 @@ A module's key is the SHA-1 of: the module ABI version, the game ID and DOL SHA-
 compile and link flags, and the embedded inputs (symbol map, splits, PAL version map,
 hooks.txt, ctx.h, module_abi.h, module_rt.cpp, recompiler.cpp). Any change to those in a
 new release rebuilds the module on first launch. The overlay key covers both DOL hashes
-and the overlay format version.
+and the overlay format version (3: lab menu choice in event08).
 
 Command-line helpers (testing): `--us-disc <path>`, `--pal-disc <path>` prefill the slots,
 `--setup-auto` starts installing without a click, `--setup` forces the screen.
@@ -200,7 +200,7 @@ All enhancements now work on both releases. Checked in the European static build
 | Feature | European specifics | Verified |
 |---------|-------------------|----------|
 | Skippable cutscenes | scene table has a 9th (language select) scene; ids and event interpreter layout unchanged | opening + mansion entrance skipped; snapshot matches a watched run |
-| HUD at the screen edges | the two HUD functions are larger (end address mapped by `VA()` of their last instruction) | 21:9 foyer: meter at the left edge |
+| HUD at the screen edges | element hooks (`fn_8003D634`, `fn_800417F8`, `fn_80045BDC`, `fn_800115F8`, ...) are `us pal`; GBH mode variable via `VA()` | 16:9: health at the left edge, GBH live camera inside the GBH frame at the right |
 | Widescreen culling (`fn_80008D58`) | camera viewport x/width at +0x1F8/+0x200 (USA +0x1EC/+0x1F4) | hook runs for every 3D projection |
 | Game Boy Horror camera | the European view-1 clear is `fn_8000B7CC` (the matcher pairs the USA `fn_8000B228` with an unrelated full-screen clear); it resets depth with a Z texture, which Aurora now implements, so no hook is needed (the old far-plane workaround is gone) | live view on the GBH screen in the foyer |
 | Ghost shading Beta | `fn_800581E8` identical; call site mapped | lighting visibly changes (Boolossus balcony); check in an ordinary room pending |
@@ -226,9 +226,10 @@ this work too).
 
 ### USA Hidden Mansion on the European game
 
-With both discs installed, F1 > Enhancements > *Hidden Mansion version* offers both rules
-on either base. On the European base, "USA (easier, not mirrored)" works like the forward
-direction in reverse:
+With both discs installed, E. Gadd's lab offers both Hidden Mansions on either base
+(docs/HIDDEN_MANSION.md, *E. Gadd's lab menu*); F1 > Enhancements > *Hidden Mansion
+version* is the fallback when the lab menu is not installed. On the European base, the USA
+rules work like the forward direction in reverse:
 
 - **Data** (built by setup next to the forward overlay, `hidden_mansion/usa/`; dev builds:
   `tools/hidden_mansion_data.py`): the USA `/Map/map2.szp`, served when the European
@@ -275,7 +276,5 @@ code with raw USA addresses checks `port::usCodeFeature()`.
 
 ## Not done yet / design notes
 
-- The E. Gadd's lab menu entries for both Hidden Mansions (docs/HIDDEN_MANSION.md); until
-  then the variant is the F1 setting, on either base.
 - Linux/macOS: the module build is Windows-only (`CreateProcess`, `.dll`); the module
   boundary itself is portable (`dlopen` is wired up).

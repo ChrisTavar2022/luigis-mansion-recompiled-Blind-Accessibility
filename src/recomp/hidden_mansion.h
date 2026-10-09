@@ -18,13 +18,22 @@ namespace recomp::hm {
 // Which release's Hidden Mansion rules apply. This is separate from the game's own
 // hidden-mansion flag: the PAL rules are active only while the flag is set AND the variant is
 // Pal, and switching back to Us fully restores US behaviour (overlay off, literals restored,
-// hooks pass straight through to the original). The intended UI is a second Hidden Mansion
-// entry in E. Gadd's lab menu (docs/HIDDEN_MANSION.md); until then the variant comes from
-// --hidden-mansion-variant pal|us (alias --hidden-mansion; env LM_HIDDEN_MANSION_VARIANT),
-// default pal.
+// hooks pass straight through to the original).
+//
+// Selection (docs/HIDDEN_MANSION.md, *E. Gadd's lab menu*): with both releases' data, picking
+// "The Hidden Mansion" in E. Gadd's lab asks "(USA)" or "(PAL)" every visit; the event script
+// records the answer in game flag 8 (the European release's own hidden-mansion save flag, set
+// for PAL, cleared for USA and again on entering the lab). Without the lab menu (one disc, or
+// an overlay built before it) the variant is F1 > Enhancements > Hidden Mansion version
+// (settings hiddenMansionPal). --hidden-mansion-variant pal|us (alias --hidden-mansion; env
+// LM_HIDDEN_MANSION_VARIANT) overrides both, for testing.
 enum class Variant { Us = 0, Pal = 1 };
 Variant variant();
-void setVariant(Variant v);
+void setVariant(Variant v);  // the F1 setting (used without the lab menu)
+
+constexpr unsigned kLabFlagPal = 8;
+bool labChoiceAvailable();           // both variants installed and the overlay has the lab menu
+std::optional<Variant> labChoice();  // with the lab menu: the variant flag 8 records
 
 // LM_HM_OVERLAY points at the overlay built by tools/hidden_mansion_data.py (default:
 // orig/hidden_mansion, searched upwards from the working directory). LM_HM_FORCE=1 keeps the

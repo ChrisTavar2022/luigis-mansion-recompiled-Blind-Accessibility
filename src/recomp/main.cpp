@@ -133,7 +133,16 @@ int main(int argc, char* argv[]) {
     port::loadSettings();
     config.msaa = u32(port::settings().video.msaa);
     config.vsync = port::settings().video.vsync;
+    // LM_BACKEND=d3d12|d3d11|vulkan (testing): graphics backend instead of Aurora's choice.
+    if (const char* b = std::getenv("LM_BACKEND")) {
+        const std::string s = b;
+        config.desiredBackend = s == "d3d12" ? BACKEND_D3D12 : s == "d3d11" ? BACKEND_D3D11 : s == "vulkan" ? BACKEND_VULKAN : BACKEND_AUTO;
+    }
     // LM_CACHE_DIR: separate shader/pipeline cache, e.g. for test runs of different builds side by side.
+    // Default: next to settings.ini, so a scratch APPDATA (test runs) also gets its own cache
+    // (Aurora's default, SDL_GetPrefPath, ignores the APPDATA variable).
+    static const std::string sCacheDir = std::filesystem::path(port::settingsPath()).parent_path().string();
+    config.cachePath = sCacheDir.c_str();
     if (const char* dir = std::getenv("LM_CACHE_DIR")) config.cachePath = dir;
     const port::Options& opts = port::options();
     config.startFullscreen = opts.fullscreen || port::settings().video.fullscreen;

@@ -93,7 +93,24 @@ void writeNamed(const u8* gx, u32 w, u32 h, Named& n) {
     n = {};
 }
 
+// Interpolation test dumps (interp.cpp, LM_INTERP_TEST): a ring of named copy targets.
+struct NamedDump {
+    std::vector<u8> buf;
+    std::string name;
+    bool written = true;
+};
+NamedDump sNamed[64];
+u32 sNamedNext = 0;
+
+void writePpmPath(const u8* gx, u32 w, u32 h, const char* path);
+
 void writePpm(const u8* gx, u32 w, u32 h, u32 frameNo) {
+    char path[512];
+    std::snprintf(path, sizeof(path), "%s/f%05u.ppm", sDump.dir.c_str(), frameNo);
+    writePpmPath(gx, w, h, path);
+}
+
+void writePpmPath(const u8* gx, u32 w, u32 h, const char* path) {
     std::vector<u8> rgb(size_t(w) * h * 3);
     const u32 tilesPerRow = (w + 3) / 4;
     for (u32 y = 0; y < h; y++)
@@ -106,8 +123,6 @@ void writePpm(const u8* gx, u32 w, u32 h, u32 frameNo) {
             o[1] = p[32];
             o[2] = p[33];
         }
-    char path[512];
-    std::snprintf(path, sizeof(path), "%s/f%05u.ppm", sDump.dir.c_str(), frameNo);
     if (FILE* f = std::fopen(path, "wb")) {
         std::fprintf(f, "P6\n%u %u\n255\n", w, h);
         std::fwrite(rgb.data(), 1, rgb.size(), f);
@@ -116,6 +131,12 @@ void writePpm(const u8* gx, u32 w, u32 h, u32 frameNo) {
 }
 
 void onWriteback(const void* dest, u32, u32, u32 w, u32 h, void*) {
+    if (!sDump.buffers && !sDump.active) return;
+    for (auto& n : sNamed)
+        if (!n.written && dest == n.buf.data()) {
+            writePpmPath(n.buf.data(), w, h, (sDump.dir + "/" + n.name + ".ppm").c_str());
+            n.written = true;
+        }
     if (!sDump.buffers) return;
     for (int i = 0; i < 4; i++) {
         if (dest != sDump.buf[i].data()) continue;
@@ -192,5 +213,25 @@ void* dumpTarget(u32 frameNo) {
     sDump.frameOf[i] = frameNo;
     return sDump.buf[i].data();
 }
+
+void* namedDumpTarget(const char* name) {
+    if (!sDump.active) return nullptr;
+    NamedDump& n = sNamed[sNamedNext++ % 64];
+    if (n.buf.empty()) {
+        n.buf.resize(640 * 480 * 4);
+        aurora_efb_ram_watch(n.buf.data(), u32(n.buf.size()));
+    }
+    n.name = name;
+    n.written = false;
+    return n.buf.data();
+}
+
+bool namedDumpWritten(const void* target) {
+    for (const auto& n : sNamed)
+        if (n.buf.data() == target) return n.written;
+    return true;
+}
+
+void applyWritebacks() { aurora_efb_ram_apply(); }
 
 }  // namespace recomp::efbcopy

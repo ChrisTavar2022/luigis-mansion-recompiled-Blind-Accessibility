@@ -8,21 +8,39 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(AURORA_ENABLE_DVD ON CACHE BOOL "" FORCE)
 set(AURORA_ENABLE_CARD ON CACHE BOOL "" FORCE)
 # Local fixes to Aurora, kept as patches so the submodule stays pristine.
+# The applied set is recorded in a stamp (hash of every patch, in order); when the set changes,
+# the submodule is reset to pristine and the whole series re-applied, since later patches may
+# touch the same lines as earlier ones (a per-patch reverse check can't tell what's applied).
 file(GLOB AURORA_PATCHES ${CMAKE_SOURCE_DIR}/patches/aurora/*.patch)
+list(SORT AURORA_PATCHES)
+set(_patch_ids "")
 foreach (_patch ${AURORA_PATCHES})
-    execute_process(COMMAND git apply --reverse --check ${_patch}
-                    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/extern/aurora
-                    RESULT_VARIABLE _already OUTPUT_QUIET ERROR_QUIET)
-    if (NOT _already EQUAL 0)
-        execute_process(COMMAND git apply ${_patch}
-                        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/extern/aurora
-                        RESULT_VARIABLE _applied)
+    file(SHA1 ${_patch} _sha)
+    get_filename_component(_name ${_patch} NAME)
+    string(APPEND _patch_ids "${_name}:${_sha}\n")
+endforeach ()
+set(_aurora_dir ${CMAKE_SOURCE_DIR}/extern/aurora)
+execute_process(COMMAND git rev-parse --git-dir WORKING_DIRECTORY ${_aurora_dir}
+                OUTPUT_VARIABLE _aurora_git OUTPUT_STRIP_TRAILING_WHITESPACE)
+get_filename_component(_aurora_git ${_aurora_git} ABSOLUTE BASE_DIR ${_aurora_dir})
+set(_stamp ${_aurora_git}/lm_patches_applied)
+set(_stamped "")
+if (EXISTS ${_stamp})
+    file(READ ${_stamp} _stamped)
+endif ()
+if (NOT _stamped STREQUAL _patch_ids)
+    execute_process(COMMAND git checkout -q -- . WORKING_DIRECTORY ${_aurora_dir})
+    execute_process(COMMAND git clean -fdq WORKING_DIRECTORY ${_aurora_dir})
+    foreach (_patch ${AURORA_PATCHES})
+        execute_process(COMMAND git apply ${_patch} WORKING_DIRECTORY ${_aurora_dir} RESULT_VARIABLE _applied)
         if (NOT _applied EQUAL 0)
+            file(REMOVE ${_stamp})
             message(FATAL_ERROR "Failed to apply Aurora patch ${_patch}")
         endif ()
         message(STATUS "Applied Aurora patch ${_patch}")
-    endif ()
-endforeach ()
+    endforeach ()
+    file(WRITE ${_stamp} "${_patch_ids}")
+endif ()
 add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
 
 

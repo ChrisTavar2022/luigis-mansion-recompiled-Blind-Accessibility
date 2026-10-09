@@ -10,7 +10,7 @@
 // archive's jmp/furnitureinfo (furniture model, room, position, rotation, scale).
 //
 // Guest side (end of frame, LMChangeFrameBuffer hook): the files are copied into a private
-// JKRExpHeap above MEM1 (0x81812000+, host-backed and unused by the game; the host window is
+// JKRExpHeap above MEM1 (0x82000000+, host-backed and unused by the game; the host window is
 // 64 MiB, ctx.h) and set up and drawn with the game's code:
 //   .mdl  relocation fn_80061B40 / .key fn_80061A24, S3DModel (__ct__8S3DModelFll), then as the
 //         file-select screen draws Luigi (fn_800494E4): lighting fn_80057F90, calcJoints
@@ -496,7 +496,15 @@ struct Camera {
     bool spin = true;
     float pos[3] = {};                             // fly
     float speed = 30.0f;
-} sCam;
+} sCam = [] {
+    // Test aid: LM_DEV_VIEWER_CAM=<yaw>,<pitch>,<distance> fixes the orbit camera (no spin).
+    Camera cam;
+    if (const char* v = std::getenv("LM_DEV_VIEWER_CAM")) {
+        std::sscanf(v, "%f,%f,%f", &cam.yaw, &cam.pitch, &cam.zoom);
+        cam.spin = false;
+    }
+    return cam;
+}();
 struct Anim {
     bool play = true;
     float speed = 1.0f;
@@ -508,7 +516,7 @@ float sWireColor[4] = {1.0f, 0.85f, 0.2f, 1.0f};
 bool sTextures = std::getenv("LM_DEV_VIEWER_NOTEX") == nullptr;  // test aid: LM_DEV_VIEWER_NOTEX=1
 const bool sGhostFxDefault = std::getenv("LM_DEV_VIEWER_GHOSTFX") == nullptr || std::atoi(std::getenv("LM_DEV_VIEWER_GHOSTFX")) != 0;
 bool sGhostFx = sGhostFxDefault;                                 // "Ghost effects" (ghost archives; test aid LM_DEV_VIEWER_GHOSTFX=0)
-bool sTwoSided = false;                                          // "Back faces": no back-face culling (Aurora patch 0010)
+bool sTwoSided = false;                                          // "Back faces": no back-face culling (Aurora patch 0011)
 float sGhostColor[4] = {0x40 / 255.0f, 0x40 / 255.0f, 0x40 / 255.0f, 1.0f};  // ghost actor +0xE9 (ambient; 404040FF in play)
 float sGhostAlpha = 1.0f;                                        // ghost actor +0xE3 (layer weight; FF when fully visible)
 bool sIsGhost = false;                                           // loaded model is a ghost
@@ -543,7 +551,9 @@ struct Pending {
 
 constexpr u32 kScratch = 0x81810000;  // matrices, colours
 constexpr u32 kHeapObj = 0x81811000;  // JKRExpHeap object
-constexpr u32 kHeapMem = 0x81812000;
+// 0x81F00000-0x81FF0000 holds early Luigi's model copies (early_luigi.cpp): the heap starts
+// above them, in the part of the 64 MiB host window that only the viewer uses.
+constexpr u32 kHeapMem = 0x82000000;
 constexpr u32 kHeapEnd = 0x83FF0000;  // host window: ctx.h kHostMemSize
 static_assert(kHeapEnd <= 0x80000000u + kHostMemSize);
 u32 sHeap = 0;
@@ -576,7 +586,7 @@ bool ensureHeap(Ctx& c) {
     const u32 kSystem = VA(0x804D94F0), kCurrent = VA(0x804D94F4), kRoot = VA(0x804D94F8);
     const u32 sys = rd32(kSystem), cur = rd32(kCurrent), root = rd32(kRoot);
     if (!gu::inMem1(root)) return false;
-    std::memset(hostp(kHeapObj), 0, kHeapMem - kHeapObj);
+    std::memset(hostp(kHeapObj), 0, 0x1000);  // the heap object only (early Luigi lives below kHeapMem)
     gu::call(c, GU_SYM("__ct__10JKRExpHeapFPvUlP7JKRHeapb"), {kHeapObj, kHeapMem, kHeapEnd - kHeapMem, root, 0});
     wr32(kSystem, sys);  // the JKRHeap constructor may adopt a new heap as system/current heap
     wr32(kCurrent, cur);

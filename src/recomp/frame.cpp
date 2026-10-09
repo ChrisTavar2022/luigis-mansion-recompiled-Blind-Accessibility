@@ -8,7 +8,13 @@
 #include "recomp/sched.h"
 #include "recomp/skip.h"
 
+#include <aurora/aurora.h>
+#include <SDL3/SDL_timer.h>
+#include <SDL3/SDL_video.h>
+
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -39,9 +45,7 @@ bool sGuestDecoupled = false;   // guest thread
 bool sHostDecoupled = false;    // host thread
 constexpr u32 kDecoupleAfter = 60;  // presents; keeps boot (GXInit, first loads) in lockstep
 
-bool interpolationWanted() {
-    return port::settings().video.frameRate != port::FrameRateMode::Original30 && sPresents.load() >= kDecoupleAfter;
-}
+bool interpolationWanted() { return targetFps() > port::kMinFps && sPresents.load() >= kDecoupleAfter; }
 
 }  // namespace
 
@@ -106,18 +110,53 @@ bool hostFrame() {
     return true;
 }
 
+float displayRefreshHz() {
+    // Followed every half second, so moving the window to another display (or changing
+    // its mode) takes effect without a restart.
+    using Clock = std::chrono::steady_clock;
+    static Clock::time_point checked{};
+    static float hz = 0;
+    const auto now = Clock::now();
+    if (now - checked < std::chrono::milliseconds(500) && checked != Clock::time_point{}) return hz;
+    checked = now;
+    if (SDL_Window* w = aurora_get_window())
+        if (const SDL_DisplayID d = SDL_GetDisplayForWindow(w))
+            if (const SDL_DisplayMode* m = SDL_GetCurrentDisplayMode(d)) hz = m->refresh_rate;
+    static float logged = -1;
+    if (hz != logged) log("[frame] display refresh rate %.2f Hz", logged = hz);
+    return hz;
+}
+
+int targetFps() {
+    const auto& v = port::settings().video;
+    int fps = v.targetFps;
+    if (v.matchDisplay) {
+        const float hz = displayRefreshHz();
+        fps = hz > 0 ? int(std::lround(hz)) : 60;
+    }
+    return std::clamp(fps, port::kMinFps, port::kMaxFps);
+}
+
 void pace() {
+    // Interpolated presentation: the host frame loop is capped at the target. With vsync the
+    // swap chain already waits for the display, so a target at or above the refresh rate
+    // runs at the refresh rate (the menu says so).
     using Clock = std::chrono::steady_clock;
     static Clock::time_point next = Clock::now();
-    const auto period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1001.0 / 60000.0));
-    if (!sHostDecoupled || port::settings().video.frameRate != port::FrameRateMode::Interpolated60) {
+    const int fps = targetFps();
+    const float hz = displayRefreshHz();
+    if (!sHostDecoupled || (port::settings().video.vsync && hz > 0 && float(fps) >= hz - 0.5f)) {
         next = Clock::now();
         return;
     }
+    const auto period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / fps));
     next += period;
     const auto now = Clock::now();
-    if (next < now - period) next = now;  // fell behind: don't try to catch up
-    else std::this_thread::sleep_until(next);
+    if (next < now - period) {  // fell behind: don't try to catch up
+        next = now;
+        return;
+    }
+    if (next > now) SDL_DelayPrecise(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(next - now).count()));
 }
 
 void stop() {

@@ -2,6 +2,7 @@
 // Drawn with Aurora's Dear ImGui on the host thread between the guest's present
 // and aurora_end_frame. While it is open the game receives neutral pad input.
 #include "recomp/menu.h"
+#include "recomp/gx_bridge.h"
 
 #include "port/install.h"
 #include "port/options.h"
@@ -9,6 +10,7 @@
 #include "recomp/controls.h"
 #include "recomp/crt.h"
 #include "recomp/dev_tools.h"
+#include "recomp/frame.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/skip.h"
 
@@ -150,6 +152,18 @@ void renderingTab() {
     ImGui::TextDisabled("turn features off only if your PC needs the speed.");
     ImGui::Separator();
     auto& r = port::settings().rendering;
+    sDirty |= ImGui::Checkbox("Integer-accurate TEV", &r.integerTev);
+    ImGui::SetItemTooltip(
+        "Color combiner math as on the GameCube: 8-bit inputs, signed 11-bit registers and rounding\n"
+        "after every stage. Slightly darker multi-stage shading and exact overflow; tiny GPU cost.");
+    sDirty |= ImGui::Checkbox("EFB color depth (6-bit + dither)", &r.efbColorDepth);
+    ImGui::SetItemTooltip(
+        "The game renders into a 6-bit-per-channel framebuffer with an ordered dither, like the\n"
+        "console. Off: smooth 8-bit color (less banding/dither grain in dark rooms). No real cost.");
+    sDirty |= ImGui::Checkbox("Display copy filter", &r.displayCopyFilter);
+    ImGui::SetItemTooltip(
+        "The vertical filter (and gamma) the console applies when copying the frame to the TV\n"
+        "image: slightly softer vertical detail, smooths the dither. One extra full-screen pass.");
     sDirty |= ImGui::Checkbox("EFB copies to RAM (accurate)", &r.efbCopyToRam);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Screen copies also exist in console memory format, like on the GameCube.\n"
@@ -159,10 +173,47 @@ void renderingTab() {
                           "Off: copies stay GPU-only textures (saves ~0.6 ms CPU per frame).");
 }
 
+// Frame rate: 30 (the game's own rate, drawn directly) up to 320, or the display's refresh rate.
+void frameRateControls(port::VideoSettings& v) {
+    const float hz = recomp::frame::displayRefreshHz();
+    const int target = recomp::frame::targetFps();
+    char label[64];
+    if (v.matchDisplay) std::snprintf(label, sizeof(label), "%d fps (display)", target);
+    else if (v.targetFps <= port::kMinFps) std::snprintf(label, sizeof(label), "30 fps (original)");
+    else std::snprintf(label, sizeof(label), "%d fps", v.targetFps);
+    ImGui::BeginDisabled(v.matchDisplay);
+    sDirty |= ImGui::SliderInt("Frame rate", &v.targetFps, port::kMinFps, port::kMaxFps, label, ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
+    const bool sliderHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+    sDirty |= ImGui::Checkbox("Match display refresh rate", &v.matchDisplay);
+    const bool checkHovered = ImGui::IsItemHovered();
+    if (v.matchDisplay && hz > 0) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%.0f Hz)", hz);
+    } else if (v.vsync && hz > 0 && float(target) > hz + 0.5f) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(VSync limits this to %.0f fps)", hz);
+    }
+    if (sliderHovered || checkHovered) {
+        char vs[160] = "";
+        if (v.vsync && hz > 0 && float(target) > hz + 0.5f)
+            std::snprintf(vs, sizeof(vs),
+                          "\n\nVSync is on: frames are limited to the display's %.0f Hz, so %d fps\n"
+                          "is not reached. Turn VSync off (next launch) to go above it (with tearing).",
+                          hz, target);
+        ImGui::SetTooltip("30 fps is the game's own rate, drawn exactly as the console does.\n"
+                          "Above 30, frames in between are interpolated (the game still runs at 30):\n"
+                          "movement, the camera, lights and effects are blended between game frames,\n"
+                          "shown one game frame (33 ms) behind. Cuts and teleports are not blended.\n"
+                          "Match display refresh rate: the refresh rate of the monitor the window is on\n"
+                          "(currently %.0f Hz).%s",
+                          hz, vs);
+    }
+}
+
 void visualsTab() {
     auto& v = port::settings().video;
-    static const char* kFrameRates[] = {"Original (30 fps)", "Interpolated 60 fps (experimental)", "Interpolated, unlimited (experimental)"};
-    sDirty |= combo("Frame rate", v.frameRate, kFrameRates, 3);
+    frameRateControls(v);
     static const char* kAspects[] = {"Original 4:3", "Match window", "16:9", "16:10", "21:9", "32:9"};
     sDirty |= combo("Aspect ratio", v.aspect, kAspects, 6);
     sDirty |= ImGui::Checkbox("Keep HUD at 4:3", &v.hudKeep4x3);
@@ -300,25 +351,36 @@ void generalEnhancementsTab() {
         const char* kVariants[] = {usGame ? "USA (original)" : "USA (easier, not mirrored)",
                                    usGame ? "European (harder, mirrored)" : "European (original)"};
         auto usable = [&](int i) { return avail[i] == port::Avail::Yes; };
-        ImGui::BeginDisabled(inside);
-        if (ImGui::BeginCombo("Hidden Mansion version", kVariants[pal ? 1 : 0])) {
-            for (int i = 0; i < 2; i++) {
-                if (ImGui::Selectable(kVariants[i], (pal ? 1 : 0) == i,
-                                      usable(i) ? 0 : ImGuiSelectableFlags_Disabled)) {
-                    e.hiddenMansionPal = i == 1;
-                    recomp::hm::setVariant(e.hiddenMansionPal ? recomp::hm::Variant::Pal : recomp::hm::Variant::Us);
-                    sDirty = true;
+        if (recomp::hm::labChoiceAvailable()) {
+            // Both releases' data: E. Gadd's lab asks on every visit (docs/HIDDEN_MANSION.md).
+            ImGui::TextUnformatted("Hidden Mansion version: chosen in E. Gadd's lab");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Picking the Hidden Mansion in E. Gadd's lab asks which one:\n"
+                                  "\"(USA)\" is the %s release's, \"(PAL)\" the %s release's\n"
+                                  "(harder, mirrored, darker). The save file keeps the answer for that visit.",
+                                  usGame ? "original USA" : "USA", usGame ? "European" : "original European");
+            if (inside) ImGui::TextDisabled("This visit: %s", kVariants[pal ? 1 : 0]);
+        } else {
+            ImGui::BeginDisabled(inside);
+            if (ImGui::BeginCombo("Hidden Mansion version", kVariants[pal ? 1 : 0])) {
+                for (int i = 0; i < 2; i++) {
+                    if (ImGui::Selectable(kVariants[i], (pal ? 1 : 0) == i,
+                                          usable(i) ? 0 : ImGuiSelectableFlags_Disabled)) {
+                        e.hiddenMansionPal = i == 1;
+                        recomp::hm::setVariant(e.hiddenMansionPal ? recomp::hm::Variant::Pal : recomp::hm::Variant::Us);
+                        sDirty = true;
+                    }
+                    if (const char* note = port::availNote(avail[i])) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(%s)", note);
+                    }
                 }
-                if (const char* note = port::availNote(avail[i])) {
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(%s)", note);
-                }
+                ImGui::EndCombo();
             }
-            ImGui::EndCombo();
+            ImGui::EndDisabled();
+            if (inside) pending("leave the Hidden Mansion to change");
         }
-        ImGui::EndDisabled();
-        if (inside) pending("leave the Hidden Mansion to change");
-        else if (!usable(0)) pending(port::availNote(avail[0]));
+        if (!usable(0)) pending(port::availNote(avail[0]));
         else if (!usable(1)) pending(port::availNote(avail[1]));
     }
 }
@@ -343,6 +405,10 @@ void unusedContentTab() {
             sDirty = true;
         }
     }
+    sDirty |= ImGui::Checkbox("Green Toad (kinopio2)", &e.greenToad);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Toads wear the unused green texture set of the never-placed kinopio2 character\n"
+                          "(TCRF's Action Replay code), with the unused green-capped dialogue icon.");
     {
         Gate g(port::usCodeFeature());
         auto item = [&](const char* label, bool& v, const char* note) {
@@ -354,12 +420,27 @@ void unusedContentTab() {
         item("Star door (Twins' room)", e.starDoor, "next map load");
         item("Game Boy Horror map: full Luigi model", e.betaMapLuigi, "next map load");
         item("Portrificationizer: each ghost's own model", e.unusedPortraitModels, nullptr);
+        item("Early Luigi model", e.earlyLuigi, "next map load");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Luigi uses the unused early model left on the disc (/model/luige.szp): slightly\n"
+                              "different face, hair and clothes. Same skeleton, so all retail animations, the\n"
+                              "Poltergust, flashlight and Game Boy Horror work as usual. Also used by the opening\n"
+                              "and E. Gadd cutscene Luigis.");
         sDirty |= ImGui::Checkbox("Air and water nozzles", &e.airWaterNozzles);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("The Poltergust's unused nozzle models: wpair when blowing air (L without an element),\n"
-                              "wpwater when spraying water. D-pad Right switches to the air nozzle while you carry\n"
-                              "an element, so L blows air instead (the element is kept); press again to switch back.");
-        if (g.a == port::Avail::Yes) pending("D-pad Right: air nozzle");
+            ImGui::SetTooltip("The Poltergust's unused nozzle models: the red wpair nozzle when blowing air\n"
+                              "(L without an element) and the blue wpwater nozzle when spraying water.\n"
+                              "Vacuum, fire and ice keep the retail nozzle.");
+        sDirty |= ImGui::Checkbox("Early Poltergust 3000", &e.earlyPoltergust);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The E3 2001 Poltergust model still on the disc (/model/vbody.szp): a red canister\n"
+                              "on a wheeled base instead of the retail tank.");
+        if (g.a == port::Avail::Yes) pending("next map load");
+        sDirty |= ImGui::Checkbox("Early Bogmire model", &e.earlyBogmire);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Bogmire uses his unused early model (/model/shadow.szp): longer wings, thinner\n"
+                              "hanging flaps, a defined chin and a wavy ghost tail, with its own animations.");
+        if (g.a == port::Avail::Yes) pending("next map load");
     }
     ImGui::Separator();
     {
@@ -450,6 +531,7 @@ void handleEvent(const SDL_Event& ev) {
 
 void draw() {
     skip::drawOverlay();
+    recomp::gx::applyAccuracySettings();
     recomp::crt::update();
     if (port::settings().enhancements.showFps) fpsOverlay();
     recomp::dev::drawOverlays();
@@ -466,7 +548,7 @@ void draw() {
                         visualsTab();
                         ImGui::EndTabItem();
                     }
-                    if (ImGui::BeginTabItem("Rendering")) {
+                    if (ImGui::BeginTabItem("Rendering", nullptr, envTab("Rendering"))) {
                         renderingTab();
                         ImGui::EndTabItem();
                     }
