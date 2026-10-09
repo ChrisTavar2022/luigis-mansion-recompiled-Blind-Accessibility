@@ -113,6 +113,7 @@ std::vector<Field> fields() {
         flag("enhancements", "heart_door", e.heartDoor),
         flag("enhancements", "star_door", e.starDoor),
         flag("enhancements", "beta_map_luigi", e.betaMapLuigi),
+        flag("enhancements", "early_luigi", e.earlyLuigi),
         flag("enhancements", "air_water_nozzles", e.airWaterNozzles),
         flag("enhancements", "unused_portrait_models", e.unusedPortraitModels),
         flag("enhancements", "skip_cutscenes", e.skipCutscenes),
