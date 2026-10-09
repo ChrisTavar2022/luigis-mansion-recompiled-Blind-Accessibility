@@ -37,7 +37,7 @@ const LeftoverRoom kRooms[] = {
      "/Iwamoto/map2/room_07.arc", "room.bin", "/Iwamoto/map2/room_07.arc", "room..bin", 0},
     {"Foyer hallway (2F), duplicate", "better-aligned beam UVs; room_30.arc \"room..bin\"", 2, 30,
      {250.0f, 550.0f, -1000.0f}, "/Iwamoto/map2/room_30.arc", "room.bin", "/Iwamoto/map2/room_30.arc", "room..bin", 0},
-    {"Parlor, alternate model (room01A)", "map 2's unused alternate model for room 1; retail collision kept", 2, 1,
+    {"Hidden Room, bare alternate model (room01A)", "map 2's unused alternate model for room 1: no curtains, rug or portraits; furniture not drawn", 2, 1,
      {-1800.0f, 0.0f, 100.0f}, nullptr, nullptr, nullptr, nullptr, 1},
 };
 

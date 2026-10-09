@@ -339,18 +339,73 @@ Used maps for reference: 1 E. Gadd's lab, 2 mansion, 3 training room, 4 Portrifi
 as map 4), 13 graveyard (Bogmire).
 
 **Port:** the Unused content tab lists maps 0/5/7/8; the Debug tab "Visit area" lists all 14
-plus the ten mansion appear points (map2 `jmp/characterinfo` `luige` entries: 0 foyer, 1/7 2F,
-2 1F, 3 roof level, 4/5/8 3F, 6 foyer door, 9 Secret Altar). A warp is queued and applied in
-the `fn_8000B4A0` hook exactly like `<WARP>`, and only while the game scene is idle
-(`sCurSceneId` is the game scene and no scene change is pending, `lbl_804D8088 == 0`); during
-transitions, events that hold the scene and the pause/map screens it waits. Maps with entry
-events play them (map 4's E. Gadd explanation, map 9's Bowser intro, appear point 9's King
-Boo scene). An event that is already running keeps running in the new map, so warping out of
-the opening sequence continues the intro story there. Verified in Original30 and
-Interpolated60: maps 0, 2 (appear points 6 and 9), 3, 4, 5, 9, 13.
+plus the ten mansion appear points (map2 `jmp/characterinfo` `luige` entries, named as the game
+shows them on arrival: 0 Foyer, 6 Foyer by the front door, 2 Graveyard, 9 Secret Altar,
+1 Nursery, 7 Sealed Room, 4 Clockwork Room, 5 Balcony, 8 3F west hallway, 3 Roof). A warp is
+queued and applied in the `fn_8000B4A0` hook exactly like `<WARP>`, and only while the game
+scene is settled: `sCurSceneId` is the game scene, no scene change is pending
+(`lbl_804D8088 == 0`, also set while an event hides the HUD), no event script runs (event
+interpreter `0x803D2D40` +0x0C), at least 60 frames since the map setup and Luigi updated for
+30 frames (or 300 frames on a map without him). Tearing a map down while it is still being set
+up crashed (a warp queued during the lab's intro fired right after the event's own WARP to the
+training room: call through a garbage pointer in `fn_800BA9E0`).
+
+**Entry cutscenes are held back** (Debug tab "Skip entry cutscenes", on by default, setting
+`debug.warp_skip_events`). Map events come from `jmp/eventinfo`: `fn_8002DA34` turns each row
+into a 0x58-byte trigger (array `lbl_804D8370`, count `lbl_804D8374`; +0x10 condition callback
+chosen by `EventIf`, +0x38 event number), and `fn_8002B7BC` loads `eventNN.txt` when
+`fn_8002B6D4` (trigger flags, story-flag gates, then the condition) returns 1. EventIf 0 is
+"always" (`fn_8002C9E0`), 2..6 are "Luigi within EventArea in the trigger's room", 1
+(`fn_8002C364`) is the same plus A pressed facing it (talking). The `fn_8002B6D4` hook (US and
+European game): after a warp's map setup, every trigger except A-to-talk ones whose condition
+holds within 150 frames is recorded and answers 0 for the rest of that visit (until the next
+map setup). Events reached later by walking somewhere, talking or story flags play normally;
+normal play (no warp) is unchanged. Held back on arrival: map 1 event 8 (E. Gadd's lab talk),
+3 event 9 (training explanation), 4 event 2 (E. Gadd at the Portrificationizer), 9 event 75
+(Bowser intro), 10 event 64 (Chauncey), 11 event 72 (Boolossus), 12 event 52, 13 event 66
+(Bogmire), mansion appear point 9 events 6 and 74 (King Boo at the Secret Altar), point 7
+event 83 (Sealed Room), point 5 event 71 (Balcony Boos). Bosses stand idle (Bowser on the
+roof, the Boolossus Boos on the balcony); Luigi has control and the HUD is on.
+
+### Warp list status (US, verified 2026-10-09)
+
+Every entry was warped to in sequence from the foyer of a new game and from each other (maps
+0-13, then 2, 9, 1, 4, 2 again; the ten appear points; the six leftover rooms, then the lab and
+room01A again), with the stick pushed up/left/down after each arrival (`LM_DEV_STATUS_LOG`
+positions and frame dumps). No crash, no event on arrival, no letterbox or hidden HUD left
+over, Luigi moved and the camera followed everywhere. Contact sheets (not committed):
+`build/warps/warp_contact_sheet.png` (one frame per entry), `maps_arrive_walk.png`,
+`mansion_appear_points.png`, `leftover_rooms.png`, `breaker_old_vs_retail.png`,
+`leftover_retail_reference.png`.
+
+| Entry | Luigi placed at | Result |
+|-------|-----------------|--------|
+| Map 0 test map | (-86, 0, 496), the map's spawn | Works. The test `candle` fire actor drifts around the spawn and burns Luigi if he stays in it; Toad, Boos and the other test actors are there |
+| Map 1 E. Gadd's lab | (-3229, 50, -3) | Works, event 8 held back. No HUD (the lab never shows one); E. Gadd idle. The lab is normally left through its event menu, so the way out is another warp |
+| Map 2 mansion (appear point 0) | Foyer (-8, 0, 145) | Works |
+| Map 3 training room | (0, 0, -18) | Works, event 9 held back; no training session starts |
+| Map 4 Portrificationizer | (-960, 0, -70) | Works, event 2 held back. Luigi's `luige` entry is flagged invisible in the JMP table, but he is visible and controllable |
+| Map 5 statue hall (unused) | (2547, 0, -138) | Works |
+| Map 6 portrait gallery | (1952, 0, -57) | Works; E. Gadd's talk (A) and the portrait plaques are A-to-talk triggers and still work |
+| Map 7 long statue hall (unused) | (2547, 0, -138) | Works (rebuilt archive) |
+| Map 8 lantern hallway (unused) | (2547, 0, -138) | Works (rebuilt archive) |
+| Map 9 roof | (-247, 1780, -961) | Works, Bowser intro held back; Bowser stands idle |
+| Map 10 Chauncey's room | (0, 0, 250) | Works, intro held back; no fight |
+| Map 11 balcony | (0, 0, 0) | Works, intro held back; the Boolossus Boos float around and can hurt Luigi |
+| Map 12 Portrificationizer (after Bowser) | (0, 0, 0) | Works, event 52 held back |
+| Map 13 graveyard | (0, 0, 1000) | Works, Bogmire intro held back. The arena's own camera sits outside the fence, so Luigi is seen through the railings |
+| Appear 6 foyer door, 2 Graveyard, 1 Nursery, 4 Clockwork Room, 8 3F hallway | the appear point | Work |
+| Appear 9 Secret Altar | (2311, -550, -6724) | Works, King Boo's events 6/74 held back |
+| Appear 7 Sealed Room, 5 Balcony | the appear point | Work, events 83 / 71 held back (the Balcony Boos keep circling) |
+| Appear 3 Roof | (-11, 1800, -2087) | Works on arrival; walking north starts the roof's area event (not an entry event), which ends with Luigi in the Clockwork Room |
+| Leftover: lab E3 2001, Portrificationizer pre-E3 | the map's spawn | Work (old models shown) |
+| Leftover: breaker room, 1F / 2F hallway duplicates | see below | Work; Luigi starts in the room |
+| Leftover: Hidden Room alternate (room01A) | (-1800, 0, 100) | Works (see below) |
 
 Test aids: `LM_START_MAP=<n>` (new game starts in map n; moved here from the Hidden Mansion
-hooks), `LM_START_APPEAR=<p>`, `LM_DEV_WARPS=<map>[:<appear>]@<frame>,...`.
+hooks), `LM_START_APPEAR=<p>`, `LM_DEV_WARPS=<map>[:<appear>]@<frame>,...`,
+`LM_DEV_STATUS_LOG=<n>` (every n frames: scene, map, room id, Luigi's position, event cursor,
+HUD-off flag, Luigi's flags; bit 0x10 = Luigi stopped).
 
 ### Maps 7 and 8: why they crashed and how they load now
 
@@ -409,26 +464,51 @@ the mansion, with screenshots, F3 overlay for positions):
   over this hallway. So in this early build the event was a test hookup on E. Gadd, not a
   scene of his own.
 
-## Unused rooms (work in progress, paused)
+## Unused rooms
 
 Leftover room models on the disc: `/Iwamoto/map1/h_01.bin` (E3 2001 lab, extra robotic-arm
 stand), `/Iwamoto/map1/h_02.bin` (pre-E3 Portrificationizer room; retail is `map4/h_02.bin`),
 `/Iwamoto/map2/room_67.arc` member `b1_c_67.bin` (older breaker room), `room_07.arc` /
 `room_30.arc` member `room..bin` (duplicate 1F / foyer 2F hallways; room_07's differs from the
-retail `room.bin` by 42 bytes), `/Iwamoto/map2/room01A.bin` (no retail counterpart).
+retail `room.bin` by 42 bytes), `/Iwamoto/map2/room01A.bin`.
 
 `src/recomp/room_swap.cpp` (Unused content tab, "Unused rooms"): Go warps to the retail room's
-map and, for that visit only, `hle_dvd.cpp` serves the retail file rebuilt with the leftover
-model (RARC member replaced, or the whole `.bin`); collision, doors and objects stay retail.
-The swap ends when Luigi leaves the room/map or another warp is made. Test aid
-`LM_DEV_ROOM=<index>@<frame>`.
+map with Luigi standing in the room, and shows the leftover model for that visit only;
+collision, doors and objects stay retail. The swap ends when Luigi leaves the room he was
+placed in or the map, or another warp is made. Entry events are held back as for any warp.
 
-Status: the lab and Portrificationizer visits load the leftover models (logged and seen).
-The mansion rooms (67, 7, 30) need Luigi to start inside them; the spawn override
-(`findLuigiAppearIndex` + `ToolData::getValue` pos_x/y/z of Luigi's entry while a visit is
-pending) is implemented but not verified, and Luigi still started in the foyer in the last
-test. Not started: a dedicated room slot for room01A (would need a map-2 room table entry,
-JMP roominfo row and collision), and the breaker-room door/collision mismatch check.
+- **File swap** (lab, Portrificationizer, breaker room, hallways): `hle_dvd.cpp` serves the
+  retail file rebuilt with the leftover model (the whole `.bin`, or the RARC member replaced).
+  The member is written into the retail member's own space when it fits, so the archive keeps
+  its size: map 2 streams room archives through fixed-size buffers, and the breaker room's
+  archive with the old model appended (485 KB instead of 371 KB) overran them; the room's node
+  tree was overwritten and the room draw `fn_80015844` recursed forever (host stack exhausted).
+  All leftovers but room_30's `room..bin` (128 bytes larger, appended: 377 KB) fit in place.
+- **Spawn**: the map setup picks Luigi's `luige` entry for the appear point
+  (`findLuigiAppearIndex`) and reads `pos_x/y/z` with `ToolData::getValue`; while a visit's
+  spawn is armed (from the warp until Luigi is placed) those reads return the room's floor
+  point: breaker room (3350, -550, -1810), 1F hallway (-1250, 0, -5000), 2F hallway
+  (250, 550, -1000), Hidden Room (-1800, 0, 100). The game derives the starting room from the
+  position. The visit used to clear the spawn as soon as the current map was the visit's map,
+  which is already true when visiting a mansion room from the mansion, so the override was gone
+  before the warp happened (Luigi started in the foyer); arrival is now the warp's map setup.
+  The game's current-room id (`0x803A3CA0` +0xC) is not the archive index (breaker room
+  archive 67 reads 69, room 7 reads 20, room 30 reads 31), so "left the room" is a change from
+  the id Luigi started in.
+- **room01A** is not loose junk: map 2's descriptor (`lbl_8030377C` +0xC, table
+  `lbl_80301360`) lists alternate room models, room 28 -> `room_28A.arc` (switched by game code,
+  `fn_80037550` / `fn_800376A4`) and room 1 -> `room01A.bin`, which nothing selects. The room
+  loader (`fn_80011FDC`) uses a room's alternate when its slot +0x45 picks one; the visit calls
+  the game's own `fn_800129FC(1, 1)` once Luigi is placed (and `(1, 0)` when he leaves). Room 1
+  is the **Hidden Room**: room01A is a bare version of it (plain cracked walls and floor, no
+  curtains, rug or portraits). Its furniture models live in `room_01.arc`, which a bare `.bin`
+  alternate does not load, so the furniture is not drawn (its collision is still there).
+
+Comparison with the retail rooms (`LM_DEV_ROOM_RETAIL=1`, same input): the old breaker room has
+a pipe/door shape on the left wall where retail has stone, and lacks the pipes right of the
+breaker (`build/warps/breaker_old_vs_retail.png`); the hallway duplicates are near-identical,
+as the file sizes suggest. Test aids: `LM_DEV_ROOM=<index>@<frame>,...`,
+`LM_DEV_ROOM_RETAIL=1` (place Luigi without swapping the model).
 
 ## Model viewer
 
