@@ -359,6 +359,14 @@ ProjMode classifyHeld() {
     }
 }
 
+}  // namespace
+
+// Vertex layout for interp's vertex-array tracking (interp_vtx.cpp).
+int gx::vtxAttrSize(int fmt, int attr) { return fmt < GX_MAX_VTXFMT ? attrSize(fmt, attr) : -1; }
+u8 gx::vtxDesc(int attr) { return attr < GX_VA_MAX_ATTR ? sDesc[attr] : 0; }
+
+namespace {
+
 void rawFifoWrite(u32 v, int size) {
     switch (size) {
     case 1: GXCmd1u8(u8(v)); break;
@@ -416,6 +424,7 @@ void gx::endPendingDraw() {
 
 void hw::fifoWrite(u32 v, int size) {
     if (dropDraw()) [[unlikely]] return;
+    if (interp::capturing()) interp::vtxBytes(v, size);
     if (sHeld.active) [[unlikely]] {
         const u32 off = u32(sHeld.bytes.size());
         for (int b = size - 1; b >= 0; b--) sHeld.bytes.push_back(u8(v >> (8 * b)));
@@ -451,7 +460,10 @@ GXHLE(GXSetDrawDone) {}
 GXHLE(GXWaitDrawDone) {}
 GXHLE(GXPixModeSync) { GXPixModeSync(); }
 GXHLE(GXSetMisc) {}
-GXHLE(GXInvalidateVtxCache) { GXInvalidateVtxCache(); }
+GXHLE(GXInvalidateVtxCache) {
+    GXInvalidateVtxCache();
+    interp::invalidateVtxCache();
+}
 GXHLE(GXInvalidateTexAll) { GXInvalidateTexAll(); }
 
 // --- vertex format ----------------------------------------------------------------
@@ -504,12 +516,15 @@ GXHLE(GXSetArray) {
         sPosArray = c.r[4];
         sPosStride = u8(c.r[5]);
     }
+    const u32 at = interp::mark();
     GXSetArray(GXAttr(c.r[3]), ptr(c.r[4]), 0, u8(c.r[5]), false);
+    interp::arrayBase(at, c.r[3], c.r[4], u8(c.r[5]));
 }
 
 GXHLE(GXBegin) {
     if (dropDraw()) return;
     sInBegin = true;
+    if (interp::capturing()) interp::vtxBegin(c.r[3], c.r[4], c.r[5], sProj.type == GX_PERSPECTIVE);
     if (ws::active() && sProj.type == GX_ORTHOGRAPHIC && viewportFull()) {
         sHeld.active = true;
         sHeldAnchor = 0;
@@ -538,6 +553,7 @@ GXHLE(GXCallDisplayList) {
     if (dropDraw()) return;
     prepareDraw(drawMode(ProjMode::Scaled), "dlist");
     GXCallDisplayList(hostp(c.r[3]), c.r[4]);
+    if (interp::capturing()) interp::vtxDisplayList(c.r[3], hostp(c.r[3]), c.r[4]);
 }
 GXHLE(GXBeginDisplayList) {
     sInDisplayList = true;
@@ -675,7 +691,12 @@ GXHLE(GXInitLightDistAttn) {
 GXHLE(GXInitLightAttn) {
     GXInitLightAttn(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6));
 }
-GXHLE(GXLoadLightObjImm) { GXLoadLightObjImm(light(c.r[3]), GXLightID(c.r[4])); }
+GXHLE(GXLoadLightObjImm) {
+    // Position and direction (view space) are blended by frame interpolation.
+    const u32 at = interp::mark();
+    GXLoadLightObjImm(light(c.r[3]), GXLightID(c.r[4]));
+    interp::note(at, interp::Kind::Light, c.r[3], std::countr_zero(c.r[4] | 0x100u), 6, 10);
+}
 
 // --- textures ------------------------------------------------------------------------------
 
@@ -885,7 +906,9 @@ GXHLE(GXCopyDisp) {
         // the game's texture-copy setup.
         GXSetTexCopySrc(0, 0, 640, 480);
         GXSetTexCopyDst(640, 480, GX_TF_RGBA8, GX_FALSE);
+        const u32 at = interp::mark();
         GXCopyTex(dump, GX_FALSE);
+        interp::noteDump(at, dump, sDiagFrame);
         GXSetTexCopySrc(u16(sCopyDiag.x), u16(sCopyDiag.y), u16(sCopyDiag.w), u16(sCopyDiag.h));
         GXSetTexCopyDst(u16(sCopyDiag.dw), u16(sCopyDiag.dh), GXTexFmt(sCopyDiag.fmt), GXBool(sCopyDiag.mip));
     }
