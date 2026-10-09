@@ -13,11 +13,14 @@
 #include "recomp/interp.h"
 #include "recomp/runtime.h"
 #include "recomp/widescreen.h"
+#include "port/settings.h"
 
 #include <dolphin/gx.h>
+#include <dolphin/gx/GXAurora.h>
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -385,7 +388,45 @@ void rawFifoWrite(u32 v, int size) {
     }
 }
 
+gx::DisplayCopy sDisplayCopy;
+
 }  // namespace
+
+const gx::DisplayCopy& gx::displayCopy() { return sDisplayCopy; }
+
+// F1 > Visuals > Rendering accuracy options -> Aurora. Test overrides: LM_ACCURACY=<mask>
+// (bit 0 integer TEV, bit 1 EFB color depth) and LM_ACCURACY_AB=<seconds> (alternate between
+// the configured options and all off every <seconds>, for A/B screenshots of one run).
+void gx::applyAccuracySettings() {
+    const auto& r = port::settings().rendering;
+    u32 flags = (r.integerTev ? GX_AURORA_ACCURACY_INT_TEV : 0) | (r.efbColorDepth ? GX_AURORA_ACCURACY_EFB_DEPTH : 0);
+    static const char* sMask = std::getenv("LM_ACCURACY");
+    if (sMask) flags = u32(std::strtoul(sMask, nullptr, 0));
+    static const double sAb = [] {
+        const char* e = std::getenv("LM_ACCURACY_AB");
+        return e ? std::atof(e) : 0.0;
+    }();
+    if (sAb > 0.0) {
+        static const auto sStart = std::chrono::steady_clock::now();
+        const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - sStart).count();
+        const long long phase = (long long)(t / sAb);
+        const bool off = phase % 2 == 1;
+        // Frame rate per phase (presented frames; use an uncapped frame rate to measure cost).
+        static long long sPhase = 0;
+        static int sFrames = 0;
+        if (phase != sPhase) {
+            const double now = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
+            log("[accuracy] phase %lld (%s): %.1f fps, ended at %.1f", sPhase, sPhase % 2 ? "off" : "on", sFrames / sAb, now);
+            sPhase = phase;
+            sFrames = 0;
+        }
+        sFrames++;
+        static const bool sFilter = port::settings().rendering.displayCopyFilter;
+        if (off) flags = 0;
+        port::settings().rendering.displayCopyFilter = off ? false : sFilter;
+    }
+    if (flags != GXGetAuroraAccuracy()) GXSetAuroraAccuracy(flags);
+}
 
 // LM_HUD_TRACE=<first>,<last>[,<step>]: for those frames (GXCopyDisp count), every 2D draw, viewport,
 // scissor and texture copy with its guest call chain, to map HUD pieces to game functions.
@@ -485,6 +526,25 @@ void hw::fifoWrite(u32 v, int size) {
         gxImpl_##name(c);                                 \
     }                                                     \
     static void gxImpl_##name([[maybe_unused]] ::recomp::Ctx& c)
+
+// GX state audit (LM_GX_AUDIT=1): logs each distinct argument combination of the state calls
+// that matter for hardware accuracy (copy filter, gamma, fog, lights, LOD...), once.
+static void gxAudit(const char* fmt, ...) {
+    static const bool on = [] {
+        const char* e = std::getenv("LM_GX_AUDIT");
+        return e && e[0] == '1';
+    }();
+    if (!on) return;
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    static std::vector<std::string> seen;
+    if (std::find(seen.begin(), seen.end(), buf) != seen.end()) return;
+    seen.emplace_back(buf);
+    log("[gx-audit] %s", buf);
+}
 
 // --- setup / sync ---------------------------------------------------------------
 
@@ -696,6 +756,7 @@ GXHLE(GXSetViewport) {
     GXSetViewport(x, farg(c, 2), w, farg(c, 4), farg(c, 5), farg(c, 6));
 }
 GXHLE(GXSetViewportJitter) {
+    gxAudit("GXSetViewportJitter field=%u", c.r[3]);
     const auto [x, w] = setViewport(c);
     GXSetViewportJitter(x, farg(c, 2), w, farg(c, 4), farg(c, 5), farg(c, 6), c.r[3]);
 }
@@ -709,9 +770,12 @@ GXHLE(GXSetClipMode) { GXSetClipMode(GXClipMode(c.r[3])); }
 // --- geometry state ------------------------------------------------------------------
 
 GXHLE(GXSetCullMode) { GXSetCullMode(GXCullMode(c.r[3])); }
-GXHLE(GXSetCoPlanar) { GXSetCoPlanar(GXBool(c.r[3])); }
-GXHLE(GXSetLineWidth) { GXSetLineWidth(u8(c.r[3]), GXTexOffset(c.r[4])); }
-GXHLE(GXSetPointSize) { GXSetPointSize(u8(c.r[3]), GXTexOffset(c.r[4])); }
+GXHLE(GXSetCoPlanar) {
+    gxAudit("GXSetCoPlanar %u", c.r[3]); GXSetCoPlanar(GXBool(c.r[3])); }
+GXHLE(GXSetLineWidth) {
+    gxAudit("GXSetLineWidth %u off=%u", c.r[3], c.r[4]); GXSetLineWidth(u8(c.r[3]), GXTexOffset(c.r[4])); }
+GXHLE(GXSetPointSize) {
+    gxAudit("GXSetPointSize %u off=%u", c.r[3], c.r[4]); GXSetPointSize(u8(c.r[3]), GXTexOffset(c.r[4])); }
 GXHLE(GXEnableTexOffsets) { GXEnableTexOffsets(GXTexCoordID(c.r[3]), GXBool(c.r[4]), GXBool(c.r[5])); }
 
 // --- lighting ----------------------------------------------------------------------------
@@ -728,13 +792,17 @@ GXHLE(GXSetChanMatColor) { GXSetChanMatColor(GXChannelID(c.r[3]), color(c.r[4]))
 GXHLE(GXSetChanAmbColor) { GXSetChanAmbColor(GXChannelID(c.r[3]), color(c.r[4])); }
 GXHLE(GXInitLightPos) { GXInitLightPos(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
 GXHLE(GXInitLightDir) { GXInitLightDir(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
-GXHLE(GXInitSpecularDir) { GXInitSpecularDir(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
+GXHLE(GXInitSpecularDir) {
+    gxAudit("GXInitSpecularDir"); GXInitSpecularDir(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
 GXHLE(GXInitLightColor) { GXInitLightColor(light(c.r[3]), color(c.r[4])); }
-GXHLE(GXInitLightSpot) { GXInitLightSpot(light(c.r[3]), farg(c, 1), GXSpotFn(c.r[4])); }
+GXHLE(GXInitLightSpot) {
+    gxAudit("GXInitLightSpot cutoff=%.1f fn=%u", farg(c, 1), c.r[4]); GXInitLightSpot(light(c.r[3]), farg(c, 1), GXSpotFn(c.r[4])); }
 GXHLE(GXInitLightDistAttn) {
+    gxAudit("GXInitLightDistAttn ref=%.1f bright=%.2f fn=%u", farg(c, 1), farg(c, 2), c.r[4]);
     GXInitLightDistAttn(light(c.r[3]), farg(c, 1), farg(c, 2), GXDistAttnFn(c.r[4]));
 }
 GXHLE(GXInitLightAttn) {
+    gxAudit("GXInitLightAttn a=%.3f %.3f %.3f k=%.4f %.4f %.6f", farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6));
     GXInitLightAttn(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6));
 }
 GXHLE(GXLoadLightObjImm) { GXLoadLightObjImm(light(c.r[3]), GXLightID(c.r[4])); }
@@ -760,6 +828,7 @@ GXHLE(GXInitTexObjCI) {
     diagTexInit("INITCI", c.r[3], c.r[4], c.r[5], c.r[6], c.r[7], c.lr);
 }
 GXHLE(GXInitTexObjLOD) {
+    gxAudit("GXInitTexObjLOD min=%u mag=%u lod=%.2f..%.2f bias=%.2f clamp=%u edge=%u aniso=%u", c.r[4], c.r[5], farg(c, 1), farg(c, 2), farg(c, 3), c.r[6], c.r[7], c.r[8]);
     if (GXTexObj* o = sTex.get(c.r[3], kTexTag))
         GXInitTexObjLOD(o, GXTexFilter(c.r[4]), GXTexFilter(c.r[5]), farg(c, 1), farg(c, 2), farg(c, 3),
                         GXBool(c.r[6]), GXBool(c.r[7]), GXAnisotropy(c.r[8]));
@@ -825,6 +894,7 @@ GXHLE(GXSetTevAlphaOp) {
 }
 GXHLE(GXSetTevColor) { GXSetTevColor(GXTevRegID(c.r[3]), color(c.r[4])); }
 GXHLE(GXSetTevColorS10) {
+    gxAudit("GXSetTevColorS10 reg=%u", c.r[3]);
     const u32 p = c.r[4];
     GXSetTevColorS10(GXTevRegID(c.r[3]), GXColorS10{s16(rd16(p)), s16(rd16(p + 2)), s16(rd16(p + 4)), s16(rd16(p + 6))});
 }
@@ -833,6 +903,7 @@ GXHLE(GXSetTevKColorSel) { GXSetTevKColorSel(GXTevStageID(c.r[3]), GXTevKColorSe
 GXHLE(GXSetTevKAlphaSel) { GXSetTevKAlphaSel(GXTevStageID(c.r[3]), GXTevKAlphaSel(c.r[4])); }
 GXHLE(GXSetTevSwapMode) { GXSetTevSwapMode(GXTevStageID(c.r[3]), GXTevSwapSel(c.r[4]), GXTevSwapSel(c.r[5])); }
 GXHLE(GXSetTevSwapModeTable) {
+    gxAudit("GXSetTevSwapModeTable %u %u%u%u%u", c.r[3], c.r[4], c.r[5], c.r[6], c.r[7]);
     GXSetTevSwapModeTable(GXTevSwapSel(c.r[3]), GXTevColorChan(c.r[4]), GXTevColorChan(c.r[5]),
                           GXTevColorChan(c.r[6]), GXTevColorChan(c.r[7]));
 }
@@ -870,17 +941,23 @@ GXHLE(GXSetTevIndirect) {
 GXHLE(GXSetColorUpdate) { GXSetColorUpdate(GXBool(c.r[3])); }
 GXHLE(GXSetAlphaUpdate) { GXSetAlphaUpdate(GXBool(c.r[3])); }
 GXHLE(GXSetZMode) { GXSetZMode(GXBool(c.r[3]), GXCompare(c.r[4]), GXBool(c.r[5])); }
-GXHLE(GXSetPixelFmt) { GXSetPixelFmt(GXPixelFmt(c.r[3]), GXZFmt16(c.r[4])); }
-GXHLE(GXSetDither) { GXSetDither(GXBool(c.r[3])); }
-GXHLE(GXSetZCompLoc) { GXSetZCompLoc(GXBool(c.r[3])); }
+GXHLE(GXSetPixelFmt) {
+    gxAudit("GXSetPixelFmt %u z=%u", c.r[3], c.r[4]); GXSetPixelFmt(GXPixelFmt(c.r[3]), GXZFmt16(c.r[4])); }
+GXHLE(GXSetDither) {
+    gxAudit("GXSetDither %u", c.r[3]); GXSetDither(GXBool(c.r[3])); }
+GXHLE(GXSetZCompLoc) {
+    gxAudit("GXSetZCompLoc %u", c.r[3]); GXSetZCompLoc(GXBool(c.r[3])); }
 GXHLE(GXSetBlendMode) {
+    gxAudit("GXSetBlendMode %u %u %u %u", c.r[3], c.r[4], c.r[5], c.r[6]);
     GXSetBlendMode(GXBlendMode(c.r[3]), GXBlendFactor(c.r[4]), GXBlendFactor(c.r[5]), GXLogicOp(c.r[6]));
 }
 GXHLE(GXSetDstAlpha) { GXSetDstAlpha(GXBool(c.r[3]), u8(c.r[4])); }
 GXHLE(GXSetFog) {
+    gxAudit("GXSetFog type=%u start=%.1f end=%.1f near=%.1f far=%.1f", c.r[3], farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4));
     GXSetFog(GXFogType(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), color(c.r[4]));
 }
 GXHLE(GXSetFogRangeAdj) {
+    gxAudit("GXSetFogRangeAdj en=%u center=%u", c.r[3], c.r[4]);
     GXFogAdjTable t{};
     if (c.r[5])
         for (int i = 0; i < 10; i++) t.r[i] = u16(rd16(c.r[5] + 2 * i));
@@ -927,16 +1004,48 @@ void diagTexInit(const char* kind, u32 obj, u32 image, u32 w, u32 h, u32 fmt, u3
     }
 }
 GXHLE(GXSetCopyClear) { GXSetCopyClear(color(c.r[3]), c.r[4]); }
-GXHLE(GXSetDispCopySrc) { GXSetDispCopySrc(u16(c.r[3]), u16(c.r[4]), u16(c.r[5]), u16(c.r[6])); }
-GXHLE(GXSetDispCopyDst) { GXSetDispCopyDst(u16(c.r[3]), u16(c.r[4])); }
-GXHLE(GXSetDispCopyYScale) { c.r[3] = GXSetDispCopyYScale(farg(c, 1)); }
-GXHLE(GXSetDispCopyGamma) { GXSetDispCopyGamma(GXGamma(c.r[3])); }
-GXHLE(GXSetCopyClamp) {}
+GXHLE(GXSetDispCopySrc) {
+    gxAudit("GXSetDispCopySrc %u %u %u %u", c.r[3], c.r[4], c.r[5], c.r[6]);
+    if (c.r[6]) sDisplayCopy.efbHeight = u16(c.r[6]);
+    GXSetDispCopySrc(u16(c.r[3]), u16(c.r[4]), u16(c.r[5]), u16(c.r[6]));
+}
+GXHLE(GXSetDispCopyDst) {
+    gxAudit("GXSetDispCopyDst %u %u", c.r[3], c.r[4]);
+    GXSetDispCopyDst(u16(c.r[3]), u16(c.r[4]));
+}
+GXHLE(GXSetDispCopyYScale) {
+    // Returns the number of XFB lines the display copy writes for the copy source height
+    // (the SDK's formula for the 9-bit reciprocal scale register).
+    gxAudit("GXSetDispCopyYScale %.4f", farg(c, 1));
+    GXSetDispCopyYScale(farg(c, 1));
+    const u32 iScale = u32(256.0f / farg(c, 1)) & 0x1FF;
+    const u32 efbHeight = sDisplayCopy.efbHeight;
+    u32 lines = iScale ? (efbHeight - 1) * 256 / iScale + 1 : efbHeight;
+    if (iScale > 128 && iScale < 256) {
+        u32 s = iScale;
+        while ((s & 1) == 0) s >>= 1;
+        if (efbHeight % s == 0) lines++;
+    }
+    c.r[3] = std::min<u32>(lines, 1024);
+}
+GXHLE(GXSetDispCopyGamma) {
+    gxAudit("GXSetDispCopyGamma %u", c.r[3]);
+    sDisplayCopy.gamma = u8(std::min<u32>(c.r[3], 2));
+    GXSetDispCopyGamma(GXGamma(c.r[3]));
+}
+GXHLE(GXSetCopyClamp) {
+    gxAudit("GXSetCopyClamp %u", c.r[3]);
+    sDisplayCopy.clamp = u8(c.r[3] & 3);
+}
 GXHLE(GXSetCopyFilter) {
+    if (c.r[6]) gxAudit("GXSetCopyFilter aa=%u vf=%u vfilter=%u,%u,%u,%u,%u,%u,%u", c.r[3], c.r[5], rd8(c.r[6]), rd8(c.r[6] + 1), rd8(c.r[6] + 2), rd8(c.r[6] + 3), rd8(c.r[6] + 4), rd8(c.r[6] + 5), rd8(c.r[6] + 6));
     u8 pattern[12][2] = {};
     u8 vfilter[7] = {};
     if (c.r[4]) std::memcpy(pattern, hostp(c.r[4]), sizeof(pattern));
     if (c.r[6]) std::memcpy(vfilter, hostp(c.r[6]), sizeof(vfilter));
+    // With vf off the SDK loads the pass-through taps {0, 0, 21, 22, 21, 0, 0}.
+    static constexpr u8 kNoFilter[7] = {0, 0, 21, 22, 21, 0, 0};
+    for (int i = 0; i < 7; i++) sDisplayCopy.vfilter[i] = c.r[5] && c.r[6] ? u8(vfilter[i] & 0x3F) : kNoFilter[i];
     GXSetCopyFilter(GXBool(c.r[3]), pattern, GXBool(c.r[5]), vfilter);
 }
 GXHLE(GXCopyDisp) {

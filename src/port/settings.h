@@ -60,7 +60,7 @@ struct EnhancementSettings {
     bool showFps = false;
     bool pauseOnFocusLoss = true;
     bool skipIntroLogos = false;
-    bool hiddenMansionPal = true;  // Hidden Mansion uses the PAL release's rules (until the lab menu offers both)
+    bool hiddenMansionPal = true;  // default Hidden Mansion rules for saves that have not chosen in E. Gadd's lab
     int palLanguage = 1;           // PAL game only: 1 English, 2 German, 3 French, 4 Spanish, 5 Italian (next launch)
     bool gbhClock = false;         // cut E3 GBH clock/radar screen, toggled in game with D-pad Left
     bool gbhTracker = false;       // unused GBH ghost tracker, cycled in game with D-pad Down (off/far/close)
@@ -104,6 +104,14 @@ struct GameplaySettings {
 // Hardware-accuracy rendering features (F1 > Visuals > Rendering). Every costly accuracy
 // feature gets a flag here, ON by default (best quality); weaker PCs can turn them off.
 struct RenderingSettings {
+    // Integer TEV: the color combiner computes with the hardware's 8-bit inputs, signed 11-bit
+    // registers and per-stage rounding instead of floats (Aurora GX_AURORA_ACCURACY_INT_TEV).
+    bool integerTev = true;
+    // EFB color depth: pixels are stored the way the game's RGBA6 framebuffer stores them,
+    // 6 bits per channel with the ordered dither the game enables (GX_AURORA_ACCURACY_EFB_DEPTH).
+    bool efbColorDepth = true;
+    // Display copy filter: the vertical filter (and gamma) GXCopyDisp applies on the way to the TV.
+    bool displayCopyFilter = true;
     // GXCopyTex results also exist as GX-format bytes in main memory, so textures that read a
     // copy with another format/size (Luigi's self-shadow depth map) and CPU reads see what the
     // console sees (docs/RENDERING.md). Off: copies stay GPU-only textures.

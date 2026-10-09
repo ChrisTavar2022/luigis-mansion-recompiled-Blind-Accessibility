@@ -34,6 +34,8 @@ fn_8009FCA8 us pal
 fn_8006D1B8 us pal
 fn_800168EC us pal
 fn_800B41E0 us pal
+# E. Gadd's lab menu with both Hidden Mansions: keep a wider choice box on screen.
+fn_80043104 us pal
 # PAL Hidden Mansion boss mechanics (same file): Boolossus movement mode, Chauncey balls and
 # rocking horses, Bowser bomb volleys.
 fn_800B783C us pal

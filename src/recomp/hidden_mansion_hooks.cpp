@@ -9,6 +9,7 @@
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
 
+#include <algorithm>
 #include <bit>
 #include <cstdlib>
 #include <unordered_map>
@@ -504,6 +505,39 @@ HLE(fn_80055C54) {
     sInWipe = hm::mirrorActive();
     callOriginal(c, "fn_80055C54");
     sInWipe = false;
+}
+
+// Event <CHOICE> list box draw (both releases). Its left edge is a constant (.sdata halfword
+// 0x804D0558 = 368, or +4 = 41 in the alternative layout selected by 0x803CF4D0) and it grows
+// to the right with the widest entry (0x804D851C, set when the list opens), so the lab's
+// "The Hidden Mansion (USA)" / "(PAL)" entries would run off a 640-wide screen. With the lab
+// menu installed, a box that would cross the right edge is moved left for the draw.
+HLE(fn_80043104) {
+    if (!hm::labChoiceAvailable()) return callOriginal(c, "fn_80043104");
+    const u32 kPos = VA(0x804D0558);  // {x, y} normal, {x, y} alternative
+    const s32 width = s32(rd32(VA(0x804D851C)));
+    constexpr s32 kFrame = 44;    // box frame + text inset beyond the widest entry
+    constexpr s32 kRight = 624;   // right edge like the original list (~620 on a 640-wide screen)
+    const u32 saved[2] = {rd16(kPos), rd16(kPos + 4)};
+    bool moved = false;
+    for (int i = 0; i < 2; i++) {
+        const s32 x = s16(saved[i]);
+        if (width > 0 && width < 600 && x + width + kFrame > kRight) {
+            wr16(kPos + 4 * u32(i), u16(s16(std::max(8, kRight - kFrame - width))));
+            moved = true;
+        }
+    }
+    static bool sLogged = false;
+    if (moved && !sLogged) {
+        sLogged = true;
+        log("[hm] lab menu: choice box width %d moved left to stay on screen (x %d -> %d)", width, s16(saved[0]),
+            s16(rd16(kPos)));
+    }
+    callOriginal(c, "fn_80043104");
+    if (moved) {
+        wr16(kPos, saved[0]);
+        wr16(kPos + 4, saved[1]);
+    }
 }
 
 // JUTRect::set(l, t, r, b): the wipe's circle rectangle is centred on x = 312; PAL uses 328.

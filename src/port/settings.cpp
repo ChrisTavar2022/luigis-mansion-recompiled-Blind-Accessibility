@@ -51,6 +51,7 @@ std::vector<Field> fields() {
     auto& e = sSettings.enhancements;
     auto& c = sSettings.crt;
     auto& g = sSettings.gameplay;
+    auto& r = sSettings.rendering;
     return {
         enm("video", "frame_rate", v.frameRate),
         enm("video", "aspect", v.aspect),
@@ -61,6 +62,9 @@ std::vector<Field> fields() {
         num("video", "msaa", v.msaa),
         flag("video", "hud_keep_4x3", v.hudKeep4x3),
         flag("video", "pal60", v.pal60),
+        flag("rendering", "integer_tev", r.integerTev),
+        flag("rendering", "efb_color_depth", r.efbColorDepth),
+        flag("rendering", "display_copy_filter", r.displayCopyFilter),
         flag("rendering", "efb_copy_to_ram", sSettings.rendering.efbCopyToRam),
         flag("crt", "enabled", c.enabled),
         enm("crt", "preset", c.preset),

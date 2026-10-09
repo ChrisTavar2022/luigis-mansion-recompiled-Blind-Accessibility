@@ -26,7 +26,7 @@ namespace {
 
 using port::GameVersion;
 
-constexpr const char* kOverlayFormat = "hidden-mansion-overlay 2";  // 2: + usa/ (reverse)
+constexpr const char* kOverlayFormat = "hidden-mansion-overlay 3";  // 2: + usa/ (reverse), 3: lab menu choice (event08)
 
 struct Slot {
     std::string path;     // UTF-8

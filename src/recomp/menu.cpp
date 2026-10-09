@@ -2,6 +2,7 @@
 // Drawn with Aurora's Dear ImGui on the host thread between the guest's present
 // and aurora_end_frame. While it is open the game receives neutral pad input.
 #include "recomp/menu.h"
+#include "recomp/gx_bridge.h"
 
 #include "port/install.h"
 #include "port/options.h"
@@ -150,6 +151,18 @@ void renderingTab() {
     ImGui::TextDisabled("turn features off only if your PC needs the speed.");
     ImGui::Separator();
     auto& r = port::settings().rendering;
+    sDirty |= ImGui::Checkbox("Integer-accurate TEV", &r.integerTev);
+    ImGui::SetItemTooltip(
+        "Color combiner math as on the GameCube: 8-bit inputs, signed 11-bit registers and rounding\n"
+        "after every stage. Slightly darker multi-stage shading and exact overflow; tiny GPU cost.");
+    sDirty |= ImGui::Checkbox("EFB color depth (6-bit + dither)", &r.efbColorDepth);
+    ImGui::SetItemTooltip(
+        "The game renders into a 6-bit-per-channel framebuffer with an ordered dither, like the\n"
+        "console. Off: smooth 8-bit color (less banding/dither grain in dark rooms). No real cost.");
+    sDirty |= ImGui::Checkbox("Display copy filter", &r.displayCopyFilter);
+    ImGui::SetItemTooltip(
+        "The vertical filter (and gamma) the console applies when copying the frame to the TV\n"
+        "image: slightly softer vertical detail, smooths the dither. One extra full-screen pass.");
     sDirty |= ImGui::Checkbox("EFB copies to RAM (accurate)", &r.efbCopyToRam);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Screen copies also exist in console memory format, like on the GameCube.\n"
@@ -300,25 +313,36 @@ void generalEnhancementsTab() {
         const char* kVariants[] = {usGame ? "USA (original)" : "USA (easier, not mirrored)",
                                    usGame ? "European (harder, mirrored)" : "European (original)"};
         auto usable = [&](int i) { return avail[i] == port::Avail::Yes; };
-        ImGui::BeginDisabled(inside);
-        if (ImGui::BeginCombo("Hidden Mansion version", kVariants[pal ? 1 : 0])) {
-            for (int i = 0; i < 2; i++) {
-                if (ImGui::Selectable(kVariants[i], (pal ? 1 : 0) == i,
-                                      usable(i) ? 0 : ImGuiSelectableFlags_Disabled)) {
-                    e.hiddenMansionPal = i == 1;
-                    recomp::hm::setVariant(e.hiddenMansionPal ? recomp::hm::Variant::Pal : recomp::hm::Variant::Us);
-                    sDirty = true;
+        if (recomp::hm::labChoiceAvailable()) {
+            // Both releases' data: E. Gadd's lab asks on every visit (docs/HIDDEN_MANSION.md).
+            ImGui::TextUnformatted("Hidden Mansion version: chosen in E. Gadd's lab");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Picking the Hidden Mansion in E. Gadd's lab asks which one:\n"
+                                  "\"(USA)\" is the %s release's, \"(PAL)\" the %s release's\n"
+                                  "(harder, mirrored, darker). The save file keeps the answer for that visit.",
+                                  usGame ? "original USA" : "USA", usGame ? "European" : "original European");
+            if (inside) ImGui::TextDisabled("This visit: %s", kVariants[pal ? 1 : 0]);
+        } else {
+            ImGui::BeginDisabled(inside);
+            if (ImGui::BeginCombo("Hidden Mansion version", kVariants[pal ? 1 : 0])) {
+                for (int i = 0; i < 2; i++) {
+                    if (ImGui::Selectable(kVariants[i], (pal ? 1 : 0) == i,
+                                          usable(i) ? 0 : ImGuiSelectableFlags_Disabled)) {
+                        e.hiddenMansionPal = i == 1;
+                        recomp::hm::setVariant(e.hiddenMansionPal ? recomp::hm::Variant::Pal : recomp::hm::Variant::Us);
+                        sDirty = true;
+                    }
+                    if (const char* note = port::availNote(avail[i])) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(%s)", note);
+                    }
                 }
-                if (const char* note = port::availNote(avail[i])) {
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(%s)", note);
-                }
+                ImGui::EndCombo();
             }
-            ImGui::EndCombo();
+            ImGui::EndDisabled();
+            if (inside) pending("leave the Hidden Mansion to change");
         }
-        ImGui::EndDisabled();
-        if (inside) pending("leave the Hidden Mansion to change");
-        else if (!usable(0)) pending(port::availNote(avail[0]));
+        if (!usable(0)) pending(port::availNote(avail[0]));
         else if (!usable(1)) pending(port::availNote(avail[1]));
     }
 }
@@ -450,6 +474,7 @@ void handleEvent(const SDL_Event& ev) {
 
 void draw() {
     skip::drawOverlay();
+    recomp::gx::applyAccuracySettings();
     recomp::crt::update();
     if (port::settings().enhancements.showFps) fpsOverlay();
     recomp::dev::drawOverlays();
@@ -466,7 +491,7 @@ void draw() {
                         visualsTab();
                         ImGui::EndTabItem();
                     }
-                    if (ImGui::BeginTabItem("Rendering")) {
+                    if (ImGui::BeginTabItem("Rendering", nullptr, envTab("Rendering"))) {
                         renderingTab();
                         ImGui::EndTabItem();
                     }
