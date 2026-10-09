@@ -183,37 +183,43 @@ void pairGroup(const Tape& a, const std::vector<u32>& A, const Tape& b, const st
         }
 }
 
-// A 3x3 (cols 3) or 3x4 (cols 4, row-major) matrix whose 3x3 part is a rotation times a
-// per-axis scale (what model-view and normal matrices are): rotation as a quaternion.
+// A 3x3 (cols 3) or 3x4 (cols 4, row-major) matrix's 3x3 part as M = Q U: a rotation Q (as
+// a quaternion) times an upper-triangular scale/shear U (Gram-Schmidt on the columns; a
+// mirrored matrix gets a negative U[2][2]). Model-view and normal matrices blend well this
+// way, including the sheared ones a non-uniformly scaled parent produces.
 struct Rigid {
-    float q[4];  // x, y, z, w
-    float s[3];  // column lengths (the first negated if mirrored)
-    bool mirrored;
+    float q[4];     // x, y, z, w
+    float u[3][3];  // upper triangular
 };
 
 bool decompose(const f32* m, int cols, Rigid& out) {
     float c[3][3];  // columns
-    for (int j = 0; j < 3; j++) {
+    for (int j = 0; j < 3; j++)
         for (int r = 0; r < 3; r++) c[j][r] = m[cols * r + j];
-        const float len = std::sqrt(c[j][0] * c[j][0] + c[j][1] * c[j][1] + c[j][2] * c[j][2]);
-        if (!(len > 1e-8f) || !std::isfinite(len)) return false;
-        out.s[j] = len;
-        for (int r = 0; r < 3; r++) c[j][r] /= len;
+    auto dot = [](const float* x, const float* y) { return x[0] * y[0] + x[1] * y[1] + x[2] * y[2]; };
+    float e[3][3];  // orthonormal columns
+    std::memset(out.u, 0, sizeof(out.u));
+    for (int j = 0; j < 3; j++) {
+        float v[3] = {c[j][0], c[j][1], c[j][2]};
+        for (int i = 0; i < j; i++) {
+            const float d = dot(e[i], c[j]);
+            out.u[i][j] = d;
+            for (int r = 0; r < 3; r++) v[r] -= d * e[i][r];
+        }
+        const float len = std::sqrt(dot(v, v));
+        if (!(len > 1e-7f) || !std::isfinite(len)) return false;
+        out.u[j][j] = len;
+        for (int r = 0; r < 3; r++) e[j][r] = v[r] / len;
     }
-    // Shear (not a rotation and scale) is blended entrywise instead.
-    for (int i = 0; i < 3; i++)
-        for (int j = i + 1; j < 3; j++)
-            if (std::fabs(c[i][0] * c[j][0] + c[i][1] * c[j][1] + c[i][2] * c[j][2]) > 0.05f) return false;
-    const float det = c[0][0] * (c[1][1] * c[2][2] - c[1][2] * c[2][1]) - c[1][0] * (c[0][1] * c[2][2] - c[0][2] * c[2][1]) +
-                      c[2][0] * (c[0][1] * c[1][2] - c[0][2] * c[1][1]);
-    out.mirrored = det < 0;
-    if (out.mirrored) {
-        out.s[0] = -out.s[0];
-        for (int r = 0; r < 3; r++) c[0][r] = -c[0][r];
+    const float cr[3] = {e[0][1] * e[1][2] - e[0][2] * e[1][1], e[0][2] * e[1][0] - e[0][0] * e[1][2],
+                         e[0][0] * e[1][1] - e[0][1] * e[1][0]};
+    if (dot(cr, e[2]) < 0) {  // mirrored: keep Q a rotation
+        for (int r = 0; r < 3; r++) e[2][r] = -e[2][r];
+        out.u[2][2] = -out.u[2][2];
     }
-    // Rotation matrix R[r][j] = c[j][r] to quaternion.
-    const float m00 = c[0][0], m01 = c[1][0], m02 = c[2][0], m10 = c[0][1], m11 = c[1][1], m12 = c[2][1], m20 = c[0][2],
-                m21 = c[1][2], m22 = c[2][2];
+    // Rotation matrix R[r][j] = e[j][r] to quaternion.
+    const float m00 = e[0][0], m01 = e[1][0], m02 = e[2][0], m10 = e[0][1], m11 = e[1][1], m12 = e[2][1], m20 = e[0][2],
+                m21 = e[1][2], m22 = e[2][2];
     const float tr = m00 + m11 + m22;
     float* q = out.q;
     if (tr > 0) {
@@ -232,12 +238,11 @@ bool decompose(const f32* m, int cols, Rigid& out) {
     return true;
 }
 
-// Blends two matrices by rotation (slerp), scale and translation, so a turning object
-// keeps its shape at in-between frames (an entrywise blend shrinks it). False if they
-// are not both rotation-and-scale matrices.
+// Blends two matrices by rotation (slerp), scale/shear and translation, so a turning
+// object keeps its shape at in-between frames (an entrywise blend shrinks it).
 bool blendRigid(const f32* a, const f32* b, int cols, float t, f32* out) {
     Rigid ra, rb;
-    if (!decompose(a, cols, ra) || !decompose(b, cols, rb) || ra.mirrored != rb.mirrored) return false;
+    if (!decompose(a, cols, ra) || !decompose(b, cols, rb) || (ra.u[2][2] < 0) != (rb.u[2][2] < 0)) return false;
     float d = ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3];
     float qb[4] = {rb.q[0], rb.q[1], rb.q[2], rb.q[3]};
     if (d < 0) {
@@ -259,10 +264,11 @@ bool blendRigid(const f32* a, const f32* b, int cols, float t, f32* out) {
     const float R[3][3] = {{1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)},
                            {2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)},
                            {2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)}};
-    for (int j = 0; j < 3; j++) {
-        const float sc = ra.s[j] + (rb.s[j] - ra.s[j]) * t;
-        for (int r = 0; r < 3; r++) out[cols * r + j] = R[r][j] * sc;
-    }
+    float U[3][3];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) U[i][j] = ra.u[i][j] + (rb.u[i][j] - ra.u[i][j]) * t;
+    for (int r = 0; r < 3; r++)
+        for (int j = 0; j < 3; j++) out[cols * r + j] = R[r][0] * U[0][j] + R[r][1] * U[1][j] + R[r][2] * U[2][j];
     if (cols == 4)
         for (int r = 0; r < 3; r++) out[4 * r + 3] = a[4 * r + 3] + (b[4 * r + 3] - a[4 * r + 3]) * t;
     return true;
@@ -325,12 +331,13 @@ bool blendable(Kind kind, const f32* a, const f32* b, int n) {
                 if (std::fabs(a[i] - b[i]) > ((cols == 4 && (i & 3) == 3) ? 400.0f : 0.35f)) return false;
             return true;
         }
-        if (ra.mirrored != rb.mirrored) return false;
+        if ((ra.u[2][2] < 0) != (rb.u[2][2] < 0)) return false;
         if (std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]) < 0.26f)
             return false;  // cos(angle / 2) < 0.26: more than ~150 degrees, no telling which way
-        for (int k = 0; k < 3; k++)
-            if (std::fabs(rb.s[k]) > 2.0f * std::fabs(ra.s[k]) + 1e-4f || std::fabs(ra.s[k]) > 2.0f * std::fabs(rb.s[k]) + 1e-4f)
-                return false;
+        for (int k = 0; k < 3; k++) {
+            const float sa = std::fabs(ra.u[k][k]), sb = std::fabs(rb.u[k][k]);
+            if (sb > 2.0f * sa + 1e-4f || sa > 2.0f * sb + 1e-4f) return false;
+        }
         if (cols == 4) {
             float da = 0, db = 0, dd = 0;
             for (int r = 0; r < 3; r++) {

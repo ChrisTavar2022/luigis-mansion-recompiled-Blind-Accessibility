@@ -21,6 +21,7 @@
 #include <dolphin/gx.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -315,8 +316,10 @@ void vtxEndTape(u8* tape, u32 size, std::vector<std::vector<u8>>& keep, u64& sna
         snapshotBytes += s.data.size();
         keep.push_back(std::move(s.data));
     }
+    // LM_INTERP_ARRAYS=0 (testing): leave the array loads pointing at live guest memory.
+    static const bool sOff = [] { const char* v = std::getenv("LM_INTERP_ARRAYS"); return v && *v == '0'; }();
     for (const Cmd& c : sCmds) {
-        if (c.snap < 0) continue;
+        if (c.snap < 0 || sOff) continue;
         const std::vector<u8>& d = keep[c.snap];
         if (d.empty()) continue;
         // The load is GX_AURORA, u16 subcommand, u64 host pointer (big-endian), u32 size, u8.
