@@ -30,7 +30,6 @@
 // these paths), and the projection's near/far planes are fitted around the whole model.
 #include "recomp/model_viewer.h"
 
-#include "port/install.h"
 #include "recomp/dev_tools.h"
 #include "recomp/efb_copy.h"
 #include "recomp/guest_util.h"
@@ -508,8 +507,9 @@ Wire sWire = Wire::Off;
 float sWireColor[4] = {1.0f, 0.85f, 0.2f, 1.0f};
 bool sTextures = std::getenv("LM_DEV_VIEWER_NOTEX") == nullptr;  // test aid: LM_DEV_VIEWER_NOTEX=1
 bool sGhostFx = true;                                            // "Ghost effects" (ghost archives)
-float sGhostColor[4] = {0.55f, 0.55f, 0.75f, 1.0f};             // ghost actor +0xE9 (ambient)
-float sGhostAlpha = 1.0f;                                        // ghost actor +0xE3 (layer weight)
+bool sTwoSided = false;                                          // "Back faces": no back-face culling (Aurora patch 0010)
+float sGhostColor[4] = {0x40 / 255.0f, 0x40 / 255.0f, 0x40 / 255.0f, 1.0f};  // ghost actor +0xE9 (ambient; 404040FF in play)
+float sGhostAlpha = 1.0f;                                        // ghost actor +0xE3 (layer weight; FF when fully visible)
 bool sIsGhost = false;                                           // loaded model is a ghost
 
 // Maps.
@@ -553,6 +553,7 @@ struct Drawable {
     u32 key = 0;                // S3DModel: .key animation
     u32 bufOpa = 0, bufXlu = 0; // J3D draw buffers
     u32 mtx = 0;                // guest copy of the placement matrix (graph root / J3D base)
+    bool bindPose = false;      // S3DModel without animation: joints fixed at load
     std::string name;
 };
 std::vector<Drawable> sDraw;
@@ -592,19 +593,6 @@ template <typename F> void withViewerHeap(F&& f) {
     wr32(kCurrent, cur);
 }
 
-// A key with every channel at its default: joints stay at their rest transforms.
-std::vector<u8> restKey(u32 numJoints) {
-    std::vector<u8> k(0x20 + std::max<u32>(numJoints * 0x24, 64) + 64, 0);
-    auto put32 = [&](u32 off, u32 v) {
-        for (int i = 0; i < 4; i++) k[off + i] = u8(v >> (24 - 8 * i));
-    };
-    put32(0x00, numJoints);
-    k[0x06] = 0;
-    k[0x07] = 1;  // one frame
-    for (u32 off = 0x0C; off <= 0x1C; off += 4) put32(off, 0x20);
-    return k;
-}
-
 void putMtx(u32 at, const float* m, int n) {
     for (int i = 0; i < n; i++) gu::wrf(at + 4 * i, m[i]);
 }
@@ -615,19 +603,64 @@ u32 copyIn(Ctx& c, const std::vector<u8>& bytes) {
     return a;
 }
 
-bool loadMdl(Ctx& c, const LoadItem& it, Drawable& d) {
+// A key with no channels; S3DModel draws nothing without a key (fn_80059C54 checks it).
+std::vector<u8> emptyKey(u32 numJoints) {
+    std::vector<u8> k(0x20 + std::max<u32>(numJoints * 0x24, 64) + 64, 0);
+    auto put32 = [&](u32 off, u32 v) {
+        for (int i = 0; i < 4; i++) k[off + i] = u8(v >> (24 - 8 * i));
+    };
+    put32(0x00, numJoints);
+    k[0x07] = 1;  // one frame
+    for (u32 off = 0x0C; off <= 0x1C; off += 4) put32(off, 0x20);
+    return k;
+}
+
+bool loadMdl(Ctx& c, const LoadItem& it, Drawable& d, Box& bounds) {
     const u32 numJoints = be16(&it.data[0x08]);
-    const std::vector<u8> key = it.key.empty() ? restKey(numJoints) : it.key;
+    const bool anim = !it.key.empty();
+    const std::vector<u8> key = anim ? it.key : emptyKey(numJoints);
     const u32 mdl = copyIn(c, it.data), k = copyIn(c, key), obj = heapAlloc(c, 0x114);
     if (!mdl || !k || !obj) return false;
     gu::call(c, GU_SYM("fn_80061B40"), {mdl});
     gu::call(c, GU_SYM("fn_80061A24"), {k});
     withViewerHeap([&] { gu::call(c, GU_SYM("__ct__8S3DModelFll"), {obj, mdl, 0}); });  // matrix arrays via operator new
     gu::call(c, GU_SYM("fn_8005AA3C"), {obj, k});
+    const u32 joints = rd32(obj + 0x14), invBind = rd32(mdl + 0x38);
+    if (anim) {
+        gu::call(c, GU_SYM("fn_8005AA34"), {obj}, {0.0});
+        gu::call(c, GU_SYM("fn_800589B0"), {obj, 0});
+    } else {
+        // No animation: the bind pose. Joint = inverse(inverse bind matrix), then the envelope
+        // matrices from them (fn_80058850, the second half of calcJoints fn_800589B0); the
+        // joints are not recalculated per frame.
+        for (u32 j = 0; j < numJoints; j++) {
+            const u32 m = joints + j * 0x30;
+            if (invBind) gu::call(c, GU_SYM("PSMTXInverse"), {invBind + j * 0x30, m});
+            else gu::call(c, GU_SYM("PSMTXIdentity"), {m});
+            // Parts that are collapsed at rest and only scaled up by their animation (the
+            // portrait ghosts' oba??g? effect meshes are bound at scale 1/100000): unit scale.
+            for (int col = 0; col < 3; col++) {
+                float v[3], len = 0;
+                for (int r = 0; r < 3; r++) len += (v[r] = gu::rdf(m + (r * 4 + col) * 4)) * v[r];
+                len = std::sqrt(len);
+                if (len > 0.0f && len < 1e-3f)
+                    for (int r = 0; r < 3; r++) gu::wrf(m + (r * 4 + col) * 4, v[r] / len);
+            }
+        }
+        gu::call(c, GU_SYM("fn_80058850"), {obj});
+        d.bindPose = true;
+    }
+    // Frame from the vertices and the joints at frame 0 (animated models are often posed far
+    // from their rest positions, cutscene models in world space).
+    for (u32 j = 0; j < numJoints; j++) {
+        const float p[3] = {gu::rdf(joints + j * 0x30 + 0x0C), gu::rdf(joints + j * 0x30 + 0x1C), gu::rdf(joints + j * 0x30 + 0x2C)};
+        bounds.add(p);
+    }
     d.obj = obj;
     d.key = k;
-    sNumFrames = std::max<u32>(sNumFrames, std::max<u32>(1, be16(&key[6])));
-    sLoadedInfo = std::to_string(numJoints) + " joints, " + std::to_string(std::max<u32>(1, be16(&key[6]))) + " frames";
+    const u32 frames = anim ? std::max<u32>(1, be16(&key[6])) : 1;
+    sNumFrames = std::max<u32>(sNumFrames, frames);
+    sLoadedInfo = std::to_string(numJoints) + " joints, " + (anim ? std::to_string(frames) + " frames" : "bind pose");
     return true;
 }
 
@@ -704,7 +737,7 @@ void loadPending(Ctx& c) {
         d.name = it.name;
         bool ok = false;
         switch (it.kind) {
-        case Kind::Mdl: ok = loadMdl(c, it, d); break;
+        case Kind::Mdl: ok = loadMdl(c, it, d, sPending.bounds); break;
         case Kind::Graph: ok = loadGraph(c, it, d); break;
         case Kind::J3D: ok = loadJ3D(c, it, d); break;
         }
@@ -730,8 +763,9 @@ void loadPending(Ctx& c) {
     }
     if (sPending.items.size() != 1) sLoadedInfo = std::to_string(sDraw.size()) + " models";
     sStatus = sLoadResult;
-    log("[viewer] loaded %s: %zu/%zu models, heap %u KiB used%s%s", sPending.label.c_str(), sDraw.size(),
-        sPending.items.size(), sHeapUsed / 1024, sLoadResult.empty() ? "" : " - ", sLoadResult.c_str());
+    log("[viewer] loaded %s: %zu/%zu models, heap %u KiB used, centre %.0f %.0f %.0f radius %.0f%s%s", sPending.label.c_str(),
+        sDraw.size(), sPending.items.size(), sHeapUsed / 1024, sCenter[0], sCenter[1], sCenter[2], sRadius,
+        sLoadResult.empty() ? "" : " - ", sLoadResult.c_str());
 }
 
 void drawBackdrop(Ctx& c) {
@@ -826,8 +860,10 @@ void loadProjection(Ctx& c) {
 
 // S3DModel: joints, view matrices, then the opaque and translucent passes.
 void drawMdl(Ctx& c, const Drawable& d, bool ghost) {
-    gu::call(c, GU_SYM("fn_8005AA34"), {d.obj}, {sFrame});
-    gu::call(c, GU_SYM("fn_800589B0"), {d.obj, 0});
+    if (!d.bindPose) {
+        gu::call(c, GU_SYM("fn_8005AA34"), {d.obj}, {sFrame});
+        gu::call(c, GU_SYM("fn_800589B0"), {d.obj, 0});
+    }
     gu::call(c, GU_SYM("fn_80059710"), {d.obj, kScratch + 0x140});
     if (ghost) {
         // fn_80060E70 pass 0x30 (opaque) and 0x130 (translucent) for a ghost type: ghost
@@ -869,8 +905,25 @@ struct GraphState {
     u32 portalFlag = VA(0x804D81B6); // u8: set per portal by fn_8001798C
 };
 
+// Room renderer lighting: its materials light channel 0 with the light mask in lbl_804D0044
+// (GX_LIGHT0) and the ambient register, both set by the room light code in play. The viewer
+// loads its own: an ambient level and a light at the camera.
+float sRoomAmbient = 0.45f, sRoomLight = 0.8f;
+void setupGraphLighting(Ctx& c) {
+    const u32 kObj = kScratch + 0x200, kCol = kScratch + 0x78;
+    const u8 a = u8(std::clamp(sRoomAmbient, 0.0f, 1.0f) * 255.0f), l = u8(std::clamp(sRoomLight, 0.0f, 1.0f) * 255.0f);
+    wr32(kCol, u32(a) << 24 | u32(a) << 16 | u32(a) << 8 | 0xFF);
+    gu::call(c, GU_SYM("GXSetChanAmbColor"), {4, kCol});
+    wr32(kCol + 4, u32(l) << 24 | u32(l) << 16 | u32(l) << 8 | 0xFF);
+    gu::call(c, GU_SYM("GXInitLightPos"), {kObj}, {0.0, 0.0, 0.0});
+    gu::call(c, GU_SYM("GXInitLightColor"), {kObj, kCol + 4});
+    gu::call(c, GU_SYM("GXInitLightAttn"), {kObj}, {1.0, 0.0, 0.0, 1.0, 0.0, 0.0});
+    gu::call(c, GU_SYM("GXLoadLightObjImm"), {kObj, 1});
+}
+
 void drawGraphs(Ctx& c, int pass) {
     static const GraphState g;
+    setupGraphLighting(c);
     u32 savedView[12];
     for (int i = 0; i < 12; i++) savedView[i] = rd32(g.view + 4 * i);
     const u8 sil = rd8(g.silhouette), mode = rd8(g.mode), portal = rd8(g.portalFlag);
@@ -896,12 +949,14 @@ void drawGraphs(Ctx& c, int pass) {
 }
 
 void drawJ3Ds(Ctx& c) {
-    const u32 sys = VA(0x804C8898);  // j3dSys: +0 view matrix, +0x44/+0x48 draw buffers, +0x4C draw mode
+    const u32 sys = VA(0x804C8898);  // j3dSys: +0 view matrix, +0x44/+0x48 draw buffers, +0x4C draw mode, +0x50 mode mask
     bool any = false;
     for (const Drawable& d : sDraw) any |= d.kind == Kind::J3D;
     if (!any) return;
-    u32 saved[0x50 / 4];
-    for (int i = 0; i < 0x50 / 4; i++) saved[i] = rd32(sys + 4 * i);
+    u32 saved[0x54 / 4];
+    for (int i = 0; i < 0x54 / 4; i++) saved[i] = rd32(sys + 4 * i);
+    // J3DMatPacket::draw only draws when (mode & mask) != 0; the game changes the mask per pass.
+    wr32(sys + 0x50, 0xFFFFFFFF);
     for (const Drawable& d : sDraw) {
         if (d.kind != Kind::J3D) continue;
         gu::call(c, GU_SYM("J3DPSMtx34Copy__FPA4_fPA4_f"), {d.mtx, d.obj + 0x1C});
@@ -919,7 +974,7 @@ void drawJ3Ds(Ctx& c) {
         gu::call(c, GU_SYM("fn_801C0050"), {d.bufOpa});
         gu::call(c, GU_SYM("fn_801C0050"), {d.bufXlu});
     }
-    for (int i = 0; i < 0x50 / 4; i++) wr32(sys + 4 * i, saved[i]);
+    for (int i = 0; i < 0x54 / 4; i++) wr32(sys + 4 * i, saved[i]);
     gu::call(c, GU_SYM("GXSetCurrentMtx"), {0});
 }
 
@@ -944,11 +999,12 @@ void drawAll(Ctx& c, bool ghostLayerOnly) {
 u32 sGhostLayer = 0, sGhostScene = 0;  // ghost layer buffers in the viewer heap (per load)
 
 void drawScene(Ctx& c) {
+    GXSetCullOverrideAurora(sTwoSided ? 1 : 0);
     bool anyMdl = false;
     for (const Drawable& d : sDraw) anyMdl |= d.kind == Kind::Mdl;
     const bool ghost = sGhostFx && sIsGhost && anyMdl && sGhostLayer && sGhostScene;
     if (sWire != Wire::Only) {
-        if (sWire == Wire::Overlay) GX2SetPolygonOffset(1.0f, 1.0f, 1.0f, 1.0f, 0.0f);
+        if (sWire == Wire::Overlay) GX2SetPolygonOffset(8.0f, 2.0f, 8.0f, 2.0f, 0.0f);
         if (ghost) {
             const u32 kLayer = VA(0x804D86B8), kScene = VA(0x804D86BC);
             const u32 savedLayer = rd32(kLayer), savedScene = rd32(kScene);
@@ -986,6 +1042,7 @@ void drawScene(Ctx& c) {
         drawAll(c, false);
         GXSetWireframeAurora(0, col);
     }
+    GXSetCullOverrideAurora(0);
 }
 
 // ---- sweep test (LM_DEV_VIEWER_SWEEP) ---------------------------------------------------
@@ -997,14 +1054,18 @@ void drawScene(Ctx& c) {
 // LM_DEV_VIEWER_SWEEP_EXIT=1 quits when done.
 struct Sweep {
     bool on = false;
-    std::string filter, shots;
+    std::string filter, shotDir;
     int frames = 8;
     std::vector<std::pair<int, int>> list;  // (archive, model)
     size_t pos = 0;
     enum { Idle, Loading, Drawing, Waiting } phase = Idle;
     u32 loadFrame = 0;
     int ok = 0, empty = 0, failed = 0;
-    std::string current;
+    std::string current, result, info;
+    double coverage = 0;
+    bool bindPose = false;  // retrying an animated model in its bind pose
+    bool twoSided = false;  // retrying with back faces (sky domes seen from outside)
+    int shots = 0;          // pictures taken of the current load (new pipelines compile asynchronously)
     bool exitWhenDone = false;
 } sSweep;
 std::atomic<bool> sSweepShotDone{false};
@@ -1019,9 +1080,10 @@ void sweepInit() {
         s = s.substr(0, at);
     }
     sSweep.filter = s;
-    if (const char* d = std::getenv("LM_DEV_VIEWER_SHOTS")) sSweep.shots = d;
+    if (const char* d = std::getenv("LM_DEV_VIEWER_SHOTS")) sSweep.shotDir = d;
     if (const char* st = std::getenv("LM_DEV_VIEWER_SWEEP_START")) sSweep.pos = size_t(std::max(0, std::atoi(st)));
     sSweep.exitWhenDone = std::getenv("LM_DEV_VIEWER_SWEEP_EXIT") != nullptr;
+    efbcopy::requestNamedDump("", 1, nullptr);  // sets the readback buffers up before the first real shot
 }
 
 // ---- host-side selection --------------------------------------------------------------
@@ -1106,6 +1168,7 @@ void openArchive(int idx, const char* keyName, const char* mdlName = nullptr, in
             if (named < 0 && keyName && p.find(keyName) != std::string::npos) named = k;
         }
     sKeySel = named >= 0 ? named : wait >= 0 ? wait : first;
+    if (keyName && std::strcmp(keyName, "-") == 0) sKeySel = -1;  // "|-": no animation
     requestLoad();
 }
 
@@ -1222,7 +1285,7 @@ void requestMap(int map, int room) {
             }
             LoadItem it{Kind::Graph, m->data, {}, {}, true, r.path + ":" + m->path};
             mtxTRS(it.mtx, f.pos, f.dir, f.scale);
-            sPending.bounds.add(graphBounds(it.data, it.mtx));
+            if (room >= 0) sPending.bounds.add(graphBounds(it.data, it.mtx));  // whole maps: framed by the rooms (some furniture is parked far away)
             sPending.items.push_back(std::move(it));
         }
     }
@@ -1244,7 +1307,7 @@ void requestMap(int map, int room) {
         sCam.spin = false;
         sCam.yaw = 0.0f;
         sCam.pitch = -0.45f;
-        const float dist = r * 1.6f + 200.0f;
+        const float dist = r * 2.4f + 200.0f;
         sCam.pos[0] = c[0];
         sCam.pos[1] = c[1] + dist * std::sin(0.45f);
         sCam.pos[2] = c[2] + dist * std::cos(0.45f);
@@ -1259,7 +1322,6 @@ void setOpen(bool open) { sOpen = open; }
 
 void guestFrame(Ctx& c) {
     if (!sOpen) return;
-    if (port::usCodeFeature() != port::Avail::Yes) return;  // USA game addresses
     sGuestFrames++;
     if (sPending.load) {
         loadPending(c);
@@ -1278,8 +1340,8 @@ void guestFrame(Ctx& c) {
     if (sDraw.empty()) {
         if (sSweep.on && sSweep.phase == Sweep::Drawing) sSweep.phase = Sweep::Waiting, sSweepShotDone = false;
         if (sSweep.on && sSweep.phase == Sweep::Waiting && !sSweepShotDone) {
-            log("[viewer-sweep] %4zu FAIL  %s  %s", sSweep.pos, sSweep.current.c_str(), sLoadResult.c_str());
-            sSweep.failed++;
+            sSweep.result = sLoadResult.empty() ? "nothing loaded" : sLoadResult;
+            sSweep.coverage = 0;
             sSweepShotDone = true;
         }
         return;
@@ -1292,33 +1354,27 @@ void guestFrame(Ctx& c) {
     setupCamera(c);
     drawScene(c);
     // Sweep: grab the picture once the model has been drawn for a few frames.
-    if (sSweep.on && sSweep.phase == Sweep::Drawing && sGuestFrames - sSweep.loadFrame + 1 >= u32(sSweep.frames)) {
+    if (sSweep.on && sSweep.phase == Sweep::Drawing && s32(sGuestFrames - sSweep.loadFrame) + 1 >= sSweep.frames) {
         sSweep.phase = Sweep::Waiting;
         sSweepShotDone = false;
         char name[64];
         std::snprintf(name, sizeof(name), "%04zu", sSweep.pos);
         std::string path;
-        if (!sSweep.shots.empty()) {
+        if (!sSweep.shotDir.empty()) {
             std::string tag = sSweep.current;
             for (char& ch : tag)
                 if (ch == '/' || ch == ':' || ch == '\\' || ch == ' ') ch = '_';
-            path = sSweep.shots + "/" + name + tag + ".ppm";
+            path = sSweep.shotDir + "/" + name + tag + ".ppm";
         }
-        const size_t idx = sSweep.pos;
-        const std::string what = sSweep.current, result = sLoadResult;
-        efbcopy::requestNamedDump(path, 4, [idx, what, result](const u8* rgb, u32 w, u32 h) {
+        sSweep.result = sLoadResult;
+        sSweep.info = sLoadedInfo;
+        efbcopy::requestNamedDump(path, 4, [](const u8* rgb, u32 w, u32 h) {
             size_t diff = 0;
             for (size_t i = 0; i < size_t(w) * h; i++) {
                 const u8* p = rgb + i * 3;
                 if (std::abs(p[0] - 0x30) > 2 || std::abs(p[1] - 0x34) > 2 || std::abs(p[2] - 0x3C) > 2) diff++;
             }
-            const double cov = 100.0 * double(diff) / double(size_t(w) * h);
-            const bool ok = result.empty() && diff > 0;
-            log("[viewer-sweep] %4zu %-5s %s  coverage %.2f%%%s%s", idx, !result.empty() ? "FAIL" : ok ? "ok" : "EMPTY",
-                what.c_str(), cov, result.empty() ? "" : "  ", result.c_str());
-            if (!result.empty()) sSweep.failed++;
-            else if (ok) sSweep.ok++;
-            else sSweep.empty++;
+            sSweep.coverage = 100.0 * double(diff) / double(size_t(w) * h);
             sSweepShotDone = true;
         });
     }
@@ -1370,8 +1426,39 @@ void window() {
             sCam.yaw = 0.6f;
         }
         if (sSweep.phase == Sweep::Waiting && sSweepShotDone) {
-            sSweep.pos++;
-            sSweep.phase = Sweep::Idle;
+            const bool drawn = sSweep.result.empty() && sSweep.coverage > 0.0;
+            if (!drawn && sSweep.result.empty() && ++sSweep.shots < 4) {
+                // Aurora compiles new pipelines in the background and skips their draws until
+                // they are ready: look again a little later.
+                sSweep.phase = Sweep::Drawing;
+                sSweep.loadFrame = sGuestFrames + u32(15 - sSweep.frames);
+            } else if (!drawn && sSweep.result.empty() && !sSweep.bindPose && sMdlSel >= 0 && sMdlKinds[sMdlSel] == Kind::Mdl &&
+                sKeySel >= 0) {
+                // Some animations start with parts scaled to nothing: check the bind pose too.
+                sSweep.bindPose = true;
+                sSweep.shots = 0;
+                openArchive(sArchiveSel, "-", nullptr, sMdlSel);
+                sSweep.phase = Sweep::Loading;
+            } else if (!drawn && sSweep.result.empty() && !sSweep.twoSided) {
+                sSweep.twoSided = sTwoSided = true;
+                sSweep.shots = 0;
+                sSweep.phase = Sweep::Drawing;
+                sSweep.loadFrame = sGuestFrames;
+            } else {
+                log("[viewer-sweep] %4zu %-5s %s  coverage %.2f%%  (%s%s%s)%s%s", sSweep.pos,
+                    !sSweep.result.empty() ? "FAIL" : drawn ? "ok" : "EMPTY", sSweep.current.c_str(), sSweep.coverage,
+                    sSweep.info.c_str(), sSweep.bindPose ? "; first animation frames empty" : "",
+                    sSweep.twoSided ? "; only with back faces" : "",
+                    sSweep.result.empty() ? "" : "  ", sSweep.result.c_str());
+                if (!sSweep.result.empty()) sSweep.failed++;
+                else if (drawn) sSweep.ok++;
+                else sSweep.empty++;
+                sSweep.pos++;
+                sSweep.bindPose = false;
+                sSweep.twoSided = sTwoSided = false;
+                sSweep.shots = 0;
+                sSweep.phase = Sweep::Idle;
+            }
         }
         if (sSweep.phase == Sweep::Idle) {
             if (sSweep.pos >= sSweep.list.size()) {
@@ -1478,6 +1565,8 @@ void window() {
             }
             ImGui::EndChild();
             ImGui::Checkbox("Furniture", &sFurniture);
+            ImGui::SliderFloat("Ambient", &sRoomAmbient, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Headlight", &sRoomLight, 0.0f, 1.0f, "%.2f");
             ImGui::SameLine();
             if (ImGui::Button("Load")) requestMap(sMapSel, sRoomSel);
             ImGui::TextDisabled("Fly: right-drag to look, WASD/QE to move,\nShift faster, wheel changes speed.");
@@ -1490,6 +1579,10 @@ void window() {
 
     ImGui::SeparatorText("Display");
     ImGui::Checkbox("Textures", &sTextures);
+    ImGui::SameLine();
+    ImGui::Checkbox("Back faces", &sTwoSided);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Draw both sides of every triangle (no back-face culling),\ne.g. to see sky domes and rooms from outside.");
     if (sIsGhost) {
         ImGui::SameLine();
         ImGui::Checkbox("Ghost effects", &sGhostFx);
