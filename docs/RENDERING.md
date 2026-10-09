@@ -319,12 +319,23 @@ EFB only and all on produce frame-identical scenes, so the same dump frame can b
 RTX 3090 Ti, 5120x3840 internal (resolution scale 8), Original 30, nursery gameplay;
 `LM_ACCURACY_AB=10` alternates each configuration with everything off and GPU utilization is
 sampled with nvidia-smi (other test instances shared the GPU, so these are averages over ~5
-on/off phase pairs):
+on/off phase pairs). **Provisional: measured under load** (several other game instances and
+builds were running on the machine); to re-measure on an idle machine.
 
-PERF_TABLE
+| Configuration vs all off | Median paired GPU-utilization delta | Paired deltas (pts) | Frame rate on / off |
+|---|---|---|---|
+| Integer TEV only | -2.3 pts | -6.7, +6.7, -2.6, -2.3, +3.9 | 29.9 / 29.8 |
+| EFB color depth only | -0.3 pts | +16.0, -21.7, +0.5, -14.4, -0.3 | 24.4 / 27.2 (machine load, both phases) |
+| Display copy filter only | -6.3 pts | +2.0, -6.3, -8.4, -6.8, +1.6 | 29.9 / 29.9 |
+| All on | +6.9 pts | +8.4, -2.4, -3.3, +6.9, +7.1 | 29.8 / 29.8 |
 
-At normal resolutions none of the toggles changes the frame rate (60 fps capped in all A/B
-runs at 2880p with interpolation).
+The spread between pairs (up to +-20 points) is far larger than any toggle's effect, so the
+honest reading is: each toggle's cost is below the noise floor of this setup. Even at
+5120x3840 every configuration held the game's 30 fps in both phases, and an earlier run at
+2880p with uncapped interpolation stayed at 60 fps with and without the toggles. Expected
+costs from the implementation: integer TEV and EFB depth are a few extra ALU ops per pixel
+(no extra passes; changing either rebuilds pipelines once), the copy filter is one extra
+full-screen pass with three texture taps.
 
 Remaining: blended draws are not quantized after blending; copy filter not applied to texture
 copies (GXCopyTex); whether hardware normalizes transformed normals; fog range LUT with
