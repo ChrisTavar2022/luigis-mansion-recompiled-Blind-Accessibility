@@ -62,18 +62,18 @@ const MapInfo kMaps[] = {
     {13, "Graveyard (Bogmire)", true, true, nullptr},
 };
 
-// map2 jmp/characterinfo "luige" entries (appear_point -> room_no, position).
+// map2 jmp/characterinfo "luige" entries (appear_point -> room_no); names as the game shows them on arrival.
 const AppearPoint kAppear[] = {
     {0, 2, "Foyer (new game / default)"},
     {6, 2, "Foyer, by the front door"},
-    {2, 16, "1F, west side"},
+    {2, 16, "Graveyard (outside the 1F west wing)"},
     {9, 70, "Secret Altar (basement)"},
-    {1, 24, "2F, west side"},
-    {7, 36, "2F, east side"},
-    {4, 56, "3F, centre"},
-    {5, 59, "3F, north"},
-    {8, 48, "3F, west side"},
-    {3, 60, "Roof level"},
+    {1, 24, "Nursery (2F)"},
+    {7, 36, "Sealed Room (2F)"},
+    {4, 56, "Clockwork Room (3F)"},
+    {5, 59, "Balcony (3F)"},
+    {8, 48, "3F west hallway"},
+    {3, 60, "Roof"},
 };
 
 std::atomic<int> sWarpMap{-1};
