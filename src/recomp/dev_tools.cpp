@@ -23,6 +23,10 @@
 #include <string>
 #include <vector>
 
+namespace recomp {
+void unusedModelsMapSetup();  // unused_models.cpp: unused model variants chosen per map
+}
+
 namespace recomp::dev {
 namespace {
 
@@ -149,6 +153,7 @@ void noteLuigi(unsigned guestActor) {
 // loads map n instead of the mansion the first time map 2 loads; LM_START_APPEAR=<p> picks the
 // mansion appear point.
 HLE(fn_8000C188) {
+    recomp::unusedModelsMapSetup();
     static const int sMap = envInt("LM_START_MAP", -1);
     static const int sAppear = envInt("LM_START_APPEAR", 0);
     static bool sDone = false;

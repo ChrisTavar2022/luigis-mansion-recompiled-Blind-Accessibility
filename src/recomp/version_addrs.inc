@@ -7,9 +7,14 @@
     {0x80058290u, 0x8005ACD8u},  // fn_800581E8+0xa8
     {0x8021DB68u, 0x80222CA0u},  // pointed at by sSceneTable+0x8 (sSceneTable+0x8 (object moved by +0x50c8))
     {0x8021DBD8u, 0x80222D10u},  // pointed at by sSceneTable+0x10 (sSceneTable+0x10 (object moved by +0x50c8))
+    {0x803054A8u, 0x8030A3B0u},  // lbl_80305484+0x24 (object moved by +0x4f08)
+    {0x8033B590u, 0x8032C5D8u},  // lbl_8033B590: 5 matching reference(s)
+    {0x8033BA38u, 0x8032CA80u},  // lbl_8033B590+0x4a8 (object moved by -0xefb8)
+    {0x80389B68u, 0x8037ACA0u},  // lbl_80389B68: 23 matching reference(s)
     {0x803A3AE4u, 0x80390DBCu},  // lbl_803A3AE0+0x4: 1 matching reference(s)
     {0x803A3C98u, 0x80390FF8u},  // lbl_803A3C98: 36 matching reference(s)
     {0x803A3CA0u, 0x80391000u},  // lbl_803A3CA0: 16 matching reference(s)
+    {0x803CE7D0u, 0x803BBB10u},  // lbl_803CE7D0: 8 matching reference(s)
     {0x803D2D40u, 0x803C0300u},  // lbl_803D2D40: 9 matching reference(s)
     {0x803D48A0u, 0x803C1E60u},  // lbl_803D48A0: 19 matching reference(s)
     {0x804CFF98u, 0x804BD660u},  // sCurScene: 5 matching reference(s)
@@ -30,4 +35,3 @@
     {0x804D94F0u, 0x804C6BE0u},  // sSystemHeap__7JKRHeap: 7 matching reference(s)
     {0x804D94F4u, 0x804C6BE4u},  // sCurrentHeap__7JKRHeap: 30 matching reference(s)
     {0x804D94F8u, 0x804C6BE8u},  // sRootHeap__7JKRHeap: 8 matching reference(s)
-    {0x804D99ACu, 0x804C7100u},  // literal c4610000 of the matched function
