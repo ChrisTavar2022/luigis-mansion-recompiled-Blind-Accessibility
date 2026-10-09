@@ -420,6 +420,12 @@ void unusedContentTab() {
         item("Star door (Twins' room)", e.starDoor, "next map load");
         item("Game Boy Horror map: full Luigi model", e.betaMapLuigi, "next map load");
         item("Portrificationizer: each ghost's own model", e.unusedPortraitModels, nullptr);
+        item("Early Luigi model", e.earlyLuigi, "next map load");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Luigi uses the unused early model left on the disc (/model/luige.szp): slightly\n"
+                              "different face, hair and clothes. Same skeleton, so all retail animations, the\n"
+                              "Poltergust, flashlight and Game Boy Horror work as usual. Also used by the opening\n"
+                              "and E. Gadd cutscene Luigis.");
         sDirty |= ImGui::Checkbox("Air and water nozzles", &e.airWaterNozzles);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("The Poltergust's unused nozzle models: the red wpair nozzle when blowing air\n"

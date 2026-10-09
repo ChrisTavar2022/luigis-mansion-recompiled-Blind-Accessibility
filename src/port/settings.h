@@ -75,6 +75,7 @@ struct EnhancementSettings {
     bool starDoor = false;              // unused star door (type 08) on the Twins' room
     bool betaMapLuigi = false;          // unused full Luigi model on the Game Boy Horror map
     bool unusedPortraitModels = false;  // each ghost's own model in the Portrificationizer scene
+    bool earlyLuigi = false;            // unused early Luigi model /model/luige.szp (src/recomp/early_luigi.cpp)
     bool airWaterNozzles = false;       // unused wpair/wpwater Poltergust nozzles (src/recomp/nozzles.cpp)
     bool earlyPoltergust = false;       // E3 2001 Poltergust body /model/vbody.szp (src/recomp/unused_models.cpp)
     bool earlyBogmire = false;          // early Bogmire model /model/shadow.szp (src/recomp/unused_models.cpp)

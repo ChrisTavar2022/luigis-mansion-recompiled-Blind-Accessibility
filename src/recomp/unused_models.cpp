@@ -151,10 +151,13 @@ bool prepare(Ctx& c, ModelSwap& s) {
 
 }  // namespace
 
+void earlyLuigiModelLoaded(Ctx& c, u32 entry);  // early_luigi.cpp
+
 // Model archive setup (archive, registry entry), USA code only.
 HLE(fn_80061C94) {
     const u32 entry = c.r[4];
     callOriginal(c, "fn_80061C94");
+    earlyLuigiModelLoaded(c, entry);
     if (port::usCodeFeature() != port::Avail::Yes || entry < kModelRegistry) return;
     if ((entry - kModelRegistry) % 0x34 || !rd32(entry + 8)) return;  // not a finished load
     const u32 model = (entry - kModelRegistry) / 0x34;

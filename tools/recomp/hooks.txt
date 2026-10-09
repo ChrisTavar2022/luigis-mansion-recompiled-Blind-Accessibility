@@ -94,7 +94,8 @@ getResSize__10JKRArchiveCFPCv
 # selector, which re-types the nozzle actor.
 fn_800B36B8
 
-# Unused model swaps (src/recomp/unused_models.cpp): model archive setup (registry entry).
+# Unused model swaps (src/recomp/unused_models.cpp, early_luigi.cpp): model archive setup
+# (registry entry); unused models / the early Luigi .mdl are swapped in after it.
 fn_80061C94
 
 # Developer tools (src/recomp/dev_tools.cpp, docs/UNUSED_CONTENT.md): map warps through the
