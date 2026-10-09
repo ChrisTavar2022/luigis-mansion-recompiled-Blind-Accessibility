@@ -25,7 +25,10 @@ using s64 = __INT64_TYPE__;
 
 constexpr u32 kMem1Size = 0x01800000;
 constexpr u32 kLockedCacheOffset = 0x01800000;  // host offset of the 0xE0000000 locked cache
-constexpr u32 kHostMemSize = 0x02000000;
+// Host window for guest addresses (masked): MEM1 (24 MiB), the locked cache, then memory that
+// only host tools use (the model viewer's heap at 0x81810000+). Must stay a power of two.
+constexpr u32 kHostMemSize = 0x04000000;
+constexpr u32 kHostMemMask = kHostMemSize - 1;
 
 inline u32 bswap32(u32 v) { return __builtin_bswap32(v); }
 inline u16 bswap16(u16 v) { return __builtin_bswap16(v); }
@@ -38,7 +41,7 @@ extern bool g_watchOn;      // LM_WATCH: report guest stores to an address range
 void watch_store(u32 a, u32 v, int size);
 
 inline u8* hostp(u32 a) {
-    return g_mem + ((a >> 28) == 0xE ? (kLockedCacheOffset | (a & 0x3FFF)) : (a & 0x01FFFFFF));
+    return g_mem + ((a >> 28) == 0xE ? (kLockedCacheOffset | (a & 0x3FFF)) : (a & kHostMemMask));
 }
 inline bool is_mmio(u32 a) { return (a >> 24) == 0xCC; }
 
@@ -126,7 +129,7 @@ struct SymEntry {
 
 // The recompiled game: tables emitted by the recompiler (func_table.cpp). Linked into
 // lmrecomp directly, or exported by the game module DLL (module_abi.h).
-constexpr u32 kModuleAbiVersion = 2;
+constexpr u32 kModuleAbiVersion = 3;
 constexpr u32 kMaxPatches = 64;
 struct GameModule {
     u32 abiVersion;

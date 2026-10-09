@@ -114,16 +114,16 @@ void initWatch() {
 }
 
 void watch_store(u32 a, u32 v, int size) {
-    const u32 phys = a & 0x01FFFFFF;
-    if (phys + size <= (sWatchLo & 0x01FFFFFF) || phys >= (sWatchHi & 0x01FFFFFF)) return;
+    const u32 phys = a & kHostMemMask;
+    if (phys + size <= (sWatchLo & kHostMemMask) || phys >= (sWatchHi & kHostMemMask)) return;
     const u32 fn = tRingPos ? tRing[(tRingPos - 1) % kRingSize] : 0;
     log("[watch] store%d %08X = %08X in %08X", size * 8, a, v, fn);
 }
 
 void watchRange(u32 a, u32 len, const char* what) {
     if (!g_watchOn) return;
-    const u32 lo = a & 0x01FFFFFF, hi = lo + len;
-    if (hi <= (sWatchLo & 0x01FFFFFF) || lo >= (sWatchHi & 0x01FFFFFF)) return;
+    const u32 lo = a & kHostMemMask, hi = lo + len;
+    if (hi <= (sWatchLo & kHostMemMask) || lo >= (sWatchHi & kHostMemMask)) return;
     log("[watch] %s writes %08X+%X", what, a, len);
 }
 

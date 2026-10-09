@@ -276,7 +276,7 @@ u8 sTevMap[16] = {};             // GXSetTevOrder map per stage (0xFF: none)
 u32 sNumTevStages = 1;
 std::vector<u32> sCopyDests;     // EFB copy destinations (physical), most recent last
 
-u32 phys(u32 a) { return a & 0x01FFFFFF; }
+u32 phys(u32 a) { return a & kHostMemMask; }
 bool isCopyDest(u32 image) { return std::find(sCopyDests.begin(), sCopyDests.end(), image) != sCopyDests.end(); }
 
 // True if any active TEV stage samples a texture that is not an EFB copy.

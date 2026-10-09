@@ -15,6 +15,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -29,14 +30,68 @@ int envInt(const char* name, int def) {
 const int sEnvEnabled = envInt("LM_EFB_RAM", -1);
 const bool sLog = std::getenv("LM_COPY_LOG") != nullptr;
 
+// A named one-off dump (requestNamedDump): written by the next guest frame.
+struct Named {
+    std::string path;
+    int shrink = 1;
+    std::function<void(const u8* rgb, u32 w, u32 h)> done;
+};
+
 struct Dump {
     std::string dir;
     u32 first = 0, last = 0, step = 1;
     std::vector<u8> buf[4];  // ring of GX RGBA8 copy targets (host memory, outside MEM1)
     u32 frameOf[4] = {};
+    Named named[4];          // per buffer: a named request instead of a frame number
     u32 next = 0;
-    bool active = false;
+    bool active = false;     // LM_FRAME_DUMP range
+    bool buffers = false;
+    bool namedPending = false;
+    Named pending;
 } sDump;
+
+void ensureBuffers() {
+    if (sDump.buffers) return;
+    sDump.buffers = true;
+    for (auto& b : sDump.buf) {
+        b.resize(640 * 480 * 4);
+        aurora_efb_ram_watch(b.data(), u32(b.size()));
+    }
+}
+
+void writeNamed(const u8* gx, u32 w, u32 h, Named& n) {
+    std::vector<u8> rgb(size_t(w) * h * 3);
+    const u32 tilesPerRow = (w + 3) / 4;
+    for (u32 y = 0; y < h; y++)
+        for (u32 x = 0; x < w; x++) {
+            const u32 tile = (y / 4) * tilesPerRow + x / 4;
+            const u32 t = (y % 4) * 4 + x % 4;
+            const u8* p = gx + tile * 64 + t * 2;
+            u8* o = &rgb[(size_t(y) * w + x) * 3];
+            o[0] = p[1];
+            o[1] = p[32];
+            o[2] = p[33];
+        }
+    if (n.done) n.done(rgb.data(), w, h);
+    if (!n.path.empty()) {
+        const u32 k = n.shrink > 1 ? u32(n.shrink) : 1u, ow = w / k, oh = h / k;
+        std::vector<u8> out(size_t(ow) * oh * 3);
+        for (u32 y = 0; y < oh; y++)
+            for (u32 x = 0; x < ow; x++)
+                for (int c = 0; c < 3; c++) {
+                    u32 sum = 0;
+                    for (u32 j = 0; j < k; j++)
+                        for (u32 i = 0; i < k; i++) sum += rgb[(size_t(y * k + j) * w + x * k + i) * 3 + c];
+                    out[(size_t(y) * ow + x) * 3 + c] = u8(sum / (k * k));
+                }
+        if (FILE* f = std::fopen(n.path.c_str(), "wb")) {
+            std::fprintf(f, "P6\n%u %u\n255\n", ow, oh);
+            std::fwrite(out.data(), 1, out.size(), f);
+            std::fclose(f);
+        }
+    }
+    n = {};
+}
 
 void writePpm(const u8* gx, u32 w, u32 h, u32 frameNo) {
     std::vector<u8> rgb(size_t(w) * h * 3);
@@ -61,9 +116,12 @@ void writePpm(const u8* gx, u32 w, u32 h, u32 frameNo) {
 }
 
 void onWriteback(const void* dest, u32, u32, u32 w, u32 h, void*) {
-    if (!sDump.active) return;
-    for (int i = 0; i < 4; i++)
-        if (dest == sDump.buf[i].data()) writePpm(sDump.buf[i].data(), w, h, sDump.frameOf[i]);
+    if (!sDump.buffers) return;
+    for (int i = 0; i < 4; i++) {
+        if (dest != sDump.buf[i].data()) continue;
+        if (sDump.named[i].done || !sDump.named[i].path.empty()) writeNamed(sDump.buf[i].data(), w, h, sDump.named[i]);
+        else if (sDump.active) writePpm(sDump.buf[i].data(), w, h, sDump.frameOf[i]);
+    }
 }
 
 bool init() {
@@ -79,10 +137,7 @@ bool init() {
                 sDump.last = b;
                 sDump.step = st ? st : 1;
                 sDump.active = true;
-                for (auto& b : sDump.buf) {
-                    b.resize(640 * 480 * 4);
-                    aurora_efb_ram_watch(b.data(), u32(b.size()));
-                }
+                ensureBuffers();
                 log("[efb] dumping guest frames %u..%u (every %u) to %s", a, b, sDump.step, sDump.dir.c_str());
             }
         }
@@ -117,7 +172,20 @@ void cpuRead(u32 addr, u32 size) {
     if (size) aurora_efb_ram_cpu_read(hostp(addr), size);
 }
 
+void requestNamedDump(const std::string& path, int shrink, std::function<void(const u8* rgb, u32 w, u32 h)> done) {
+    ensureBuffers();
+    sDump.pending = {path, shrink, std::move(done)};
+    sDump.namedPending = true;
+}
+
 void* dumpTarget(u32 frameNo) {
+    if (sDump.namedPending) {
+        sDump.namedPending = false;
+        const u32 i = sDump.next++ % 4;
+        sDump.named[i] = std::move(sDump.pending);
+        sDump.pending = {};
+        return sDump.buf[i].data();
+    }
     if (!sDump.active || frameNo < sDump.first || frameNo > sDump.last || (frameNo - sDump.first) % sDump.step) return nullptr;
     // Readbacks land a frame or two later: rotate through the buffers.
     const u32 i = sDump.next++ % 4;
