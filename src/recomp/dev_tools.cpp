@@ -177,6 +177,7 @@ HLE(fn_8000C188) {
     sSuppressed.clear();
     sVisit = sArrivalPending;  // reached by a warp: its entry events are held back
     sArrivalPending = false;
+    rooms::onMapSetup();
     callOriginal(c, "fn_8000C188");
 }
 
@@ -310,11 +311,14 @@ HLE(LMChangeFrameBuffer__Fv) {
     ++sFrames;
     for (const auto& w : sEnvWarps)
         if (u32(w[0]) == sFrames) requestWarp(w[1], w[2]);
-    // Test aid: LM_DEV_ROOM=<leftover room index>@<frame> starts a leftover-room visit.
+    // Test aid: LM_DEV_ROOM=<leftover room index>@<frame>,... starts leftover-room visits.
     static const char* sEnvRoom = std::getenv("LM_DEV_ROOM");
-    if (sEnvRoom) {
+    for (const char* p = sEnvRoom; p && *p;) {
         int idx = 0, frame = 0;
-        if (std::sscanf(sEnvRoom, "%d@%d", &idx, &frame) == 2 && u32(frame) == sFrames) rooms::visit(idx);
+        if (std::sscanf(p, "%d@%d", &idx, &frame) == 2 && u32(frame) == sFrames) rooms::visit(idx);
+        const char* comma = std::strchr(p, ',');
+        if (!comma) break;
+        p = comma + 1;
     }
 
     Status s;
@@ -328,7 +332,7 @@ HLE(LMChangeFrameBuffer__Fv) {
             for (int i = 0; i < 3; i++) s.pos[i] = gu::rdf(luigi + 0x44 + 4 * i);
     }
     sStatus = s;
-    rooms::onFrame(s.inGame, s.map, s.room);
+    rooms::onFrame(c, s.inGame, sLuigi != 0, s.map, s.room);
     // Test aid: LM_DEV_STATUS_LOG=<n> logs the warp-relevant state every n frames (scene, map,
     // room, Luigi's position, event script cursor, HUD-off and Luigi-stopped flags).
     static const int sStatusLog = envInt("LM_DEV_STATUS_LOG", 0);
@@ -510,6 +514,12 @@ void debugSection() {
     if (dirty) port::saveSettings();
 
     ImGui::SeparatorText("Visit area");
+    if (ImGui::Checkbox("Skip entry cutscenes", &e.dbgWarpSkipEvents)) port::saveSettings();
+    helpMarker("A warp does not start the cutscene or event the destination plays on arrival\n"
+               "(E. Gadd in the lab and the Portrificationizer room, the training explanation,\n"
+               "boss intros, King Boo at the Secret Altar), so Luigi can walk around freely.\n"
+               "Events started later by walking somewhere, talking (A) or story flags play as usual.\n"
+               "Normal play is unchanged.");
     mapTable("allmaps", false);
     if (ImGui::TreeNode("Mansion entry points")) {
         ImGui::BeginDisabled(!sStatus.inGame);
