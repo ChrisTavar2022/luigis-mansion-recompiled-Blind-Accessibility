@@ -257,6 +257,81 @@ What the game itself never finished:
   in the code gives the dedicated nozzles different gameplay.
 - Luigi's other character types (1/0xB3) have 0xB8/0xB9 entries too; the port leaves them alone.
 
+### Early Luigi model ("Early Luigi model")
+
+The disc root's `/model/luige.szp` (TCRF: the early Luigi) is never loaded. The model
+registry `lbl_8034E46C` (0x34 per model) has `/model/luige.szp` as entry 0, but map setup
+(`fn_8006227C`) first asks the resident game archive for the same name with `.arc`
+(`game_usa.szp` → `model/luige.arc`) and reads the disc file only when that is missing.
+`fn_80061C94` then fills the entry from the archive: every `/key`, `/sls`, `/slk` and `/txp`
+file (keys are stored by archive order, 0x8D slots), the per-model tables of `fn_80187B24`,
+and last the `/model` `.mdl`, relocated by `fn_80061B40` into entry +8.
+
+Comparison (archives extracted from the user's disc):
+- Skeleton: identical. 65 joints, 55 envelopes, the same node graph, inverse bind matrices
+  and skin weights, so every retail animation drives the early mesh unchanged.
+- Animations: early 121 keys, retail 141, 87 names in common (63 byte-identical). Early-only:
+  squat set (`squ_*`, `k_squ_*`), `l_tdm01-07`/`l_sdm01-04` (the lab cutscene keys that
+  retail moved to `dluige01`/`dluige03`), `turi09_1-3`/`turi11`/`turi12` (hose-pull
+  variants), `wait2`, `walk1`, `walk2`, `b_kam_wt`, `bibi_kam`, `bibi_set`, `ldr_wt_e`.
+  Retail-only: the `ac_*` actions (knock, call, punch, ...), burn/ice/poison/bite reactions,
+  elevator, `get_*`, `lookheat`, `dmydr_*` and others. The game indexes keys by archive
+  order, so the early key set cannot be swapped in; the retail set is kept.
+- Mesh: same vertex counts per type except texture coordinates (0x5FA vs 0x5F6); 19
+  materials vs 16, 20 textures vs 21, 26 samplers vs 30. Visible differences: the face
+  (bigger, rounder nose; fuller lower face and chin), ears, the hair at the back and its
+  texture (texture 4), cap shape (`build/early_luigi_viewer_heads.png`).
+- Eyes: the `.txp` texture patterns (blinks, expressions) store *sampler* indices. Retail
+  eye textures 10, 14-18 exist pixel-identical in the early model under other indices; retail
+  19 (looking eye, used by `lookheat`/`ac_call`/`doku_lp`) and 20 (the dark "poisoned" eye of
+  `doku_*`) do not exist (`build/early_luigi_eye_textures.png`). The early model's own extra
+  eye (its texture 19) is pixel-identical to retail 18.
+
+Port (`src/recomp/early_luigi.cpp`, hook on `fn_80061C94`, US code only): the original runs
+unchanged; then, if entry +8 is a relocated `.mdl` with exactly the early model's skeleton
+(counts, node graph, inverse binds), +8 is pointed at an early copy built for it. The copy
+is the early `.mdl` (read once from the disc with the host RARC/Yay0 reader, `rarc.h`) with
+a new sampler table laid out like the target model's: each target sampler points at the
+early texture with identical pixels, or at a copy of the target's texture appended to the
+early file (retail 19 and 20, and the unused retail 4); the early materials are re-pointed
+at matching entries, so the retail `.txp` files show the same eyes. The game's own
+`fn_80061B40` relocates it. Copies live in host-backed memory above MEM1
+(0x81F00000-0x81FF0000, taken from the end of the model viewer's heap), one per target
+layout. Everything else (keys, `.txp`, `.slk`/`.sls`, the per-model tables) is retail.
+Takes effect on the next map load (the registry is rebuilt at every map setup); with the
+option off the hook only calls the original. Test aid: `LM_EARLY_LUIGI=1`.
+
+Which Luigis change:
+- Gameplay Luigi (registry entry 0) in every map, including the in-engine event scenes in
+  the mansion and the lab that use him.
+- `dluige03` (the lab cutscene Luigi with the Poltergust, map 4/1 events) and `dluige01`:
+  same skeleton and bind pose, loaded through the same registry; each gets its own copy
+  (`dluige03` has 22 textures, so texture 21 is appended too). Verified for `dluige03`;
+  `dluige01` was not reached in testing but takes the same path.
+- Not changed: `dluige02` (ending; same graph but different inverse binds) and the demo
+  scenes under `/Ajioka/ADemo` (opening forest/gate: `opwf_luigi.mdl`/`entergate.mdl`, a
+  122-joint rig; ending: `db_luigi.mdl`, other bind pose). Those are separate models built
+  for their own animations, not variants of `luige.mdl`, so the early mesh cannot drive them.
+
+Verified (native guest frames from `LM_FRAME_DUMP`, Nursery with
+`LM_TEST_STATE=poltergust LM_START_MAP=2 LM_START_APPEAR=1`, same input script with the option
+on and off; lab with `LM_START_MAP=4`):
+- `build/early_luigi_nursery.png`: front (eyes, blink, scared mouth animation), side and
+  three-quarter views while walking with the flashlight; backpack, hose, nozzle, flashlight
+  and hands line up as in retail.
+- `build/early_luigi_vacuum.png`: vacuuming (mode 1, `LM_NOZZLE_DUMP=1`), side view.
+- `build/early_luigi_lab_cutscene.png`: E. Gadd's lab event scenes (`dluige03` and the
+  gameplay model).
+- `build/early_luigi_viewer_body.png`, `..._heads.png`: model viewer, early
+  (`LM_DEV_VIEWER=/model/luige.szp|wait0`) vs retail (`/Game/game_usa.szp#luige|wait0`),
+  front and side, with the new test aid `LM_DEV_VIEWER_CAM=<yaw>,<pitch>,<distance>` (fixed
+  camera, no spin).
+- Game Boy Horror map/screen opens normally. The self-shadow uses whatever model Luigi draws,
+  so it follows the early mesh (no artefacts seen; not inspected closely).
+
+Not checked in game: the retail-only expressions that use the appended eye textures
+(poisoned, `lookheat`) and the burn/ice reactions.
+
 ## Other leftovers noticed
 
 - GBH screen mode 1 is the E3 clock (exposed as a toggle); there is no separate gauge screen.
@@ -456,4 +531,8 @@ such as Chauncey (`/model/baby.szp`) are complete. "(no animation)" uses a key w
 channel at its default, which collapses skinned models.
 
 Test aid: `LM_DEV_VIEWER=<archive>[#<model name part>][|<key name part>]`, e.g.
-`/model/baby.szp|akubi` or `/Game/game_usa.szp#luige|wait`.
+`/model/baby.szp|akubi` or `/Game/game_usa.szp#luige|wait`; `LM_DEV_VIEWER_CAM=<yaw>,<pitch>,<distance>`
+fixes the camera (no spin), e.g. `0,0.1,0.8` front, `1.5708,0.1,0.8` side. From Git Bash, set
+`MSYS2_ENV_CONV_EXCL=LM_DEV_VIEWER` (or launch from PowerShell), otherwise the leading `/` is
+rewritten into a Windows path. The viewer heap ends at 0x81F00000 (the early Luigi copies use
+the 960 KiB after it).
