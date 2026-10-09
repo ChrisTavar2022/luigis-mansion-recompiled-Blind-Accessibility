@@ -139,6 +139,7 @@ std::vector<Field> fields() {
         num("debug", "hud_test", e.dbgHudTest),
         flag("debug", "font_test", e.dbgFontTest),
         flag("debug", "font_test_latin", e.dbgFontTestLatin),
+        flag("debug", "warp_skip_events", e.dbgWarpSkipEvents),
     };
 }
 

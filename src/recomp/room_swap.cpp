@@ -2,12 +2,14 @@
 #include "recomp/room_swap.h"
 
 #include "recomp/dev_tools.h"
+#include "recomp/guest_util.h"
 #include "recomp/hle.h"
 
 #include <dolphin/dvd.h>
 
 #include <atomic>
 #include <bit>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -18,25 +20,34 @@ namespace {
 
 // Rooms are matched by the retail file the game loads for them (map descriptors lbl_802FF218:
 // map 1's single room is /Iwamoto/map1/hakase.arc, map 4's /Iwamoto/map4/h_02.bin, map 2's
-// rooms /Iwamoto/map2/room_NN.arc with the model in "room.bin").
+// rooms /Iwamoto/map2/room_NN.arc with the model in "room.bin"). Spawn points are floor
+// positions inside the room (world coordinates, checked in game with the F3 overlay).
+// Map 2's descriptor (lbl_8030377C +0xC, lbl_80301360) lists alternate room models the room
+// loader (fn_80011FDC) uses when a room's slot +0x45 selects one: room 28 -> room_28A.arc
+// (switched by game code, fn_80037550 / fn_800376A4) and room 1 -> room01A.bin, which nothing
+// ever selects. The visit selects it with the game's own fn_800129FC(room, 1).
 const LeftoverRoom kRooms[] = {
     {"Laboratory, E3 2001 version", "extra stand for a robotic arm; /h_01.bin/1.3/Fri Apr 27 2001", 1, -1, {},
-     "/Iwamoto/map1/hakase.arc", "room.bin", "/Iwamoto/map1/h_01.bin", nullptr},
+     "/Iwamoto/map1/hakase.arc", "room.bin", "/Iwamoto/map1/h_01.bin", nullptr, 0},
     {"Portrificationizer room, pre-E3", "door bump; dirt ball where the Gallery door is", 4, -1, {},
-     "/Iwamoto/map4/h_02.bin", nullptr, "/Iwamoto/map1/h_02.bin", nullptr},
+     "/Iwamoto/map4/h_02.bin", nullptr, "/Iwamoto/map1/h_02.bin", nullptr, 0},
     {"Breaker room, older version", "door on the left wall; retail collision and door kept", 2, 67,
-     {3350.0f, -550.0f, -1810.0f}, "/Iwamoto/map2/room_67.arc", "room.bin", "/Iwamoto/map2/room_67.arc", "b1_c_67.bin"},
+     {3350.0f, -550.0f, -1810.0f}, "/Iwamoto/map2/room_67.arc", "room.bin", "/Iwamoto/map2/room_67.arc", "b1_c_67.bin", 0},
     {"1F hallway, duplicate", "room_07.arc \"room..bin\"", 2, 7, {-1250.0f, 0.0f, -5000.0f},
-     "/Iwamoto/map2/room_07.arc", "room.bin", "/Iwamoto/map2/room_07.arc", "room..bin"},
+     "/Iwamoto/map2/room_07.arc", "room.bin", "/Iwamoto/map2/room_07.arc", "room..bin", 0},
     {"Foyer hallway (2F), duplicate", "better-aligned beam UVs; room_30.arc \"room..bin\"", 2, 30,
-     {500.0f, 550.0f, -1100.0f}, "/Iwamoto/map2/room_30.arc", "room.bin", "/Iwamoto/map2/room_30.arc", "room..bin"},
+     {250.0f, 550.0f, -1000.0f}, "/Iwamoto/map2/room_30.arc", "room.bin", "/Iwamoto/map2/room_30.arc", "room..bin", 0},
+    {"Hidden Room, bare alternate model (room01A)", "map 2's unused alternate model for room 1: no curtains, rug or portraits; furniture not drawn", 2, 1,
+     {-1800.0f, 0.0f, 100.0f}, nullptr, nullptr, nullptr, nullptr, 1},
 };
 
 constexpr s32 kEntryBase = 0x48000000;  // virtual FST entries (hidden_mansion.cpp uses 0x40000000)
 
 std::mutex sM;
 std::atomic<int> sActive{-1};
-bool sArrived = false, sInRoom = false;
+bool sArrived = false;
+int sStartRoom = -1;  // the game's current-room id where Luigi was placed (not the archive index)
+bool sAltShown = false;  // alternate model selected (alternate visits)
 std::vector<u8> sBytes;  // served file for the active swap
 int sBuilt = -1;
 bool sSpawnPending = false;
@@ -83,13 +94,24 @@ std::vector<u8> member(const std::vector<u8>& arc, const char* name) {
     return {arc.begin() + off, arc.begin() + off + size};
 }
 
-// The archive with `name`'s data replaced: the new data is appended (32-byte aligned) and the
-// entry, file size, data size and main-RAM size are updated.
+// The archive with `name`'s data replaced. Data that fits in the member's own space is written
+// there, so the archive keeps its size: map 2 streams room archives through fixed-size buffers,
+// and a grown archive overruns them (the breaker room's archive + the old model appended came
+// to 485 KB and the room's node tree was overwritten: endless recursion in the room draw
+// fn_80015844). Otherwise the new data is appended (32-byte aligned) and the entry, file size,
+// data size and main-RAM size are updated.
 std::vector<u8> replaceMember(std::vector<u8> arc, const char* name, const std::vector<u8>& data) {
     const u32 e = findEntry(arc, name);
     if (!e) return {};
-    arc.resize((arc.size() + 31) & ~size_t(31), 0);
     const u32 dataStart = be32(&arc[0x0C]) + 0x20;
+    const u32 oldOff = dataStart + be32(&arc[e + 8]), oldSize = be32(&arc[e + 12]);
+    if (data.size() <= oldSize && size_t(oldOff) + oldSize <= arc.size()) {
+        std::memcpy(&arc[oldOff], data.data(), data.size());
+        std::memset(&arc[oldOff + data.size()], 0, oldSize - data.size());
+        put32(&arc[e + 12], u32(data.size()));
+        return arc;
+    }
+    arc.resize((arc.size() + 31) & ~size_t(31), 0);
     const u32 at = u32(arc.size());
     arc.insert(arc.end(), data.begin(), data.end());
     arc.resize((arc.size() + 31) & ~size_t(31), 0);
@@ -125,6 +147,17 @@ void end(const char* why) {
     if (i >= 0) log("[rooms] %s: back to the retail model (%s)", kRooms[i].name, why);
 }
 
+// fn_800129FC(room, n): selects alternate model n of a map-2 room (0 = retail) and reloads it
+// if it is loaded.
+// Test aid: LM_DEV_ROOM_RETAIL=1 makes visits place Luigi without swapping the model (for
+// comparing the leftover with the retail room).
+const bool sRetailOnly = [] {
+    const char* v = std::getenv("LM_DEV_ROOM_RETAIL");
+    return v && *v == '1';
+}();
+
+void selectAlternate(Ctx& c, int room, int alt) { gu::call(c, GU_SYM("fn_800129FC"), {u32(room), u32(alt)}); }
+
 }  // namespace
 
 const LeftoverRoom* list(int* count) {
@@ -138,7 +171,8 @@ void visit(int index) {
     dev::requestWarp(r.map, 0);  // ends any other visit first
     {
         std::lock_guard lk(sM);
-        sArrived = sInRoom = false;
+        sArrived = sAltShown = false;
+        sStartRoom = -1;
         sSpawnPending = r.spawn[0] != 0.0f || r.spawn[1] != 0.0f || r.spawn[2] != 0.0f;
         std::memcpy(sSpawn, r.spawn, sizeof(sSpawn));
     }
@@ -154,37 +188,43 @@ void cancel() {
 
 int active() { return sActive.load(); }
 
-void onFrame(bool inGame, int map, int room) {
-    const int i = sActive.load();
-    if (i < 0 || !inGame) return;
-    const LeftoverRoom& r = kRooms[i];
-    if (!sArrived) {
-        if (map == r.map) {
-            sArrived = true;
-            std::lock_guard lk(sM);
-            sSpawnPending = false;
-            sLuigiEntry = -1;
-        }
-        return;
-    }
-    if (map != r.map) return end("left the map");
-    if (r.room >= 0) {
-        if (room == r.room) sInRoom = true;
-        else if (sInRoom) end("left the room");
-    }
+// The warp's map setup: from here on the visit is in its map (the spawn override stays armed
+// until Luigi has been placed).
+void onMapSetup() {
+    if (sActive.load() < 0) return;
+    if (sArrived) return end("map changed");
+    sArrived = true;
 }
 
-bool takeSpawn(float out[3]) {
-    std::lock_guard lk(sM);
-    if (!sSpawnPending || sActive.load() < 0) return false;
-    sSpawnPending = false;
-    std::memcpy(out, sSpawn, sizeof(sSpawn));
-    return true;
+void onFrame(Ctx& c, bool inGame, bool luigi, int map, int room) {
+    const int i = sActive.load();
+    if (i < 0 || !inGame || !sArrived) return;
+    const LeftoverRoom& r = kRooms[i];
+    if (luigi) {
+        std::lock_guard lk(sM);
+        sSpawnPending = false;
+        sLuigiEntry = -1;
+    }
+    if (map != r.map) return end("left the map");
+    if (r.alternate > 0 && !sAltShown && luigi && !sRetailOnly) {
+        sAltShown = true;
+        selectAlternate(c, r.room, r.alternate);
+        log("[rooms] %s: room %d alternate model %d selected", r.name, r.room, r.alternate);
+    }
+    // The current-room id (0x803A3CA0 +0xC) is not the archive index (the breaker room, archive
+    // 67, reads 69), so "left the room" is a change from the room Luigi was placed in.
+    if (r.room >= 0 && luigi) {
+        if (sStartRoom < 0) sStartRoom = room;
+        else if (room != sStartRoom) {
+            if (sAltShown) selectAlternate(c, r.room, 0);
+            end("left the room");
+        }
+    }
 }
 
 s32 overlayEntry(const char* guestPath) {
     const int i = sActive.load();
-    if (i < 0 || std::strcmp(guestPath, kRooms[i].target) != 0) return -1;
+    if (i < 0 || sRetailOnly || !kRooms[i].target || std::strcmp(guestPath, kRooms[i].target) != 0) return -1;
     std::lock_guard lk(sM);
     return build(i) ? kEntryBase + i : -1;
 }
