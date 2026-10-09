@@ -9,6 +9,7 @@
 #include "recomp/controls.h"
 #include "recomp/crt.h"
 #include "recomp/dev_tools.h"
+#include "recomp/frame.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/skip.h"
 
@@ -159,10 +160,47 @@ void renderingTab() {
                           "Off: copies stay GPU-only textures (saves ~0.6 ms CPU per frame).");
 }
 
+// Frame rate: 30 (the game's own rate, drawn directly) up to 320, or the display's refresh rate.
+void frameRateControls(port::VideoSettings& v) {
+    const float hz = recomp::frame::displayRefreshHz();
+    const int target = recomp::frame::targetFps();
+    char label[64];
+    if (v.matchDisplay) std::snprintf(label, sizeof(label), "%d fps (display)", target);
+    else if (v.targetFps <= port::kMinFps) std::snprintf(label, sizeof(label), "30 fps (original)");
+    else std::snprintf(label, sizeof(label), "%d fps", v.targetFps);
+    ImGui::BeginDisabled(v.matchDisplay);
+    sDirty |= ImGui::SliderInt("Frame rate", &v.targetFps, port::kMinFps, port::kMaxFps, label, ImGuiSliderFlags_AlwaysClamp);
+    ImGui::EndDisabled();
+    const bool sliderHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+    sDirty |= ImGui::Checkbox("Match display refresh rate", &v.matchDisplay);
+    const bool checkHovered = ImGui::IsItemHovered();
+    if (v.matchDisplay && hz > 0) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%.0f Hz)", hz);
+    } else if (v.vsync && hz > 0 && float(target) > hz + 0.5f) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(VSync limits this to %.0f fps)", hz);
+    }
+    if (sliderHovered || checkHovered) {
+        char vs[160] = "";
+        if (v.vsync && hz > 0 && float(target) > hz + 0.5f)
+            std::snprintf(vs, sizeof(vs),
+                          "\n\nVSync is on: frames are limited to the display's %.0f Hz, so %d fps\n"
+                          "is not reached. Turn VSync off (next launch) to go above it (with tearing).",
+                          hz, target);
+        ImGui::SetTooltip("30 fps is the game's own rate, drawn exactly as the console does.\n"
+                          "Above 30, frames in between are interpolated (the game still runs at 30):\n"
+                          "movement, the camera, lights and effects are blended between game frames,\n"
+                          "shown one game frame (33 ms) behind. Cuts and teleports are not blended.\n"
+                          "Match display refresh rate: the refresh rate of the monitor the window is on\n"
+                          "(currently %.0f Hz).%s",
+                          hz, vs);
+    }
+}
+
 void visualsTab() {
     auto& v = port::settings().video;
-    static const char* kFrameRates[] = {"Original (30 fps)", "Interpolated 60 fps (experimental)", "Interpolated, unlimited (experimental)"};
-    sDirty |= combo("Frame rate", v.frameRate, kFrameRates, 3);
+    frameRateControls(v);
     static const char* kAspects[] = {"Original 4:3", "Match window", "16:9", "16:10", "21:9", "32:9"};
     sDirty |= combo("Aspect ratio", v.aspect, kAspects, 6);
     sDirty |= ImGui::Checkbox("Keep HUD at 4:3", &v.hudKeep4x3);
