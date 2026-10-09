@@ -60,7 +60,7 @@ struct EnhancementSettings {
     bool showFps = false;
     bool pauseOnFocusLoss = true;
     bool skipIntroLogos = false;
-    bool hiddenMansionPal = true;  // Hidden Mansion uses the PAL release's rules (until the lab menu offers both)
+    bool hiddenMansionPal = true;  // default Hidden Mansion rules for saves that have not chosen in E. Gadd's lab
     int palLanguage = 1;           // PAL game only: 1 English, 2 German, 3 French, 4 Spanish, 5 Italian (next launch)
     bool gbhClock = false;         // cut E3 GBH clock/radar screen, toggled in game with D-pad Left
     bool gbhTracker = false;       // unused GBH ghost tracker, cycled in game with D-pad Down (off/far/close)

@@ -66,7 +66,7 @@ A module's key is the SHA-1 of: the module ABI version, the game ID and DOL SHA-
 compile and link flags, and the embedded inputs (symbol map, splits, PAL version map,
 hooks.txt, ctx.h, module_abi.h, module_rt.cpp, recompiler.cpp). Any change to those in a
 new release rebuilds the module on first launch. The overlay key covers both DOL hashes
-and the overlay format version.
+and the overlay format version (3: lab menu choice in event08).
 
 Command-line helpers (testing): `--us-disc <path>`, `--pal-disc <path>` prefill the slots,
 `--setup-auto` starts installing without a click, `--setup` forces the screen.
@@ -226,9 +226,10 @@ this work too).
 
 ### USA Hidden Mansion on the European game
 
-With both discs installed, F1 > Enhancements > *Hidden Mansion version* offers both rules
-on either base. On the European base, "USA (easier, not mirrored)" works like the forward
-direction in reverse:
+With both discs installed, E. Gadd's lab offers both Hidden Mansions on either base
+(docs/HIDDEN_MANSION.md, *E. Gadd's lab menu*); F1 > Enhancements > *Hidden Mansion
+version* is the fallback when the lab menu is not installed. On the European base, the USA
+rules work like the forward direction in reverse:
 
 - **Data** (built by setup next to the forward overlay, `hidden_mansion/usa/`; dev builds:
   `tools/hidden_mansion_data.py`): the USA `/Map/map2.szp`, served when the European
@@ -275,7 +276,5 @@ code with raw USA addresses checks `port::usCodeFeature()`.
 
 ## Not done yet / design notes
 
-- The E. Gadd's lab menu entries for both Hidden Mansions (docs/HIDDEN_MANSION.md); until
-  then the variant is the F1 setting, on either base.
 - Linux/macOS: the module build is Windows-only (`CreateProcess`, `.dll`); the module
   boundary itself is portable (`dlopen` is wired up).

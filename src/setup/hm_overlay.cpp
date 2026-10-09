@@ -5,16 +5,20 @@
 //                      the hidden-mansion flag is set).
 //   Event/eventNN.szp  the US archive with only text/eventNN.txt (the language-neutral event
 //                      script) swapped for the PAL one, stored as literal-only Yay0.
+//   Event/event08.szp  E. Gadd's lab: the US archive with the PAL script plus a follow-up
+//                      choice "The Hidden Mansion (USA)" / "(PAL)" (two message lines added);
+//                      served whichever version is selected ([always]).
 //   manifest.txt       one "guest path -> overlay file [condition]" line per redirect.
 //
 // and the reverse, the USA Hidden Mansion for the European base (usa/, docs/SETUP.md):
 //
 //   usa/Map/map2.szp      the US /Map/map2.szp (served for /Map/map2u.szp).
 //   usa/Event/eventNN.szp the PAL archive (all languages) with text/eventNN.txt swapped for
-//                         the US script.
+//                         the US script; event08 is the PAL archive with the lab choice.
 //   usa/manifest.txt
 #include "setup/hm_overlay.h"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -197,6 +201,112 @@ Bytes rarcReplace(const Bytes& arc, const RarcEntry& target, const Bytes& data) 
     return out;
 }
 
+// ---- E. Gadd's lab menu: both Hidden Mansions (docs/HIDDEN_MANSION.md) -----------------
+// Same transformation as tools/hidden_mansion_data.py (lab_script / lab_table).
+constexpr int kLabFlagPal = 8;          // the PAL hidden-mansion save flag (recomp/hidden_mansion.h)
+constexpr size_t kLabHiddenLine = 38;                    // "The Hidden Mansion" in every language
+
+std::vector<Bytes> split(const Bytes& b, const std::string& sep) {
+    std::vector<Bytes> out;
+    size_t pos = 0;
+    for (;;) {
+        auto it = std::search(b.begin() + std::ptrdiff_t(pos), b.end(), sep.begin(), sep.end());
+        out.emplace_back(b.begin() + std::ptrdiff_t(pos), it);
+        if (it == b.end()) break;
+        pos = size_t(it - b.begin()) + sep.size();
+    }
+    return out;
+}
+Bytes join(const std::vector<Bytes>& parts, const std::string& sep) {
+    Bytes out;
+    for (size_t i = 0; i < parts.size(); i++) {
+        if (i) out.insert(out.end(), sep.begin(), sep.end());
+        out.insert(out.end(), parts[i].begin(), parts[i].end());
+    }
+    return out;
+}
+Bytes bytes(const std::string& s) { return Bytes(s.begin(), s.end()); }
+bool startsWith(const Bytes& b, const std::string& p) {
+    return b.size() >= p.size() && std::equal(p.begin(), p.end(), b.begin(),
+                                              [](char x, std::uint8_t y) { return std::uint8_t(x) == y; });
+}
+
+std::vector<Bytes> tableEntries(const Bytes& table) {
+    auto e = split(table, "\r\n");
+    while (!e.empty() && e.back().empty()) e.pop_back();
+    return e;
+}
+
+// A message table (CRLF-terminated entries, LF inside an entry) with entries n and n+1 =
+// "<Hidden Mansion line> (USA)" / "(PAL)"; shorter tables are padded with empty entries so the
+// indices match in every language.
+Bytes labTable(const Bytes& table, size_t n, bool japanese) {
+    auto e = tableEntries(table);
+    if (e.size() <= kLabHiddenLine || e.size() > n) throw std::runtime_error("unexpected lab message table");
+    Bytes base = e[kLabHiddenLine];
+    while (!base.empty() && (base.back() == '.' || base.back() == ' ')) base.pop_back();
+    e.resize(n);
+    // Japanese: full-width parentheses and letters in Shift-JIS.
+    static const std::string kJp[2] = {"\x81\x69\x82\x74\x82\x72\x82\x60\x81\x6A", "\x81\x69\x82\x6F\x82\x60\x82\x6B\x81\x6A"};
+    static const std::string kEn[2] = {" (USA)", " (PAL)"};
+    for (int i = 0; i < 2; i++) {
+        Bytes line = base;
+        const std::string& s = japanese ? kJp[i] : kEn[i];
+        line.insert(line.end(), s.begin(), s.end());
+        e.push_back(line);
+    }
+    Bytes out = join(e, "\r\n");
+    const std::string tail = "\r\n\r\n";
+    out.insert(out.end(), tail.begin(), tail.end());
+    return out;
+}
+
+// event08 script with the "urayasiki" case turned into a USA/PAL follow-up choice.
+Bytes labScript(const Bytes& script, size_t n) {
+    const auto lines = split(script, "\r\n");
+    const auto start = std::find(lines.begin(), lines.end(), bytes("<CASE>\"urayasiki\""));
+    if (start == lines.end()) throw std::runtime_error("event08 has no Hidden Mansion case");
+    const auto end = std::find_if(start + 1, lines.end(), [](const Bytes& l) { return startsWith(l, "<END>"); });
+    if (end == lines.end()) throw std::runtime_error("event08 Hidden Mansion case has no end");
+    std::vector<Bytes> body;
+    for (auto it = start + 1; it != end + 1; ++it)
+        if (!startsWith(*it, "<FLAGON>(8)") && !startsWith(*it, "<FLAGOFF>(8)")) body.push_back(*it);
+    const auto ura = std::find(body.begin(), body.end(), bytes("<URALUIGI>"));
+    if (ura == body.end()) throw std::runtime_error("event08 Hidden Mansion case has no URALUIGI");
+    std::vector<Bytes> out(lines.begin(), start);
+    out.push_back(bytes("<CASE>\"urayasiki\""));
+    out.push_back(bytes("<CHOICE>\"ura_us\"(" + std::to_string(n) + ")\"ura_pal\"(" + std::to_string(n + 1) + ")<LISTEND>"));
+    out.push_back(bytes("<ANYKEY>"));
+    for (const bool pal : {false, true}) {
+        out.push_back(bytes(pal ? "<CASE>\"ura_pal\"" : "<CASE>\"ura_us\""));
+        out.insert(out.end(), body.begin(), ura);
+        out.push_back(bytes(std::string(pal ? "<FLAGON>(" : "<FLAGOFF>(") + std::to_string(kLabFlagPal) + ")"));
+        out.insert(out.end(), ura, body.end());
+    }
+    out.insert(out.end(), end + 1, lines.end());
+    return join(out, "\r\n");
+}
+
+// event08 archive (either release, every language it has) with the lab choice.
+Bytes labArchive(const Bytes& arc, const Bytes& palScript) {
+    const auto files = rarcFiles(arc);
+    size_t n = 0;
+    for (const auto& [k, e] : files)
+        if (k.rfind("message/", 0) == 0) n = std::max(n, tableEntries(member(arc, e)).size());
+    Bytes out = rarcReplace(arc, files.at("text/event08.txt"), labScript(palScript, n));
+    for (const auto& [k, e] : files) {
+        if (k.rfind("message/", 0) != 0) continue;
+        const Bytes table = labTable(member(arc, e), n, k.find("japanese") != std::string::npos);
+        out = rarcReplace(out, rarcFiles(out).at(k), table);
+    }
+    const auto check = rarcFiles(out);
+    if (check.size() != files.size()) throw std::runtime_error("archive rewrite failed");
+    for (const auto& [k, e] : files)
+        if (k != "text/event08.txt" && k.rfind("message/", 0) != 0 && member(out, check.at(k)) != member(arc, e))
+            throw std::runtime_error("archive rewrite failed");
+    return out;
+}
+
 bool writeFile(const std::filesystem::path& p, const Bytes& b) {
     std::ofstream o(p, std::ios::binary);
     o.write(reinterpret_cast<const char*>(b.data()), std::streamsize(b.size()));
@@ -229,6 +339,15 @@ bool buildHiddenMansionOverlay(const Disc& us, const Disc& pal, const std::files
                 const auto uf = rarcFiles(u), pf = rarcFiles(p);
                 const auto ui = uf.find(script), pi = pf.find(script);
                 if (ui == uf.end() || pi == pf.end()) throw std::runtime_error(path + " has no " + script);
+                if (std::string(ev) == "08") {
+                    // The lab menu: served whichever version is chosen, so it can ask. Its script
+                    // is the European one (which keeps flag 8 in step) on both games.
+                    const Bytes palScript = prefix.empty() ? member(p, pi->second) : member(u, ui->second);
+                    if (!writeFile(dir / "Event" / file, yay0Store(labArchive(u, palScript))))
+                        throw std::runtime_error("could not write the overlay");
+                    list += path + " -> " + prefix + "Event/" + file + " [always]\n";
+                    continue;
+                }
                 const Bytes newScript = member(p, pi->second);
                 if (member(u, ui->second) == newScript) continue;  // identical: nothing to serve
                 const Bytes patched = rarcReplace(u, ui->second, newScript);

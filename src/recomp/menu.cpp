@@ -313,25 +313,36 @@ void generalEnhancementsTab() {
         const char* kVariants[] = {usGame ? "USA (original)" : "USA (easier, not mirrored)",
                                    usGame ? "European (harder, mirrored)" : "European (original)"};
         auto usable = [&](int i) { return avail[i] == port::Avail::Yes; };
-        ImGui::BeginDisabled(inside);
-        if (ImGui::BeginCombo("Hidden Mansion version", kVariants[pal ? 1 : 0])) {
-            for (int i = 0; i < 2; i++) {
-                if (ImGui::Selectable(kVariants[i], (pal ? 1 : 0) == i,
-                                      usable(i) ? 0 : ImGuiSelectableFlags_Disabled)) {
-                    e.hiddenMansionPal = i == 1;
-                    recomp::hm::setVariant(e.hiddenMansionPal ? recomp::hm::Variant::Pal : recomp::hm::Variant::Us);
-                    sDirty = true;
+        if (recomp::hm::labChoiceAvailable()) {
+            // Both releases' data: E. Gadd's lab asks on every visit (docs/HIDDEN_MANSION.md).
+            ImGui::TextUnformatted("Hidden Mansion version: chosen in E. Gadd's lab");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Picking the Hidden Mansion in E. Gadd's lab asks which one:\n"
+                                  "\"(USA)\" is the %s release's, \"(PAL)\" the %s release's\n"
+                                  "(harder, mirrored, darker). The save file keeps the answer for that visit.",
+                                  usGame ? "original USA" : "USA", usGame ? "European" : "original European");
+            if (inside) ImGui::TextDisabled("This visit: %s", kVariants[pal ? 1 : 0]);
+        } else {
+            ImGui::BeginDisabled(inside);
+            if (ImGui::BeginCombo("Hidden Mansion version", kVariants[pal ? 1 : 0])) {
+                for (int i = 0; i < 2; i++) {
+                    if (ImGui::Selectable(kVariants[i], (pal ? 1 : 0) == i,
+                                          usable(i) ? 0 : ImGuiSelectableFlags_Disabled)) {
+                        e.hiddenMansionPal = i == 1;
+                        recomp::hm::setVariant(e.hiddenMansionPal ? recomp::hm::Variant::Pal : recomp::hm::Variant::Us);
+                        sDirty = true;
+                    }
+                    if (const char* note = port::availNote(avail[i])) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("(%s)", note);
+                    }
                 }
-                if (const char* note = port::availNote(avail[i])) {
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(%s)", note);
-                }
+                ImGui::EndCombo();
             }
-            ImGui::EndCombo();
+            ImGui::EndDisabled();
+            if (inside) pending("leave the Hidden Mansion to change");
         }
-        ImGui::EndDisabled();
-        if (inside) pending("leave the Hidden Mansion to change");
-        else if (!usable(0)) pending(port::availNote(avail[0]));
+        if (!usable(0)) pending(port::availNote(avail[0]));
         else if (!usable(1)) pending(port::availNote(avail[1]));
     }
 }
