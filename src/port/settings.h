@@ -52,7 +52,8 @@ struct AudioSettings {
     float sfxVolume = 1.0f;     // everything else
     AudioOutput output = AudioOutput::Stereo;
     bool swapChannels = false;
-    bool reverb = true;
+    bool reverb = true;        // DSP effect lines (echo/reverb) and the chorus bus
+    bool voiceFilters = true;  // per-voice FIR / IIR / distortion stages of the DSP microcode
 };
 
 struct EnhancementSettings {
