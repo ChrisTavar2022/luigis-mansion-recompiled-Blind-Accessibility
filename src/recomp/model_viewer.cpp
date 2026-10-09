@@ -1309,7 +1309,7 @@ void requestMap(int map, int room) {
             }
             LoadItem it{Kind::Graph, m->data, {}, {}, true, r.path + ":" + m->path};
             mtxTRS(it.mtx, f.pos, f.dir, f.scale);
-            if (room >= 0) sPending.bounds.add(graphBounds(it.data, it.mtx));  // whole maps: framed by the rooms (some furniture is parked far away)
+            // Framed by the room shells only: some furniture is parked far away from its room.
             sPending.items.push_back(std::move(it));
         }
     }
