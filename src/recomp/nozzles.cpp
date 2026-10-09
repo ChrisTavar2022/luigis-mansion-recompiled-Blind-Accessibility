@@ -7,7 +7,8 @@
 // type 7 (`wplight`). Types 8 (`wpwater`) and 9 (`wpair`) are registered right after them,
 // with their own models and their own attach tables in fn_80078008, but the switch never
 // selects them. With the option on, the mode selector runs unchanged and the nozzle is then
-// re-typed through the same function: water spray -> wpwater, air -> wpair.
+// re-typed through the same function: water spray -> wpwater, air -> wpair. No map ever
+// requests those two models, so they are loaded first with the game's own model loader.
 //
 // D-pad Right toggles the air nozzle while Luigi carries an element (retail has no way to
 // blow air then): the selector sees "no element" (+0x1184 = 1, its value for air) for the
@@ -43,6 +44,31 @@ bool enabled() {
 
 bool inMem1(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
 
+// Character models: type table lbl_8033B590 (0x1C per type, +0 = model index) and model
+// registry lbl_8034E46C (0x34 per model: +0 file name, +8 loaded .mdl, +0x30 load state).
+// The game loads a model when a map needs it (fn_8006227C at map setup; per-event models via
+// fn_800620F4 from the event code, JmpMessage). wpwater/wpair are never needed, so their
+// entries stay empty and re-typing the nozzle to them would leave it without a model.
+constexpr u32 kTypeTable = 0x8033B590, kModelRegistry = 0x8034E46C;
+
+u32 modelEntry(u32 type) { return kModelRegistry + 0x34 * rd32(kTypeTable + 0x1C * type); }
+
+// True once the type's model is resident; otherwise starts the game's own async load
+// (fn_800620F4: disc read into the map's model heap, then the same setup as the map loader).
+// The registry is cleared at every map setup, so this runs again after each map change.
+bool modelReady(Ctx& c, u32 type) {
+    const u32 e = modelEntry(type);
+    if (rd32(e + 8)) return true;
+    if (rd32(e + 0x30) == 0) {
+        static const u32 sLoad = guestSymbol("fn_800620F4__Fi");
+        const Ctx saved = c;
+        guestCall(c, sLoad, rd32(kTypeTable + 0x1C * type));
+        c = saved;
+        log("[nozzle] loading %s", gstr(rd32(e)));
+    }
+    return false;
+}
+
 bool sAirSelected = false;
 u16 sPrevButtons = 0;
 
@@ -77,8 +103,11 @@ HLE(fn_800B36B8) {
     const u32 mode = rd32(luigi + kMode);
     const u32 type = rd32(nozzle + kCharType);
     u32 want = type;
-    if (on && mode == kModeWater) want = kTypeWater;
-    else if (on && mode == kModeAir) want = kTypeAir;
+    // Load both as soon as the option is on, so the first spray already has its model.
+    const bool waterReady = on && modelReady(c, kTypeWater);
+    const bool airReady = on && modelReady(c, kTypeAir);
+    if (waterReady && mode == kModeWater) want = kTypeWater;
+    else if (airReady && mode == kModeAir) want = kTypeAir;
     else if (type == kTypeWater || type == kTypeAir) want = mode == kModeLight ? kTypeLight : kTypeHose;  // back to retail
     if (want != type) {
         static const u32 sRetype = guestSymbol("fn_800B9064");

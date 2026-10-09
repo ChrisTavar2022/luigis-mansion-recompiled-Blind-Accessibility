@@ -224,20 +224,35 @@ them (or the option is turned off) it goes back to 6/7 as in retail. D-pad Right
 duration of its call, so L blows air with `wpair` and the element is kept. With the option
 off the hook only calls the original (types stay 6/7, D-pad Right does nothing).
 
-Verified (`build/nozzles_cmp.png`, guest frames from `LM_FRAME_DUMP`, Nursery,
-`LM_START_MAP=2 LM_START_APPEAR=1`): retail air (big `vhead`), restored air (`wpair`),
-flashlight (`wplight`), retail water (`vhead`), restored water (`wpwater`); the water stream
-and the air effect come out of the new nozzles. `build/nozzles_full.png` adds the D-pad Right
-case (air while carrying water). Test aids: `LM_NOZZLES=1` (force on), `LM_NOZZLE_DUMP=1`
-(logs mode/element/meter/nozzle type on change, plus the Poltergust controller
-`[Luigi+0x7E4]` +0x310/+0x314/+0x334 and its 0x50-byte input block).
+The models have to be loaded first. Character models live in the registry `lbl_8034E46C`
+(0x34 per model: +0 file name, +8 relocated `.mdl` once loaded, +0x30 load state; the type
+table `lbl_8033B590` +0 gives a type's model index: `vhead` 1, `wplight` 2, `wpwater` 18,
+`wpair` 19). Map setup (`fn_8006227C`) clears the registry and loads only the models the map
+needs (resident archives directly, others through `fn_800620F4`); event code loads extra
+models the same way (`JmpMessage`, `0x800EB5A0`). `wpwater`/`wpair` are never requested, so
+re-typing the nozzle to them without loading left the S3DModel with no model data: the first
+version of this option drew only a thin grey stub in Luigi's hand. The hook now requests both
+with `fn_800620F4__Fi` while the option is on (again after every map change, since the
+registry is cleared) and only re-types once the registry entry has its model. Drawn standalone
+in the model viewer (`LM_DEV_VIEWER=/model/wpwater.szp`), the models are a long grey tube,
+dark ridged collar, bulging blue (`wpwater`) or red (`wpair`) section and white tip, 88 units
+long like `vhead`, with the same three joints and key names.
+
+Verified (`build/nozzles_side.png`, native guest frames from `LM_FRAME_DUMP`, Nursery,
+`LM_START_MAP=2 LM_START_APPEAR=1`, Luigi turned sideways with the stick): retail water
+(`vhead`), water with `wpwater` (blue), air with `wpair` (red), and air with `wpair` after
+D-pad Right while carrying water. The nozzles sit in Luigi's hands like `vhead` and the water
+stream and air puffs come out of their tips. Test aids: `LM_NOZZLES=1` (force on),
+`LM_NOZZLE_DUMP=1` (logs mode/element/meter/nozzle type on change, plus the Poltergust
+controller `[Luigi+0x7E4]` +0x310/+0x314/+0x334 and its 0x50-byte input block).
 
 What the game itself never finished:
-- No code path selects types 8/9; the mapping water → `wpwater`, air → `wpair` is inferred from
-  the type names and their attach tables. There is no `wpfire`/`wpice`, so fire and ice keep
-  `vhead`.
-- The attach tables for 8/9 are only read by `fn_80078008`; the re-type keeps the slot the
-  `vhead` was attached with (like `wplight` in retail), so the nozzle sits where `vhead` does.
+- No code path selects types 8/9 or loads their models; the mapping water → `wpwater`, air →
+  `wpair` is inferred from the type names, their models and their attach tables. There is no
+  `wpfire`/`wpice`, so fire and ice keep `vhead`.
+- The three attach tables (`lbl_8035416C` `vhead`, `lbl_803543B4` `wpwater`, `lbl_803544D8`
+  `wpair`) are identical apart from their animation lists (same joint 0x0E, same values), so
+  keeping the `vhead` attachment loses nothing.
 - Air and water behave exactly as with `vhead` (same effects, same element meter); nothing
   in the code gives the dedicated nozzles different gameplay.
 - Luigi's other character types (1/0xB3) have 0xB8/0xB9 entries too; the port leaves them alone.
