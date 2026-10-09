@@ -7,6 +7,7 @@
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
+#include "recomp/widescreen.h"
 
 #include <bit>
 #include <cstdlib>
@@ -484,6 +485,7 @@ bool sInWipe = false;   // inside fn_80055C54 (iris wipe)
 }  // namespace
 
 HLE(fn_80041214) {
+    ws::AnchorScope centered(0);  // drawn at Luigi's projected position: not edge-anchored
     if (ver::pal()) return hm::callWithoutFlag(c, "fn_80041214");
     sInHud = hm::mirrorActive();
     callOriginal(c, "fn_80041214");

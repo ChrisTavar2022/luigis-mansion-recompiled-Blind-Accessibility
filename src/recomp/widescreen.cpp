@@ -109,45 +109,66 @@ HLE(fn_80008D58) {
 }
 
 
-// HUD anchoring. Menus (title, file select, options...) are J2DScreens; the
-// in-game HUD is a few J2DScreens drawn by two game functions plus panes and
-// pictures that game code draws directly (the health meter, the room name).
-// For those, each 2D draw that lies in the outer 30% of the 4:3 frame on one
-// side moves to that edge of the display (the GX HLE decodes its vertices;
-// hudAnchorFor). HUD pieces are small and sit well inside one band, so a
-// counter's digits and its icon move together.
+// HUD anchoring (widescreen.h, AnchorScope). The in-game HUD is drawn once per frame by
+// fn_8003E3D0, which calls one function per element; those are hooked here, so whatever
+// they draw (J2DScreens, panes, pictures, text, the GBH's screen) moves as one unit.
+// Elements not listed (the element meter, the ghost counters) stay centered with the
+// dialogue and menus. The guest thread is the only caller.
 namespace {
-struct HudScreen {
-    u32 start, end;
-};
-// fn_80056F64 and fn_8003E3D0: first and last instruction (USA addresses, VA() gives the
-// running game's; the European versions are larger).
-HudScreen hudScreen(int i) {
-    return i == 0 ? HudScreen{VA(0x80056F64), VA(0x800570C8) + 4} : HudScreen{VA(0x8003E3D0), VA(0x8003E7AC) + 4};
-}
-int sScreenDepth = 0;   // J2DScreen::draw nesting
-bool sInHudScreen = false;
+int sAnchorStack[16];
+int sAnchorDepth = 0;
 }  // namespace
 
-bool inHud() {
-    return sAnchorHud.load(std::memory_order_relaxed) && active() && (sScreenDepth == 0 || sInHudScreen);
+AnchorScope::AnchorScope(int anchor) {
+    if (sAnchorDepth < int(std::size(sAnchorStack))) sAnchorStack[sAnchorDepth] = anchor;
+    sAnchorDepth++;
+}
+AnchorScope::~AnchorScope() { sAnchorDepth--; }
+
+int hudAnchor() {
+    if (sAnchorDepth <= 0 || !sAnchorHud.load(std::memory_order_relaxed) || !active()) return 0;
+    return sAnchorStack[std::min(sAnchorDepth, int(std::size(sAnchorStack))) - 1];
 }
 
-int hudAnchorFor(float lo, float hi) { return hi <= -0.4f ? -1 : lo >= 0.4f ? 1 : 0; }
+bool inHudScope() { return sAnchorDepth > 0 && active(); }
 
-HLE(draw__9J2DScreenFiiPC14J2DGrafContext) {
-    const bool outer = sInHudScreen;
-    if (sScreenDepth == 0) {
-        sInHudScreen = false;
-        for (int i = 0; i < 2; i++) {
-            const HudScreen s = hudScreen(i);
-            if (c.lr - s.start < s.end - s.start) sInHudScreen = true;
-        }
-    }
-    sScreenDepth++;
-    callOriginal(c, "draw__9J2DScreenFiiPC14J2DGrafContext");
-    sScreenDepth--;
-    sInHudScreen = outer;
+// Game Boy Horror (bottom right): frame, LEDs and the J2DScreen of whatever its screen
+// shows (money tally, E. Gadd's call, the cut E3 clock).
+HLE(fn_8003D634) {
+    AnchorScope s(1);
+    callOriginal(c, "fn_8003D634");
+}
+// The static noise drawn over the GBH screen (gbnoise01..03), from the HUD and from the
+// GBH view's own pass (fn_8003E7B0(1)).
+HLE(fn_8003BE9C) {
+    AnchorScope s(1);
+    callOriginal(c, "fn_8003BE9C");
+}
+// Sets up view n of the frame loop: its viewport/scissor (and for view 1 the depth-clear
+// quad, fn_8000B228) are set here, and the view's draws that follow use them. View 1 is the
+// GBH screen's live 3D view (unused camera mode). View 0 is the main view; it is smaller
+// than the screen while the GBH frame surrounds it (r13+0x200, fn_80010F20), and then
+// follows the centered frame.
+HLE(fn_800115F8) {
+    AnchorScope s(c.r[3] == 1 ? 1 : 0);
+    callOriginal(c, "fn_800115F8");
+}
+// Event portrait renderer (<PDEMO>): 3D drawn into its own viewport. During E. Gadd's call
+// (GBH screen mode lbl_804D846C = 3) that viewport is the GBH screen.
+HLE(fn_80114E18) {
+    AnchorScope s(rd32(VA(0x804D846C)) == 3 ? 1 : 0);
+    callOriginal(c, "fn_80114E18");
+}
+// Room name when entering a room: the floor (top right) and the room's name (top left).
+HLE(fn_80045BDC) {
+    AnchorScope s(kAnchorBySide);
+    callOriginal(c, "fn_80045BDC");
+}
+// Health meter (bottom left). In the training room it shows over Luigi instead
+// (fn_80041214, a projected position): that call opens a centered scope.
+HLE(fn_800417F8) {
+    AnchorScope s(-1);
+    callOriginal(c, "fn_800417F8");
 }
 
 }  // namespace recomp::ws

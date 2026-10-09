@@ -25,6 +25,7 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace recomp {
@@ -102,6 +103,11 @@ int sProjEmittedAnchor = 0;         // HUD anchor the emitted projection was bui
 struct {
     f32 left = 0, wd = kLogicalWidth;
 } sVp;
+// A partial viewport set by a HUD element (ws::AnchorScope: the GBH's live 3D view) is sent
+// to Aurora moved and narrowed like the 2D around it, with this anchor; scissors set while
+// it is current follow it too.
+bool sVpFollow = false;
+int sVpAnchor = 0;
 struct {
     u32 x = 0, y = 0, w = 640, h = 480;
 } sScissor;
@@ -112,10 +118,23 @@ int sScissorAnchor = 0;
 // them is brought up to date before the first raw FIFO write after any change.
 bool sRawCheck = true;
 
-// HUD anchor for the draw being prepared: a held draw keeps the one from its GXBegin.
+// HUD anchor for the draw being prepared: a held draw keeps the one from its GXBegin (it
+// is only sent at the next GX call, which may come after the HUD element's scope ended).
 int sHeldAnchor = 0;
 bool sInHeldPrepare = false;
-int hudAnchor() { return sInHeldPrepare ? sHeldAnchor : 0; }
+// A by-side scope is resolved per held draw (classifyHeld); anything else in it stays centered.
+int scopeAnchor() {
+    const int a = ws::hudAnchor();
+    return a == ws::kAnchorBySide ? 0 : a;
+}
+int hudAnchor() { return sInHeldPrepare ? sHeldAnchor : scopeAnchor(); }
+
+// x of the centered (and anchored) 4:3 frame for logical x: what the scaled orthographic
+// projection does to 2D, in pixels.
+f32 pillarX(f32 x, int anchor) {
+    const f32 s = ws::factor(), mid = kLogicalWidth * 0.5f;
+    return mid + (x - mid) * s + f32(anchor) * (1.0f - s) * mid;
+}
 
 bool viewportFull() { return sVp.left <= 1.0f && sVp.left + sVp.wd >= kLogicalWidth - 1.0f; }
 
@@ -157,11 +176,9 @@ void emitProjection(ProjMode mode) {
 void emitScissor(bool pillar) {
     sScissorAnchor = 0;
     if (pillar) {
-        const f32 s = ws::factor(), mid = kLogicalWidth * 0.5f;
-        sScissorAnchor = hudAnchor();
-        const f32 shift = f32(sScissorAnchor) * (1.0f - s) * mid;
-        const f32 l = std::max(0.0f, mid + (f32(sScissor.x) - mid) * s + shift);
-        const f32 r = std::min(kLogicalWidth, mid + (f32(sScissor.x + sScissor.w) - mid) * s + shift);
+        sScissorAnchor = sVpFollow ? sVpAnchor : hudAnchor();
+        const f32 l = std::max(0.0f, pillarX(f32(sScissor.x), sScissorAnchor));
+        const f32 r = std::min(kLogicalWidth, pillarX(f32(sScissor.x + sScissor.w), sScissorAnchor));
         const u32 li = u32(std::max(0.0f, std::floor(l)));
         GXSetScissor(li, sScissor.y, u32(std::ceil(r)) - li, sScissor.h);
     } else {
@@ -201,8 +218,9 @@ void prepareDraw(ProjMode mode, const char* what = "draw") {
     const bool hud = mode == ProjMode::Scaled && sProj.type == GX_ORTHOGRAPHIC;
     if (sProjSet && (sProjDirty || mode != sProjEmitted || (hud && hudAnchor() != sProjEmittedAnchor)))
         emitProjection(mode);
-    const bool pillar = hud && (sScissor.x > 0 || sScissor.x + sScissor.w < 640);
-    if (pillar != sScissorPillar || (pillar && hudAnchor() != sScissorAnchor)) emitScissor(pillar);
+    const bool pillar = sVpFollow || (hud && (sScissor.x > 0 || sScissor.x + sScissor.w < 640));
+    const int anchor = sVpFollow ? sVpAnchor : hudAnchor();
+    if (pillar != sScissorPillar || (pillar && anchor != sScissorAnchor)) emitScissor(pillar);
 }
 
 // Mirror of the vertex layout state that immediate-mode 2D draws use, so a
@@ -291,7 +309,7 @@ bool samplesPicture() {
 
 f32 sHeldLo = 0, sHeldHi = 0;  // NDC x extent of the last decoded held draw
 bool sHeldDecoded = false;
-bool sHeldHud = false;  // the held draw belongs to the in-game HUD (ws::inHud)
+std::string sHeldChain;  // LM_HUD_TRACE
 bool coversScreen() {
     const int fmt = sHeld.fmt;
     const size_t n = sHeld.verts;
@@ -342,14 +360,14 @@ bool coversScreen() {
 //    so it lines up with the stretched EFB;
 //  - covers the width and samples an ordinary texture (a 4:3 background
 //    picture): per --ws-backgrounds, centered by default;
-//  - anything else is HUD: centered 4:3.
+//  - anything else is HUD: centered 4:3 (moved to an edge with its HUD element's anchor).
 ProjMode classifyHeld() {
     sHeldDecoded = false;
     if (!coversScreen()) {
-        // In-game HUD: a draw in the outer part of the 4:3 frame moves to that edge.
-        if (sHeldDecoded && sHeldHud) sHeldAnchor = ws::hudAnchorFor(sHeldLo, sHeldHi);
+        if (sHeldAnchor == ws::kAnchorBySide) sHeldAnchor = !sHeldDecoded ? 0 : sHeldLo + sHeldHi < 0.0f ? -1 : 1;
         return ProjMode::Scaled;
     }
+    if (sHeldAnchor == ws::kAnchorBySide) sHeldAnchor = 0;
     traceNote("full-screen 2D, %s", samplesPicture() ? "picture" : "fill/copy");
     if (!samplesPicture()) return ProjMode::Plain;
     switch (ws::backgroundMode()) {
@@ -368,6 +386,34 @@ void rawFifoWrite(u32 v, int size) {
 }
 
 }  // namespace
+
+// LM_HUD_TRACE=<first>,<last>[,<step>]: for those frames (GXCopyDisp count), every 2D draw, viewport,
+// scissor and texture copy with its guest call chain, to map HUD pieces to game functions.
+static u32 sDiagFrame = 0;
+static bool hudTraceOn() {
+    static const auto range = [] {
+        u32 a = ~0u, b = 0, step = 1;
+        if (const char* v = std::getenv("LM_HUD_TRACE")) std::sscanf(v, "%u,%u,%u", &a, &b, &step);
+        return std::tuple<u32, u32, u32>{a, b, step ? step : 1};
+    }();
+    const auto [first, last, step] = range;
+    return sDiagFrame >= first && sDiagFrame <= last && (sDiagFrame - first) % step == 0;
+}
+static std::string guestChain(const Ctx& c) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%08X", c.lr);
+    std::string s = buf;
+    u32 sp = c.r[1];
+    for (int i = 0; i < 12; i++) {
+        sp = rd32(sp);
+        if (sp < 0x80000000u || sp >= 0x81800000u) break;
+        std::snprintf(buf, sizeof(buf), "<%08X", rd32(sp + 4));
+        s += buf;
+    }
+    return s;
+}
+#define HUD_TRACE(fmt, ...) \
+    do { if (hudTraceOn()) log("[hud] f%u " fmt, sDiagFrame, __VA_ARGS__); } while (0)
 
 static FILE* dlTraceFile() {
     static FILE* f = [] { const char* p = std::getenv("LM_DL_TRACE"); return p ? std::fopen(p, "w") : nullptr; }();
@@ -399,8 +445,11 @@ void gx::endPendingDraw() {
     if (sHeld.active) {
         sHeld.active = false;
         sInHeldPrepare = true;
-        prepareDraw(classifyHeld(), "held");
+        const ProjMode mode = classifyHeld();
+        prepareDraw(mode, "held");
         sInHeldPrepare = false;
+        HUD_TRACE("held %s x[%.3f,%.3f] mode=%d anchor=%d %s", sHeldDecoded ? "dec" : "nodec", sHeldLo, sHeldHi,
+                  int(mode), sHeldAnchor, sHeldChain.c_str());
         sRawCheck = true;
         GXBegin(sHeld.prim, sHeld.fmt, sHeld.verts);
         for (u32 w : sHeld.writes) {
@@ -512,11 +561,11 @@ GXHLE(GXBegin) {
     sInBegin = true;
     if (ws::active() && sProj.type == GX_ORTHOGRAPHIC && viewportFull()) {
         sHeld.active = true;
-        sHeldAnchor = 0;
+        sHeldAnchor = ws::hudAnchor();
         sHeld.prim = GXPrimitive(c.r[3]);
         sHeld.fmt = GXVtxFmt(c.r[4]);
         sHeld.verts = u16(c.r[5]);
-        sHeldHud = ws::inHud();
+        if (hudTraceOn()) sHeldChain = guestChain(c);
         sHeld.bytes.clear();
         sHeld.writes.clear();
         return;
@@ -536,6 +585,9 @@ GXHLE(GXCallDisplayList) {
         }
     }
     if (dropDraw()) return;
+    if (sProj.type == GX_ORTHOGRAPHIC || !viewportFull())
+        HUD_TRACE("dlist %s vp(%.0f,+%.0f) %s", sProj.type == GX_ORTHOGRAPHIC ? "ortho" : "persp", sVp.left, sVp.wd,
+                  guestChain(c).c_str());
     prepareDraw(drawMode(ProjMode::Scaled), "dlist");
     GXCallDisplayList(hostp(c.r[3]), c.r[4]);
 }
@@ -626,21 +678,31 @@ GXHLE(GXSetCurrentMtx) {
     sCurPosMtx = c.r[3];
     GXSetCurrentMtx(c.r[3]);
 }
-GXHLE(GXSetViewport) {
+// Records the guest viewport; returns the x/width to send (moved and narrowed like the 2D
+// around it for a partial viewport set by a HUD element, see sVpFollow).
+static std::pair<f32, f32> setViewport(const Ctx& c) {
     sRawCheck = true;
     sVp.left = farg(c, 1);
     sVp.wd = farg(c, 3);
-    GXSetViewport(farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6));
+    sVpFollow = !viewportFull() && ws::inHudScope();
+    sVpAnchor = sVpFollow ? scopeAnchor() : 0;
+    HUD_TRACE("viewport %.1f %.1f %.1f %.1f%s %s", farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4),
+              sVpFollow ? " follow" : "", guestChain(c).c_str());
+    if (!sVpFollow) return {sVp.left, sVp.wd};
+    return {pillarX(sVp.left, sVpAnchor), sVp.wd * ws::factor()};
+}
+GXHLE(GXSetViewport) {
+    const auto [x, w] = setViewport(c);
+    GXSetViewport(x, farg(c, 2), w, farg(c, 4), farg(c, 5), farg(c, 6));
 }
 GXHLE(GXSetViewportJitter) {
-    sRawCheck = true;
-    sVp.left = farg(c, 1);
-    sVp.wd = farg(c, 3);
-    GXSetViewportJitter(farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6), c.r[3]);
+    const auto [x, w] = setViewport(c);
+    GXSetViewportJitter(x, farg(c, 2), w, farg(c, 4), farg(c, 5), farg(c, 6), c.r[3]);
 }
 GXHLE(GXSetScissor) {
+    HUD_TRACE("scissor %u %u %u %u %s", c.r[3], c.r[4], c.r[5], c.r[6], guestChain(c).c_str());
     sScissor = {c.r[3], c.r[4], c.r[5], c.r[6]};
-    emitScissor(false);
+    emitScissor(sVpFollow);
 }
 GXHLE(GXSetClipMode) { GXSetClipMode(GXClipMode(c.r[3])); }
 
@@ -849,7 +911,6 @@ GXHLE(GXInitFogAdjTable) {
 // Current texture-copy setup (LM_COPY_LOG and the LM_FRAME_DUMP restore), copies by frame for the log.
 static struct { u32 x, y, w, h, dw, dh, fmt, mip; } sCopyDiag;
 static const bool sCopyLog = std::getenv("LM_COPY_LOG") != nullptr;
-static u32 sDiagFrame = 0;
 u32 copyDispCount() { return sDiagFrame; }
 struct DiagCopy { u32 dest, size, fmt, w, h, frame; };
 static std::vector<DiagCopy> sDiagCopies;
@@ -902,6 +963,8 @@ GXHLE(GXSetTexCopyDst) {
     GXSetTexCopyDst(u16(c.r[3]), u16(c.r[4]), GXTexFmt(c.r[5]), GXBool(c.r[6]));
 }
 GXHLE(GXCopyTex) {
+    HUD_TRACE("copytex src(%u,%u %ux%u) dst %ux%u fmt %u -> %08X %s", sCopyDiag.x, sCopyDiag.y, sCopyDiag.w, sCopyDiag.h,
+              sCopyDiag.dw, sCopyDiag.dh, sCopyDiag.fmt, c.r[3], guestChain(c).c_str());
     if (sCopyLog) {
         const u32 sz = GXGetTexBufferSize(u16(sCopyDiag.dw), u16(sCopyDiag.dh), sCopyDiag.fmt, GX_FALSE, 0);
         log("[copydiag] f%u COPY dest=%08X src=(%u,%u %ux%u) dst=%ux%u fmt=%u mip=%u clear=%u size=%X lr=%08X%s",

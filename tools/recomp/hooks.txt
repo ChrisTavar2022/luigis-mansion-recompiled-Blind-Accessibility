@@ -66,9 +66,16 @@ fn_800C0F08 us pal
 fn_80081BCC us pal
 getValue__Q24Koga8ToolDataCFiPCcPPCc us pal
 fn_800D1458 us pal
-# J2D screen drawing: the in-game HUD anchored to the screen edges in
-# widescreen (src/recomp/widescreen.cpp).
-draw__9J2DScreenFiiPC14J2DGrafContext us pal
+# In-game HUD elements, anchored to the screen edges as units in widescreen
+# (src/recomp/widescreen.cpp): Game Boy Horror, its screen noise, the frame loop's view
+# setup (GBH live 3D view, the scan view's small main view), event portraits (E. Gadd's call
+# on the GBH screen), room name, health meter.
+fn_8003D634 us pal
+fn_8003BE9C us pal
+fn_800115F8 us pal
+fn_80114E18 us pal
+fn_80045BDC us pal
+fn_800417F8 us pal
 # Early ghost lighting (cheat-equivalent, src/recomp/unused_content.cpp)
 fn_8005A5D4 us pal
 
