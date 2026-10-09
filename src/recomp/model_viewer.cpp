@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -192,7 +193,15 @@ std::string sStatus;
 struct Camera {
     float yaw = 0.6f, pitch = 0.25f, zoom = 1.0f;
     bool spin = true;
-} sCam;
+} sCam = [] {
+    // Test aid: LM_DEV_VIEWER_CAM=<yaw>,<pitch>,<distance> fixes the camera (no spin).
+    Camera cam;
+    if (const char* v = std::getenv("LM_DEV_VIEWER_CAM")) {
+        std::sscanf(v, "%f,%f,%f", &cam.yaw, &cam.pitch, &cam.zoom);
+        cam.spin = false;
+    }
+    return cam;
+}();
 struct Anim {
     bool play = true;
     float speed = 1.0f;
@@ -209,7 +218,7 @@ struct Pending {
 constexpr u32 kScratch = 0x81810000;   // matrices, colours
 constexpr u32 kHeapObj = 0x81811000;   // JKRExpHeap object
 constexpr u32 kHeapMem = 0x81812000;
-constexpr u32 kHeapEnd = 0x81FF0000;
+constexpr u32 kHeapEnd = 0x81F00000;  // 0x81F00000-0x81FF0000: early Luigi model copies (early_luigi.cpp)
 u32 sHeap = 0;
 u32 sModel = 0, sKey = 0;
 u32 sNumFrames = 0;

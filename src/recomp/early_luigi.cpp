@@ -20,8 +20,10 @@
 // out like the target model's: each target sampler points at the early texture with identical
 // pixels, or at a copy of the target's texture appended to the early model when the early
 // model has none. The early materials are re-pointed at matching entries of that table.
-// Cutscene-only Luigi models (dluige01/03, same skeleton) get the same treatment when they
-// load. Docs: docs/UNUSED_CONTENT.md ("Early Luigi model").
+// The in-engine cutscene Luigis that go through the same registry (dluige01, dluige03: same
+// skeleton and bind pose) get the same treatment. The pre-rendered-style demo scenes
+// (/Ajioka/ADemo: opening, ending) carry their own Luigi models with a 122-joint rig or another
+// bind pose and are left alone. Docs: docs/UNUSED_CONTENT.md ("Early Luigi model").
 #include "port/install.h"
 #include "port/settings.h"
 #include "recomp/hle.h"
@@ -32,7 +34,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
-#include <string>
 #include <vector>
 
 namespace recomp {
@@ -41,6 +42,10 @@ namespace {
 constexpr u32 kModelRegistry = 0x8034E46C;  // lbl_8034E46C, 0x34 per model
 constexpr u32 kEntrySize = 0x34;
 constexpr u32 kNumModels = 0x106;
+// Guest memory for the relocated early copies: host-backed, above the 24 MiB of MEM1 the game
+// uses, after the model viewer's heap (model_viewer.cpp ends it at 0x81F00000).
+constexpr u32 kCopyBase = 0x81F00000, kCopyEnd = 0x81FF0000;
+u32 sNext = kCopyBase;
 
 bool envFlag() {
     static const bool sEnv = [] {
@@ -95,25 +100,26 @@ const std::vector<u8>& earlyMdl() {
     return sMdl;
 }
 
-// Builds the early model for `target` (a relocated .mdl in guest memory) and returns its
-// relocated guest copy, or 0. Sampler indices mean the same textures as in the target.
+// True for a relocated .mdl in guest memory with Luigi's skeleton exactly as in the early
+// model: joint/envelope counts, node graph and inverse bind matrices. That is the gameplay
+// model and the cutscene copies dluige01/dluige03; the ending models (dluige02, the
+// cutscene archive's db_luigi) are bound in another space and are left alone.
+bool luigiSkeleton(u32 target) {
+    const std::vector<u8>& early = earlyMdl();
+    if (early.empty() || !inMem1(target)) return false;
+    if (rd32(target) != 0x04B40000u || !(rd32(target + 0x48) & 0x80000000u)) return false;  // relocated .mdl only
+    const u32 joints = be16(&early[0x08]);
+    if (rd16(target + 0x08) != joints || rd16(target + 0x0C) != be16(&early[0x0C])) return false;
+    const u32 tn = rd32(target + 0x30), ti = rd32(target + 0x38);
+    if (!inMem1(tn) || !inMem1(ti)) return false;
+    return !std::memcmp(hostp(tn), &early[be32(&early[0x30])], 0x10 * joints) &&
+           !std::memcmp(hostp(ti), &early[be32(&early[0x38])], 0x30 * joints);
+}
+
+// Builds the early model for `target` (a relocated Luigi .mdl in guest memory) and returns
+// its relocated guest copy, or 0. Sampler indices mean the same textures as in the target.
 u32 buildFor(Ctx& c, u32 target) {
     const std::vector<u8>& early = earlyMdl();
-    if (early.empty()) return 0;
-    if (!(rd32(target + 0x48) & 0x80000000u)) return 0;  // not relocated yet
-    // Same skeleton is required: joint and envelope counts and the node table.
-    if (rd16(target + 0x08) != be16(&early[0x08]) || rd16(target + 0x0C) != be16(&early[0x0C])) {
-        log("[early luigi] skeleton mismatch, model left as is");
-        return 0;
-    }
-    {
-        const u32 tn = rd32(target + 0x30), en = be32(&early[0x30]);
-        if (std::memcmp(hostp(tn), &early[en], 0x10 * be16(&early[0x08])) != 0) {
-            log("[early luigi] joint graph mismatch, model left as is");
-            return 0;
-        }
-    }
-
     std::vector<u8> out = early;
     auto align = [&](u32 a) { while (out.size() % a) out.push_back(0); };
     align(32);
@@ -209,7 +215,15 @@ u32 buildFor(Ctx& c, u32 target) {
     put16(&out[0x24], u16(samp.size()));
     put32(&out[0x6C], newSamp);
 
-    const u32 g = hleAlloc(u32(out.size()), 32);
+    // Host-backed memory above MEM1, like the model viewer's heap: the copies stay for the
+    // whole session (one per target layout, at most a few), and the game never frees an
+    // .mdl it got from the model registry.
+    const u32 g = (sNext + 31) & ~31u;
+    if (g + out.size() > kCopyEnd) {
+        log("[early luigi] no room for another early model copy");
+        return 0;
+    }
+    sNext = g + u32(out.size());
     std::memcpy(hostp(g), out.data(), out.size());
     static const u32 sRelocate = guestSymbol("fn_80061B40");
     const Ctx saved = c;
@@ -220,35 +234,45 @@ u32 buildFor(Ctx& c, u32 target) {
     return g;
 }
 
-// Luigi models handled: gameplay Luigi and the cutscene Luigis with the same skeleton.
-// (dluige02, the ending model, has different bind poses and is left alone.)
-bool isLuigiModel(const char* name) {
-    return !std::strcmp(name, "/model/luige.szp") || !std::strcmp(name, "/model/dluige01.szp") ||
-           !std::strcmp(name, "/model/dluige03.szp");
+// Content key of a target's texture/sampler layout (what the early copy depends on).
+u64 layoutKey(u32 target) {
+    u64 h = 1469598103934665603ull;
+    auto mix = [&](const u8* p, u32 n) {
+        for (u32 i = 0; i < n; i++) h = (h ^ p[i]) * 1099511628211ull;
+    };
+    const u32 nt = rd16(target + 0x20), ns = rd16(target + 0x24);
+    for (u32 t = 0; t < nt; t++) {
+        const u8* th = static_cast<const u8*>(hostp(rd32(rd32(target + 0x60) + 4 * t)));
+        mix(th, 0x20 + texBytes(th[0], be16(th + 2), be16(th + 4)));
+    }
+    mix(static_cast<const u8*>(hostp(rd32(target + 0x6C))), 8 * ns);
+    return h ^ (u64(nt) << 48) ^ (u64(ns) << 32);
 }
 
-std::map<std::string, u32> sBuilt;  // model file name -> early copy (0 = failed)
+std::map<u64, u32> sBuilt;  // target layout -> early copy (0 = failed)
+
+// The early copy for a Luigi .mdl, or 0 when `mdl` is something else.
+u32 earlyFor(Ctx& c, u32 mdl, const char* what) {
+    if (!luigiSkeleton(mdl)) return 0;
+    const u64 key = layoutKey(mdl);
+    auto it = sBuilt.find(key);
+    if (it == sBuilt.end()) it = sBuilt.emplace(key, buildFor(c, mdl)).first;
+    static int sLogged = 0;
+    if (it->second && sLogged++ < 40) log("[early luigi] %s %08X -> early model %08X", what, mdl, it->second);
+    return it->second;
+}
 
 }  // namespace
 
-// Model registry setup from a loaded archive (map setup / async model loads).
+// Model registry setup from a loaded archive (map setup / async model loads): character
+// models, including the gameplay Luigi and the dluige cutscene Luigis.
 HLE(fn_80061C94) {
     const u32 entry = c.r[4];
     callOriginal(c, "fn_80061C94");
     if (!enabled() || entry < kModelRegistry || entry >= kModelRegistry + kEntrySize * kNumModels) return;
     if ((entry - kModelRegistry) % kEntrySize) return;
-    const u32 namePtr = rd32(entry);
     const u32 mdl = rd32(entry + 8);
-    if (!inMem1(namePtr) || !inMem1(mdl)) return;
-    const std::string name = gstr(namePtr);
-    if (!isLuigiModel(name.c_str())) return;
-    auto it = sBuilt.find(name);
-    if (it == sBuilt.end()) it = sBuilt.emplace(name, buildFor(c, mdl)).first;
-    if (it->second) {
-        wr32(entry + 8, it->second);
-        static int sLogged = 0;
-        if (sLogged++ < 20) log("[early luigi] %s -> early model", name.c_str());
-    }
+    if (const u32 e = earlyFor(c, mdl, inMem1(rd32(entry)) ? gstr(rd32(entry)) : "model")) wr32(entry + 8, e);
 }
 
 }  // namespace recomp
