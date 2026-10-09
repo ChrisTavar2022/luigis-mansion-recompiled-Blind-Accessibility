@@ -506,7 +506,8 @@ enum class Wire : int { Off, Overlay, Only };
 Wire sWire = Wire::Off;
 float sWireColor[4] = {1.0f, 0.85f, 0.2f, 1.0f};
 bool sTextures = std::getenv("LM_DEV_VIEWER_NOTEX") == nullptr;  // test aid: LM_DEV_VIEWER_NOTEX=1
-bool sGhostFx = true;                                            // "Ghost effects" (ghost archives)
+const bool sGhostFxDefault = std::getenv("LM_DEV_VIEWER_GHOSTFX") == nullptr || std::atoi(std::getenv("LM_DEV_VIEWER_GHOSTFX")) != 0;
+bool sGhostFx = sGhostFxDefault;                                 // "Ghost effects" (ghost archives; test aid LM_DEV_VIEWER_GHOSTFX=0)
 bool sTwoSided = false;                                          // "Back faces": no back-face culling (Aurora patch 0010)
 float sGhostColor[4] = {0x40 / 255.0f, 0x40 / 255.0f, 0x40 / 255.0f, 1.0f};  // ghost actor +0xE9 (ambient; 404040FF in play)
 float sGhostAlpha = 1.0f;                                        // ghost actor +0xE3 (layer weight; FF when fully visible)
@@ -763,14 +764,17 @@ void loadPending(Ctx& c) {
     }
     if (sPending.items.size() != 1) sLoadedInfo = std::to_string(sDraw.size()) + " models";
     sStatus = sLoadResult;
-    log("[viewer] loaded %s: %zu/%zu models, heap %u KiB used, centre %.0f %.0f %.0f radius %.0f%s%s", sPending.label.c_str(),
+    log("[viewer] loaded %s%s: %zu/%zu models, heap %u KiB used, centre %.0f %.0f %.0f radius %.0f%s%s", sPending.label.c_str(),
+        sIsGhost ? (sGhostFx ? " [ghost layer]" : " [ghost, plain]") : "",
         sDraw.size(), sPending.items.size(), sHeapUsed / 1024, sCenter[0], sCenter[1], sCenter[2], sRadius,
         sLoadResult.empty() ? "" : " - ", sLoadResult.c_str());
 }
 
 void drawBackdrop(Ctx& c) {
-    // Orthographic full-screen fill at the far plane: clears the picture (and depth) under the model.
-    const float ortho[16] = {2.0f / 640, 0, 0, -1, 0, -2.0f / 480, 0, 1, 0, 0, -1, -1, 0, 0, 0, 1};
+    // Orthographic full-screen fill exactly at the far plane (GX depth 0): clears the picture and
+    // the depth under the model. (It used to sit at 99.9% of the depth range, which hid every
+    // part of a model further than ~1000x the near plane: models "partly vanished" from afar.)
+    const float ortho[16] = {2.0f / 640, 0, 0, -1, 0, -2.0f / 480, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1};
     const float ident[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
     putMtx(kScratch + 0x000, ortho, 16);
     putMtx(kScratch + 0x040, ident, 12);
@@ -1108,7 +1112,7 @@ void selectArchive(int idx) {
         }
     }
     sStatus = sMdls.empty() ? "no models in this archive" : "";
-    sGhostFx = true;
+    sGhostFx = sGhostFxDefault;
 }
 
 // Keys that belong with a model: same nested archive (prefix up to the last ".arc/").
