@@ -53,7 +53,8 @@ std::vector<Field> fields() {
     auto& g = sSettings.gameplay;
     auto& r = sSettings.rendering;
     return {
-        enm("video", "frame_rate", v.frameRate),
+        num("video", "target_fps", v.targetFps),
+        flag("video", "match_display_refresh", v.matchDisplay),
         enm("video", "aspect", v.aspect),
         num("video", "resolution_scale", v.resolutionScale),
         num("video", "fov_scale", v.fovScale),
@@ -172,6 +173,12 @@ void loadSettings() {
         const auto eq = line.find('=');
         if (eq == std::string::npos) continue;
         const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
+        if (section == "video" && key == "frame_rate") {  // before target_fps: 0 = 30, 1 = 60, 2 = unlimited
+            const int old = std::atoi(value.c_str());
+            sSettings.video.targetFps = old == 1 ? 60 : 30;
+            sSettings.video.matchDisplay = old == 2;
+            continue;
+        }
         bool known = false;
         for (auto& f : table)
             if (section == f.section && key == f.key) {
@@ -181,6 +188,8 @@ void loadSettings() {
         if (!known)
             for (auto& ext : extensions()) ext.load(section, key, value);
     }
+    auto& v = sSettings.video;
+    v.targetFps = v.targetFps < kMinFps ? kMinFps : v.targetFps > kMaxFps ? kMaxFps : v.targetFps;
 }
 
 void saveSettings() {

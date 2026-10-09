@@ -7,12 +7,17 @@
 
 namespace port {
 
-enum class FrameRateMode { Original30, Interpolated60, InterpolatedUnlimited };
 enum class AspectMode { Original4x3, Auto, Wide16x9, Wide16x10, Ultra21x9, Ultra32x9 };
 enum class AudioOutput { Stereo, Mono, Surround };
 
+constexpr int kMinFps = 30, kMaxFps = 320;
+
 struct VideoSettings {
-    FrameRateMode frameRate = FrameRateMode::Original30;
+    // Presentation frame rate. 30 = the game's own rate, drawn directly (no interpolation);
+    // above 30 the frames in between are interpolated (src/recomp/interp.*). matchDisplay
+    // uses the refresh rate of the display the window is on instead of targetFps.
+    int targetFps = 30;         // kMinFps..kMaxFps
+    bool matchDisplay = false;
     AspectMode aspect = AspectMode::Auto;
     int resolutionScale = 0;    // internal render resolution: 0 = match window, N = N x 480p (aspect-widened)
     float fovScale = 1.0f;      // multiplies the game's vertical field of view
