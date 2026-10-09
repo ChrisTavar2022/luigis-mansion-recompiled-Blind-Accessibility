@@ -65,6 +65,7 @@ struct Tape {
     u32 paired = 0, unpaired = 0;
     u32 dumpOffset = ~0u;  // LM_INTERP_TEST: tape offset of the LM_FRAME_DUMP copy's target pointer
     u32 dumpFrame = 0;
+    u32 guestUs = 0;  // guest-thread time spent closing the tape (array copies' bookkeeping, pairing)
 };
 
 // --- guest side (guest thread only) ---
@@ -101,7 +102,7 @@ std::deque<std::shared_ptr<const Tape>> sRetired;
 std::vector<u8> sReplay;
 u32 sPresented = 0, sTapes = 0, sBlended = 0, sSnapped = 0, sCuts = 0;
 Clock::time_point sStatsStart = Clock::now();
-u64 sTapeBytes = 0, sArrayBytes = 0, sPairedSum = 0, sUnpairedSum = 0;
+u64 sTapeBytes = 0, sArrayBytes = 0, sPairedSum = 0, sUnpairedSum = 0, sGuestUs = 0, sReplayUs = 0;
 // LM_INTERP_TRACE=1: per present, alpha, time since the last present and what
 // could not be blended (by kind).
 const bool sTrace = std::getenv("LM_INTERP_TRACE") != nullptr;
@@ -345,7 +346,7 @@ bool blendable(Kind kind, const f32* a, const f32* b, int n) {
                 db += b[4 * r + 3] * b[4 * r + 3];
                 dd += (a[4 * r + 3] - b[4 * r + 3]) * (a[4 * r + 3] - b[4 * r + 3]);
             }
-            if (std::sqrt(dd) > std::max(300.0f, std::sqrt(std::max(da, db)))) return false;
+            if (std::sqrt(dd) > std::max(200.0f, 0.5f * std::sqrt(std::max(da, db)))) return false;
         }
         return true;
     }
@@ -407,6 +408,7 @@ void beginTape() {
 
 void endTape(u32 retraceCount) {
     if (!sCapturing) return;
+    const auto t0 = Clock::now();
     const u32 size = sBase + AuroraCaptureEnd();
     std::vector<std::vector<u8>> arrays;
     u64 arrayBytes = 0;
@@ -440,6 +442,7 @@ void endTape(u32 retraceCount) {
     }
     if (sLastTape) pairTapes(*sLastTape, *tape);
     tape->done = Clock::now();
+    tape->guestUs = u32(std::chrono::duration_cast<std::chrono::microseconds>(tape->done - t0).count());
     sLastTape = tape;
     {
         std::lock_guard lk(sM);
@@ -724,7 +727,9 @@ bool replay(bool final) {
         const double since = std::chrono::duration<double>(Clock::now() - b->done).count();
         alpha = float(std::clamp(since / interval, 0.0, 1.0));
     }
+    const auto r0 = Clock::now();
     replayPair(final ? nullptr : a.get(), *b, alpha, nullptr);
+    sReplayUs += u64(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - r0).count());
     if (sTrace) {
         static Clock::time_point last = Clock::now();
         const auto now = Clock::now();
@@ -745,18 +750,21 @@ bool replay(bool final) {
         sTapeBytes += b->bytes.size();
         sArrayBytes += b->arrayBytes;
         sPairedSum += b->paired;
+        sGuestUs += b->guestUs;
         sUnpairedSum += b->unpaired;
     }
     const double elapsed = std::chrono::duration<double>(Clock::now() - sStatsStart).count();
     if (elapsed >= 5.0) {
         log("[interp] presented %.1f fps, game %.1f fps, tape %.0f KiB + arrays %.0f KiB, per tape %.0f paired / %.0f "
-            "unpaired; per present %u blended / %u snapped; %u cut presents",
+            "unpaired; per present %u blended / %u snapped; %u cut presents; tape close %.2f ms (guest), replay "
+            "%.2f ms (host)",
             sPresented / elapsed, sTapes / elapsed, sTapes ? double(sTapeBytes) / sTapes / 1024.0 : 0.0,
             sTapes ? double(sArrayBytes) / sTapes / 1024.0 : 0.0, sTapes ? double(sPairedSum) / sTapes : 0.0,
             sTapes ? double(sUnpairedSum) / sTapes : 0.0, sPresented ? sBlended / sPresented : 0,
-            sPresented ? sSnapped / sPresented : 0, sCuts);
+            sPresented ? sSnapped / sPresented : 0, sCuts, sTapes ? double(sGuestUs) / sTapes / 1000.0 : 0.0,
+            sPresented ? double(sReplayUs) / sPresented / 1000.0 : 0.0);
         sPresented = sTapes = sBlended = sSnapped = sCuts = 0;
-        sTapeBytes = sArrayBytes = sPairedSum = sUnpairedSum = 0;
+        sTapeBytes = sArrayBytes = sPairedSum = sUnpairedSum = sGuestUs = sReplayUs = 0;
         sStatsStart = Clock::now();
     }
     return true;

@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
@@ -190,6 +191,13 @@ u32 parse(const u8* p, u32 size, bool partial) {
         } else {
             sUnparsed++;
             sBadOp = op | (partial ? 0x100 : 0) | (i << 12);
+            static int dumped = 0;
+            if (std::getenv("LM_INTERP_TRACE") && dumped++ < 3) {
+                char buf[400];
+                int n = 0;
+                for (u32 k = 0; k < size && k < 96 && n < 380; k++) n += std::snprintf(buf + n, sizeof(buf) - n, "%02X", p[k]);
+                log("[interp] unparsed %s stream at +%u: %s", partial ? "raw" : "list", i, buf);
+            }
             return size;
         }
         if (i + len > size) {
