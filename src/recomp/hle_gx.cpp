@@ -12,6 +12,7 @@
 #include "recomp/hle.h"
 #include "recomp/interp.h"
 #include "recomp/runtime.h"
+#include "recomp/version.h"
 #include "recomp/widescreen.h"
 #include "port/settings.h"
 
@@ -194,6 +195,12 @@ void emitScissor(bool pillar) {
 // full-screen viewport gets: Scaled (centered 4:3) or Plain (stretched).
 ProjMode drawMode(ProjMode ortho2D) {
     if (!viewportFull()) return ProjMode::Plain;
+    // The shadow-map pass (light's view, fn_8005D984 .. fn_8005DBE4, flagged by the game in
+    // lbl_804D8080) is rendered into the whole EFB and copied as a 640x480 texture that the
+    // receivers project with the unmodified light matrices: it must not get the Hor+/FOV or
+    // centered-4:3 adjustments, or the map no longer lines up with its projection
+    // (docs/RENDERING.md, "Shadows").
+    if (rd32(VA(0x804D8080)) != 0) return ProjMode::Plain;
     if (sProj.type == GX_PERSPECTIVE) return ws::adjusting() ? ProjMode::Scaled : ProjMode::Plain;
     return ws::active() ? ortho2D : ProjMode::Plain;
 }

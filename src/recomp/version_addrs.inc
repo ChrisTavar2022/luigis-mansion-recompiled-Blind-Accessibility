@@ -12,6 +12,7 @@
     {0x804CFFACu, 0x804BD674u},  // lbl_804CFFAC: 3 matching reference(s)
     {0x804D0558u, 0x804BDC20u},  // lbl_804D0558: 3 matching reference(s)
     {0x804D07C8u, 0x804BDE80u},  // lbl_804D07C8: 2 matching reference(s)
+    {0x804D8080u, 0x804C5740u},  // lbl_804D8080: 2 matching reference(s)
     {0x804D8088u, 0x804C5748u},  // lbl_804D8088: 10 matching reference(s)
     {0x804D80A0u, 0x804C5760u},  // sCurSceneId: 5 matching reference(s)
     {0x804D80A4u, 0x804C5764u},  // lbl_804D80A4: 3 matching reference(s)
