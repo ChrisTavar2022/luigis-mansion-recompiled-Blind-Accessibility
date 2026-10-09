@@ -9,27 +9,19 @@
 // selects them. With the option on, the mode selector runs unchanged and the nozzle is then
 // re-typed through the same function: water spray -> wpwater, air -> wpair. No map ever
 // requests those two models, so they are loaded first with the game's own model loader.
-//
-// D-pad Right toggles the air nozzle while Luigi carries an element (retail has no way to
-// blow air then): the selector sees "no element" (+0x1184 = 1, its value for air) for the
-// duration of its call, so L picks air and the element is kept. Docs: docs/UNUSED_CONTENT.md.
+// Fire, ice and the vacuum keep `vhead`, the flashlight `wplight`. Docs: docs/UNUSED_CONTENT.md.
 #include "port/install.h"
 #include "port/settings.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 
-#include <dolphin/pad.h>
-
 #include <cstdlib>
 
 namespace recomp {
-u16 padButtons();  // hle_pad.cpp: port 1 buttons as last handed to the game
-
 namespace {
 
 constexpr u32 kNozzle = 0x7A4;   // nozzle actor (MoveObj); character type at +0x3C
 constexpr u32 kMode = 0x1180;    // Poltergust mode chosen by fn_800B36B8
-constexpr u32 kElement = 0x1184; // 1 none (air), 2 fire, 3 water, 4 ice
 constexpr u32 kCharType = 0x3C;
 constexpr u32 kModeWater = 3, kModeAir = 6, kModeLight = 5;
 constexpr u32 kTypeHose = 6, kTypeLight = 7, kTypeWater = 8, kTypeAir = 9;
@@ -69,9 +61,6 @@ bool modelReady(Ctx& c, u32 type) {
     return false;
 }
 
-bool sAirSelected = false;
-u16 sPrevButtons = 0;
-
 }  // namespace
 
 // Luigi's Poltergust mode selector (once per Luigi update).
@@ -85,20 +74,7 @@ HLE(fn_800B36B8) {
         return;
     }
     const bool on = enabled();
-    const u16 buttons = padButtons();
-    if (!on) {
-        sAirSelected = false;
-    } else if ((buttons & PAD_BUTTON_RIGHT) && !(sPrevButtons & PAD_BUTTON_RIGHT)) {
-        sAirSelected = !sAirSelected;
-        log("[nozzle] air nozzle %s", sAirSelected ? "selected" : "off (element nozzle)");
-    }
-    sPrevButtons = buttons;
-
-    const u32 element = rd32(luigi + kElement);
-    const bool presentAir = on && sAirSelected && element >= 2 && element <= 4;
-    if (presentAir) wr32(luigi + kElement, 1);
     callOriginal(c, "fn_800B36B8");
-    if (presentAir && rd32(luigi + kElement) == 1) wr32(luigi + kElement, element);
 
     const u32 mode = rd32(luigi + kMode);
     const u32 type = rd32(nozzle + kCharType);

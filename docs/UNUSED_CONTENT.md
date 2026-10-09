@@ -219,10 +219,10 @@ How the retail code uses them:
 Port (`src/recomp/nozzles.cpp`, hook on `fn_800B36B8`, US code only): the selector runs
 unchanged; afterwards, with the option on, the nozzle is re-typed through the game's own
 `fn_800B9064`: mode 3 (water) → 8 `wpwater`, mode 6 (air) → 9 `wpair`; when the mode leaves
-them (or the option is turned off) it goes back to 6/7 as in retail. D-pad Right toggles an
-"air nozzle" selection: while Luigi carries an element, the selector sees +0x1184 = 1 for the
-duration of its call, so L blows air with `wpair` and the element is kept. With the option
-off the hook only calls the original (types stay 6/7, D-pad Right does nothing).
+them (or the option is turned off) it goes back to 6/7 as in retail. Vacuum, fire and ice
+keep `vhead`, the flashlight `wplight`. The option is a plain on/off switch (no button: the
+D-pad is kept for the early Game Boy Horror modes). With the option off the hook only calls
+the original (types stay 6/7).
 
 The models have to be loaded first. Character models live in the registry `lbl_8034E46C`
 (0x34 per model: +0 file name, +8 relocated `.mdl` once loaded, +0x30 load state; the type
@@ -240,8 +240,8 @@ long like `vhead`, with the same three joints and key names.
 
 Verified (`build/nozzles_side.png`, native guest frames from `LM_FRAME_DUMP`, Nursery,
 `LM_START_MAP=2 LM_START_APPEAR=1`, Luigi turned sideways with the stick): retail water
-(`vhead`), water with `wpwater` (blue), air with `wpair` (red), and air with `wpair` after
-D-pad Right while carrying water. The nozzles sit in Luigi's hands like `vhead` and the water
+(`vhead`), water with `wpwater` (blue), air with `wpair` (red). The nozzles sit in Luigi's
+hands like `vhead` and the water
 stream and air puffs come out of their tips. Test aids: `LM_NOZZLES=1` (force on),
 `LM_NOZZLE_DUMP=1` (logs mode/element/meter/nozzle type on change, plus the Poltergust
 controller `[Luigi+0x7E4]` +0x310/+0x314/+0x334 and its 0x50-byte input block).
@@ -256,6 +256,87 @@ What the game itself never finished:
 - Air and water behave exactly as with `vhead` (same effects, same element meter); nothing
   in the code gives the dedicated nozzles different gameplay.
 - Luigi's other character types (1/0xB3) have 0xB8/0xB9 entries too; the port leaves them alone.
+
+### Unused model swaps (`src/recomp/unused_models.cpp`)
+
+Character models are loaded per map into the registry `lbl_8034E46C` (0x34 per model: +0 file
+name, +4 archive, +8 relocated `.mdl`, +0xC key count, +0x10 key list, +0x30 load state) from
+the resident game archive when it has `model/<name>.arc`, otherwise from the loose disc file
+`/model/<name>.szp`. `fn_80061C94(archive, entry)` sets each one up: the `/key` files into the
+key list in archive order (relocated by `fn_80061A24`), then the `.mdl` into +8 (relocated by
+`fn_80061B40`). It runs for resident archives directly from map setup (`fn_8006227C`) and for
+disc archives from the DVD callback (`fn_800620CC`). The port hooks it (US code only): after it
+finishes, for an enabled swap the entry gets a relocated host-loaded copy of the unused `.mdl`
+(read from the disc with the port's RARC/Yay0 reader, copied into `hleAlloc` memory, relocated
+by the game's own `fn_80061B40`), and each key slot the unused archive's key for the same
+action. Actors built afterwards use it like any other model. Takes effect at the next map load.
+
+#### Early Poltergust 3000 ("Early Poltergust 3000")
+
+Two `vbody` models exist. Retail uses `model/vbody.arc` from the resident `game_usa.szp`
+(34808-byte `.mdl`, the rounded red tank with the big silver wheel); `/model/vbody.szp`
+(25764-byte `.mdl`) is the E3 2001 Poltergust, a red canister with dark end caps and silver
+knobs on a base with four black wheels (yellow hubs). The loose file is never read because the
+registry's `/model/vbody.szp` name resolves to the resident `.arc` first. Both have 4 joints.
+The E3 archive's keys have the same names as the retail ones except that it has no
+`lght_vby.key` (flashlight pose), so that slot keeps the retail key; the other six are the
+E3 ones (its `h_vbody` idle is a one-frame pose instead of retail's 30-frame wobble).
+
+Verified (`build/early_poltergust.png`, Nursery, guest frames): retail tank from the side, the
+E3 canister from the back (four wheels) and from both sides. It sits upright on Luigi's back on
+the retail attachment; the hose (drawn by the player code between the tank and the nozzle)
+starts at the top of the canister and still lines up. Vacuuming works as before. Test aid:
+`LM_EARLY_POLTERGUST=1`.
+
+Not finished in the game: nothing references the E3 model any more; how it was meant to sit
+on Luigi's back (upright, as the retail keys and its own keys place it) can't be checked against
+E3 footage here.
+
+#### Early Bogmire ("Early Bogmire model")
+
+`/model/shadow.szp` (registry model 129) is the early Bogmire; no character type uses it.
+Retail Bogmire is type 213 `bfire` (model 130, `/model/bfire.szp`, a disc file loaded for
+map 13, the cemetery boss arena, and listed in map 2's `characterinfo`). The two skeletons
+differ (shadow 42 joints, bfire 41), so bfire's keys can't drive the early model; every bfire key
+slot gets the shadow key for the same action: `appear` -> `syutugen` (appear), `dappear` ->
+`kieru` (vanish), `wait`/`dwait` -> `wait`, `nigeru`/`nigeru2` (pulling against the vacuum) ->
+`kinko` (the 12-frame tug of war, same length as `nigeru`), `biribiri` and `suikomi` by name.
+The early archive's `kogeki` (attack), `kuyasi` (frustrated) and `tyakasu` keys have no retail
+slot and are not used. The retail `geb/bfire.geb` and `.bas` (sound timing) files stay in use.
+
+Verified: model viewer (`build/bogmire_viewer.png`: `bfire` above, `shadow` below with the
+longer wings and thin hanging flaps, the defined chin and the wavy skirt) and the map 13 intro
+(`build/bogmire_intro.png`, `LM_START_MAP=13`, same guest frames retail/early). The fight runs
+with the early model (60 s with `LM_SKIP_CUTSCENES`, shadow clones and Bogmire's appearances,
+no errors). Not checked: whether any Bogmire effect is attached to a joint by index (with one
+more joint, such an effect could sit on a different body part); the Portrificationizer and the
+gallery never use `bfire` (portrait scenes use their own models, the gallery a painting).
+Test aid: `LM_EARLY_BOGMIRE=1`.
+
+### Green Toad ("Green Toad (kinopio2)")
+
+Types 42 `kinopio` and 43 `kinopio2` both use model 0x49 (`/model/kinopio.szp`); kinopio2 is
+never placed. The archive has two texture patterns (`txp/kinopio1.txp`, `kinopio2.txp`, loaded
+per model by `fn_80187B24` into the list at `lbl_80389B68 + model*0x40`); a type's +0x10 picks
+one when an actor is set up (`fn_80067B04`/`fn_80067F84` -> `fn_80187974` -> S3DModel +0xA4):
+kinopio 0, kinopio2 1 (green spots). TCRF's NTSC-U code `0433BA28 00000049`,
+`0033BA31 00000002`, `0433BA38 00000001` writes kinopio's model index, its +9 byte and +0x10;
+on GLME01 rev 0 the first two already hold those values, so the effect is kinopio +0x10 = 1.
+
+Port: that value is written at every map setup (`fn_8000C188` hook), and because Toad's archive
+is a disc file loaded asynchronously (the Toads placed at map load are set up before their
+`.txp` files exist, so the code alone leaves them red), every live Toad's S3DModel +0xA4 is set
+to the green pattern once it is loaded (GBH HUD hook, every gameplay frame). Dialogue icon:
+`fn_80041DB8` loads 19 speaker icons named by `lbl_80305148 + 0x360` into 0x18-byte sprites at
+`lbl_803CE7D0 + 0xA90` (+0x10 = texture object). Despite the names, every Toad uses entry 16,
+`kino_ri.bti` (red), and entry 15, `kino_icon.bti`, is a green-capped Toad that is loaded but
+never shown; the option points sprite 16 at sprite 15's texture. Everything is put back when
+the option is turned off. The addresses go through `VA()`, so it also works on the European
+game (tables checked in the PAL DOL: same layout, kinopio/kinopio2 at types 42/43, icons 15/16).
+
+Verified (`build/green_toad.png`): the Washroom Toad (`LM_START_MAP=2`,
+`LM_TELEPORT=-2210,0,-4150,100`, A presses) talking, retail vs green: model and dialogue icon
+both green. Test aid: `LM_GREEN_TOAD=1`.
 
 ## Other leftovers noticed
 

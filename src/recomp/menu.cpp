@@ -405,6 +405,10 @@ void unusedContentTab() {
             sDirty = true;
         }
     }
+    sDirty |= ImGui::Checkbox("Green Toad (kinopio2)", &e.greenToad);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Toads wear the unused green texture set of the never-placed kinopio2 character\n"
+                          "(TCRF's Action Replay code), with the unused green-capped dialogue icon.");
     {
         Gate g(port::usCodeFeature());
         auto item = [&](const char* label, bool& v, const char* note) {
@@ -418,10 +422,19 @@ void unusedContentTab() {
         item("Portrificationizer: each ghost's own model", e.unusedPortraitModels, nullptr);
         sDirty |= ImGui::Checkbox("Air and water nozzles", &e.airWaterNozzles);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("The Poltergust's unused nozzle models: wpair when blowing air (L without an element),\n"
-                              "wpwater when spraying water. D-pad Right switches to the air nozzle while you carry\n"
-                              "an element, so L blows air instead (the element is kept); press again to switch back.");
-        if (g.a == port::Avail::Yes) pending("D-pad Right: air nozzle");
+            ImGui::SetTooltip("The Poltergust's unused nozzle models: the red wpair nozzle when blowing air\n"
+                              "(L without an element) and the blue wpwater nozzle when spraying water.\n"
+                              "Vacuum, fire and ice keep the retail nozzle.");
+        sDirty |= ImGui::Checkbox("Early Poltergust 3000", &e.earlyPoltergust);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The E3 2001 Poltergust model still on the disc (/model/vbody.szp): a red canister\n"
+                              "on a wheeled base instead of the retail tank.");
+        if (g.a == port::Avail::Yes) pending("next map load");
+        sDirty |= ImGui::Checkbox("Early Bogmire model", &e.earlyBogmire);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Bogmire uses his unused early model (/model/shadow.szp): longer wings, thinner\n"
+                              "hanging flaps, a defined chin and a wavy ghost tail, with its own animations.");
+        if (g.a == port::Avail::Yes) pending("next map load");
     }
     ImGui::Separator();
     {
