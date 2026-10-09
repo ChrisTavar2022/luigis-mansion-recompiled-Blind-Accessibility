@@ -195,33 +195,67 @@ zoom) shows a small full-body Luigi instead of the big head.
   value), so it is correct whenever the scene reads it and goes back to `0x60` when the option
   is off. Test aid: `LM_UNUSED_PORTRAITS=1`.
 
-### Not done: dedicated air/water nozzles
+### Air and water nozzles ("Air and water nozzles")
 
-`/model/wpwater.szp` and `/model/wpair.szp` (and `wplight`) are registered character types
-7/8/9 (`lbl_8033B590`: `wplight`, `wpwater`, `wpair`, right after `vbody`/`vhead`), each
-with a model-registry entry. No code ever creates those actors. Luigi's equipment is created
-in `fn_80072554` (types 6 `vhead`, 5 `vbody`, 0x0A `gameboy`) and attached to joints by
-`fn_800AE1A4` → `fn_800685DC` (child slots at parent +0x5C8, stride 0x40). Hiding an actor is
-MoveObj flag 0x4000 at +0x40. A reconstruction would create type 8/9 actors, attach them
-like `vhead`, and swap visibility while Luigi sprays.
+`/model/wplight.szp`, `/model/wpwater.szp` and `/model/wpair.szp` are character types 7/8/9
+(`lbl_8033B590`, right after `vbody` 5 / `vhead` 6). Each has a model-registry entry and its
+own attach table for Luigi in `fn_80078008` (`lbl_80354290`, `lbl_803543B4`,
+`lbl_803544D8`; Luigi's other character types 1/0xB3 have a parallel 0xB5..0xB9 set).
 
-What is known about the spray state so far:
-- The Poltergust controller is `[Luigi+0x7E4]` (code in `auto_03_80073A18`, updated by
-  `fn_80073AF8` from `fn_800B5324`). +0x310 is the mode (1 idle, 2 active) and +0x314 the
-  sub-action. Each frame Luigi copies a 0x50-byte input block to its start: +0x04 element
-  index, +0x40 request.
-- `fn_8007528C` starts actions from the request: 2 = vacuum (sub 0xF); 5 = element spray, only
-  when the element index is 1..3 (sub 0x11); 9 and 11 are other actions. Air blowing showed up
-  as mode 2 / sub 0x0A.
-- Luigi's request comes from `fn_800B5324`: 5 while Luigi +0x1114 > 0 (element spray), 6
-  while +0x110C > 0. Luigi's element is +0x1184 (2 fire, 3 water, 4 ice) and the meter amount
-  is +0x1188 (0..100).
-- The scripted runs could not produce a sustained spray. The test Luigi was sitting in event
-  dialogue, so L was ignored. The next step is to rerun with `LM_TEST_STATE=water`, periodic
-  A presses or `LM_SKIP_AUTO`, then hold L and read `LM_NOZZLE_DUMP` to confirm the sub-actions
-  for water and air.
+How the retail code uses them:
+- Luigi's equipment is created in `fn_80072554` (types 6, 5, 0x0A `gameboy`) and attached by
+  `fn_800AE1A4`: nozzle at Luigi +0x7A4, tank +0x7A8, GBH +0x7AC.
+- The nozzle is one actor whose character type is changed on the fly: `fn_800B9064(luigi,
+  type)` → `fn_800B90D0` → `fn_80067B04` (MoveObj re-init with the new type's model).
+- Luigi's Poltergust mode selector `fn_800B36B8` sets +0x1180: 1 vacuum (R, input object
+  +0x7D4 +0x20 > 0), L (+0x2C > 0) → the element +0x1184 (2 fire, 3 water, 4 ice; 1 = no
+  element → 6 air), 5 flashlight. On a change it re-types the nozzle: **5 → type 7
+  `wplight`** (so wplight *is* used in retail, as the idle/flashlight nozzle), every other mode
+  → type 6 `vhead`. Types 8/9 are never selected.
+- Vacuum, air and element spray all work in ordinary rooms with `LM_TEST_STATE` (checked in the
+  Nursery and in the foyer after the opening). The earlier "L/R do nothing" runs pressed the
+  buttons before gameplay started (still in the opening/dialogue).
 
-No option is offered until that is confirmed.
+Port (`src/recomp/nozzles.cpp`, hook on `fn_800B36B8`, US code only): the selector runs
+unchanged; afterwards, with the option on, the nozzle is re-typed through the game's own
+`fn_800B9064`: mode 3 (water) → 8 `wpwater`, mode 6 (air) → 9 `wpair`; when the mode leaves
+them (or the option is turned off) it goes back to 6/7 as in retail. D-pad Right toggles an
+"air nozzle" selection: while Luigi carries an element, the selector sees +0x1184 = 1 for the
+duration of its call, so L blows air with `wpair` and the element is kept. With the option
+off the hook only calls the original (types stay 6/7, D-pad Right does nothing).
+
+The models have to be loaded first. Character models live in the registry `lbl_8034E46C`
+(0x34 per model: +0 file name, +8 relocated `.mdl` once loaded, +0x30 load state; the type
+table `lbl_8033B590` +0 gives a type's model index: `vhead` 1, `wplight` 2, `wpwater` 18,
+`wpair` 19). Map setup (`fn_8006227C`) clears the registry and loads only the models the map
+needs (resident archives directly, others through `fn_800620F4`); event code loads extra
+models the same way (`JmpMessage`, `0x800EB5A0`). `wpwater`/`wpair` are never requested, so
+re-typing the nozzle to them without loading left the S3DModel with no model data: the first
+version of this option drew only a thin grey stub in Luigi's hand. The hook now requests both
+with `fn_800620F4__Fi` while the option is on (again after every map change, since the
+registry is cleared) and only re-types once the registry entry has its model. Drawn standalone
+in the model viewer (`LM_DEV_VIEWER=/model/wpwater.szp`), the models are a long grey tube,
+dark ridged collar, bulging blue (`wpwater`) or red (`wpair`) section and white tip, 88 units
+long like `vhead`, with the same three joints and key names.
+
+Verified (`build/nozzles_side.png`, native guest frames from `LM_FRAME_DUMP`, Nursery,
+`LM_START_MAP=2 LM_START_APPEAR=1`, Luigi turned sideways with the stick): retail water
+(`vhead`), water with `wpwater` (blue), air with `wpair` (red), and air with `wpair` after
+D-pad Right while carrying water. The nozzles sit in Luigi's hands like `vhead` and the water
+stream and air puffs come out of their tips. Test aids: `LM_NOZZLES=1` (force on),
+`LM_NOZZLE_DUMP=1` (logs mode/element/meter/nozzle type on change, plus the Poltergust
+controller `[Luigi+0x7E4]` +0x310/+0x314/+0x334 and its 0x50-byte input block).
+
+What the game itself never finished:
+- No code path selects types 8/9 or loads their models; the mapping water → `wpwater`, air →
+  `wpair` is inferred from the type names, their models and their attach tables. There is no
+  `wpfire`/`wpice`, so fire and ice keep `vhead`.
+- The three attach tables (`lbl_8035416C` `vhead`, `lbl_803543B4` `wpwater`, `lbl_803544D8`
+  `wpair`) are identical apart from their animation lists (same joint 0x0E, same values), so
+  keeping the `vhead` attachment loses nothing.
+- Air and water behave exactly as with `vhead` (same effects, same element meter); nothing
+  in the code gives the dedicated nozzles different gameplay.
+- Luigi's other character types (1/0xB3) have 0xB8/0xB9 entries too; the port leaves them alone.
 
 ## Other leftovers noticed
 

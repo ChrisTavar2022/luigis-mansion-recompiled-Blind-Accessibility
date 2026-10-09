@@ -284,6 +284,7 @@ HLE(getResSize__10JKRArchiveCFPCv) {
 
 
 u16 padButtons();  // hle_pad.cpp
+u32 copyDispCount();  // hle_gx.cpp
 
 // Called once per gameplay frame (after the GBH HUD update).
 void unusedAssetsFrame(Ctx& c) {
@@ -298,6 +299,17 @@ void unusedAssetsFrame(Ctx& c) {
     const u8* cur = hostp(actor);
     const bool l = padButtons() & 0x0040;
     const u32 st = rd32(actor + 0x7E4);
+    {
+        // Luigi's Poltergust mode (+0x1180: 0 none, 1 vacuum, 2-4 element, 5 flashlight, 6 air),
+        // element (+0x1184), meter (+0x1188) and the nozzle actor's character type ([+0x7A4] +0x3C).
+        static std::string lastF;
+        char b[160];
+        const u32 nz = rd32(actor + 0x7A4);
+        std::snprintf(b, sizeof b, "btn %04X mode %d element %d meter %.0f nozzle type %d", padButtons(),
+                      s32(rd32(actor + 0x1180)), s32(rd32(actor + 0x1184)), std::bit_cast<float>(rd32(actor + 0x1188)),
+                      nz ? s32(rd32(nz + 0x3C)) : -1);
+        if (lastF != b) log("[nozzle] frame %u: %s", copyDispCount(), b), lastF = b;
+    }
     if (st >= 0x80000000u && st < 0x81800000u) {
         static u32 last = ~0u;
         const u32 v = rd32(st + 0x310) << 16 | rd32(st + 0x314) << 8 | rd32(st + 0x334);
