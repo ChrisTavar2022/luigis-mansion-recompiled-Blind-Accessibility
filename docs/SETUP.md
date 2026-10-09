@@ -200,7 +200,7 @@ All enhancements now work on both releases. Checked in the European static build
 | Feature | European specifics | Verified |
 |---------|-------------------|----------|
 | Skippable cutscenes | scene table has a 9th (language select) scene; ids and event interpreter layout unchanged | opening + mansion entrance skipped; snapshot matches a watched run |
-| HUD at the screen edges | the two HUD functions are larger (end address mapped by `VA()` of their last instruction) | 21:9 foyer: meter at the left edge |
+| HUD at the screen edges | element hooks (`fn_8003D634`, `fn_800417F8`, `fn_80045BDC`, `fn_800115F8`, ...) are `us pal`; GBH mode variable via `VA()` | 16:9: health at the left edge, GBH live camera inside the GBH frame at the right |
 | Widescreen culling (`fn_80008D58`) | camera viewport x/width at +0x1F8/+0x200 (USA +0x1EC/+0x1F4) | hook runs for every 3D projection |
 | Game Boy Horror camera | the European view-1 clear is `fn_8000B7CC` (the matcher pairs the USA `fn_8000B228` with an unrelated full-screen clear); it resets depth with a Z texture, which Aurora now implements, so no hook is needed (the old far-plane workaround is gone) | live view on the GBH screen in the foyer |
 | Ghost shading Beta | `fn_800581E8` identical; call site mapped | lighting visibly changes (Boolossus balcony); check in an ordinary room pending |
