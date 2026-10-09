@@ -9,6 +9,23 @@ set(AURORA_ENABLE_DVD ON CACHE BOOL "" FORCE)
 set(AURORA_ENABLE_CARD ON CACHE BOOL "" FORCE)
 # Local fixes to Aurora, kept as patches so the submodule stays pristine.
 file(GLOB AURORA_PATCHES ${CMAKE_SOURCE_DIR}/patches/aurora/*.patch)
+# A later patch may change lines in an earlier one's context, so on an already patched tree the
+# single-patch reverse check below can fail for the earlier patch. After a successful run the
+# hashes of the applied series are stamped into the submodule (untracked file, removed by
+# `git -C extern/aurora clean -fd`), and an unchanged series is not checked again.
+set(_patchHashes "")
+foreach (_patch ${AURORA_PATCHES})
+    file(SHA256 ${_patch} _h)
+    string(APPEND _patchHashes "${_h} ")
+endforeach ()
+set(_stamp ${CMAKE_SOURCE_DIR}/extern/aurora/.lm_patches_applied)
+set(_stampHashes "")
+if (EXISTS ${_stamp})
+    file(READ ${_stamp} _stampHashes)
+endif ()
+if (_stampHashes STREQUAL _patchHashes)
+    set(AURORA_PATCHES "")
+endif ()
 foreach (_patch ${AURORA_PATCHES})
     execute_process(COMMAND git apply --reverse --check ${_patch}
                     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/extern/aurora
@@ -18,11 +35,14 @@ foreach (_patch ${AURORA_PATCHES})
                         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/extern/aurora
                         RESULT_VARIABLE _applied)
         if (NOT _applied EQUAL 0)
-            message(FATAL_ERROR "Failed to apply Aurora patch ${_patch}")
+            message(FATAL_ERROR "Failed to apply Aurora patch ${_patch}. If the patches changed since "
+                                "they were applied, reset the submodule (git -C extern/aurora checkout . && "
+                                "git -C extern/aurora clean -fd) and configure again.")
         endif ()
         message(STATUS "Applied Aurora patch ${_patch}")
     endif ()
 endforeach ()
+file(WRITE ${_stamp} "${_patchHashes}")
 add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
 
 
