@@ -247,9 +247,12 @@ markedly darker than the US one (candle/lamp light sources unaffected).
 `hm::variant()` / `hm::setVariant()` (`src/recomp/hidden_mansion.h`). Everything below is
 active only while the game's flag is set **and** the variant is PAL; with the US variant the
 overlay is off, patched literals are restored and every hook passes straight through to the
-original. Until the lab menu offers both (below), the variant comes from
-`--hidden-mansion-variant pal|us` (alias `--hidden-mansion`, env
-`LM_HIDDEN_MANSION_VARIANT`), default `pal`.
+original. With both discs the player picks the variant in E. Gadd's lab (below); the lab
+records it in game flag 8 and `variant()` reads it from there. Without the lab menu (one
+disc, or an overlay built before it) the variant is F1 > Enhancements > *Hidden Mansion
+version*. `--hidden-mansion-variant pal|us` (alias `--hidden-mansion`, env
+`LM_HIDDEN_MANSION_VARIANT`) overrides both, for testing; `LM_HM_FORCE=1` sets flag 8 from
+the F1/override default when it forces the hidden-mansion flag.
 
 **Data overlay** (`tools/hidden_mansion_data.py` → `orig/hidden_mansion/`, served by
 `hle_dvd.cpp` through `hm::overlayEntry`/`overlayRead`): `/Map/map2.szp` → PAL `map2u.szp` while
@@ -322,13 +325,50 @@ data, so flag 5 persists, while the hidden-mansion flag itself is RAM-only and i
 each time the player picks the Hidden Mansion in the lab (PAL additionally mirrors it in save
 flag 8).
 
-**Adding the PAL entry.** No game build uses more than four `<CHOICE>` entries, so the safe
-form is a follow-up question rather than a fifth entry: in the `"urayasiki"` case, ask
-`<CHOICE>"ura_us"(N)"ura_pal"(N+1)<LISTEND>` with two new lines appended to `message8.csv`
-("Hidden Mansion (USA)", "Hidden Mansion (PAL)"), and in `"ura_pal"` run `<FLAGON>(F)`
-before `<URALUIGI>` (`<FLAGOFF>(F)` in `"ura_us"`), where F is a flag no script or code uses
-(e.g. 240; scripts use flags up to 198 plus 255). The host then derives the variant from flag
-F (read it the same way as `getFlagValue`) instead of the command line, so the choice persists
-with the save. All of this is a script + message-table patch that `tools/hidden_mansion_data.py`
-can apply to the US `event08.szp` (it already rewrites that archive). A true fifth entry needs
-checking the `<CHOICE>` handler's capacity in `fn_8006385C` first.
+**Implementation: a follow-up choice.** No game build uses more than four `<CHOICE>`
+entries, so picking "The Hidden Mansion" asks a second `<CHOICE>` (`tools/hidden_mansion_data.py`
+`lab_script`/`lab_table`, C++ twin in `src/setup/hm_overlay.cpp`; both produce identical
+archives):
+
+```
+<CASE>"urayasiki"
+<CHOICE>"ura_us"(39)"ura_pal"(40)<LISTEND>
+<ANYKEY>
+<CASE>"ura_us"   ...original send-off... <FLAGOFF>(8) <URALUIGI> ...
+<CASE>"ura_pal"  ...original send-off... <FLAGON>(8)  <URALUIGI> ...
+```
+
+- **Script**: the European `event08` script (it already clears flag 8 and the hidden-mansion
+  flag when the lab is entered, and sets flag 8 before `<URALUIGI>`), with the
+  `"urayasiki"` case split as above. Served on both games (`Event/event08.szp` on the USA game,
+  `usa/Event/event08.szp` on the European one; manifest tag `[always]`) whichever variant is
+  selected, as long as both discs are installed (`hm::labChoiceAvailable()`).
+- **Text**: two lines appended to every message table in the archive (`message8.csv`; the
+  European archive's `message/<language>/book1.txt`, padded with empty entries so the
+  indices match): that language's own "Hidden Mansion" line (index 38) plus " (USA)" /
+  " (PAL)" (full-width in the Japanese table). English: "The Hidden Mansion (USA)" /
+  "The Hidden Mansion (PAL)". Drawn by the game's own choice box and font.
+- **Choice box**: its left edge is a constant (`.sdata` 0x804D0558 = 368) and it grows to the
+  right, so the longer entries ran off the screen; `HLE(fn_80043104)` (the `<CHOICE>` box
+  draw, both releases) moves a box that would cross x = 624 to the left for the draw, only
+  while the lab menu is installed.
+- **Where the answer is kept: game flag 8**, the European release's hidden-mansion save
+  flag. Flags 85..255 are cleared on every map load (`fn_80066084`: 85..169,
+  `fn_8006628C`: 170..255), so an unused high flag cannot carry the choice into the mansion,
+  and the low persistent flags are used by scripts, code or map data. Flag 8 is set for PAL /
+  cleared for USA right before `<URALUIGI>`, is saved with the file, and is cleared again
+  whenever the lab is entered; it is exactly "currently in the PAL Hidden Mansion". The USA
+  game never reads it; the European scripts (event16/73) use it for their Boo-count gates,
+  which is what the PAL rules need, and with it cleared they take the USA branch.
+  `hm::variant()` = flag 8 while the lab menu is installed. The choice is therefore asked
+  on every visit (like the hidden-mansion flag itself, which the lab sets each time), and a
+  save made inside a Hidden Mansion keeps its variant.
+- **F1**: with the lab menu the F1 combo is replaced by a note ("chosen in E. Gadd's lab",
+  and the current visit's version while inside); the setting stays as the fallback.
+- **Retail unchanged** with one disc: nothing is served and the menu is the original one.
+
+Verified (US base, `lmrecomp`, and European base, `LuigisMansionRecomp` with both discs and
+a setup-built overlay; scratch AppData/card, `LM_START_MAP=1` + `LM_SKIP_TEST` flags 5/7):
+the follow-up list shows both lines on screen; "(PAL)" gives the mirrored, darker mansion
+with `map2u` (US base) / the European data (European base); "(USA)" gives the unmirrored
+USA mansion (US base: retail data; European base: `usa/Map/map2.szp`).
