@@ -81,6 +81,10 @@ fn_8002F4DC
 getResource__10JKRArchiveFPCc
 getResSize__10JKRArchiveCFPCv
 
+# Unused air/water Poltergust nozzles (src/recomp/nozzles.cpp): Luigi's Poltergust mode
+# selector, which re-types the nozzle actor.
+fn_800B36B8
+
 # Developer tools (src/recomp/dev_tools.cpp, docs/UNUSED_CONTENT.md): map warps through the
 # scene manager (+ LM_START_MAP), the game's JUTReport queue (debug text overlay), and the
 # end-of-frame copy where debug switches are applied and the model viewer draws.

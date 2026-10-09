@@ -21,9 +21,11 @@
 namespace recomp::audio {
 namespace {
 
-// Channel order of the AI DMA frames: JAudio interleaves the DSP's first output
-// buffer (bus 0x0D00) into the first slot of each frame.
-constexpr bool kRightFirst = false;
+// Channel order of the AI DMA frames: the console plays the first sample of each
+// stereo frame on the right. JAudio's Jac_VframeWork interleaves the DSP's second
+// output buffer (bus 0x0D60) into that slot and bus 0x0D00 into the second, so
+// 0x0D00 is left (as AFC stream channel 0 and the Dolby matrix, +S on 0x0D00, imply).
+constexpr bool kRightFirst = true;
 
 std::mutex sM;
 SDL_AudioStream* sStream = nullptr;

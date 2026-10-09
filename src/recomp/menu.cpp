@@ -221,8 +221,20 @@ void soundTab() {
     sDirty |= ImGui::SliderFloat("Sound effects volume", &a.sfxVolume, 0.0f, 1.0f);
     static const char* kOutputs[] = {"Stereo", "Mono", "Surround (Pro Logic II matrix)"};
     sDirty |= combo("Output", a.output, kOutputs, 3);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Surround here plays like Stereo: the console's Dolby Surround matrix is always\n"
+                          "reproduced in the stereo output (choose Surround in the game's own options),\n"
+                          "so a Pro Logic (II) decoder can unfold it.");
     sDirty |= ImGui::Checkbox("Swap left/right", &a.swapChannels);
+    ImGui::SeparatorText("DSP accuracy");
     sDirty |= ImGui::Checkbox("Reverb / echo", &a.reverb);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The DSP's effect lines (feedback delays used as room echo) and its chorus bus.\n"
+                          "Off: dry sound only, slightly cheaper.");
+    sDirty |= ImGui::Checkbox("Voice filters", &a.voiceFilters);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Per-voice FIR / IIR / distortion stages the game asks the DSP for (muffled or\n"
+                          "distorted sounds). Off: those sounds play unfiltered, slightly cheaper.");
 }
 
 // Gameplay / difficulty (port::GameplaySettings, src/recomp/gameplay_hooks.cpp). All neutral by
@@ -342,6 +354,12 @@ void unusedContentTab() {
         item("Star door (Twins' room)", e.starDoor, "next map load");
         item("Game Boy Horror map: full Luigi model", e.betaMapLuigi, "next map load");
         item("Portrificationizer: each ghost's own model", e.unusedPortraitModels, nullptr);
+        sDirty |= ImGui::Checkbox("Air and water nozzles", &e.airWaterNozzles);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The Poltergust's unused nozzle models: wpair when blowing air (L without an element),\n"
+                              "wpwater when spraying water. D-pad Right switches to the air nozzle while you carry\n"
+                              "an element, so L blows air instead (the element is kept); press again to switch back.");
+        if (g.a == port::Avail::Yes) pending("D-pad Right: air nozzle");
     }
     ImGui::Separator();
     {
