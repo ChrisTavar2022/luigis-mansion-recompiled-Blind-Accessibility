@@ -116,6 +116,12 @@ struct RenderingSettings {
     // copy with another format/size (Luigi's self-shadow depth map) and CPU reads see what the
     // console sees (docs/RENDERING.md). Off: copies stay GPU-only textures.
     bool efbCopyToRam = true;
+    // Shadows (docs/RENDERING.md, "Shadows"). The game's shadow map (light's-view depth, copied
+    // as Z16 and compared in the TEV) at the internal render resolution instead of 640x480.
+    bool shadowRenderResolution = true;
+    // Widescreen: the shadow light's frustum is widened by the same factor as the view, so
+    // shadows reach the extra side areas (the game only covers what a 4:3 screen shows).
+    bool shadowWidescreen = true;
 };
 
 struct Settings {

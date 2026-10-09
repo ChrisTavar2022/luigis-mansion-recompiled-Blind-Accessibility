@@ -3,6 +3,7 @@
     {0x80058290u, 0x8005ACD8u},  // fn_800581E8+0xa8
     {0x8021DB68u, 0x80222CA0u},  // pointed at by sSceneTable+0x8 (sSceneTable+0x8 (object moved by +0x50c8))
     {0x8021DBD8u, 0x80222D10u},  // pointed at by sSceneTable+0x10 (sSceneTable+0x10 (object moved by +0x50c8))
+    {0x803A3820u, 0x80390AF0u},  // lbl_803A3820: 66 matching reference(s)
     {0x803A3AE4u, 0x80390DBCu},  // lbl_803A3AE0+0x4: 1 matching reference(s)
     {0x803A3C98u, 0x80390FF8u},  // lbl_803A3C98: 36 matching reference(s)
     {0x803A3CA0u, 0x80391000u},  // lbl_803A3CA0: 16 matching reference(s)

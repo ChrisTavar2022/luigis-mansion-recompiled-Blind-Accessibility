@@ -140,3 +140,5 @@ patch 3 8003D544 480000D8
 # Lightning test aid (lightning_test.cpp, LM_LIGHTNING): room thunder update, room Thunder field.
 fn_800168EC
 fn_8002D7C8
+# Shadow-map enhancements (shadows.cpp): light camera setup of the shadow pass.
+fn_8005D984 us pal

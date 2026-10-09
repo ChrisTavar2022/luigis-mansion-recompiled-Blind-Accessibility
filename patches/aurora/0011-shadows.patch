@@ -1,5 +1,55 @@
+diff --git a/include/aurora/efb_ram.h b/include/aurora/efb_ram.h
+index f4a1caf..f49a571 100644
+--- a/include/aurora/efb_ram.h
++++ b/include/aurora/efb_ram.h
+@@ -25,6 +25,11 @@ typedef struct AuroraEfbRamStats {
+ /** Enables accurate copies (default on). Off: copies stay GPU-only (Aurora's original behaviour). */
+ void aurora_efb_ram_set_enabled(bool enabled);
+ bool aurora_efb_ram_enabled(void);
++/** A Z16 depth copy read back as an IA8 texture of the same size at the same address (a depth
++ *  map compared in the TEV, e.g. Luigi's Mansion's shadow map) uses the copy texture at the
++ *  internal resolution (default) instead of the console's 640x480 bytes. Both hold the same
++ *  values (I = depth bits 23..16, A = 15..8); only the resolution differs. */
++void aurora_efb_ram_set_scaled_depth_reads(bool enabled);
+ /** Read back every copy into memory (testing/debug; normally only CPU-read ranges are). */
+ void aurora_efb_ram_set_readback_all(bool enabled);
+ /** The CPU is about to read [ptr, ptr+size) (e.g. DCInvalidateRange): copies there are read back
+diff --git a/lib/gfx/efb_ram.cpp b/lib/gfx/efb_ram.cpp
+index b4bb1b7..0f007d2 100644
+--- a/lib/gfx/efb_ram.cpp
++++ b/lib/gfx/efb_ram.cpp
+@@ -303,6 +303,7 @@ struct DecodedKey {
+ std::mutex g_mutex;
+ std::atomic_bool g_enabled{true};
+ std::atomic_bool g_readbackAll{false};
++std::atomic_bool g_scaledDepthReads{true};
+ std::vector<Entry> g_entries; // oldest first
+ absl::flat_hash_map<uint64_t, LazyBufferRef> g_bytePool; // (dest ^ size) -> bytes buffer, reused per range
+ absl::flat_hash_map<DecodedKey, Decoded> g_decoded;
+@@ -717,6 +718,13 @@ TextureHandle resolve_texture(const GXTexObj_& obj) {
+   if (last->dest == data && static_cast<u32>(last->fmt) == fmt && last->width == width && last->height == height) {
+     return {};
+   }
++  // A Z16 copy read as IA8 of the same size: Aurora's copy texture already holds that view
++  // (tex_copy_conv FragZ16: I = depth bits 23..16, A = 15..8), at the internal resolution.
++  if (g_scaledDepthReads.load(std::memory_order_relaxed) && last->dest == data &&
++      static_cast<u32>(last->fmt) == GX_TF_Z16 && fmt == GX_TF_IA8 && last->width == width &&
++      last->height == height) {
++    return {};
++  }
+   if (!supported_texture_format(fmt)) {
+     return {}; // palette/CMPR reads keep Aurora's reinterpretation
+   }
+@@ -833,6 +841,7 @@ void aurora_efb_ram_set_enabled(bool enabled) {
+ bool aurora_efb_ram_enabled() { return enabled(); }
+ 
+ void aurora_efb_ram_set_readback_all(bool enabled) { g_readbackAll = enabled; }
++void aurora_efb_ram_set_scaled_depth_reads(bool enabled) { g_scaledDepthReads = enabled; }
+ 
+ void aurora_efb_ram_cpu_read(const void* ptr, uint32_t size) {
+   if (!enabled() || size == 0) {
 diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
-index 543d5e3..c5aa52b 100644
+index 543d5e3..6701965 100644
 --- a/lib/gx/shader.cpp
 +++ b/lib/gx/shader.cpp
 @@ -24,6 +24,13 @@ using namespace std::string_view_literals;
@@ -78,7 +128,7 @@ index 543d5e3..c5aa52b 100644
        alphaNormalized[stage.alphaOp.outReg] = stage.alphaOp.clamp;
      }
    }
-@@ -1983,6 +2004,38 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1983,6 +2004,45 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
      fragmentFn += efb_quantize(config);
    }
  
@@ -99,12 +149,19 @@ index 543d5e3..c5aa52b 100644
 +  if (shadow_dbg() == 7 && fragmentFn.find("let dbg_cmp") != std::string::npos) {
 +    fragmentFn += "\n    prev = vec4f(floor(dbg_k1 / 256.0) / 255.0, (dbg_k1 % 256.0) / 255.0, floor(dbg_k2 / 256.0) / 255.0, 1.0);";
 +  }
-+  if (shadow_dbg() == 9 && fragmentFn.find("let dbg_cmp") != std::string::npos) {
++  if (shadow_dbg() == 10 && fragmentFn.find("let dbg_cmp") != std::string::npos) {
++    fragmentFn += "\n    let dbg_in = all(tex1_uv >= vec2f(0.0)) && all(tex1_uv <= vec2f(1.0)) && in.tex1_uvw.z < 0.0;";
++    fragmentFn += "\n    prev = vec4f(select(0.0, 1.0, dbg_in), floor(dbg_k2 / 256.0) / 255.0, dbg_cmp, 1.0);";
++  }
++  if (shadow_dbg() == 9 &&fragmentFn.find("let dbg_cmp") != std::string::npos) {
 +    fragmentFn += "\n    prev = vec4f(dbg_cmp, select(0.0, 1.0, dbg_k1 > dbg_k2), 0.5, 1.0);";
 +  }
 +  if (shadow_dbg() == 8 &&fragmentFn.find("let dbg_cmp") != std::string::npos) {
 +    fragmentFn += fmt::format("\n    prev = vec4f((dbg_k2 % 256.0) / 255.0, {}, dbg_cmp, 1.0);",
 +                              fragmentFnPre.find("var rast1 ") != std::string::npos ? "rast1.a" : "0.0");
++  }
++  if (shadow_dbg() == 11 && fragmentFn.find("let dbg_cmp") != std::string::npos) {
++    fragmentFn += "\n    prev = vec4f(clamp(tex1_uv, vec2f(0.0), vec2f(1.0)), select(0.0, 1.0, in.tex1_uvw.z < 0.0), 1.0);";
 +  }
 +  if (shadow_dbg() == 3) {
 +    for (u32 k = 1; k < config.tevStageCount; ++k) {
@@ -117,7 +174,7 @@ index 543d5e3..c5aa52b 100644
    if (dstAlphaMode == DstAlphaMode::Replace) {
      // GX destination alpha is set via the blend constant
      fragmentFn += "\n    prev.a = 1.0;";
-@@ -2429,6 +2482,16 @@ fn fs_main(in: VertexOutput) -> {10} {{{6}{5}{11}
+@@ -2429,6 +2489,16 @@ fn fs_main(in: VertexOutput) -> {10} {{{6}{5}{11}
    if (EnableDebugPrints) {
      Log.info("Generated shader (hash {:x}): {}", hash, shaderSource);
    }
