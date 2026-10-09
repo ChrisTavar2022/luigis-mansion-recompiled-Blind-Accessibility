@@ -164,11 +164,12 @@ under `build/` and are not committed:
 
 ### As built (`src/recomp/interp.*`, `src/recomp/frame.cpp`, Aurora patch 0005)
 
-The setting is F1 > Visuals > Frame rate:
+Current state (frame-rate slider, vertex-array copies, pairing by draw, rotation blending,
+lights/texture matrices/CPU-built vertices, test mode and measurements): **docs/INTERPOLATION.md**.
+The notes below describe the first version; where they differ, INTERPOLATION.md is current.
 
-- **Original (30 fps)** is the lockstep path, unchanged.
-- **Interpolated 60 fps** and **Interpolated, unlimited** use the design below, simplified
-  where the measurements allowed it.
+The setting is F1 > Visuals > Frame rate: 30 fps (lockstep, unchanged) up to 320 fps, or the
+display's refresh rate; above 30 the design below is used.
 
 **Capture instead of snapshotting.**
 - Aurora patch `0005-capture-and-replay` makes the FIFO's display-list redirection
