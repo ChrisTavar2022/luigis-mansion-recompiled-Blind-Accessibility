@@ -166,12 +166,12 @@ void renderingTab() {
     sDirty |= ImGui::Checkbox("EFB copies to RAM (accurate)", &r.efbCopyToRam);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Screen copies also exist in console memory format, like on the GameCube.\n"
-                          "Textures that read a copy in another format (Luigi's shadow depth map is\n"
+                          "Textures that read a copy in another format (the shadow depth map is\n"
                           "read as an IA8 texture) get the console's exact bytes, and memory the game\n"
                           "overwrites stops showing a stale copy. Aimed at the rare Luigi mouth/hose flicker.\n"
                           "Off: copies stay GPU-only textures (saves ~0.6 ms CPU per frame).");
     ImGui::Separator();
-    ImGui::TextDisabled("Shadows (flashlight, lightning, Luigi's self-shadow)");
+    ImGui::TextDisabled("Shadows (flashlight and lightning shadow map)");
     sDirty |= ImGui::Checkbox("Shadow map at render resolution", &r.shadowRenderResolution);
     ImGui::SetItemTooltip(
         "The game draws its shadows from a depth map rendered from the light. On: that map uses the\n"
