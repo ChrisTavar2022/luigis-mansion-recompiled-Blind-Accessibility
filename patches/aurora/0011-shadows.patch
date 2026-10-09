@@ -48,42 +48,151 @@ index b4bb1b7..0f007d2 100644
  
  void aurora_efb_ram_cpu_read(const void* ptr, uint32_t size) {
    if (!enabled() || size == 0) {
+diff --git a/lib/gfx/encoding.cpp b/lib/gfx/encoding.cpp
+index 4432b36..fd5c624 100644
+--- a/lib/gfx/encoding.cpp
++++ b/lib/gfx/encoding.cpp
+@@ -263,9 +263,7 @@ void render(wgpu::CommandEncoder& cmd, FramePacket& frame, RenderPass& passInfo,
+     const bool needsScaling = dstSize.width != static_cast<uint32_t>(passInfo.resolveRect.width) ||
+                               dstSize.height != static_cast<uint32_t>(passInfo.resolveRect.height);
+     const bool isDepth = gx::is_depth_format(passInfo.resolveFormat);
+-    if (isDepth && passInfo.msaaSamples > 1) {
+-      Log.fatal("Depth tex copies from multisampled EFB targets are not supported");
+-    }
++    // Depth copies from a multisampled EFB read sample 0 (tex_copy_conv's MS depth pipelines).
+     const tex_copy_conv::ConvRequest convReq{
+         .fmt = passInfo.resolveFormat,
+         .srcFmt = passInfo.resolveSourceFormat,
+@@ -273,6 +271,7 @@ void render(wgpu::CommandEncoder& cmd, FramePacket& frame, RenderPass& passInfo,
+         .uniformRange = passInfo.resolveUniformRange,
+         .dst = passInfo.resolveTarget,
+         .sampleFilter = needsScaling ? tex_copy_conv::SampleFilter::Linear : tex_copy_conv::SampleFilter::Nearest,
++        .srcSamples = isDepth ? passInfo.msaaSamples : 1u,
+     };
+     const bool needsOpaqueAlpha = !isDepth && !gx::efb_has_alpha(convReq.srcFmt);
+     const bool sameFormat =
+diff --git a/lib/gfx/tex_copy_conv.cpp b/lib/gfx/tex_copy_conv.cpp
+index 305d090..a3f3560 100644
+--- a/lib/gfx/tex_copy_conv.cpp
++++ b/lib/gfx/tex_copy_conv.cpp
+@@ -330,6 +330,9 @@ static constexpr std::array DepthConvPipelines{
+ 
+ static wgpu::BindGroupLayout g_bindGroupLayout;
+ static wgpu::BindGroupLayout g_depthBindGroupLayout;
++// Depth copies from a multisampled EFB (MSAA enhancement): the same conversions reading sample 0.
++static wgpu::BindGroupLayout g_depthBindGroupLayoutMS;
++static absl::flat_hash_map<GXTexFmt, wgpu::RenderPipeline> g_depthPipelinesMS;
+ static wgpu::Sampler g_nearestSampler;
+ static wgpu::Sampler g_linearSampler;
+ static absl::flat_hash_map<GXTexFmt, wgpu::RenderPipeline> g_pipelines;
+@@ -516,6 +519,33 @@ void initialize() {
+   };
+   g_depthBindGroupLayout = g_device.CreateBindGroupLayout(&depthBindGroupLayoutDescriptor);
+ 
++  static constexpr std::array depthBindGroupLayoutEntriesMS{
++      wgpu::BindGroupLayoutEntry{
++          .binding = 0,
++          .visibility = wgpu::ShaderStage::Fragment,
++          .texture =
++              wgpu::TextureBindingLayout{
++                  .sampleType = wgpu::TextureSampleType::Depth,
++                  .viewDimension = wgpu::TextureViewDimension::e2D,
++                  .multisampled = true,
++              },
++      },
++      wgpu::BindGroupLayoutEntry{
++          .binding = 1,
++          .visibility = wgpu::ShaderStage::Vertex,
++          .buffer =
++              wgpu::BufferBindingLayout{
++                  .type = wgpu::BufferBindingType::Uniform,
++              },
++      },
++  };
++  static constexpr wgpu::BindGroupLayoutDescriptor depthBindGroupLayoutDescriptorMS{
++      .label = "TexCopyConv Depth MS Bind Group Layout",
++      .entryCount = depthBindGroupLayoutEntriesMS.size(),
++      .entries = depthBindGroupLayoutEntriesMS.data(),
++  };
++  g_depthBindGroupLayoutMS = g_device.CreateBindGroupLayout(&depthBindGroupLayoutDescriptorMS);
++
+   g_blitPipeline = create_pipeline(
+       {GX_TF_RGBA8, FragPassthrough, webgpu::g_graphicsConfig.surfaceConfiguration.format, "TexCopyConv Blit"},
+       ShaderPreamble, g_bindGroupLayout);
+@@ -532,6 +562,10 @@ void initialize() {
+       if (conv.outputFormat != to_wgpu(conv.fmt)) {
+         Log.fatal("Output format mismatch for {}", conv.fmt);
+       }
++      std::string preambleMS = DepthShaderPreamble;
++      const std::string_view from = "texture_depth_2d";
++      preambleMS.replace(preambleMS.find(from), from.size(), "texture_depth_multisampled_2d");
++      g_depthPipelinesMS[conv.fmt] = create_pipeline(conv, preambleMS, g_depthBindGroupLayoutMS);
+     }
+     g_depthSnapshotBindGroupLayout = create_depth_snapshot_layout(false, "Depth Snapshot Bind Group Layout");
+     g_depthSnapshotBindGroupLayoutMS = create_depth_snapshot_layout(true, "Depth Snapshot MS Bind Group Layout");
+@@ -561,6 +595,8 @@ void shutdown() {
+   g_blitPipeline = {};
+   g_bindGroupLayout = {};
+   g_depthBindGroupLayout = {};
++  g_depthBindGroupLayoutMS = {};
++  g_depthPipelinesMS.clear();
+   g_nearestSampler = {};
+   g_linearSampler = {};
+   g_depthSnapshotBindGroupLayout = {};
+@@ -592,7 +628,7 @@ static void execute(const wgpu::CommandEncoder& cmd, const ConvRequest& req, con
+         },
+     };
+     const wgpu::BindGroupDescriptor bindGroupDescriptor{
+-        .layout = g_depthBindGroupLayout,
++        .layout = req.srcSamples > 1 ? g_depthBindGroupLayoutMS : g_depthBindGroupLayout,
+         .entryCount = bindGroupEntries.size(),
+         .entries = bindGroupEntries.data(),
+     };
+@@ -645,6 +681,13 @@ static void execute(const wgpu::CommandEncoder& cmd, const ConvRequest& req, con
+ }
+ 
+ void run(const wgpu::CommandEncoder& cmd, const ConvRequest& req) {
++  if (req.srcSamples > 1 && gx::is_depth_format(req.fmt)) {
++    const auto ms = g_depthPipelinesMS.find(req.fmt);
++    if (ms != g_depthPipelinesMS.end()) {
++      execute(cmd, req, ms->second);
++    }
++    return;
++  }
+   const auto it = g_pipelines.find(req.fmt);
+   if (it == g_pipelines.end()) {
+     Log.fatal("No copy conversion pipeline for format {}", static_cast<int>(req.fmt));
+diff --git a/lib/gfx/tex_copy_conv.hpp b/lib/gfx/tex_copy_conv.hpp
+index 9e6c9d2..a6946f9 100644
+--- a/lib/gfx/tex_copy_conv.hpp
++++ b/lib/gfx/tex_copy_conv.hpp
+@@ -28,6 +28,7 @@ struct ConvRequest {
+   Range uniformRange;        // Uniforms
+   TextureHandle dst;         // Destination texture
+   SampleFilter sampleFilter = SampleFilter::Nearest;
++  uint32_t srcSamples = 1;   // depth copies: sample count of srcView (MSAA EFB: sample 0 is copied)
+ };
+ 
+ bool needs_conversion(GXTexFmt fmt);
 diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
-index 543d5e3..6701965 100644
+index 543d5e3..039bab5 100644
 --- a/lib/gx/shader.cpp
 +++ b/lib/gx/shader.cpp
-@@ -24,6 +24,13 @@ using namespace std::string_view_literals;
- namespace {
- constexpr Module Log{"aurora::gfx::gx"};
- 
-+// TEMP debug (shadow investigation): AURORA_SHADOW_DBG=1 forces alpha GR16 compares true,
-+// =3 outputs (ramp coarse, shadow-map coarse) for shaders with an alpha GR16 compare.
-+int shadow_dbg() {
-+  static const int v = [] { const char* e = std::getenv("AURORA_SHADOW_DBG"); return e ? std::atoi(e) : 0; }();
-+  return v;
-+}
-+
- std::string_view chan_comp(GXTevColorChan chan) noexcept {
-   switch (chan) {
-   case GX_CH_RED:
-@@ -1038,8 +1045,10 @@ std::string build_int_tev_stage(size_t idx, const ShaderConfig& config, const Te
+@@ -1038,8 +1038,10 @@ std::string build_int_tev_stage(size_t idx, const ShaderConfig& config, const Te
        }
        expr = fmt::format("itev_clamp3({} + select(vec3i(0), {}, {}), {})", d, c, cond, op.clamp);
      }
 -    const auto outReg = int_reg_name(op.outReg);
 -    out += fmt::format("\n    {0} = vec4i({1}, {0}.a);", outReg, expr);
-+    // Both units read their inputs before either writes (the alpha unit's R8/GR16/BGR24
-+    // compares read the color inputs, and color inputs may read alpha registers), so the
-+    // results go through temporaries and are stored together after the alpha unit below.
++    // The color and alpha units read their inputs before either writes its result (the alpha
++    // unit's R8/GR16/BGR24 compares read the stage's color inputs, and color inputs may read
++    // alpha registers), so both results go through temporaries and are stored together below.
 +    out += fmt::format("\n    let tevc{} = {};", idx, expr);
    }
    // Alpha
    {
-@@ -1065,10 +1074,14 @@ std::string build_int_tev_stage(size_t idx, const ShaderConfig& config, const Te
-         const auto b = int_color_arg(stage.colorPass.b, idx, config, stage, false);
-         cond = fmt::format("({} {} {})", int_cmp_key(op.op, a), rel, int_cmp_key(op.op, b));
+@@ -1067,8 +1069,11 @@ std::string build_int_tev_stage(size_t idx, const ShaderConfig& config, const Te
        }
-+      if (shadow_dbg() == 1 && (op.op == GX_TEV_COMP_GR16_GT)) cond = "true";
        expr = fmt::format("itev_clamp1({} + select(0, {}, {}), {})", d, c, cond, op.clamp);
      }
 -    out += fmt::format("\n    {}.a = {};", int_reg_name(op.outReg), expr);
@@ -95,19 +204,11 @@ index 543d5e3..6701965 100644
    return out;
  }
  
-@@ -1319,6 +1332,11 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
-     const auto& stage = config.tevStages[idx];
-     if (config.intTev) {
-       fragmentFn += build_int_tev_stage(idx, config, stage);
-+      if (shadow_dbg() >= 6 && stage.alphaOp.op == GX_TEV_COMP_GR16_GT && stage.alphaOp.outReg == 1) {
-+        fragmentFn += "\n    let dbg_cmp = f32(ireg0.a) / 255.0;";
-+        fragmentFn += "\n    let dbg_s = itev_f2i3(sampled0.rab); let dbg_k1 = f32(dbg_s.g * 256 + dbg_s.r);";
-+        fragmentFn += "\n    let dbg_t = itev_f2i3(sampled1.agb); let dbg_k2 = f32(dbg_t.g * 256 + dbg_t.r);";
-+      }
-       continue;
-     }
-     {
-@@ -1333,7 +1351,8 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1329,11 +1334,11 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+         }
+         return fmt::format("tev_overflow_vec3f({})", value);
+       };
+-      std::string_view outReg = regName[stage.colorOp.outReg];
        std::string op = tev_color_op(stage.colorOp.op, tev_bias(stage.colorOp.bias), tev_scale(stage.colorOp.scale),
                                      stage.colorOp.clamp, color_arg(stage.colorPass.a), color_arg(stage.colorPass.b),
                                      color_arg(stage.colorPass.c), color_arg_reg(stage.colorPass.d, idx, config, stage));
@@ -117,7 +218,7 @@ index 543d5e3..6701965 100644
        colorNormalized[stage.colorOp.outReg] = stage.colorOp.clamp;
      }
      {
-@@ -1358,7 +1377,9 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1358,7 +1363,9 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
                                      stage.alphaOp.clamp, cmp_arg(stage.colorPass.a, stage.alphaPass.a),
                                      cmp_arg(stage.colorPass.b, stage.alphaPass.b),
                                      alpha_arg(stage.alphaPass.c), alpha_arg_reg(stage.alphaPass.d, idx, config, stage));
@@ -128,66 +229,3 @@ index 543d5e3..6701965 100644
        alphaNormalized[stage.alphaOp.outReg] = stage.alphaOp.clamp;
      }
    }
-@@ -1983,6 +2004,45 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
-     fragmentFn += efb_quantize(config);
-   }
- 
-+  if (shadow_dbg() == 5 && fragmentFnPre.find("var rast1 ") != std::string::npos &&
-+      uniBufAttrs.find("cc1a_mat") != std::string::npos) {
-+    for (u32 k = 1; k < config.tevStageCount; ++k) {
-+      if (config.tevStages[k].alphaOp.op == GX_TEV_COMP_GR16_GT) {
-+        fragmentFn += "\n    prev = vec4f(rast1.a, ubuf.cc1a_mat.a, ubuf.cc1a_amb.a, 1.0);";
-+        break;
-+      }
-+    }
-+  }
-+  if (shadow_dbg() == 6 && fragmentFn.find("let dbg_cmp") != std::string::npos) {
-+    // R = compare result, G = receiver - shadow-map key (x16, offset 0.5), B = rast1.a if present
-+    fragmentFn += fmt::format("\n    prev = vec4f(dbg_cmp, clamp(0.5 + (dbg_k1 - dbg_k2) / 4096.0, 0.0, 1.0), {}, 1.0);",
-+                              fragmentFnPre.find("var rast1 ") != std::string::npos ? "rast1.a" : "0.0");
-+  }
-+  if (shadow_dbg() == 7 && fragmentFn.find("let dbg_cmp") != std::string::npos) {
-+    fragmentFn += "\n    prev = vec4f(floor(dbg_k1 / 256.0) / 255.0, (dbg_k1 % 256.0) / 255.0, floor(dbg_k2 / 256.0) / 255.0, 1.0);";
-+  }
-+  if (shadow_dbg() == 10 && fragmentFn.find("let dbg_cmp") != std::string::npos) {
-+    fragmentFn += "\n    let dbg_in = all(tex1_uv >= vec2f(0.0)) && all(tex1_uv <= vec2f(1.0)) && in.tex1_uvw.z < 0.0;";
-+    fragmentFn += "\n    prev = vec4f(select(0.0, 1.0, dbg_in), floor(dbg_k2 / 256.0) / 255.0, dbg_cmp, 1.0);";
-+  }
-+  if (shadow_dbg() == 9 &&fragmentFn.find("let dbg_cmp") != std::string::npos) {
-+    fragmentFn += "\n    prev = vec4f(dbg_cmp, select(0.0, 1.0, dbg_k1 > dbg_k2), 0.5, 1.0);";
-+  }
-+  if (shadow_dbg() == 8 &&fragmentFn.find("let dbg_cmp") != std::string::npos) {
-+    fragmentFn += fmt::format("\n    prev = vec4f((dbg_k2 % 256.0) / 255.0, {}, dbg_cmp, 1.0);",
-+                              fragmentFnPre.find("var rast1 ") != std::string::npos ? "rast1.a" : "0.0");
-+  }
-+  if (shadow_dbg() == 11 && fragmentFn.find("let dbg_cmp") != std::string::npos) {
-+    fragmentFn += "\n    prev = vec4f(clamp(tex1_uv, vec2f(0.0), vec2f(1.0)), select(0.0, 1.0, in.tex1_uvw.z < 0.0), 1.0);";
-+  }
-+  if (shadow_dbg() == 3) {
-+    for (u32 k = 1; k < config.tevStageCount; ++k) {
-+      if (config.tevStages[k].alphaOp.op == GX_TEV_COMP_GR16_GT) {
-+        fragmentFn += fmt::format("\n    prev = vec4f(sampled{}.a, sampled{}.r, 0.0, 1.0);", k - 1, k);
-+        break;
-+      }
-+    }
-+  }
-   if (dstAlphaMode == DstAlphaMode::Replace) {
-     // GX destination alpha is set via the blend constant
-     fragmentFn += "\n    prev.a = 1.0;";
-@@ -2429,6 +2489,16 @@ fn fs_main(in: VertexOutput) -> {10} {{{6}{5}{11}
-   if (EnableDebugPrints) {
-     Log.info("Generated shader (hash {:x}): {}", hash, shaderSource);
-   }
-+  if (const char* dumpDir = std::getenv("AURORA_SHADOW_DUMP")) {
-+    bool has = false;
-+    for (u32 k = 0; k < config.tevStageCount; ++k) has |= config.tevStages[k].alphaOp.op == GX_TEV_COMP_GR16_GT;
-+    if (has) {
-+      if (FILE* f = std::fopen(fmt::format("{}/sh_{:x}.wgsl", dumpDir, hash).c_str(), "wb")) {
-+        std::fwrite(shaderSource.data(), 1, shaderSource.size(), f);
-+        std::fclose(f);
-+      }
-+    }
-+  }
- 
-   return shaderSource;
- }
