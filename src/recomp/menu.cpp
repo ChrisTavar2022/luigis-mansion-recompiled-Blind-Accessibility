@@ -342,6 +342,12 @@ void unusedContentTab() {
         item("Star door (Twins' room)", e.starDoor, "next map load");
         item("Game Boy Horror map: full Luigi model", e.betaMapLuigi, "next map load");
         item("Portrificationizer: each ghost's own model", e.unusedPortraitModels, nullptr);
+        sDirty |= ImGui::Checkbox("Air and water nozzles", &e.airWaterNozzles);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The Poltergust's unused nozzle models: wpair when blowing air (L without an element),\n"
+                              "wpwater when spraying water. D-pad Right switches to the air nozzle while you carry\n"
+                              "an element, so L blows air instead (the element is kept); press again to switch back.");
+        if (g.a == port::Avail::Yes) pending("D-pad Right: air nozzle");
     }
     ImGui::Separator();
     {

@@ -69,6 +69,7 @@ struct EnhancementSettings {
     bool starDoor = false;              // unused star door (type 08) on the Twins' room
     bool betaMapLuigi = false;          // unused full Luigi model on the Game Boy Horror map
     bool unusedPortraitModels = false;  // each ghost's own model in the Portrificationizer scene
+    bool airWaterNozzles = false;       // unused wpair/wpwater Poltergust nozzles; D-pad Right = air nozzle (src/recomp/nozzles.cpp)
     bool earlyGhostLighting = false;  // "Ghost shading: Beta" = the known beta-shading cheat (fn_800581E8 channel setup)
     bool skipCutscenes = false;  // START skips cutscenes (src/recomp/skip.cpp)
     bool fastForwardKey = true;  // holding Tab runs the game at high speed (src/recomp/skip.cpp)

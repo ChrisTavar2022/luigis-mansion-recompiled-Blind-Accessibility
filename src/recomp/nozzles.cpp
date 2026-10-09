@@ -1,0 +1,93 @@
+// Unused air and water nozzles (F1 > Enhancements > Unused content, off by default).
+//
+// The Poltergust's nozzle is one actor (Luigi +0x7A4) that the game re-types on the fly:
+// Luigi's mode selector fn_800B36B8 picks the mode (+0x1180: 1 vacuum, 2-4 fire/water/ice,
+// 5 flashlight, 6 air) and, on a change, calls fn_800B9064(luigi, type), which turns the
+// nozzle into character type 6 (`vhead`) for every mode except the flashlight, which uses
+// type 7 (`wplight`). Types 8 (`wpwater`) and 9 (`wpair`) are registered right after them,
+// with their own models and their own attach tables in fn_80078008, but the switch never
+// selects them. With the option on, the mode selector runs unchanged and the nozzle is then
+// re-typed through the same function: water spray -> wpwater, air -> wpair.
+//
+// D-pad Right toggles the air nozzle while Luigi carries an element (retail has no way to
+// blow air then): the selector sees "no element" (+0x1184 = 1, its value for air) for the
+// duration of its call, so L picks air and the element is kept. Docs: docs/UNUSED_CONTENT.md.
+#include "port/install.h"
+#include "port/settings.h"
+#include "recomp/hle.h"
+#include "recomp/runtime.h"
+
+#include <dolphin/pad.h>
+
+#include <cstdlib>
+
+namespace recomp {
+u16 padButtons();  // hle_pad.cpp: port 1 buttons as last handed to the game
+
+namespace {
+
+constexpr u32 kNozzle = 0x7A4;   // nozzle actor (MoveObj); character type at +0x3C
+constexpr u32 kMode = 0x1180;    // Poltergust mode chosen by fn_800B36B8
+constexpr u32 kElement = 0x1184; // 1 none (air), 2 fire, 3 water, 4 ice
+constexpr u32 kCharType = 0x3C;
+constexpr u32 kModeWater = 3, kModeAir = 6, kModeLight = 5;
+constexpr u32 kTypeHose = 6, kTypeLight = 7, kTypeWater = 8, kTypeAir = 9;
+
+bool enabled() {
+    static const bool sEnv = [] {
+        const char* v = std::getenv("LM_NOZZLES");
+        return v && *v && *v != '0';
+    }();
+    return (sEnv || port::settings().enhancements.airWaterNozzles) && port::usCodeFeature() == port::Avail::Yes;
+}
+
+bool inMem1(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
+
+bool sAirSelected = false;
+u16 sPrevButtons = 0;
+
+}  // namespace
+
+// Luigi's Poltergust mode selector (once per Luigi update).
+HLE(fn_800B36B8) {
+    const u32 luigi = c.r[3];
+    const u32 nozzle = inMem1(luigi) ? rd32(luigi + kNozzle) : 0;
+    // Luigi's own type 1/0xB3 uses its 0xB5.. nozzle set, which has no air/water models.
+    const u32 self = inMem1(luigi) ? rd32(luigi + kCharType) : 0;
+    if (!inMem1(nozzle) || self == 1 || self == 0xB3) {
+        callOriginal(c, "fn_800B36B8");
+        return;
+    }
+    const bool on = enabled();
+    const u16 buttons = padButtons();
+    if (!on) {
+        sAirSelected = false;
+    } else if ((buttons & PAD_BUTTON_RIGHT) && !(sPrevButtons & PAD_BUTTON_RIGHT)) {
+        sAirSelected = !sAirSelected;
+        log("[nozzle] air nozzle %s", sAirSelected ? "selected" : "off (element nozzle)");
+    }
+    sPrevButtons = buttons;
+
+    const u32 element = rd32(luigi + kElement);
+    const bool presentAir = on && sAirSelected && element >= 2 && element <= 4;
+    if (presentAir) wr32(luigi + kElement, 1);
+    callOriginal(c, "fn_800B36B8");
+    if (presentAir && rd32(luigi + kElement) == 1) wr32(luigi + kElement, element);
+
+    const u32 mode = rd32(luigi + kMode);
+    const u32 type = rd32(nozzle + kCharType);
+    u32 want = type;
+    if (on && mode == kModeWater) want = kTypeWater;
+    else if (on && mode == kModeAir) want = kTypeAir;
+    else if (type == kTypeWater || type == kTypeAir) want = mode == kModeLight ? kTypeLight : kTypeHose;  // back to retail
+    if (want != type) {
+        static const u32 sRetype = guestSymbol("fn_800B9064");
+        const Ctx saved = c;
+        guestCall(c, sRetype, luigi, want);
+        c = saved;
+        static int sLogged = 0;
+        if (sLogged++ < 40) log("[nozzle] mode %u: nozzle type %u -> %u", mode, type, want);
+    }
+}
+
+}  // namespace recomp
