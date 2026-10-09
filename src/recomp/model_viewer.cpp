@@ -691,8 +691,28 @@ bool loadGraph(Ctx& c, const LoadItem& it, Drawable& d) {
     return true;
 }
 
+// Joints at rest scale 0 (effects grown only by their .bck: doki, lg_icestate, ftc): unit scale,
+// as for .mdl parts bound at a vanishing scale. JNT1 entries are 0x40 bytes, scale at +4.
+std::vector<u8> unitJointScales(std::vector<u8> d) {
+    for (u32 off = 0x20; off + 0x10 <= d.size();) {
+        const u32 size = be32(&d[off + 4]);
+        if (size < 8 || off + size > d.size()) break;
+        if (std::memcmp(&d[off], "JNT1", 4) == 0) {
+            const u32 count = be16(&d[off + 8]), entries = off + be32(&d[off + 0x0C]);
+            for (u32 i = 0; i < count && entries + i * 0x40 + 0x10 <= d.size(); i++)
+                for (u32 k = 0; k < 3; k++) {
+                    u8* p = &d[entries + i * 0x40 + 4 + 4 * k];
+                    if (std::fabs(bef(p)) < 1e-3f) p[0] = 0x3F, p[1] = 0x80, p[2] = 0, p[3] = 0;  // 1.0f
+                }
+            break;
+        }
+        off += size;
+    }
+    return d;
+}
+
 bool loadJ3D(Ctx& c, const LoadItem& it, Drawable& d) {
-    const u32 data = copyIn(c, it.data);
+    const u32 data = copyIn(c, unitJointScales(it.data));
     if (!data) return false;
     u32 modelData = 0, model = 0, opa = 0, xlu = 0;
     withViewerHeap([&] {
