@@ -160,7 +160,7 @@ frame's earlier upload. Nothing in this cutscene does that.
 ## EFB copies to RAM
 
 Toggle: **EFB copies to RAM (accurate)** (`[rendering] efb_copy_to_ram`, default on;
-`LM_EFB_RAM=0/1` overrides). Code: Aurora patch `patches/aurora/0007-efb-copy-to-ram.patch`
+`LM_EFB_RAM=0/1` overrides). Code: Aurora patch `patches/aurora/0009-efb-copy-to-ram.patch`
 (`lib/gfx/efb_ram.{hpp,cpp}`, C API `include/aurora/efb_ram.h`) and `src/recomp/efb_copy.cpp`.
 
 ### Console behaviour

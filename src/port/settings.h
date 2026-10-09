@@ -113,7 +113,7 @@ struct RenderingSettings {
     // GXCopyTex results also exist as GX-format bytes in main memory, so textures that read a
     // copy with another format/size (Luigi's self-shadow depth map) and CPU reads see what the
     // console sees (docs/RENDERING.md). Off: copies stay GPU-only textures.
-    bool efbCopyToRam = false;  // TEMP off: intermittent crash (CreateBuffer on the FIFO thread in efb_ram.cpp); turn back on when fixed
+    bool efbCopyToRam = true;
 };
 
 struct Settings {

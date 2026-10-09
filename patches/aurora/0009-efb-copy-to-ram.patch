@@ -88,10 +88,10 @@ index 8a3d428..18ee339 100644
    ++handle.revision;
 diff --git a/lib/gfx/efb_ram.cpp b/lib/gfx/efb_ram.cpp
 new file mode 100644
-index 0000000..14a70af
+index 0000000..b4bb1b7
 --- /dev/null
 +++ b/lib/gfx/efb_ram.cpp
-@@ -0,0 +1,882 @@
+@@ -0,0 +1,920 @@
 +#include "efb_ram.hpp"
 +
 +#include "frame_packet.hpp"
@@ -334,6 +334,23 @@ index 0000000..14a70af
 +// whatever thread services Dawn callbacks; writebacks run on the caller of apply().
 +// ---------------------------------------------------------------------------------------------
 +
++// A GPU buffer recorded on the FIFO thread but created and used only on the render worker
++// (Dawn device calls from the FIFO thread race with the render worker).
++struct LazyBuffer {
++  wgpu::Buffer buffer;
++  uint64_t size = 0;
++  wgpu::BufferUsage usage = wgpu::BufferUsage::None;
++  const char* label = "";
++  const wgpu::Buffer& get() {
++    if (!buffer) {
++      const wgpu::BufferDescriptor desc{.label = label, .usage = usage, .size = size};
++      buffer = g_device.CreateBuffer(&desc);
++    }
++    return buffer;
++  }
++};
++using LazyBufferRef = std::shared_ptr<LazyBuffer>;
++
 +struct Entry {
 +  const uint8_t* dest = nullptr;
 +  uint32_t size = 0;
@@ -341,7 +358,7 @@ index 0000000..14a70af
 +  uint32_t width = 0;
 +  uint32_t height = 0;
 +  TextureHandle copy;   // the copy's GPU texture (Aurora's, possibly upscaled)
-+  wgpu::Buffer bytes;   // GX-format bytes of the copy
++  LazyBufferRef bytes;  // GX-format bytes of the copy
 +  uint64_t seq = 0;
 +  uint64_t encodedSeq = 0;
 +  HashType ramHash = 0; // memory contents we expect (pre-copy, or our writeback)
@@ -349,7 +366,8 @@ index 0000000..14a70af
 +};
 +
 +struct Readback {
-+  wgpu::Buffer buffer;
++  wgpu::Buffer buffer;        // render worker / map callback only
++  std::vector<uint8_t> data;  // filled by the map callback
 +  const uint8_t* dest = nullptr;
 +  uint32_t size = 0;
 +  GXTexFmt fmt = GX_TF_I8;
@@ -380,11 +398,12 @@ index 0000000..14a70af
 +std::atomic_bool g_enabled{true};
 +std::atomic_bool g_readbackAll{false};
 +std::vector<Entry> g_entries; // oldest first
-+absl::flat_hash_map<uint64_t, wgpu::Buffer> g_bytePool; // (dest ^ size) -> bytes buffer, reused per range
++absl::flat_hash_map<uint64_t, LazyBufferRef> g_bytePool; // (dest ^ size) -> bytes buffer, reused per range
 +absl::flat_hash_map<DecodedKey, Decoded> g_decoded;
 +std::vector<std::pair<const uint8_t*, uint32_t>> g_cpuReadRanges;
 +std::vector<std::pair<const uint8_t*, uint32_t>> g_watchRanges; // read back even when disabled
 +std::deque<std::shared_ptr<Readback>> g_landed;
++std::mutex g_poolMutex;  // readback buffer pool: render worker + map callbacks
 +std::vector<wgpu::Buffer> g_readbackPool;
 +absl::flat_hash_map<const uint8_t*, std::pair<uint32_t, HashType>> g_written; // our last writeback per dest
 +uint64_t g_seq = 0;
@@ -411,20 +430,20 @@ index 0000000..14a70af
 +
 +uint32_t align4(uint32_t v) { return (v + 3u) & ~3u; }
 +
-+wgpu::Buffer bytes_buffer(const uint8_t* dest, uint32_t size) {
++LazyBufferRef bytes_buffer(const uint8_t* dest, uint32_t size) {
 +  const uint64_t key = reinterpret_cast<uintptr_t>(dest) ^ (static_cast<uint64_t>(size) << 40);
 +  auto& buf = g_bytePool[key];
 +  if (!buf) {
-+    const wgpu::BufferDescriptor desc{
-+        .label = "EFB copy RAM bytes",
-+        .usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopySrc | wgpu::BufferUsage::CopyDst,
++    buf = std::make_shared<LazyBuffer>(LazyBuffer{
 +        .size = align4(size),
-+    };
-+    buf = g_device.CreateBuffer(&desc);
++        .usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopySrc | wgpu::BufferUsage::CopyDst,
++        .label = "EFB copy RAM bytes",
++    });
 +  }
 +  return buf;
 +}
 +
++// Render worker only.
 +wgpu::Buffer params_buffer(const Params& params) {
 +  const wgpu::BufferDescriptor desc{
 +      .label = "EFB copy RAM params",
@@ -507,17 +526,17 @@ index 0000000..14a70af
 +PassOp make_encode_op(Entry& e) {
 +  e.encodedSeq = e.seq;
 +  ++g_stats.encodes;
-+  const auto paramsBuf = params_buffer(Params{
++  const Params params{
 +      .fmt = static_cast<uint32_t>(e.fmt),
 +      .width = e.width,
 +      .height = e.height,
 +      .srcWidth = e.copy->size.width,
 +      .srcHeight = e.copy->size.height,
 +      .byteSize = e.size,
-+  });
++  };
 +  return [copy = e.copy, bytes = e.bytes, fmt = e.fmt, w = e.width, h = e.height, size = e.size,
-+          paramsBuf](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
-+    run_encode(cmd, copy, bytes, fmt, w, h, size, paramsBuf);
++          params](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
++    run_encode(cmd, copy, bytes->get(), fmt, w, h, size, params_buffer(params));
 +  };
 +}
 +
@@ -536,7 +555,9 @@ index 0000000..14a70af
 +  }
 +}
 +
++// Render worker only.
 +wgpu::Buffer acquire_readback_buffer(uint32_t size) {
++  std::lock_guard lock{g_poolMutex};
 +  for (auto it = g_readbackPool.begin(); it != g_readbackPool.end(); ++it) {
 +    if (it->GetSize() >= size) {
 +      auto buf = std::move(*it);
@@ -628,8 +649,11 @@ index 0000000..14a70af
 +  g_entries.clear();
 +  g_bytePool.clear();
 +  g_decoded.clear();
++  {
++    std::lock_guard poolLock{g_poolMutex};
++    g_readbackPool.clear();
++  }
 +  g_landed.clear();
-+  g_readbackPool.clear();
 +  g_encodePipeline = {};
 +  g_encodeLayout = {};
 +  g_decodePipeline = {};
@@ -695,7 +719,6 @@ index 0000000..14a70af
 +  ++g_stats.readbacks;
 +  auto encode = make_encode_op(e);
 +  auto rb = std::make_shared<Readback>(Readback{
-+      .buffer = acquire_readback_buffer(size),
 +      .dest = dest,
 +      .size = size,
 +      .fmt = fmt,
@@ -707,18 +730,31 @@ index 0000000..14a70af
 +  return [encode = std::move(encode), bytes = e.bytes, rb](const wgpu::CommandEncoder& cmd,
 +                                                           detail::FramePacket& frame) {
 +    encode(cmd, frame);
-+    cmd.CopyBufferToBuffer(bytes, 0, rb->buffer, 0, align4(rb->size));
++    rb->buffer = acquire_readback_buffer(rb->size);
++    cmd.CopyBufferToBuffer(bytes->get(), 0, rb->buffer, 0, align4(rb->size));
 +    frame.afterSubmitCallbacks.emplace_back([rb] {
-+      rb->buffer.MapAsync(wgpu::MapMode::Read, 0, align4(rb->size), wgpu::CallbackMode::AllowSpontaneous,
-+                          [rb](wgpu::MapAsyncStatus status, wgpu::StringView message) {
-+                            rb->ok = status == wgpu::MapAsyncStatus::Success;
-+                            if (!rb->ok && status != wgpu::MapAsyncStatus::CallbackCancelled &&
-+                                status != wgpu::MapAsyncStatus::Aborted) {
-+                              Log.warn("readback map failed: {}", magic_enum::enum_name(status));
-+                            }
-+                            std::lock_guard lock{g_mutex};
-+                            g_landed.push_back(rb);
-+                          });
++      rb->buffer.MapAsync(
++          wgpu::MapMode::Read, 0, align4(rb->size), wgpu::CallbackMode::AllowSpontaneous,
++          [rb](wgpu::MapAsyncStatus status, wgpu::StringView) {
++            rb->ok = status == wgpu::MapAsyncStatus::Success;
++            if (rb->ok) {
++              const auto* mapped = static_cast<const uint8_t*>(rb->buffer.GetConstMappedRange(0, align4(rb->size)));
++              rb->ok = mapped != nullptr;
++              if (rb->ok) {
++                rb->data.assign(mapped, mapped + rb->size);
++              }
++              rb->buffer.Unmap();
++              std::lock_guard lock{g_poolMutex};
++              if (g_readbackPool.size() < 16) {
++                g_readbackPool.push_back(std::move(rb->buffer));
++              }
++            } else if (status != wgpu::MapAsyncStatus::CallbackCancelled && status != wgpu::MapAsyncStatus::Aborted) {
++              Log.warn("readback map failed: {}", magic_enum::enum_name(status));
++            }
++            rb->buffer = {};
++            std::lock_guard lock{g_mutex};
++            g_landed.push_back(rb);
++          });
 +    });
 +  };
 +}
@@ -806,7 +842,7 @@ index 0000000..14a70af
 +      ops.push_back(make_encode_op(*e));
 +    }
 +  }
-+  wgpu::Buffer src;
++  LazyBufferRef src;
 +  uint32_t srcSize = 0;
 +  uint32_t srcOffset = 0;
 +  const auto* single = parts.size() == 1 && parts[0]->dest <= data && data + texSize <= parts[0]->dest + parts[0]->size
@@ -818,15 +854,27 @@ index 0000000..14a70af
 +    srcOffset = static_cast<uint32_t>(data - single->dest);
 +  } else {
 +    // Memory under the texture, then each copy's bytes over it in copy order.
-+    const wgpu::BufferDescriptor desc{
-+        .label = "EFB copy RAM staging",
-+        .usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst,
++    src = std::make_shared<LazyBuffer>(LazyBuffer{
 +        .size = align4(texSize),
-+        .mappedAtCreation = true,
-+    };
-+    src = g_device.CreateBuffer(&desc);
-+    std::memcpy(src.GetMappedRange(0, align4(texSize)), data, texSize);
-+    src.Unmap();
++        .usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst,
++        .label = "EFB copy RAM staging",
++    });
++    auto mem = std::make_shared<std::vector<uint8_t>>(data, data + texSize);
++    mem->resize(align4(texSize));
++    ops.push_back([src, mem](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
++      // Through a mapped-at-creation copy buffer recorded into the same encoder, so the upload is
++      // ordered with the copies below (queue.WriteBuffer would land before the whole frame).
++      const wgpu::BufferDescriptor desc{
++          .label = "EFB copy RAM staging upload",
++          .usage = wgpu::BufferUsage::CopySrc,
++          .size = mem->size(),
++          .mappedAtCreation = true,
++      };
++      const auto upload = g_device.CreateBuffer(&desc);
++      std::memcpy(upload.GetMappedRange(0, mem->size()), mem->data(), mem->size());
++      upload.Unmap();
++      cmd.CopyBufferToBuffer(upload, 0, src->get(), 0, mem->size());
++    });
 +    srcSize = texSize;
 +    for (auto* e : parts) {
 +      const uint8_t* lo = std::max(e->dest, data);
@@ -835,19 +883,19 @@ index 0000000..14a70af
 +      const auto to = static_cast<uint32_t>(lo - data) & ~3u;
 +      const auto len = align4(static_cast<uint32_t>(hi - lo));
 +      ops.push_back([bytes = e->bytes, src, from, to, len](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
-+        cmd.CopyBufferToBuffer(bytes, from, src, to, len);
++        cmd.CopyBufferToBuffer(bytes->get(), from, src->get(), to, len);
 +      });
 +    }
 +  }
-+  const auto paramsBuf = params_buffer(Params{
++  const Params params{
 +      .fmt = fmt,
 +      .width = width,
 +      .height = height,
 +      .byteSize = srcSize,
 +      .byteOffset = srcOffset,
-+  });
-+  ops.push_back([src, srcSize, paramsBuf, dst = dec.handle](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
-+    run_decode(cmd, src, srcSize, paramsBuf, dst);
++  };
++  ops.push_back([src, srcSize, params, dst = dec.handle](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
++    run_decode(cmd, src->get(), srcSize, params_buffer(params), dst);
 +  });
 +  if (!queue_pre_pass_ops(std::move(ops))) {
 +    return {};
@@ -933,8 +981,7 @@ index 0000000..14a70af
 +      const auto prev = g_written.find(rb->dest);
 +      const bool ours = prev != g_written.end() && prev->second.first == rb->size && prev->second.second == now;
 +      if (now == rb->preHash || ours) {
-+        const auto* mapped = static_cast<const uint8_t*>(rb->buffer.GetConstMappedRange(0, align4(rb->size)));
-+        std::memcpy(dest, mapped, rb->size);
++        std::memcpy(dest, rb->data.data(), rb->size);
 +        const aurora::HashType h = hash_range(dest, rb->size);
 +        g_written[rb->dest] = {rb->size, h};
 +        for (auto& e : g_entries) {
@@ -947,15 +994,6 @@ index 0000000..14a70af
 +        wrote = true;
 +      } else {
 +        ++g_stats.skipped;
-+      }
-+    }
-+    if (rb->buffer.GetMapState() == wgpu::BufferMapState::Mapped) {
-+      rb->buffer.Unmap();
-+    }
-+    {
-+      std::lock_guard lock{g_mutex};
-+      if (g_readbackPool.size() < 16) {
-+        g_readbackPool.push_back(std::move(rb->buffer));
 +      }
 +    }
 +    if (wrote && g_writebackFn != nullptr) {
