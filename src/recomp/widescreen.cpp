@@ -81,6 +81,11 @@ float fovRatio(float m11) {
 
 bool adjusting() { return active() || sFov.load(std::memory_order_relaxed) != 1.0f; }
 
+namespace {
+bool sShadowLightSetup = false;
+}  // namespace
+void setShadowLightSetup(bool on) { sShadowLightSetup = on; }
+
 
 float factor() { return sFactor.load(std::memory_order_relaxed); }
 
@@ -96,7 +101,7 @@ HLE(fn_80008D58) {
     const u32 cam = c.r[3];
     // Viewport x and width (the European camera has 12 more bytes before them; fovY is unmoved).
     const bool fullScreen = rd32(cam + VOFF(0x1EC, 0x1F8)) == 0 && rd32(cam + VOFF(0x1F4, 0x200)) >= 640;
-    if (adjusting() && fullScreen) {
+    if (adjusting() && fullScreen && !sShadowLightSetup) {
         const float fovY = rdf32(cam + 0x90) * 3.14159265f / 180.0f;
         const double sides = fovY > 0.0f ? 1.0 / fovRatio(1.0f / std::tan(fovY * 0.5f)) : 1.0;
         const double inv = sides / factor();

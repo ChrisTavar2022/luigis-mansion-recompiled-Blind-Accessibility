@@ -123,9 +123,15 @@ struct RenderingSettings {
     // Display copy filter: the vertical filter (and gamma) GXCopyDisp applies on the way to the TV.
     bool displayCopyFilter = true;
     // GXCopyTex results also exist as GX-format bytes in main memory, so textures that read a
-    // copy with another format/size (Luigi's self-shadow depth map) and CPU reads see what the
+    // copy with another format/size (the shadow depth map) and CPU reads see what the
     // console sees (docs/RENDERING.md). Off: copies stay GPU-only textures.
     bool efbCopyToRam = true;
+    // Shadows (docs/RENDERING.md, "Shadows"). The game's shadow map (light's-view depth, copied
+    // as Z16 and compared in the TEV) at the internal render resolution instead of 640x480.
+    bool shadowRenderResolution = true;
+    // Widescreen: the shadow light's frustum is widened by the same factor as the view, so
+    // shadows reach the extra side areas (the game only covers what a 4:3 screen shows).
+    bool shadowWidescreen = true;
 };
 
 struct Settings {

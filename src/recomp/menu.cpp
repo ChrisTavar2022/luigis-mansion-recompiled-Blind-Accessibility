@@ -167,10 +167,24 @@ void renderingTab() {
     sDirty |= ImGui::Checkbox("EFB copies to RAM (accurate)", &r.efbCopyToRam);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Screen copies also exist in console memory format, like on the GameCube.\n"
-                          "Textures that read a copy in another format (Luigi's shadow depth map is\n"
+                          "Textures that read a copy in another format (the shadow depth map is\n"
                           "read as an IA8 texture) get the console's exact bytes, and memory the game\n"
                           "overwrites stops showing a stale copy. Aimed at the rare Luigi mouth/hose flicker.\n"
                           "Off: copies stay GPU-only textures (saves ~0.6 ms CPU per frame).");
+    ImGui::Separator();
+    ImGui::TextDisabled("Shadows (flashlight and lightning shadow map)");
+    sDirty |= ImGui::Checkbox("Shadow map at render resolution", &r.shadowRenderResolution);
+    ImGui::SetItemTooltip(
+        "The game draws its shadows from a depth map rendered from the light. On: that map uses the\n"
+        "internal render resolution, so shadow edges stay sharp at high resolutions.\n"
+        "Off: the console's 640x480 map (blockier, stair-stepped edges at high resolution).\n"
+        "Without 'EFB copies to RAM' the map always follows the render resolution. Tiny GPU cost.");
+    sDirty |= ImGui::Checkbox("Widescreen shadows", &r.shadowWidescreen);
+    ImGui::SetItemTooltip(
+        "The game only renders shadows for what a 4:3 screen shows. On: the light's view is widened\n"
+        "with the screen, so lightning and flashlight shadows reach the left/right edges at 16:9 and\n"
+        "wider (slightly lower horizontal shadow detail). Off: objects near the edges cast no\n"
+        "shadows, like widescreen hacks on the original. No cost. Only matters in widescreen.");
 }
 
 // Frame rate: 30 (the game's own rate, drawn directly) up to 320, or the display's refresh rate.
