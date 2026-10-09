@@ -85,6 +85,7 @@ struct EnhancementSettings {
     int dbgHudTest = 0;              // 0 off, 1 icons, 2 numbers, 3 element meter
     bool dbgFontTest = false;        // font test screen text
     bool dbgFontTestLatin = false;   // PAL fix: last font-test line shows "alphabet 123"
+    bool dbgWarpSkipEvents = true;   // warps don't start the destination's entry cutscene/event
 };
 
 // Gameplay / difficulty options (F1 > Enhancements > Gameplay). Defaults are neutral: the
