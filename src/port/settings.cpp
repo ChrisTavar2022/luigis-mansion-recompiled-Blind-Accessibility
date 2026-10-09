@@ -95,6 +95,7 @@ std::vector<Field> fields() {
         enm("audio", "output", a.output),
         flag("audio", "swap_channels", a.swapChannels),
         flag("audio", "reverb", a.reverb),
+        flag("audio", "voice_filters", a.voiceFilters),
         flag("enhancements", "show_fps", e.showFps),
         flag("enhancements", "pause_on_focus_loss", e.pauseOnFocusLoss),
         flag("enhancements", "skip_intro_logos", e.skipIntroLogos),
