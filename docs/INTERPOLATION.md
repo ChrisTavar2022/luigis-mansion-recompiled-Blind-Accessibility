@@ -60,13 +60,19 @@ LM_START_APPEAR=1`, Luigi walking with scripted stick input):
   copies. Every tape starts by loading the current arrays, so it never depends on another tape.
   Indexed matrix loads (`LOAD_INDX`) extend the matrix arrays the same way. About 1.2 MB of copies
   per game frame in a room.
-- **Pairing by draw.** Every noted value (position/normal/texture matrix, projection, light) is
-  grouped by kind, slot and the identity of the draw that follows it (display-list address and
-  size, or primitive + vertex layout + position array for immediate draws). Within a group the
-  closest values are paired first (rotation weighted against translation), so two instances of
-  the same mesh don't swap. What is left is paired by (kind, slot, source address). Pairing is
-  done once per tape on the guest thread (about 1.1 ms including the copy bookkeeping).
-  `LM_INTERP_PAIRING=source` uses only the old address pairing, for comparison.
+- **Pairing by draw.** The values noted before a draw (position/normal/texture matrices,
+  projection, lights) and the draw's own CPU-built vertices form a *bundle*, identified by what is
+  drawn (display-list address and size, or primitive + vertex layout + position array for
+  immediate draws) and by the kinds and sizes of its values. Bundles of the same identity are
+  paired between frames, closest values first (rotation weighted against translation, a sprite's
+  texture spin weighted strongly), then their values one by one. XF slots are deliberately not
+  part of the identity: J3D hands out matrix slots per frame. Where many draws share an identity
+  (particles), the common motion (the camera's, in view space) is taken out first and a draw may
+  move at most 12 units plus 1% of its distance on its own: a particle that died and one born
+  elsewhere are never paired, they just disappear/appear. What is left is paired by (kind, source
+  address) only where that is unambiguous. Pairing runs once per tape on the guest thread (about
+  0.6 ms including the copy bookkeeping). `LM_INTERP_PAIRING=source` uses only address pairing,
+  for comparison.
 - **Blending.** Position and normal matrices are split into rotation (quaternion, slerp) and an
   upper-triangular scale/shear part (Gram-Schmidt), so turning objects keep their shape and
   sheared matrices from non-uniformly scaled parents still blend. A pair is shown unblended
@@ -83,8 +89,14 @@ LM_START_APPEAR=1`, Luigi walking with scripted stick input):
   slot, the direction keeping its length (spot-cone falloff).
 - **Texture matrices**: projection-style ones (flashlight projector, shadows) are blended
   row-wise; the rows are compared by their rotation/scale part only. Matrices that alternate with
-  zero matrices are never blended toward zero. Small texture-coordinate matrices snap on a wrap
-  (an entry jumping by more than 0.5).
+  zero matrices are never blended toward zero. 2x4 matrices that spin texture coordinates in their
+  plane (particle sprites) are blended by angle and scale about their pivot (up to ~150 degrees per
+  game frame). Other small texture-coordinate matrices snap on a wrap (an entry jumping by more
+  than 0.5).
+- **Billboards and particles**: camera-facing sprites (the particle system's one-quad display
+  lists, J3D billboards such as the spiderwebs) have no rotation in view space; slerp keeps it that
+  way, so they stay camera-facing at every in-between frame while their positions, sizes and
+  spins are blended.
 - **CPU-built geometry**: immediate-mode draws under a perspective projection with direct float
   XYZ positions are noted as vertex blocks and paired by layout, vertex count and the nearest
   first vertices; positions are blended (a block moving more than 200 units snaps).
@@ -103,19 +115,58 @@ repo; the checks are:
 
 - *stale*: pixels where `fN_s<steps>` differs from `fN_fresh` (a late replay must look exactly
   like the 30 Hz frame). 100 walking frames: 3308 with `LM_INTERP_ARRAYS=0` (Luigi's body
-  missing), **0** with the copies.
+  missing), **0** with the copies. On main after the shadows merge (703f378) frame 2608 shows
+  3161 again, with or without the copies: there Luigi's body is missing from the *fresh* replay
+  and present in the late one, and the same body dropout happens in Original 30 (frames
+  2608-2609, also with `LM_EFB_RAM=0` and the shadow options off). So it is not interpolation
+  but GX state the frame inherits from the previous one (a fresh replay starts from the previous
+  frame's end state, like the console; the late replay starts from its own end state); to be
+  looked at with the shadow/GX accuracy work.
+- *billboard tracking* (`LM_INTERP_TRACE` "match" lines): camera-facing sprites followed over
+  three tapes; "jerky" = the middle position is far off the line through its neighbours (a wrong
+  pair). 100 walking frames in the nursery, ~33,000 sprites tracked: 7,709 jerky with address
+  pairing, 5,274 with the first per-draw pairing (large groups paired in order), **827** now.
 - *snapped*: blobs that jump all at once between fN-1_fresh and fN_s1 and then stay. Over 100
   walking frames these are now almost only Luigi's instant 180-degree turns (the game turns him
   within one frame: nothing to interpolate) and the flashlight switching on. Position matrices
   shown unblended per frame went from ~90 (entrywise thresholds) to ~25 (rotation/shear
   blending); texture matrices from ~300 to ~50 (the remaining ones are 2D texture rotations of
-  more than 90 degrees per frame).
+  more than 90 degrees per frame). With per-draw bundles and sprite spins (October 2026) the
+  nursery walk is at ~6 position and ~6 texture matrices per frame, and the pixel blobs that
+  snap at the start of an in-between dropped from 166,000 to 18,000 pixels over 100 frames (what
+  is left is Luigi's instant turns).
 - Teleport (`LM_SKIP_TEST=2700:pos:...`) and warp (`LM_DEV_WARPS=2:3@2700`): no smearing; the
   room change happens under the fade.
 
 Performance (RTX 3090 Ti, i9-12900KS, nursery, walking): 60.0 fps presented at a 60 target,
 game 29.6-30.1 fps; tape ~600 KiB + ~1.2 MiB array copies per game frame; 1.1 ms guest time per
 tape, 0.4 ms host time per present for the blended replay.
+
+## Dust and spiderwebs (October 2026)
+
+User report: with interpolation on, the dust Luigi kicks up and the spiderwebs misbehaved.
+`LM_INTERP_DRAWS=<first>[,<last>]` (frame numbers as in `LM_FRAME_DUMP`) logs every draw of
+those tapes with its guest call chain, the values noted before it, and what each was paired
+with.
+
+- **Spiderwebs** (nursery, foyer) are J3D draws (`draw__8J3DShapeCFv`) of camera-facing
+  billboards. J3D loads their matrices into whichever XF slots are free that frame (slots 6/9/12/15
+  in one frame, 15/18/21/24 in the next), and pairing used the slot as part of the key, so they
+  never found a partner and were drawn as captured: they moved in 30 Hz steps while the room
+  around them moved smoothly (template tracking in the dumps: web +4 px at once, wall +1 px per
+  in-between; now both +1 px per in-between).
+- **Dust and other particle effects** come from the game's particle system (`fn_8012FD14`): every
+  particle is the same 32-byte quad display list with a billboard position matrix and a spinning
+  2x4 texture matrix, all loaded from one scratch address. About 180 such draws per frame were
+  one group, too large for the nearest-value pairing then (it fell back to pairing in draw
+  order, which shifts whenever a particle dies or spawns), so puffs were blended toward other
+  puffs (flying across the cloud, stretching, doubling). Their texture spins (30-90 degrees per
+  frame) also snapped. Now particles are paired as whole draws with the camera motion taken out,
+  spins are blended by angle, and new/dead particles are left unpaired.
+- A field-order bug in the value records also gave CPU-built vertex blocks a stride of 1, so they
+  were never blended (they always snapped as "too far"); fixed.
+- The scanner now sizes immediate-mode vertices with the layout as it was at `GXBegin` (the game
+  changes it right after `GXEnd`); the "unparsed stream" (a full-screen 2D quad) is gone.
 
 ## Known limitations
 
@@ -125,7 +176,6 @@ tape, 0.4 ms host time per present for the blended replay.
   VSync in the GPU control panel); targets below the refresh rate are hit exactly (45 and 50 fps
   measured). `LM_BACKEND=d3d12|d3d11|vulkan` picks the backend for such tests.
 - Things the game snaps itself (Luigi's instant turns, a light switching on) stay snapped.
-- One raw immediate-mode draw per frame (a 4-vertex quad) is parsed with a different vertex
-  size than the game wrote, so its stream is skipped (logged once per run as "unparsed"); it
-  has no indexed attributes, so nothing is lost.
+- Particles that die or are born between two game frames vanish/appear at the first in-between
+  frame instead of fading.
 - Replaying a tape starts from the GX state the previous replay left (unchanged from before).
