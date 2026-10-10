@@ -7,6 +7,7 @@
 // FIFO unchanged. The console needs no GXEnd; Aurora does, so an open draw is
 // closed before the next GX call.
 #include "recomp/efb_copy.h"
+#include "recomp/enhanced_lighting.h"
 #include "recomp/frame.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
@@ -18,6 +19,7 @@
 
 #include <dolphin/gx.h>
 #include <dolphin/gx/GXAurora.h>
+#include <aurora/enhanced.h>
 
 #include <algorithm>
 #include <bit>
@@ -410,6 +412,8 @@ gx::DisplayCopy sDisplayCopy;
 }  // namespace
 
 const gx::DisplayCopy& gx::displayCopy() { return sDisplayCopy; }
+
+void gx::recheckDrawState() { sRawCheck = true; }
 
 // F1 > Visuals > Rendering accuracy options -> Aurora. Test overrides: LM_ACCURACY=<mask>
 // (bit 0 integer TEV, bit 1 EFB color depth, bit 2 texture copy filter) and LM_ACCURACY_AB=<seconds> (alternate between
@@ -998,6 +1002,16 @@ GXHLE(GXLoadLightObjImm) {
     // Position and direction (view space) are blended by frame interpolation.
     const u32 at = interp::mark();
     GXLoadLightObjImm(light(c.r[3]), GXLightID(c.r[4]));
+    if (std::getenv("LM_LIGHT_TRACE")) {
+        const auto* lo = reinterpret_cast<const float*>(hostp(c.r[3]) + 4);  // a0 a1 a2 k0 k1 k2 px..nz
+        static std::vector<u64> seen;
+        const u64 key = u64(c.lr) << 32 | c.r[4] | u64(lo[1] != 0.0f) << 31;
+        if (std::find(seen.begin(), seen.end(), key) == seen.end()) {
+            seen.push_back(key);
+            log("[light] obj %08X id %X a %.3f %.3f %.3f k %.6f %.6f %.6f col %08X chain %s", c.r[3], c.r[4], lo[0], lo[1],
+                lo[2], lo[3], lo[4], lo[5], rd32(c.r[3]), guestChain(c).c_str());
+        }
+    }
     interp::note(at, interp::Kind::Light, c.r[3], std::countr_zero(c.r[4] | 0x100u), 6, 10);
 }
 

@@ -2,6 +2,7 @@
 // docs/GAMEPLAY_OPTIONS.md). Every hook calls the original unchanged when its option is at the
 // neutral default, so the original game is untouched unless the player changes something.
 #include "recomp/gameplay.h"
+#include "recomp/ghost_lights.h"
 
 #include "recomp/coop.h"
 #include "recomp/hidden_mansion.h"
@@ -181,7 +182,9 @@ HLE(fn_800C0F08) {
     const u32 self = c.r[3];
     const u32 msg = inMem1(c.r[4]) ? rd32(c.r[4]) : 0;
     if (coop::active()) coop::onGhostMessage(c);  // 2-player mode: messages from player 2
+    if (inMem1(self)) ghostlights::onCharacterEvent(rd32(self + 0x808), msg, self, c.r[4]);  // ghost_lights.cpp
     callOriginal(c, "fn_800C0F08");
+    if (msg == 21 && inMem1(self) && ghostlights::testForceLit(rd32(self + 0x808))) c.r[3] = 1;  // LM_GHOST_HUNT_BEAM
     const float k = current().ghostHealthScale;
     if (k == 1.0f || (msg != 6 && msg != 7)) return;
     const u32 actor = rd32(self + 0x808);
@@ -202,6 +205,7 @@ HLE(fn_80081BCC) {
     const float k = current().vacuumStrength;
     const u32 cap = c.r[3];
     const u32 ghost = inMem1(cap) ? rd32(cap + 0x18) : 0;
+    if (inMem1(ghost)) ghostlights::onVacuumTick(ghost);  // ghost_lights.cpp
     if (k == 1.0f || !inMem1(ghost)) return hm::callWithFlag(c, "fn_80081BCC");
     const s32 before = rds16(ghost + 0xFC);
     hm::callWithFlag(c, "fn_80081BCC");

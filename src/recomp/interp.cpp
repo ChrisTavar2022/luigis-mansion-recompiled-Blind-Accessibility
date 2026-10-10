@@ -98,6 +98,7 @@ struct Tape {
     std::vector<s32> partner;  // per patch: index into pairedWith->patches, or -1
     bool cut = false;          // a camera cut since pairedWith: shown as is
     u32 paired = 0, unpaired = 0;
+    std::vector<std::pair<u32, u32>> lights;  // extra-light commands: offset of the first light, count
     u32 dumpOffset = ~0u;  // LM_INTERP_TEST: tape offset of the LM_FRAME_DUMP copy's target pointer
     u32 dumpFrame = 0;
     u32 guestUs = 0;  // guest-thread time spent closing the tape (array copies' bookkeeping, pairing)
@@ -120,6 +121,7 @@ u32 sBase = 0;            // start of the current capture segment in sScratch
 std::vector<Patch> sPatches;
 u32 sUngrouped = 0;  // patches from here on wait for their draw
 std::vector<u64> sBundleIds;
+std::vector<std::pair<u32, u32>> sLights;  // extra-light commands of the tape being captured
 bool sOverflowLogged = false;
 u32 sDumpAt = ~0u, sDumpFrame = 0;
 const void* sDumpPtr = nullptr;
@@ -755,6 +757,7 @@ void beginTape() {
     sBase = 0;
     sPatches.clear();
     sBundleIds.clear();
+    sLights.clear();
     sUngrouped = 0;
     AuroraCaptureBegin(sScratch.data(), kCaptureSize);
     sCapturing = true;
@@ -784,6 +787,8 @@ void endTape(u32 retraceCount) {
     sPatches = {};
     tape->bundleIds = std::move(sBundleIds);
     sBundleIds = {};
+    tape->lights = std::move(sLights);
+    sLights = {};
     tape->arrays = std::move(arrays);
     tape->arrayBytes = arrayBytes;
     tape->retrace = retraceCount;
@@ -836,6 +841,14 @@ void noteDump(u32 at, const void* target, u32 frameNo) {
 }
 
 u32 mark() { return capturing() ? sBase + AuroraCapturePos() : ~0u; }
+
+void noteExtraLights(u32 at, u32 count) {
+    if (at == ~0u || !capturing() || count == 0) return;
+    // GX_AURORA (0x50), u16 GX_AURORA_SET_EXTRA_LIGHTS, u8 count, then the lights.
+    const u32 end = at + 4 + count * GX_AURORA_EXTRA_LIGHT_WORDS * 4;
+    if (end > sBase + AuroraCapturePos() || sScratch[at] != 0x50 || sScratch[at + 3] != count) return;
+    sLights.emplace_back(at + 4, count);
+}
 
 void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     if (at == ~0u || !capturing()) return;
@@ -959,6 +972,34 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             }
             for (int k = 0; k < p.count; k++) storeBE(sReplay.data() + p.offset + 4 * k, out[k]);
             sBlended++;
+        }
+    }
+    // Extra lights (enhanced lighting): position, color, radius and intensity blended by id;
+    // a light without a partner is shown as captured.
+    if (a && alpha < 1.0f && !a->lights.empty()) {
+        constexpr u32 kWords = GX_AURORA_EXTRA_LIGHT_WORDS;
+        auto u32At = [](const u8* p) { return u32(p[0]) << 24 | u32(p[1]) << 16 | u32(p[2]) << 8 | p[3]; };
+        for (const auto& [offB, countB] : b.lights) {
+            for (u32 i = 0; i < countB; i++) {
+                const u8* lb = b.bytes.data() + offB + i * kWords * 4;
+                const u32 id = u32At(lb + 36);
+                if (id == 0) continue;
+                const u8* la = nullptr;
+                for (const auto& [offA, countA] : a->lights)
+                    for (u32 j = 0; j < countA && !la; j++) {
+                        const u8* cand = a->bytes.data() + offA + j * kWords * 4;
+                        if (u32At(cand + 36) == id) la = cand;
+                    }
+                if (!la) continue;
+                const float jump = std::fabs(loadBE(la) - loadBE(lb)) + std::fabs(loadBE(la + 4) - loadBE(lb + 4)) +
+                                   std::fabs(loadBE(la + 8) - loadBE(lb + 8));
+                if (jump > 600.0f) continue;  // teleport / camera cut
+                u8* out = sReplay.data() + (lb - b.bytes.data());
+                for (int k = 0; k < 8; k++) {
+                    const f32 va = loadBE(la + 4 * k), vb = loadBE(lb + 4 * k);
+                    storeBE(out + 4 * k, va + (vb - va) * alpha);
+                }
+            }
         }
     }
     if (dump && b.dumpOffset != ~0u) {

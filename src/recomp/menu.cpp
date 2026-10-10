@@ -11,6 +11,7 @@
 #include "recomp/controls.h"
 #include "recomp/crt.h"
 #include "recomp/dev_tools.h"
+#include "recomp/enhanced_lighting.h"
 #include "recomp/frame.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/skip.h"
@@ -199,6 +200,168 @@ void renderingTab() {
         "rooms, shadows of things farther away (or close to the camera) drop out as he walks.\n"
         "On: the shadow light's range covers everything in view, so all shadows always render.\n"
         "Off: the original behaviour. No cost.");
+}
+
+// ---- Enhanced lighting > Ghost lights (src/recomp/ghost_lights.cpp) ----
+void ghostLightsSection() {
+    auto& g = port::settings().ghostLights;
+    sDirty |= ImGui::Checkbox("Ghost lights", &g.enabled);
+    ImGui::SetItemTooltip(
+        "Every visible ghost lights the room around it in its own glow colour (the colour the game\n"
+        "uses for that ghost's light effects; fire, water and ice ghosts glow orange, blue, cyan).\n"
+        "Invisible ghosts give no light. Off: the original lighting. Small GPU cost per light.");
+    ImGui::BeginDisabled(!g.enabled);
+    sDirty |= ImGui::SliderFloat("Ghost light intensity", &g.intensity, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Brightness of every ghost light (1 = default).");
+    sDirty |= ImGui::SliderFloat("Ghost light radius", &g.radiusScale, 0.25f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("How far each ghost's light reaches (scaled by the ghost's size; bosses reach farthest).");
+    sDirty |= ImGui::Checkbox("Dramatic ghost light effects", &g.dramatic);
+    ImGui::SetItemTooltip(
+        "The light pulses gently, flares when a ghost appears, ramps up and flickers while the\n"
+        "Poltergust drains the ghost, and bursts then fades when it is captured.\n"
+        "Off: a steady light that only follows the ghost's visibility.");
+    sDirty |= ImGui::SliderInt("Max ghost lights", &g.maxLights, 1, 16, "%d", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Most ghost lights at once (the strongest/nearest first). Lower is faster.");
+    sDirty |= ImGui::Checkbox("Shadows from ghost lights", &g.shadows);
+    ImGui::SetItemTooltip("The one or two strongest ghost lights cast shadows. Costs a shadow pass per light.");
+    sDirty |= ImGui::SliderFloat("Invisible ghost glow", &g.invisibleHint, 0.0f, 0.3f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("A faint glow from ghosts that are currently invisible (0 = none, the default).");
+    ImGui::EndDisabled();
+}
+
+// ---- end Ghost lights ----
+
+// Enhanced lighting (src/recomp/enhanced_lighting.cpp, docs/RENDERING.md "Enhanced lighting"):
+// a master switch (off by default) and every part with its own switch and controls.
+void enhancedLightingTab() {
+    auto& l = port::settings().enhancedLighting;
+    ImGui::TextDisabled("Optional effects on top of the accurate rendering. Off by default: the original");
+    ImGui::TextDisabled("look is one click away. Each part can be switched and tuned on its own.");
+    ImGui::Separator();
+    sDirty |= ImGui::Checkbox("Enhanced lighting", &l.enabled);
+    ImGui::SetItemTooltip(
+        "Master switch for everything on this page. Off: the game renders exactly as the accurate\n"
+        "renderer does (no extra cost). Turning it on builds extra shader variants once (brief hitch).");
+    ImGui::BeginDisabled(!l.enabled);
+    static const char* kPresets[] = {"Low", "Medium", "High", "Ultra", "Custom"};
+    sDirty |= combo("Quality preset", l.preset, kPresets, 5);
+    ImGui::SetItemTooltip(
+        "Sets the soft shadow, volumetric beam and colored-light shadow quality. Low suits weaker\n"
+        "GPUs; Ultra is for high-end cards at high resolutions. Custom keeps the values chosen below.");
+    const bool custom = l.preset == port::EnhancedPreset::Custom;
+
+    ImGui::SeparatorText("Lighting");
+    sDirty |= ImGui::Checkbox("Per-pixel lighting", &l.perPixelLighting);
+    ImGui::SetItemTooltip(
+        "The game's own lights (room lights, flashlight, specular) are computed for every pixel\n"
+        "instead of every vertex, with the same formulas. Smoother, rounder light pools on walls\n"
+        "and floors instead of blotchy triangles. Small GPU cost.");
+    sDirty |= ImGui::Checkbox("Flashlight quality", &l.flashlightQuality);
+    ImGui::SetItemTooltip(
+        "The flashlight cone is evaluated per pixel with a smooth penumbra: a clean round beam\n"
+        "edge without a hard rim. Softness blends from the original falloff (0) to fully smoothed (1).");
+    ImGui::BeginDisabled(!l.flashlightQuality);
+    sDirty |= ImGui::SliderFloat("Penumbra softness", &l.flashlightSoftness, 0.0f, 1.0f, "%.2f");
+    sDirty |= ImGui::SliderFloat("Beam highlights", &l.flashlightSpecular, 0.0f, 2.0f, "%.2f");
+    ImGui::SetItemTooltip("Glossy highlights where the flashlight hits floors, furniture and characters\n"
+                          "(per pixel, tinted by the surface). 0: the original matte response.");
+    ImGui::EndDisabled();
+    sDirty |= ImGui::Checkbox("Dynamic colored lights", &l.extraLights);
+    ImGui::SetItemTooltip(
+        "Colored real-time light from ghosts and other light-emitting objects, lighting the room\n"
+        "around them (through the game's own materials). Cost grows with the number of lights.");
+    ImGui::BeginDisabled(!l.extraLights);
+    sDirty |= ImGui::SliderFloat("Light intensity", &l.extraLightIntensity, 0.0f, 3.0f, "%.2f");
+    sDirty |= ImGui::SliderFloat("Light color vibrance", &l.extraLightSaturation, 0.0f, 2.5f, "%.2f");
+    ImGui::SetItemTooltip("Saturation of every colored light (ghosts and other sources) and its glow.\n"
+                          "1: the colors as the game defines them; higher: deeper, more contrasty colors.");
+    sDirty |= ImGui::Checkbox("Colored light shadows", &l.extraLightShadows);
+    ImGui::SetItemTooltip(
+        "The strongest colored lights (ghost lights: the two brightest) cast shadows: furniture and\n"
+        "characters between a ghost and a wall block its glow. Screen-space: a depth pre-pass of the\n"
+        "room and a ray march toward each light at half resolution. Moderate GPU cost.");
+    static const char* kXlQ[] = {"Low", "Medium", "High"};
+    ImGui::BeginDisabled(!l.extraLightShadows || l.preset != port::EnhancedPreset::Custom);
+    sDirty |= ImGui::Combo("Light shadow quality", &l.extraShadowQuality, kXlQ, 3);
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    // ---- Ghost lights (src/recomp/ghost_lights.cpp): the game-side source of colored lights ----
+    ImGui::SeparatorText("Ghost lights");
+    ImGui::BeginDisabled(!l.extraLights);
+    ghostLightsSection();
+    ImGui::EndDisabled();
+    // ---- end Ghost lights ----
+
+    ImGui::SeparatorText("Shadows");
+    sDirty |= ImGui::Checkbox("Soft shadows", &l.softShadows);
+    ImGui::SetItemTooltip(
+        "Filters the game's flashlight/lightning shadow map: soft edges instead of hard, stair-stepped\n"
+        "ones, and (High/Ultra) contact hardening: sharp where an object touches the surface, softer\n"
+        "farther away. Also removes the faint stripes of the original depth packing. Cost: a few\n"
+        "dozen texture reads per shadowed pixel.");
+    ImGui::BeginDisabled(!l.softShadows);
+    static const char* kShadowQ[] = {"Low (PCF 8)", "Medium (PCF 16)", "High (PCSS 16)", "Ultra (PCSS 32)"};
+    ImGui::BeginDisabled(!custom);
+    sDirty |= ImGui::Combo("Shadow quality", &l.softShadowQuality, kShadowQ, 4);
+    ImGui::EndDisabled();
+    sDirty |= ImGui::SliderFloat("Shadow softness", &l.softShadowRadius, 0.25f, 6.0f, "%.2f");
+    sDirty |= ImGui::SliderFloat("Contact hardening", &l.softShadowPenumbra, 0.0f, 20.0f, "%.1f");
+    ImGui::SetItemTooltip("High/Ultra only: how quickly shadows soften with distance from the object casting them.");
+    ImGui::EndDisabled();
+    static const char* kMapSize[] = {"Render resolution", "2048 x 1536", "4096 x 3072"};
+    ImGui::BeginDisabled(!port::settings().rendering.shadowRenderResolution);
+    sDirty |= ImGui::Combo("Shadow map size", &l.shadowMapSize, kMapSize, 3);
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip(
+        "Resolution of the flashlight/lightning shadow map. Render resolution: as the accurate\n"
+        "renderer (the shadow pass uses the internal resolution). 2048/4096: the shadow pass is\n"
+        "drawn into its own target of that size, so shadows stay sharp at low render resolutions.\n"
+        "Needs Visuals > Rendering > \"Shadow map at render resolution\". Cost: one larger depth\n"
+        "pass per frame (4096: noticeable on weak GPUs).");
+
+    ImGui::SeparatorText("Atmosphere");
+    sDirty |= ImGui::Checkbox("Volumetric flashlight beam", &l.volumetricBeam);
+    ImGui::SetItemTooltip(
+        "Light scattering in the air of the flashlight beam (dusty haze), stopped by walls and\n"
+        "objects. One reduced-resolution pass; quality = ray-march steps/resolution.");
+    ImGui::BeginDisabled(!l.volumetricBeam);
+    sDirty |= ImGui::SliderFloat("Beam intensity", &l.volumetricIntensity, 0.0f, 3.0f, "%.2f");
+    static const char* kVolQ[] = {"Low", "Medium", "High"};
+    ImGui::BeginDisabled(!custom);
+    sDirty |= ImGui::Combo("Beam quality", &l.volumetricQuality, kVolQ, 3);
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    sDirty |= ImGui::Checkbox("Bloom / glow", &l.bloom);
+    ImGui::SetItemTooltip(
+        "Light sources glow: lamps, candles, fireplaces, the flashlight lens, ghost lights and auras,\n"
+        "lightning, nozzle effects. The HUD never glows. Computed at a capped resolution, so the\n"
+        "cost hardly depends on the render resolution.");
+    ImGui::BeginDisabled(!l.bloom);
+    sDirty |= ImGui::SliderFloat("Glow intensity", &l.bloomIntensity, 0.0f, 2.0f, "%.2f");
+    sDirty |= ImGui::SliderFloat("Light sources", &l.bloomEmissive, 0.0f, 2.0f, "%.2f");
+    ImGui::SetItemTooltip("Glow of light-emitting effects (what the game draws as added light): lamp and candle\n"
+                          "glows, fire, the flashlight lens, ghost auras, sparkles, lightning and nozzle effects.");
+    sDirty |= ImGui::SliderFloat("Colored light glow", &l.bloomLightGlow, 0.0f, 2.0f, "%.2f");
+    ImGui::SetItemTooltip("Halo around the dynamic colored lights (ghosts), hidden by walls and objects in front.");
+    sDirty |= ImGui::SliderFloat("Bright surfaces", &l.bloomScene, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("Glow of ordinary surfaces that are brighter than the threshold (lit walls, white\n"
+                          "objects). Low keeps the glow on actual light sources.");
+    sDirty |= ImGui::SliderFloat("Glow threshold", &l.bloomThreshold, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("Brightness where bright surfaces start to glow. Lower: more of the scene glows.");
+    sDirty |= ImGui::SliderFloat("Glow radius", &l.bloomRadius, 0.25f, 2.0f, "%.2f");
+    sDirty |= ImGui::SliderFloat("Flashlight-lit walls glow less", &l.bloomFlashlightSuppress, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("Surfaces that are only bright because the flashlight shines on them glow less\n"
+                          "than actual light sources.");
+    ImGui::EndDisabled();
+    sDirty |= ImGui::Checkbox("Ambient occlusion (experimental)", &l.ssao);
+    ImGui::SetItemTooltip(
+        "Darkens corners, creases and the floor under furniture (screen-space, from the depth\n"
+        "buffer). One half-resolution pass plus a blur. Experimental: can darken large areas.");
+    ImGui::BeginDisabled(!l.ssao);
+    sDirty |= ImGui::SliderFloat("Occlusion intensity", &l.ssaoIntensity, 0.0f, 2.0f, "%.2f");
+    sDirty |= ImGui::SliderFloat("Occlusion radius", &l.ssaoRadius, 10.0f, 200.0f, "%.0f");
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
 }
 
 // Frame rate: 30 (the game's own rate, drawn directly) up to 320, or the display's refresh rate.
@@ -591,8 +754,24 @@ void handleEvent(const SDL_Event& ev) {
 void draw() {
     skip::drawOverlay();
     recomp::gx::applyAccuracySettings();
+    recomp::enh::applySettings();
     recomp::crt::update();
     if (port::settings().enhancements.showFps) fpsOverlay();
+    // LM_FPS_LOG=1: presented host frames per second every 2 s (performance measurements).
+    static const bool sFpsLog = std::getenv("LM_FPS_LOG") != nullptr;
+    if (sFpsLog) {
+        using clock = std::chrono::steady_clock;
+        static auto last = clock::now();
+        static int frames = 0;
+        frames++;
+        const float dt = std::chrono::duration<float>(clock::now() - last).count();
+        if (dt >= 2.0f) {
+            std::printf("[fps] %.1f phase %d\n", frames / dt, recomp::enh::perfPhase());
+            std::fflush(stdout);
+            frames = 0;
+            last = clock::now();
+        }
+    }
     recomp::dev::drawOverlays();
     if (!sOpen) return;
     ImGui::SetNextWindowSize(ImVec2(680, 400), ImGuiCond_FirstUseEver);
@@ -609,6 +788,10 @@ void draw() {
                     }
                     if (ImGui::BeginTabItem("Rendering", nullptr, envTab("Rendering"))) {
                         renderingTab();
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("Enhanced lighting", nullptr, envTab("Enhanced lighting"))) {
+                        enhancedLightingTab();
                         ImGui::EndTabItem();
                     }
                     ImGui::EndTabBar();

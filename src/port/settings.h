@@ -149,9 +149,71 @@ struct RenderingSettings {
     bool shadowAnyDistance = true;
 };
 
+// ---- Enhanced lighting > Ghost lights (src/recomp/ghost_lights.cpp; docs/RENDERING.md) ----
+// Every visible ghost lights the room around it in its own glow colour. Part of the optional
+// "Enhanced lighting" group: OFF by default, the original look stays one click away.
+struct GhostLightSettings {
+    bool enabled = false;
+    float intensity = 1.0f;     // 0..4, multiplies every ghost light
+    float radiusScale = 1.0f;   // 0.25..3, multiplies the per-ghost-size radius
+    bool dramatic = true;       // pulse, flare on appearing/attacking, flicker when stunned, vacuum struggle, capture burst
+    int maxLights = 8;          // 1..16, strongest ghosts first
+    bool shadows = true;        // the 1-2 strongest ghost lights cast shadows (if the renderer supports it)
+    float invisibleHint = 0.0f; // 0..0.3: faint glow of fully invisible ghosts (0 = none)
+};
+
+// Enhanced lighting (F1 > Visuals > Enhanced lighting; docs/RENDERING.md "Enhanced lighting"):
+// effects layered on top of the accurate GX rendering of world geometry. Everything is gated by
+// `enabled` (OFF by default: the original look stays one click away; off renders exactly what
+// the plain renderer does). Each part has its own switch and strength/quality controls; the
+// preset fills in the quality fields (Custom keeps them).
+enum class EnhancedPreset { Low, Medium, High, Ultra, Custom };
+
+struct EnhancedLightingSettings {
+    bool enabled = false;
+    EnhancedPreset preset = EnhancedPreset::High;
+    // The game's own GX lights (room lights, flashlight, specular) evaluated per pixel.
+    bool perPixelLighting = true;
+    // Flashlight cone per pixel with a smooth penumbra.
+    bool flashlightQuality = true;
+    float flashlightSoftness = 0.6f;  // 0..1
+    float flashlightSpecular = 0.6f;  // 0..2: glossy highlight where the beam hits (per pixel)
+    // Soft shadows for the game's shadow map (PCF / PCSS contact hardening).
+    bool softShadows = true;
+    int softShadowQuality = 2;        // 0 PCF 8, 1 PCF 16, 2 PCSS 16, 3 PCSS 32
+    float softShadowRadius = 1.0f;    // filter radius (640x480 shadow-map texels)
+    float softShadowPenumbra = 6.0f;  // PCSS penumbra growth
+    int shadowMapSize = 0;            // 0 render resolution, 1 2048x1536, 2 4096x3072 (offscreen)
+    // Dynamic colored lights from game objects (ghosts) and test lights.
+    bool extraLights = true;
+    float extraLightIntensity = 1.0f;  // 0..3
+    float extraLightSaturation = 1.6f; // 0..2.5: color vibrance of all colored lights (1 = as the source gives it)
+    bool extraLightShadows = true;     // shadows of lights flagged to cast them (ghost lights: the strongest two)
+    int extraShadowQuality = 1;        // 0 low, 1 medium, 2 high (ray-march steps)
+    // Volumetric haze in the flashlight beam.
+    bool volumetricBeam = true;
+    float volumetricIntensity = 2.0f;  // 0..3
+    int volumetricQuality = 1;         // 0 low, 1 medium, 2 high
+    // Glow around bright light sources (HUD excluded).
+    bool bloom = true;
+    float bloomIntensity = 0.5f;       // 0..2
+    float bloomThreshold = 0.8f;       // 0..1
+    float bloomRadius = 1.0f;          // 0.25..2
+    float bloomFlashlightSuppress = 0.6f;  // 0..1: less glow from walls lit by the flashlight
+    float bloomScene = 0.12f;          // 0..1: glow of ordinary bright surfaces (above the threshold)
+    float bloomEmissive = 0.6f;        // 0..2: glow of light-emitting effects (glows, fire, beams, sparks)
+    float bloomLightGlow = 0.6f;       // 0..2: glow around colored light sources (ghosts)
+    // Screen-space ambient occlusion (contact darkening in corners and under furniture).
+    bool ssao = false;
+    float ssaoIntensity = 0.4f;        // 0..2
+    float ssaoRadius = 60.0f;          // world units
+};
+
 struct Settings {
     VideoSettings video;
     RenderingSettings rendering;
+    GhostLightSettings ghostLights;
+    EnhancedLightingSettings enhancedLighting;
     CrtSettings crt;
     AudioSettings audio;
     EnhancementSettings enhancements;

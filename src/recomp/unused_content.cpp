@@ -1,6 +1,7 @@
 // Unused content still present in the retail code, re-enabled as F1 > Enhancements options.
 // Both are hooks (tools/recomp/hooks.txt) that run the original function and only steer which
 // of the game's own code paths it takes. Findings and addresses: docs/UNUSED_CONTENT.md.
+#include "recomp/enhanced_lighting.h"
 #include "port/settings.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
@@ -119,11 +120,17 @@ HLE(fn_8003CFC0) {
 // back at half resolution weighted by the ghost's alpha (fn_8000C2D0, fn_8005F280). Pass 0
 // (used by the never-shipped Game Boy Horror view) draws every actor, ghosts included,
 // straight into the scene with their ghost lighting and alpha: the early, more solid look.
+// The ghost pass is also where enhanced lighting tags draws as ghosts (enhanced_lighting.h).
 HLE(fn_80060E70) {
     static const bool sForce = envFlag("LM_EARLY_GHOSTS");
+    const u32 pass = c.r[3] & 0x30;
+    struct GhostScope {
+        bool prev = enh::ghostPass();
+        explicit GhostScope(bool on) { enh::setGhostPass(on); }
+        ~GhostScope() { enh::setGhostPass(prev); }
+    } ghostScope(pass == 0x30);
     if (!sForce) return  // dev-only experiment (LM_EARLY_GHOSTS=1); the menu option is the beta lighting below
         callOriginal(c, "fn_80060E70");
-    const u32 pass = c.r[3] & 0x30;
     if (pass == 0x10) {
         c.r[3] &= ~0x30u;  // normal actors + ghosts, drawn directly
     } else if (pass == 0x30) {

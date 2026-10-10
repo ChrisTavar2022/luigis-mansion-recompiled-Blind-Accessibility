@@ -1,5 +1,6 @@
 // HLE: controllers, via Aurora's PAD (SDL gamepads + keyboard bindings), plus
 // an optional scripted input for automated testing (--input).
+#include "recomp/ghost_lights.h"
 #include "recomp/hle.h"
 
 #include "port/options.h"
@@ -163,6 +164,7 @@ HLE(PADRead) {
     }
     if (!port::options().inputScript.empty()) {
         applyScript(st);
+        ghostlights::testPad(st[0].button, st[0].stickX, st[0].stickY, st[0].substickY, st[0].triggerRight);  // LM_GHOST_HUNT test aid
         static u32 sLogged = 0;
         if (st[0].button && sLogged++ < 20)
             log("[pad] retrace %u frame %u: buttons %04X err %d", viRetraceCount(), skip::guestFrames(), st[0].button, st[0].err);

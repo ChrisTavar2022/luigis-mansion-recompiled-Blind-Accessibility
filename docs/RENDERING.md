@@ -864,3 +864,289 @@ Test aids: `LM_PIPELINE_LIST=<file>` (a damaged list), `LM_CACHE_DIR=<dir>`; the
 `<cache dir>/pipeline_cache.journal` (u32 magic "AUJN", version, phase 0 clean / 1 startup /
 2 running, consecutive startup crashes, then 64 slots); the `pipeline_bad` table lists recorded
 configs (`reason` 1 = failed creation, 2 = crash suspect, `crashes`).
+
+## Enhanced lighting
+
+Optional effects layered on top of the accurate GX rendering: F1 > Visuals > Enhanced lighting
+(`[enhanced_lighting]` in settings.ini). **Master switch off by default**; off, the renderer
+emits nothing new (no draw-class commands, no scene-end marker, no shader variants), and frame
+dumps are byte-identical to the plain renderer (nursery: master off vs the plain frames of an
+`LM_ENHANCED_AB` run, and earlier against the main build).
+Every part has its own switch and strength/quality control; the Quality preset
+(Low/Medium/High/Ultra/Custom) sets soft-shadow, volumetric and colored-light-shadow quality.
+Code: Aurora patch `0016-enhanced-lighting.patch` (`lib/gfx/enhanced.cpp/.hpp`,
+`include/aurora/enhanced.h`, `include/aurora/lights.h`, shader generator changes in
+`lib/gx/shader.cpp`), port side `src/recomp/enhanced_lighting.cpp/.h` (settings → Aurora,
+draw classes, scene bracket, test lights), `shadows.cpp` (caster-pass class, shadow map size),
+`unused_content.cpp` (ghost pass), `ghost_lights.cpp` (the ghost light provider, below).
+
+### How it hooks in
+
+- **Draw classes** (`GXSetDrawClassAurora`, FIFO command `GX_AURORA_SET_DRAW_CLASS`, so it is
+  ordered with the draws and recorded in interpolation tapes) are set only at hook boundaries,
+  never between the game's own GX commands: WORLD inside the main 3D view (`fn_8000BB98(0)`),
+  GHOST inside its ghost pass (`fn_80060E70` pass 0x30), OTHER inside the shadow-map caster pass
+  (`fn_8005D984` .. `fn_8005D8CC`) and everywhere else (HUD/2D, GBH, menus). Aurora additionally
+  treats non-perspective draws as OTHER (2D quads inside the view: screen copies, ghost-layer
+  composite). Only sent while the master switch is on. (A first version decided per draw in
+  `hle_gx.cpp`'s draw preparation; inserting commands there between raw FIFO writes was fragile.)
+- **Shader variants** (`ShaderConfig::enhClass`, chosen in `enhanced::shader_class`): 1 for
+  WORLD, 2 for GHOST, 0 (the plain shader) for OTHER, for additive draws (light effects: the
+  flashlight beam is built on GX vertex lighting and a color-texgen lookup), and for untextured
+  lit draws (effect volumes whose color/alpha *is* the lighting result; the nursery's beam haze
+  depends on one). Which parts run inside a variant is a uniform (`enh_flags`), so toggling a
+  part never rebuilds pipelines; only the master switch does (one-time compile hitch).
+- **Scene bracket**: `fn_8000BB98(0)` (main 3D view, US+PAL hook) is wrapped: before it the
+  frame's extra lights are sent (`aurora::gfx::set_extra_lights`), after it `GXSceneEndAurora`
+  marks the end of the 3D scene, before the HUD: bloom, volumetric beam and ambient occlusion
+  are composited onto the EFB there, so the HUD never glows and the CRT filter comes after.
+- **A/B test aid** `LM_ENHANCED_AB=<n>`: game frames alternate in blocks of n between enhanced
+  and plain (draws classed OTHER, no lights, no scene end: the plain renderer), so consecutive
+  `LM_FRAME_DUMP` frames of one deterministic run compare both (with n = 1, odd dump frames are
+  enhanced). The plain frames are byte-identical to a run with the master switch off.
+
+### The parts
+
+| Part (setting) | What | How |
+|---|---|---|
+| Per-pixel lighting (`per_pixel_lighting`) | The game's own GX lights evaluated per fragment with the same channel math (ambient/material sources, diffuse fn, spot/distance attenuation, clamps) | View-space position/normal interpolated to the fragment (`enh_pos`/`enh_nrm`; face normal from derivatives when the draw has no normals); WORLD draws only (ghost-pass draws keep vertex lighting: the ghost layer is composited from its own copy); channels that feed a color texgen keep their vertex result |
+| Flashlight quality (`flashlight_quality`, softness, beam highlights) | Round beam pool with a smooth penumbra; glossy highlights where the beam hits | Spot color channels evaluated per pixel; below the cone's full strength the GX angular term is remapped through smoothstep (0 = GX curve, 1 = smooth). Alpha channels stay exact (the shadow light's ALPHA1 scales the shadow strength: smoothing it weakened shadows). "Beam highlights" (`flashlight_specular`, 0.6) adds a Blinn-Phong term (exponent 28) per spot light, tinted by the material color |
+| Soft shadows (`soft_shadows`, quality, softness, contact hardening) | Soft edges for the game's shadow map (flashlight, lightning, room light) | The TEV `GR16_GT` compare stage (receiver key vs packed Z16 map) becomes a filtered compare: PCF 8/16 taps on a rotated Vogel disk, or PCSS (blocker search + penumbra from receiver-blocker distance) 16/32; receiver key computed analytically from the depth-ramp texcoord where it agrees with the TEV's key (no LINEAR byte-wrap stripes); capped slope-scaled bias on the off-centre taps only and a penumbra capped at 1.5x the radius (with a grazing shadow light, e.g. a ballroom ghost's own light near the floor, a full receiver-plane bias and wide penumbras erased thin casters' shadows); early out when the centre and 4 outer taps agree. Integer-TEV path included |
+| Shadow map size (`shadow_map_size`) | 2048x1536 / 4096x3072 shadow map independent of the render resolution | `shadows.cpp`: the caster pass (`fn_8005D984` … `fn_8005D8CC`, new US+PAL hook) renders into an Aurora offscreen target (`GXCreateFrameBuffer`) of that size; the Z16 copy comes from it. Needs "Shadow map at render resolution" |
+| Dynamic colored lights (`extra_lights`, intensity) | Up to 16 point lights per pixel on world geometry | `aurora/lights.h` interface below; added to the lit color channel (× material color) so the game's TEV decides the response; smooth (1-x²)² falloff to the radius, half-Lambert on ghost draws, optional specular |
+| Colored light shadows (`extra_light_shadows`, quality) | Lights flagged `ExtraLightCastShadows` (up to 4; ghost lights flag the two strongest) are blocked by furniture/characters | Screen space, current frame: the opaque world draws are re-rendered depth-only (same pipelines, depth layout) into a half-resolution pre-pass **before** the EFB pass that draws them (pass pre-op), a ray-march pass (8/16/32 steps, thickness 160 units) writes an RGBA8 mask (one channel per light), which is copied into a reserved storage-buffer range; the world shaders read it (`enh_mask`, bilinear) |
+| Volumetric beam (`volumetric_beam`, intensity 2.0, quality) | Dusty haze in the flashlight beam, stopped by walls | Scene end: ray march along each view ray (16/24/48 steps, 1/4 or 1/2 resolution) through the flashlight's GX spot attenuation (the flashlight = the bright angular spot light nearest the camera among the world draws' lights), forward-scattering phase, depth-limited; density modulated by slowly drifting 3D value noise (dust motes) |
+| Bloom / glow (`bloom`, intensity, light sources, colored light glow, bright surfaces, threshold, radius, flashlight-lit walls) | Light sources glow, the HUD never | Scene end, HDR (RGBA16F) chain at ≤ 720 lines: bright pass = **glow buffer** (emissive) + soft-knee scene highlights × "bright surfaces" (suppressed where the flashlight is the only reason a wall is bright) + **light glows**; 6-level 13-tap downsample / tent upsample; composited additively onto the EFB |
+| Ambient occlusion (`ssao`, intensity, radius; off by default, experimental) | Contact darkening | Scene end, half resolution, 12 hemisphere samples from the depth buffer, depth-aware blur, multiplied onto the EFB |
+
+**Glow buffer (emissive-aware bloom).** Additive draws (blend SRCALPHA/ONE etc.: glows, lens
+sprite, sparkles, fire, dust, lightning and nozzle effects; not the beam volume itself, whose
+alpha is a color-texgen lookup: glowing it again washed the picture out when it points at the
+camera) are recorded with a copy of their pipeline for a RGBA16F target and re-rendered right
+after the EFB pass they were drawn in (before a later EFB copy could change textures), depth
+tested (inclusive, no write) against that pass's depth, at bloom level-0 resolution. The copy
+takes the draw's final state (Aurora merges consecutive draws into the recorded command later;
+the first version re-rendered only the first fragment of the beam cone, a wedge pointing the
+wrong way). The game draws the 3D scene, copies it (RGB565 640x480, color clear, depth kept),
+draws the ghost layer and pastes the scene back before the HUD: glow draws survive that copy;
+a color + depth clear (a new scene) drops them. Ordinary lit surfaces only glow through "bright
+surfaces" (0.25 by default), so walls do not bloom; the glow buffer is Reinhard-compressed.
+**Light glows**: each extra light adds a small screen-space halo at its position (core =
+3% of its radius), hidden when the depth buffer shows a surface in front of it.
+
+### Extra light interface (`include/aurora/lights.h`)
+
+```cpp
+namespace aurora::gfx {
+struct ExtraLight {
+  float pos[3];       // VIEW space (GX eye space, same space as GXLoadLightObjImm positions)
+  float color[3];     // linear RGB, may exceed 1
+  float radius;       // world units; smooth falloff to 0 at radius
+  float intensity;    // multiplier
+  uint32_t flags;     // bit0: cast shadows, bit1: affects ghosts/translucent, bit2: specular
+  uint32_t id;        // stable per-source id for interpolation pairing (0 = none)
+};
+void set_extra_lights(const ExtraLight* lights, uint32_t count);  // once per game frame
+}
+```
+
+Port side: `recomp::submitExtraLights(lights, count)` (guest thread, once per game frame,
+strongest first, up to 16); `enh::worldToView` converts world positions with the current
+camera. The set is written into the GX FIFO (`GX_AURORA_SET_EXTRA_LIGHTS`) at the start of the
+main view, so it is part of interpolation tapes: `interp.cpp` blends position, color, radius and
+intensity between game frames by `id` (unpaired lights are shown as captured; jumps > 600 units
+are not blended). "Translucent" (bit1) lets a light reach ghost-pass draws; ghost lights leave it
+off. Test aid: `LM_TEST_LIGHTS=<count>[,<radius>[,<intensity>]]` (colored lights orbiting Luigi,
+the first two cast shadows).
+
+### Verification (US unless noted; `build/enhanced/*.png`; native 640x480 frame dumps of the
+deterministic nursery script `LM_START_MAP=2 LM_START_APPEAR=1 LM_TEST_STATE=poltergust
+LM_SKIP_CUTSCENES=1 LM_SKIP_AUTO=30 LM_INPUT_CLOCK=frames` with `LM_ENHANCED=1 LM_ENHANCED_AB=1`)
+
+- Master off vs the AB run's plain frames: identical (5 frames); earlier against the main build.
+- `nursery_beam_off_on.png`, `nursery_beam_crop_off_on.png`: flashlight on the door: dusty
+  volumetric haze in the beam, smoother pool, lens glow.
+- `nursery_lightning_off_on.png` (`LM_LIGHTNING=0,60,1`), `lightning_shadows_crop_plain_hard_soft.png`
+  (plain / enhanced with soft shadows off = identical hard shadows / PCSS).
+- `colored_light_shadows_off_on_mask.png` (`LM_TEST_LIGHTS=4`): colored pools on walls and floor,
+  shadows of crib and bears, and the shadow mask (`AURORA_ENH_GLOWDBG=8`).
+- Ballroom shadows (`LM_TELEPORT=1800,0,-1400,100`; the shadow light there is a dancing
+  ghost's own light near the floor, so the long shadows change every frame with the dance):
+  `ballroom_shadows_per_part.png` (enhanced frames of AB runs that are frame-aligned with each
+  other, rows: everything off, per-pixel, flashlight quality, bloom, volumetric, soft shadows,
+  default minus soft shadows) and `ballroom_shadows_alloff_default_ghostlights.png`: the game's
+  shadows are kept in every configuration. The earlier report of missing shadows came from
+  comparing different game frames (consecutive AB frames differ in the dance) plus two real
+  issues fixed since: the penumbra smoothing was applied to the shadow light's ALPHA1 mask, and
+  the soft-shadow bias/penumbra erased thin casters with a grazing light. Remaining visible
+  difference: bloom brightens the white floor (bright surfaces 0.12 by default).
+- `ghost_layer_ghostlight_ab_diff.png` (gold ghosts, room 42, ghost lights A/B with difference):
+  changes only at the lit ghost and its light pool, no duplicate ghost shapes (the faint shapes
+  in the ghost-lights agent's capture images are other ghosts at different times).
+- Showcase: `ballroom_dark_showcase.png` (+ `_full_2560x1440`, `showcase2`, contact sheet):
+  Ultra, ghost lights, bloom, ambient_scale 0.35, 16:9, render scale 3, window captures.
+- `ws21x9_off_on.png` (21:9, render scale 2), `msaa4x_scale4_16x9_off_on.png` (MSAA 4x, scale 4,
+  16:9), `pal_base_off_on.png` (European game via LuigisMansionRecomp setup),
+  `hidden_mansion_off_on.png` (`LM_HM_FORCE=1`).
+- Interpolation at 120 fps (`LM_INTERP_TEST=4`, walking, test lights): the in-between replays
+  converge monotonically on the next game frame, the last step is identical to the captured
+  frame; extra lights move smoothly (`interp_120fps_steps.png`).
+
+### Cost
+
+RTX 3090 Ti, nursery gameplay with 4 test lights, render scale 8 (5120x3840), uncapped at
+320 fps target (the 120 Hz display caps at ~120), Ultra preset + AO + 4096 shadow map.
+`LM_ENH_PERF_AB=6,<part>` switches one part off/on every 6 s within a run and `LM_FPS_LOG=1`
+logs presented fps with the phase; numbers are the mean over ~18 two-second samples per phase
+(other agents' game instances shared the GPU, so +-0.5 ms is noise):
+
+| Part | Cost per frame at 5120x3840 |
+|---|---|
+| Everything (master switch) | +0.6 ms (after the fixes below; was +3.8 ms) |
+| Per-pixel lighting | below noise (-0.3 ms) |
+| Flashlight quality + highlights | +0.1 ms |
+| Soft shadows (PCSS 32) | +0.45 ms (was +5 ms before the early out) |
+| Colored lights (4) | +1.6 ms |
+| Colored light shadows (2 lights, 32 steps) | below noise |
+| Volumetric beam (High) | +0.05 ms (was +4.4 ms before capping its target at 720 lines) |
+| Bloom | +0.6 ms |
+| Ambient occlusion | +0.1 ms |
+| Shadow map 4096x3072 | below noise |
+
+At 1x-3x render scale every part is well below a millisecond. Turning the master switch on
+compiles the enhanced shader variants once (a short hitch with the pipeline precache warm).
+
+### Look
+
+One shared look for colored light: "Light color vibrance" (`extra_light_saturation`, 1.6)
+pushes every extra light's color away from its gray (keeping its brightest channel), for every
+provider (all ghost lights, test lights) and their bloom halos; the flashlight, lamps, candles,
+fireplaces, lightning and element effects get the same treatment through per-pixel lighting,
+highlights and the emissive glow buffer. Each part keeps its own toggle and slider.
+
+### Debug aids (Aurora, env)
+
+`AURORA_ENH_LOG=1` (scene-end/flashlight/glow/light-shadow log), `AURORA_ENH_DRAWLOG=<n>`
+(+`AURORA_ENH_DRAWLOG_ALL`: every draw of the n-th scene with class, blend, lighting, TEV),
+`AURORA_ENH_GLOWDBG=1` (show the glow buffer), `=2` (one glow draw per frame), `=3/5/6` (all
+world draws into the glow buffer / without depth test / inverted test), `=7` (glow pass depth),
+`=8` (light-shadow mask), `=9/10` (mask pass depth / light distance), `AURORA_ENH_HIDE_ADDITIVE=1`
+(drop additive world draws), `AURORA_ENH_NOVARIANT=1` (no shader variants),
+`AURORA_SHADER_DUMP=<dir>` (every generated WGSL shader). Port: `LM_ENHANCED=0|1`,
+`LM_ENHANCED_AB=<n>`, `LM_TEST_LIGHTS`, `LM_SHADOW_MAP=0|1|2`, `LM_LIGHT_TRACE=1` (each distinct
+`GXLoadLightObjImm` call with its guest chain).
+
+### Ghost lights
+
+F1 > Visuals > Enhanced lighting > "Ghost lights" (`[ghost_lights]` in settings.ini; needs the
+Enhanced lighting master switch and "Dynamic colored lights"; off by default). Every ghost the
+game draws becomes a coloured point light in the renderer's extra-light list
+(`aurora/lights.h`), so ghosts light the floor, walls and furniture around them in their own
+glow colour. Code: `src/recomp/ghost_lights.cpp` (US + PAL).
+
+**Where the data comes from** (USA addresses; `VA()` / `VOFF()` for the European game):
+
+| What | Source |
+|---|---|
+| Ghost actors | live character slots `lbl_803D48A0` (count `lbl_804D8750`), the list the actor draw pass `fn_80060E70` walks. A ghost = type (actor +0x3C) with type flag 8 in `lbl_8033B590` (0x1C per type: +0x08 u16 flags, +0x14 s16 class 1 small / 2 normal / 3 portrait / 4 boss, +0x18 name) |
+| Drawn this frame | the draw pass's own test: actor +0x40 flags (0x6000 not drawn, 0x100 hidden from the normal passes, 0x200 any room) and room byte (+0xB4 >> 24) visible through `fn_8001CE1C(room, -1)` |
+| Position | actor +0x44, lifted 40/90/110/160 units (class 1/2/3/4): +0x44 is where the game puts the small GX light some ghosts carry (`EnZako::fn_800C1FFC` → `fn_80016C98(0, actor+0x44, BrightColor × alpha, 40, 80)`), but walking ghosts have it near the floor (ballroom shy-guy ghosts at y 60), where a point light only grazes the floor |
+| Colour | the ghost's glow colour, EnemyParam "BrightColor" (`/param/ctp/<type>.prm`, `Koga::EnTypesManager::sManager`+4, 0x218 per type, value at +0x1FC; same layout on PAL), which the game copies to actor +0xE4 and uses for the ghost's light effects. The actor copy is read; parameter and a per-class table are fallbacks |
+| Element ghosts | EnemyParam Element (+0x198): 1 fire, 2 water, 3 ice (from the weakness test at 0x800C75F8). They all share the pale glow C1DCF7, so their light is fire orange / water blue / ice cyan instead |
+| Visibility | actor +0xE3, the alpha the ghost layer is drawn with (0 invisible .. 255) |
+| HP | actor +0xFC (s16), maximum = EnemyParam life (+0x1C) |
+| States | `Koga::CharacterEvent` messages to the ghost's AI (`fn_800C0F08`, hooked in gameplay_hooks.cpp; message → observer slot from `receiveMessage`'s jump table): 2 in the flashlight beam (every frame), 3 capture begin, 4 capture end (also sent when a ghost vanishes/escapes), 9 fishing begin (hooked by the Poltergust), 12 collided with Luigi, 13/14/15 fire/ice/water spray, 16/17/18 fire/ice/water ball. The Poltergust capture update `fn_80081BCC` (ghost at capture +0x18) runs every frame a ghost is held |
+| Camera | GX view matrix `lbl_803A3820`+0x18C (+0x198 on PAL), the matrix `fn_80057CFC` uses to put the S3D lights in eye space for `GXLoadLightObjImm`; identical to `enh::worldToView` (checked) |
+
+Per-type glow colours (US, `LM_GHOST_LIGHT_LOG` dumps the table): gold ghost `mgyapoo1`
+F19726, Chauncey `bbaby` CCFF99, Boolossus/Boos `btelesa`/`telesa` white, Mr. Luggs `eater`
+CC74F0, waiters A3DDE0, ballroom shy-guy ghosts `heypo1..8` red/green/white/brown/orange/
+yellow/pink/purple, blue/ice ghosts `iyapoo*` 5ACBE1, gold mice F5C50F, Bogmire `bshadow`
+white, Neville `situji` 0032FF.
+
+**Behaviour** ("Dramatic ghost light effects", on by default): gentle two-frequency pulse; a
+flare when a ghost fades in or collides with Luigi; a nervous flicker that brightens while the
+flashlight beam is on it; while the Poltergust holds it the light ramps with lost HP
+(0.35 + 0.65 × (1 − HP/max)) with a fast tremor and a larger radius; capture (message 3, or HP
+reaching 0 while held) gives a ~3× burst that fades over 1.5 s and follows the ghost into the
+nozzle (and stays at its last position if the actor leaves the list); element hits tint the
+light with the element for 20 frames. Invisible ghosts give no light ("Invisible ghost glow"
+0..0.3 adds a faint hint). Lights are sorted by strength / distance; "Max ghost lights"
+(default 8, renderer limit 16) keeps the strongest, the strongest two get the cast-shadows flag
+when "Shadows from ghost lights" is on (the renderer does not implement extra-light shadows
+yet). Radius by class 380/560/720/1100 × "Ghost light radius"; ids = actor pointer, so
+interpolation pairs them. Actors are pooled and reused, so capture marks expire.
+
+The lights do not carry `ExtraLightTranslucent`: only draws of the ghost pass (`fn_80060E70`
+pass 0x30) are ghost draws for the renderer, blended room geometry (much of the ballroom floor
+and walls) is ordinary world geometry and gets the light, and a ghost's body does not light
+itself; its halo comes from the bloom's light glow.
+
+Built at the start of the main view `fn_8000BB98(0)` (enhanced_lighting.cpp's hook calls
+`ghostlights::onMainView` before `enh::beginScene`) and submitted with
+`recomp::submitExtraLights`; frames without the game scene have none.
+
+**Verification** (US unless noted; build/ghostlights/*.png): `LM_GHOST_LIGHT_AB=1` sends the
+lights only on every other game frame so consecutive `LM_FRAME_DUMP` frames compare with/without
+in the same scene (frame brightness then alternates by ~7.5e6 per frame in the ballroom).
+Ballroom (`LM_TELEPORT=1800,0,-1400,100`): coloured pools around the shy-guy ghosts on the floor
+and the chandelier (`ballroom_ab.png`); Chauncey (`LM_START_MAP=10`): green light on the
+balcony floor and balustrade (`chauncey_ab.png`); Boolossus (map 11): white light, collide
+events flare it (`boolossus_ab.png`). Logged in game: gold ghost in the training room
+(`LM_START_MAP=3`; appear flare, in-beam events, flee/despawn with message 4), Mr. Luggs and the
+waiters in the dining room, the ballroom ghosts. PAL base (map 11): same ghost, colour, view
+positions and events.
+
+**Stun → vacuum → capture, in play** (gold ghosts, map 2 room 42 = enemyinfo room 39,
+`LM_TELEPORT=0,550,-3300,100`; the ghosts spawn as soon as Luigi is in the room). What the
+game does (US): the gold ghost strategy (`lbl_8035B6E4`) cycles AI states 4 appear → 5 approach
+→ 8 hover in front of Luigi (~50 frames) → 0xA attack (fully visible) → vanish → 4 (9 is a
+later hover). Its beam handler (`fn_800C7824`) only reacts in states 5/8/9 (`fn_800C8F88`): it
+starts the light-bind sub-strategy at strategy +0x504 (`fn_800C8FE8`, pointer at +0x590), which
+counts frames the ghost is still lit (message 21 = EnThought +0x908 > 0; message 2 sets +0x908)
+against `fn_800DBE8C`: the type's LightBindFrame (gold ghost 25) scaled by distance between the
+Min/MaxLightBindRange 100..400 (closer = more frames). In state 5 it also starts fleeing.
+Sub-state 3 = stunned: heart and HP counter shown, and it fades away within ~15 frames unless
+the vacuum hooks it.
+
+Why the first attempts never vacuumed: each time a ghost appears Luigi is startled for ~77
+frames (Poltergust mode, Luigi +0x1180, = 0; `LM_NOZZLE_DUMP=1`), and that window covers the
+first hover/attack. A stun inside it ends before R can do anything. R itself works under
+`LM_TEST_STATE` once gameplay has started. The hunting aid therefore stuns only while the mode
+is non-zero and holds R from the moment it aims (`LM_GHOST_HUNT_R=0`), nozzle tilted up (C stick)
+and pulling away once hooked.
+
+Run that completes the whole sequence (deterministic): `LM_GHOST_HUNT=9 LM_GHOST_HUNT_BEAM=89
+LM_GHOST_HUNT_DMAX=300 LM_GHOST_HUNT_R=0` plus the teleport above, `LM_TEST_STATE=poltergust`,
+`--input "600:START*10,1000:A*6"`: aim at f2546 (state 9, 216 units), R → Poltergust mode 1,
+message 9 (hooked) at f2556, HP 10 → 0 by f2626 (capture update holding the ghost every frame),
+message 3 (capture begin) f2634, message 4 (inside the Poltergust) f2662. Ghost light intensity
+over it (`LM_GHOST_LIGHT_LOG`): in the beam ~2 (flicker), held 3-7 rising with lost HP plus
+tremor, capture burst peaking at ~6 at f2629 and fading to 0.3 by f2659, off once captured.
+The beam stun is the stand-in (`LM_GHOST_HUNT_BEAM` delivers the game's own message 2 in
+states 8/9; aiming the real flashlight up at the hovering ghost from a script did not work);
+everything after it is the game's own vacuum and capture.
+
+Frame dumps with `LM_GHOST_LIGHT_AB=1` (off / on / difference; presents 4990..5101 of that run):
+- `gold_ghost_stun_ab.png`: lit and stunned (heart shown): orange light on the wall and floor.
+- `gold_ghost_vacuum_ab.png`: hooked, HP 10 → 4 → 2: the pool on the floor and walls grows
+  brighter and wider as the HP drains.
+- `gold_ghost_capture_ab.png`: capture burst (the room lit orange), fading while the ghost is
+  pulled into the nozzle, nothing once it is inside.
+The first capture peaked at ~17× (burst multiplied by the vacuum struggle) and washed the room
+out; the struggle is no longer applied during the capture.
+
+Element ghosts and element hits have not been exercised in play.
+
+Test aids: `LM_GHOST_LIGHTS=1` (on regardless of the settings; with `LM_ENHANCED=1`),
+`LM_GHOST_LIGHT_LOG=1|N` (every ghost each N frames: id, type, class, element, state, alpha,
+HP, flags, colour, world and view position, intensity, radius; the lights sent; every event;
+vacuum holds; the type colour table once), `LM_GHOST_LIGHT_DIFF=1` (changed bytes 0..0x200 of
+drawn ghosts, research aid), `LM_GHOST_LIGHT_AB=1`, and the hunting aids (US, research):
+`LM_GHOST_HUNT=1|<AI state hex>` steers Luigi (after `--input`: faces away from the target
+ghost while it hovers, turns to it in the given state, holds R and closes in with the nozzle
+tilted up once it is stunned, pulls away when hooked), `LM_GHOST_HUNT_BEAM=<states>`,
+`LM_GHOST_HUNT_DMAX`, `LM_GHOST_HUNT_DELAY`, `LM_GHOST_HUNT_R`, `LM_GHOST_HUNT_TURN`,
+`LM_GHOST_HUNT_CY`, `LM_GHOST_HUNT_DIV`, `LM_GHOST_HUNT_FLIP`. The log line's `ai` field is the
+ghost's strategy state (EnThought +0x800 → +0x0E; decorator inner state in the high half), and
+the first AI of each type logs its strategy vtable.
