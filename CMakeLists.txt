@@ -29,8 +29,12 @@ if (EXISTS ${_stamp})
     file(READ ${_stamp} _stamped)
 endif ()
 if (NOT _stamped STREQUAL _patch_ids)
+    # The patches are LF; Git for Windows' system-wide core.autocrlf=true would check the
+    # submodule out with CRLF. Force LF and rewrite every file before applying.
+    execute_process(COMMAND git config core.autocrlf false WORKING_DIRECTORY ${_aurora_dir})
     execute_process(COMMAND git checkout -q -- . WORKING_DIRECTORY ${_aurora_dir})
     execute_process(COMMAND git clean -fdq WORKING_DIRECTORY ${_aurora_dir})
+    execute_process(COMMAND git checkout-index -f -a WORKING_DIRECTORY ${_aurora_dir})
     foreach (_patch ${AURORA_PATCHES})
         execute_process(COMMAND git apply ${_patch} WORKING_DIRECTORY ${_aurora_dir} RESULT_VARIABLE _applied)
         if (NOT _applied EQUAL 0)
