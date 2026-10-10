@@ -150,6 +150,8 @@ void applySettings() {
     c.softShadowQuality = u32(std::clamp(l.softShadowQuality, 0, 3));
     c.softShadowRadius = l.softShadowRadius;
     c.softShadowPenumbra = l.softShadowPenumbra;
+    c.shadowDarkness = l.shadowDarkness;
+    c.shadowAmbientKeep = l.shadowAmbientKeep;
     c.extraLights = l.extraLights;
     c.extraLightIntensity = l.extraLightIntensity;
     c.extraLightSaturation = l.extraLightSaturation;
