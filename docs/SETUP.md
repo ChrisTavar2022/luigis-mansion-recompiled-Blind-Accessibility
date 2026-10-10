@@ -218,22 +218,13 @@ All enhancements now work on both releases. Checked in the European static build
 | Gameplay options | Luigi's riding byte +0x1350; the European Luigi update writes it every frame, so it is set in `fn_800B84E4` (state update) instead; darkness: the game's own hidden-mansion 0.2 is not applied twice | health x2 HUD 200, darkness, hearts, riding |
 | Debug: info overlay, particle report, depth blur, warps, model viewer | `LMChangeFrameBuffer` is the European `fn_80007940` (alarm-paced variant) | overlays, warps to maps 5 and 13, viewer (Chauncey) |
 
-### PAL parity status (paused)
+### PAL parity status
 
-Done and checked on the European static build: version mapping (`VA`/`VOFF`, generated
-`version_addrs.inc`, USA names for European functions, `palfn_` hooks), skippable cutscenes
-(snapshot identical to a watched run), HUD edge anchoring + culling hook at 21:9, GBH camera,
-gameplay options (health x2, darkness, no hearts, always ride), debug overlays / warps / model
-viewer, and the USA Hidden Mansion on the European game in the foyer (USA map data served, no
-mirror, USA lighting; the European variant still mirrored and dark).
-
-Pending: ghost shading Beta re-check in an ordinary room (the Boolossus check shows the
-change); the reverse Hidden Mansion's boss rules (Chauncey, Bowser, Boolossus), hearts and
-enemy timers are implemented but not yet exercised in play; `LuigisMansionRecomp` with both
-discs (setup building `hidden_mansion/usa/` and both modules) not yet run end to end; a
-warp queued very early (`LM_DEV_WARPS` during the opening) broke the European game once;
-European runs sometimes print `crash: abort()` when the test harness stops them (seen before
-this work too).
+Every feature was checked on the European base (October 2026): table, fixes and remaining
+gates in docs/PAL_PARITY.md. Only the leftover-room visits stay USA-only (greyed in F1).
+European specifics found there: the double-buffered frame end drops frames unless the
+previous buffer is reported as shown (`palfn_80007844` hook), interpolation tapes are stamped
+with the game's N/60 s frame period, and instruction patches need their own `pal` lines.
 
 ### USA Hidden Mansion on the European game
 
@@ -272,7 +263,8 @@ ones found are all on the main game thread.
 
 | Feature | USA base | European base |
 |---------|----------|---------------|
-| Skippable cutscenes, HUD at screen edges, widescreen culling, GBH camera, ghost shading, gameplay options, debug tools | yes | yes |
+| Skippable cutscenes, HUD at screen edges, widescreen culling, GBH camera/clock/tracker, ghost shading, unused content, gameplay options, debug tools | yes | yes |
+| Leftover-room visits (Unused content > Unused rooms) | yes | *not available on the European version yet* |
 | Hidden Mansion: European rules | with both discs (overlay) | native |
 | Hidden Mansion: USA rules | native | with both discs (reverse overlay) |
 | PAL refresh rate, language | *European version only* (greyed on a USA-only install) | yes |
