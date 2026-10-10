@@ -168,6 +168,30 @@ with.
 - The scanner now sizes immediate-mode vertices with the layout as it was at `GXBegin` (the game
   changes it right after `GXEnd`); the "unparsed stream" (a full-screen 2D quad) is gone.
 
+## Cost of closing a tape (guest thread)
+
+Pairing runs on the game thread when a tape is closed, so it eats into the 33 ms game frame.
+The 5-second `[interp]` stats line reports it as `tape close X ms (guest: arrays, copy, draws,
+rest, cut)`: vertex-array bookkeeping, copying the tape, pairing draws, pairing leftover values by
+source, and the camera-cut check.
+
+In the foyer (~3,300 values per tape) the per-draw pairing took 13.4 ms: groups of 448, 224 and
+125 identical particle draws were compared all-pairs (up to 200,000 candidate pairs per group,
+every one sorted, including the ones rejected by the motion limit), and every draw's position was
+re-read from the tape for every comparison. Now (paired/unpaired counts unchanged within
+run-to-run noise):
+- each draw's position is read once; the common motion is the median over at most 64 sampled
+  draws instead of all of them;
+- in groups of more than 1,024 pairs, only predecessors within the motion limit are visited
+  (sorted along the axis the group is most spread out on, then a range scan), so a draw has a
+  handful of candidates instead of hundreds; rejected pairs are never stored;
+- particles (one CPU-built vertex block per draw) have their first vertices decoded once per
+  group, and candidates are sorted as packed integer keys;
+- the per-draw index lists are one flat array (one allocation instead of one per draw).
+
+Foyer: tape close 13.7 ms -> 1.05 ms (draws 13.4 -> 0.8 ms; copy 0.1-0.2 ms); opening cutscene
+and title 0.1-0.3 ms.
+
 ## Known limitations
 
 - On the test machine presentation never exceeded the display's 60 Hz even with VSync off

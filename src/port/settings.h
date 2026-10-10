@@ -136,10 +136,6 @@ struct RenderingSettings {
     // room light), so shadows vanish on things farther away. On: the band is extended to what the
     // player's view shows (enhancement). Off: the original range.
     bool shadowAnyDistance = true;
-    // A material/state combination seen for the first time waits for its GPU pipeline to compile
-    // (a short hitch once) instead of being skipped until it is ready (objects missing for a few
-    // frames, e.g. Luigi's body when the flashlight first turns toward the camera).
-    bool waitForShaders = true;
 };
 
 struct Settings {

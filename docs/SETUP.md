@@ -11,6 +11,7 @@ bundled clang + lld. Nothing derived from the game is shipped or committed.
 
 ```
 LuigisMansionRecomp.exe   runtime + recompiler + setup UI
+pipelines.bin             shader/pipeline precache list (data/pipelines.bin; docs/RENDERING.md)
 *.dll                     SDL3, Dawn (+ dxcompiler/dxil), nod, libpng, zlib
 llvm/bin/clang.exe        bundled compiler (from LM_LLVM_DIR, default: the LLVM that built the exe)
 llvm/bin/lld-link.exe     bundled linker
@@ -43,7 +44,15 @@ The LLVM binaries are copied at install time, never committed. Toolchain lookup 
      version of `tools/hidden_mansion_data.py`; files are read straight from the discs):
      the European rules' data for the USA game and the USA rules' data for the European
      game (`usa/`).
-3. **Launch** the chosen version: open its disc in Aurora's DVD layer, check the DOL
+3. **Compile shaders.** Aurora compiles every pipeline in the precache list
+   (`pipelines.bin`) plus any this PC used before, on worker threads, from the first setup
+   frame on, so most of it overlaps the disc picking and the module build. When setup was
+   shown (first run, `--setup`, a rebuild) and the compile is not finished yet, a
+   "Compiling shaders n / N" step with a progress bar follows; "Play now" leaves the rest to
+   the background. Later launches without the setup screen compile whatever is missing in the
+   background while the title runs (a small corner note shows progress). A draw never waits on
+   anything but its own pipeline, and is never skipped (docs/RENDERING.md, "Pipeline precache").
+4. **Launch** the chosen version: open its disc in Aurora's DVD layer, check the DOL
    again, load the module, boot.
 
 Later launches skip the screen when the configured discs are readable and every module
@@ -61,6 +70,8 @@ Game > *Add or change discs...*) opens the screen again.
 | `game/<id>/recompiler.log` | recompiler summary |
 | `hidden_mansion/` | European Hidden Mansion overlay for the USA game, `usa/`: USA Hidden Mansion overlay for the European game; `overlay.key` |
 | `USA/Card A`, ... | memory cards (unchanged) |
+| `pipeline_cache.db` | every pipeline config this PC has used (Aurora), rebuilt at startup |
+| `dawn_cache.db` | Dawn's compiled shader blobs; stale entries pruned after the startup rebuild |
 
 A module's key is the SHA-1 of: the module ABI version, the game ID and DOL SHA-1, the
 compile and link flags, and the embedded inputs (symbol map, splits, PAL version map,

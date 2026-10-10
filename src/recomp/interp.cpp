@@ -101,7 +101,16 @@ struct Tape {
     u32 dumpOffset = ~0u;  // LM_INTERP_TEST: tape offset of the LM_FRAME_DUMP copy's target pointer
     u32 dumpFrame = 0;
     u32 guestUs = 0;  // guest-thread time spent closing the tape (array copies' bookkeeping, pairing)
+    // Breakdown of guestUs: array bookkeeping, tape copy, draw pairing, leftover pairing, cut check.
+    u32 phaseUs[5] = {};
 };
+
+u32 usSince(std::chrono::steady_clock::time_point& t) {
+    const auto now = std::chrono::steady_clock::now();
+    const u32 us = u32(std::chrono::duration_cast<std::chrono::microseconds>(now - t).count());
+    t = now;
+    return us;
+}
 
 // --- guest side (guest thread only) ---
 std::vector<u8> sScratch;
@@ -139,6 +148,7 @@ std::vector<u8> sReplay;
 u32 sPresented = 0, sTapes = 0, sBlended = 0, sSnapped = 0, sCuts = 0;
 Clock::time_point sStatsStart = Clock::now();
 u64 sTapeBytes = 0, sArrayBytes = 0, sPairedSum = 0, sUnpairedSum = 0, sGuestUs = 0, sReplayUs = 0;
+u64 sPhaseUs[5] = {};
 // LM_INTERP_TRACE=1: per present, alpha, time since the last present and what
 // could not be blended (by kind).
 const bool sTrace = std::getenv("LM_INTERP_TRACE") != nullptr;
@@ -213,19 +223,31 @@ void pairNearest(const std::vector<u32>& A, const std::vector<u32>& B, std::vect
     for (u32 i : A) {
         if (usedA[i]) continue;
         for (u32 j : B)
-            if (partnerB[j] < 0) cand.emplace_back(dist(i, j), i, j);
+            if (partnerB[j] < 0)
+                if (const float d = dist(i, j); d < 1e29f) cand.emplace_back(d, i, j);  // too far: never a pair
     }
     std::sort(cand.begin(), cand.end());
     for (const auto& [d, i, j] : cand)
-        if (d < 1e29f && !usedA[i] && partnerB[j] < 0) {
+        if (!usedA[i] && partnerB[j] < 0) {
             partnerB[j] = s32(i);
             usedA[i] = 1;
         }
 }
 
+// The values of one draw: a view into Bundles::flat.
+struct Span {
+    const u32* p = nullptr;
+    u32 n = 0;
+    const u32* begin() const { return p; }
+    const u32* end() const { return p + n; }
+    size_t size() const { return n; }
+    bool empty() const { return n == 0; }
+    u32 operator[](size_t k) const { return p[k]; }
+};
+
 // Where a draw is (view space): the translation of its first position matrix, or its first
 // CPU-built vertex. False if it has neither.
-bool bundlePos(const Tape& t, const std::vector<u32>& patches, float out[3]) {
+bool bundlePos(const Tape& t, Span patches, float out[3]) {
     for (u32 i : patches) {
         const Patch& p = t.patches[i];
         if (p.kind == Kind::PosMtx) {
@@ -243,16 +265,27 @@ bool bundlePos(const Tape& t, const std::vector<u32>& patches, float out[3]) {
 // The values noted for each draw of a tape, keyed by what is drawn and by the kinds and
 // sizes of the values (so two draws are only compared value by value when they line up).
 struct Bundles {
-    std::vector<std::vector<u32>> patches;  // per draw
+    std::vector<u32> flat;     // patch indices, grouped by draw
+    std::vector<Span> patches;  // per draw
     std::vector<u64> key;
 };
 Bundles bundlesOf(const Tape& t) {
     Bundles out;
-    out.patches.resize(t.bundleIds.size());
+    const size_t n = t.bundleIds.size();
+    // Counting sort by draw (one allocation instead of one per draw; patches of a draw are
+    // usually consecutive, and the order within a draw is kept).
+    std::vector<u32> start(n + 1, 0);
+    for (const Patch& p : t.patches)
+        if (p.bundle < n) start[p.bundle + 1]++;
+    for (size_t k = 0; k < n; k++) start[k + 1] += start[k];
+    out.flat.resize(start[n]);
+    std::vector<u32> fill(start.begin(), start.end() - 1);
     for (u32 i = 0; i < t.patches.size(); i++)
-        if (t.patches[i].bundle < out.patches.size()) out.patches[t.patches[i].bundle].push_back(i);
-    out.key.resize(t.bundleIds.size());
-    for (size_t k = 0; k < out.key.size(); k++) {
+        if (t.patches[i].bundle < n) out.flat[fill[t.patches[i].bundle]++] = i;
+    out.patches.resize(n);
+    out.key.resize(n);
+    for (size_t k = 0; k < n; k++) {
+        out.patches[k] = {out.flat.data() + start[k], start[k + 1] - start[k]};
         u64 h = t.bundleIds[k];
         for (u32 i : out.patches[k]) {
             const Patch& p = t.patches[i];
@@ -405,6 +438,7 @@ bool blendSpin(const f32* a, const f32* b, float t, f32* out) {
 bool blendable(Kind kind, const f32* a, const f32* b, int n);
 
 void pairTapes(const Tape& a, Tape& b) {
+    auto tp = Clock::now();
     b.pairedWith = &a;
     b.partner.assign(b.patches.size(), -1);
     std::vector<u8> usedA(a.patches.size(), 0);
@@ -418,6 +452,18 @@ void pairTapes(const Tape& a, Tape& b) {
             if (!ba.patches[k].empty()) ga[ba.key[k]].push_back(k);
         for (u32 k = 0; k < bb.key.size(); k++)
             if (!bb.patches[k].empty()) gb[bb.key[k]].push_back(k);
+        // Where each draw is, once (the pairing below compares every draw of a group with every
+        // other: hundreds of particles or decorations of one kind).
+        struct Where {
+            float p[3];
+            bool ok;
+        };
+        auto where = [](const Tape& t, const Bundles& bs) {
+            std::vector<Where> w(bs.patches.size());
+            for (size_t k = 0; k < w.size(); k++) w[k].ok = bundlePos(t, bs.patches[k], w[k].p);
+            return w;
+        };
+        const std::vector<Where> wa = where(a, ba), wb = where(b, bb);
         std::vector<s32> drawPartner(bb.key.size(), -1);
         std::vector<u8> drawUsed(ba.key.size(), 0);
         for (const auto& [key, B] : gb) {
@@ -432,12 +478,18 @@ void pairTapes(const Tape& a, Tape& b) {
             const bool many = A.size() > 1 || B.size() > 1;
             float common[3] = {0, 0, 0};
             if (many && A.size() * B.size() <= 250000) {
+                // From a sample of at most 64 of them: the median of a few dozen moves is as
+                // good, and big groups (hundreds of draws) stay linear.
                 std::vector<float> moves[3];
-                for (u32 j : B) {
-                    float pb[3], pa[3], best = 1e30f, bm[3] = {};
-                    if (!bundlePos(b, bb.patches[j], pb)) continue;
+                const size_t sample = std::max<size_t>(1, B.size() / 64);
+                for (size_t n = 0; n < B.size(); n += sample) {
+                    const u32 j = B[n];
+                    float best = 1e30f, bm[3] = {};
+                    if (!wb[j].ok) continue;
+                    const float* pb = wb[j].p;
                     for (u32 i : A) {
-                        if (!bundlePos(a, ba.patches[i], pa)) continue;
+                        if (!wa[i].ok) continue;
+                        const float* pa = wa[i].p;
                         const float d = (pa[0] - pb[0]) * (pa[0] - pb[0]) + (pa[1] - pb[1]) * (pa[1] - pb[1]) +
                                         (pa[2] - pb[2]) * (pa[2] - pb[2]);
                         if (d < best) best = d, bm[0] = pb[0] - pa[0], bm[1] = pb[1] - pa[1], bm[2] = pb[2] - pa[2];
@@ -451,10 +503,99 @@ void pairTapes(const Tape& a, Tape& b) {
                         common[c] = moves[c][moves[c].size() / 2];
                     }
             }
+            auto fullDistance = [&](u32 i, u32 j) {
+                float d = 0;
+                const auto& pa = ba.patches[i];
+                const auto& pb = bb.patches[j];
+                for (size_t k = 0; k < pa.size(); k++) d += distance(a, a.patches[pa[k]], b, b.patches[pb[k]]);
+                return d;
+            };
+            if (many && A.size() * B.size() > 1024 && A.size() * B.size() <= 250000) {
+                // Big groups: only draws within the motion limit can pair, so find them through
+                // the predecessors sorted by x (moved by the common motion) instead of comparing
+                // every draw with every other.
+                static std::vector<std::pair<float, u32>> byX;
+                byX.clear();
+                std::vector<u32> nowhereA;  // no position: compared with everything
+                // Along the axis they are most spread out on.
+                float lo3[3] = {1e30f, 1e30f, 1e30f}, hi3[3] = {-1e30f, -1e30f, -1e30f};
+                for (u32 i : A)
+                    if (wa[i].ok)
+                        for (int c = 0; c < 3; c++) lo3[c] = std::min(lo3[c], wa[i].p[c]), hi3[c] = std::max(hi3[c], wa[i].p[c]);
+                int ax = 0;
+                for (int c = 1; c < 3; c++)
+                    if (hi3[c] - lo3[c] > hi3[ax] - lo3[ax]) ax = c;
+                for (u32 i : A) {
+                    if (drawUsed[i]) continue;
+                    if (wa[i].ok) byX.emplace_back(wa[i].p[ax] + common[ax], i);
+                    else nowhereA.push_back(i);
+                }
+                std::sort(byX.begin(), byX.end());
+                // Draws of one CPU-built vertex block each (particles): their first vertices
+                // decoded once, not once per candidate pair.
+                const Patch& p0 = b.patches[bb.patches[B[0]][0]];
+                const bool vertsOnly = bb.patches[B[0]].size() == 1 && p0.kind == Kind::Verts;
+                const u32 nv = std::min<u32>(p0.count, 4);
+                static std::vector<float> decA, decB;
+                if (vertsOnly) {
+                    decA.resize(ba.patches.size() * 12);
+                    decB.resize(bb.patches.size() * 12);
+                    for (u32 i : A)
+                        for (u32 v = 0; v < nv; v++)
+                            for (int c = 0; c < 3; c++) decA[i * 12 + v * 3 + c] = vtx(a, a.patches[ba.patches[i][0]], v, c);
+                    for (u32 j : B)
+                        for (u32 v = 0; v < nv; v++)
+                            for (int c = 0; c < 3; c++) decB[j * 12 + v * 3 + c] = vtx(b, b.patches[bb.patches[j][0]], v, c);
+                }
+                auto groupDistance = [&](u32 i, u32 j) {
+                    if (!vertsOnly) return fullDistance(i, j);
+                    float d = 0;  // as distance() for Verts
+                    for (u32 k = 0; k < nv * 3; k++) d += std::fabs(decA[i * 12 + k] - decB[j * 12 + k]);
+                    return d;
+                };
+                // Candidates as (distance bits << 32 | index) keys: sorting plain integers is several
+                // times faster than tuples (distances are never negative).
+                static std::vector<u64> keys;
+                static std::vector<std::pair<u32, u32>> cand;
+                keys.clear();
+                cand.clear();
+                auto add = [&](float d, u32 i, u32 j) {
+                    keys.push_back(u64(std::bit_cast<u32>(d)) << 32 | cand.size());
+                    cand.emplace_back(i, j);
+                };
+                for (u32 j : B) {
+                    if (drawPartner[j] >= 0) continue;
+                    if (!wb[j].ok) {  // no position: compared with everything
+                        for (u32 i : A)
+                            if (!drawUsed[i]) add(groupDistance(i, j), i, j);
+                        continue;
+                    }
+                    const float* pb = wb[j].p;
+                    const float lim = 12.0f + 0.01f * std::sqrt(pb[0] * pb[0] + pb[1] * pb[1] + pb[2] * pb[2]);
+                    auto it = std::lower_bound(byX.begin(), byX.end(), std::pair<float, u32>(pb[ax] - lim, 0));
+                    for (; it != byX.end() && it->first <= pb[ax] + lim; ++it) {
+                        const u32 i = it->second;
+                        float d2 = 0;
+                        for (int c = 0; c < 3; c++) {
+                            const float e = pb[c] - wa[i].p[c] - common[c];
+                            d2 += e * e;
+                        }
+                        if (d2 <= lim * lim) add(groupDistance(i, j), i, j);
+                    }
+                    for (u32 i : nowhereA) add(groupDistance(i, j), i, j);
+                }
+                std::sort(keys.begin(), keys.end());
+                for (const u64 k : keys)
+                    if (const auto [i, j] = cand[u32(k)]; !drawUsed[i] && drawPartner[j] < 0) {
+                        drawPartner[j] = s32(i);
+                        drawUsed[i] = 1;
+                    }
+                continue;
+            }
             pairNearest(A, B, drawPartner, drawUsed, [&](u32 i, u32 j) {
                 if (many) {
-                    float pa[3], pb[3];
-                    if (bundlePos(a, ba.patches[i], pa) && bundlePos(b, bb.patches[j], pb)) {
+                    if (wa[i].ok && wb[j].ok) {
+                        const float *pa = wa[i].p, *pb = wb[j].p;
                         float d2 = 0, r2 = 0;
                         for (int c = 0; c < 3; c++) {
                             const float e = pb[c] - pa[c] - common[c];
@@ -464,11 +605,7 @@ void pairTapes(const Tape& a, Tape& b) {
                         if (d2 > lim * lim) return 1e30f;
                     }
                 }
-                float d = 0;
-                const auto& pa = ba.patches[i];
-                const auto& pb = bb.patches[j];
-                for (size_t k = 0; k < pa.size(); k++) d += distance(a, a.patches[pa[k]], b, b.patches[pb[k]]);
-                return d;
+                return fullDistance(i, j);
             });
         }
         for (u32 j = 0; j < bb.key.size(); j++) {
@@ -481,6 +618,7 @@ void pairTapes(const Tape& a, Tape& b) {
             }
         }
     }
+    b.phaseUs[2] = usSince(tp);
     // 2. What is left: by kind and source address, only where that is unambiguous (pool and
     //    scratch matrices are shared by many objects).
     {
@@ -504,6 +642,7 @@ void pairTapes(const Tape& a, Tape& b) {
                 }
         }
     }
+    b.phaseUs[3] = usSince(tp);
     // A camera cut (or a teleport) moves nearly every object at once: show the new frame as is.
     u32 pos = 0, jumps = 0;
     b.paired = b.unpaired = 0;
@@ -522,6 +661,7 @@ void pairTapes(const Tape& a, Tape& b) {
         if (!blendable(Kind::PosMtx, va, vb, 12)) jumps++;
     }
     b.cut = pos >= 8 && jumps * 2 > pos;
+    b.phaseUs[4] = usSince(tp);
 }
 
 // Whether a and b are close enough to blend; a jump (teleport, texture scroll wrapping,
@@ -631,6 +771,8 @@ void endTape(u32 retraceCount) {
     detail::vtxEndTape(sScratch.data(), size, arrays, arrayBytes);
     detail::noteDraw(0);
     sCapturing = false;
+    auto tp = t0;
+    const u32 vtxUs = usSince(tp);
     if (size + 4096 >= kCaptureSize) {  // the capture ran out of room: drop this frame
         if (!sOverflowLogged) log("[interp] frame larger than %u MiB; dropped", kCaptureSize >> 20);
         sOverflowLogged = true;
@@ -645,6 +787,8 @@ void endTape(u32 retraceCount) {
     tape->arrays = std::move(arrays);
     tape->arrayBytes = arrayBytes;
     tape->retrace = retraceCount;
+    tape->phaseUs[0] = vtxUs;
+    tape->phaseUs[1] = usSince(tp);
     if (sDumpAt != ~0u) {
         const u64 ptr = u64(reinterpret_cast<uintptr_t>(sDumpPtr));
         for (u32 i = sDumpAt; i + 8 <= std::min(size, sDumpAt + 64); i++) {
@@ -1004,20 +1148,25 @@ bool replay(bool final) {
         sArrayBytes += b->arrayBytes;
         sPairedSum += b->paired;
         sGuestUs += b->guestUs;
+        for (int k = 0; k < 5; k++) sPhaseUs[k] += b->phaseUs[k];
         sUnpairedSum += b->unpaired;
     }
     const double elapsed = std::chrono::duration<double>(Clock::now() - sStatsStart).count();
     if (elapsed >= 5.0) {
         log("[interp] presented %.1f fps, game %.1f fps, tape %.0f KiB + arrays %.0f KiB, per tape %.0f paired / %.0f "
-            "unpaired; per present %u blended / %u snapped; %u cut presents; tape close %.2f ms (guest), replay "
-            "%.2f ms (host)",
+            "unpaired; per present %u blended / %u snapped; %u cut presents; tape close %.2f ms (guest: arrays %.2f, "
+            "copy %.2f, draws %.2f, rest %.2f, cut %.2f), replay %.2f ms (host)",
             sPresented / elapsed, sTapes / elapsed, sTapes ? double(sTapeBytes) / sTapes / 1024.0 : 0.0,
             sTapes ? double(sArrayBytes) / sTapes / 1024.0 : 0.0, sTapes ? double(sPairedSum) / sTapes : 0.0,
             sTapes ? double(sUnpairedSum) / sTapes : 0.0, sPresented ? sBlended / sPresented : 0,
             sPresented ? sSnapped / sPresented : 0, sCuts, sTapes ? double(sGuestUs) / sTapes / 1000.0 : 0.0,
+            sTapes ? double(sPhaseUs[0]) / sTapes / 1000.0 : 0.0, sTapes ? double(sPhaseUs[1]) / sTapes / 1000.0 : 0.0,
+            sTapes ? double(sPhaseUs[2]) / sTapes / 1000.0 : 0.0, sTapes ? double(sPhaseUs[3]) / sTapes / 1000.0 : 0.0,
+            sTapes ? double(sPhaseUs[4]) / sTapes / 1000.0 : 0.0,
             sPresented ? double(sReplayUs) / sPresented / 1000.0 : 0.0);
         sPresented = sTapes = sBlended = sSnapped = sCuts = 0;
         sTapeBytes = sArrayBytes = sPairedSum = sUnpairedSum = sGuestUs = sReplayUs = 0;
+        std::fill(std::begin(sPhaseUs), std::end(sPhaseUs), 0ull);
         sStatsStart = Clock::now();
     }
     return true;

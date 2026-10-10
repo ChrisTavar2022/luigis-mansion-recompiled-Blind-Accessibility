@@ -441,11 +441,6 @@ void gx::applyAccuracySettings() {
         port::settings().rendering.displayCopyFilter = off ? false : sFilter;
     }
     if (flags != GXGetAuroraAccuracy()) GXSetAuroraAccuracy(flags);
-    static int sBlocking = -1;
-    if (sBlocking != int(r.waitForShaders)) {
-        sBlocking = int(r.waitForShaders);
-        GXSetAuroraBlockingPipelines(r.waitForShaders);
-    }
 }
 
 // LM_HUD_TRACE=<first>,<last>[,<step>]: for those frames (GXCopyDisp count), every 2D draw, viewport,

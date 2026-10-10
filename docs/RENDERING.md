@@ -487,14 +487,109 @@ i.e. the light sits where a perspective map cannot cover what the camera sees. C
 cases would need a different light projection (e.g. a second map or an orthographic fit),
 which the game's receiver code (perspective ramp) does not support without further hooks.
 
-### Shader compilation and missing objects (Luigi's body)
+## Pipeline precache (Aurora patch 0013): no first-run flicker
 
-Aurora compiles GPU pipelines in the background and **skips draws** whose pipeline is not ready.
-In the nursery walk test (interpolation docs), the first time the flashlight faces the camera
-Luigi's body (actor drawn without the shadow stages, `fn_80060E70` when `fn_800093EC` says the
-light faces the view) needs new pipelines and was missing for ~4 frames (2608-2611) at Original
-30 too. Not GX state: forcing all suspect states, disabling copies, the shadow pass or array
-snapshots made no difference; blocking compilation fixed it. Aurora patch 0013 adds
-`GXSetAuroraBlockingPipelines`; F1 > Visuals > Rendering "Wait for shader compilation"
-(`wait_for_shaders`, on): the frame waits once per new pipeline (cached afterwards). Before/after:
-`build/shadows2/luigi_body_before_after.png` (top off, bottom on, frames 2607-2610).
+**Symptom (user):** on the first boot many things flickered in and out while playing; later
+runs were fine.
+
+**Cause.** Aurora builds a WebGPU render pipeline (WGSL generated from the GX TEV/vertex/
+indirect state, plus blend/depth/cull state) for every distinct GX state the game draws with,
+lazily, on a background thread. `gx::render` skipped any draw whose pipeline was not ready
+yet (`get_pipeline` returned false and the draw was dropped), so for the frames it took to
+compile (about 50 ms per pipeline with a cold driver cache, 99 pipelines from boot to the
+foyer) objects, effects and HUD parts were missing. Measured on a cold run boot -> foyer with
+the old behaviour (`LM_PIPELINE_WAIT=0`): **5118 dropped draws**. Later runs were fine
+because Aurora remembers every config in `pipeline_cache.db` and rebuilds them all at startup,
+and Dawn's blob cache (`dawn_cache.db`) makes that fast (about 2 ms per pipeline). Both caches
+were persisted correctly and keyed by content (xxh3 of the config struct; no pointers), so
+they hit on the next run.
+
+**Fix** (`patches/aurora/0013-pipeline-precache.patch`, `src/recomp/precache.cpp`):
+
+- **Draws never drop.** `get_pipeline` waits for a pipeline that is queued or compiling (moves
+  it to the front of the queue) instead of skipping the draw; only a pipeline whose creation
+  failed is skipped (`droppedDraws` stat). Worst case is a hitch, never a missing object.
+- **Several compile threads** (half the hardware threads, 1..8; `LM_PIPELINE_THREADS`). The
+  shipped list compiles in about 3 s with 8 threads vs 13 s with one (warm driver cache).
+- **Shipped precache list** `data/pipelines.bin` (copied next to the exe, installed with it):
+  1999 pipeline configs (15 KB, zstd) recorded by an automated sweep. It holds Aurora's
+  config structs only (generated metadata, no game data). `aurora_pipeline_cache_seed` adds
+  them to the known set on every launch; Aurora's own `pipeline_cache.db` adds whatever this
+  PC used beyond it. The known set is compiled in the background from the **first frame**
+  (Aurora used to start before the application could add a list or set its accuracy flags),
+  in first-use order (title screen first).
+- **Setup compiles it with a progress bar** ("Compiling shaders", docs/SETUP.md), with a
+  "Play now" button that leaves the rest to the background. On later launches whatever is
+  missing (deleted cache, driver update invalidating Dawn's cache, new game version) compiles
+  in the background while the title runs, with a small "Compiling shaders n / N" note in the
+  corner; draws that need a pipeline before it is done wait for it.
+- **Settings that change shaders.** The F1 > Visuals > Rendering accuracy toggles (integer
+  TEV, EFB colour depth) are baked into each shader config. Aurora derives their variants from
+  the recorded configs (`intTev` from the flag; EFB depth off clears `efbFmt`/`dither`/
+  `efbBlend`, exactly as `populate_pipeline_config` does) and rebuilds the set in the
+  background when a flag changes, so the list (recorded with both on, the defaults) covers
+  every combination. MSAA only changes the render target layout, which Aurora already
+  rebuilds the whole set for. The CRT filter is a post-process chain outside the pipeline
+  cache; the wireframe override (patch 0012, model viewer) is not precached.
+- The Dawn cache prune (deletes blobs not used in a session) now runs only after the first
+  full rebuild was queued; with several threads and the deferred rebuild it could otherwise
+  fire while the queue was momentarily empty and delete blobs still needed.
+
+**Measurements** (US, dev build, RTX-class GPU, Original 30, 8 threads; "worst frame" is the
+worst frame time per 5 s window, first window excluded since it contains window creation):
+
+| Run | Pipelines created on demand | Draws that waited | Dropped draws | Worst frame |
+|-----|------|------|------|------|
+| Cold, old behaviour (`LM_PIPELINE_WAIT=0`, no list), boot -> foyer | 99 | 0 | **5118** | n/a |
+| Cold, no list, waiting (`LM_PRECACHE=0`), boot -> foyer | 99 | 35 (1.4 s total, max 111 ms) | 0 | 224 ms |
+| Warm (second run, own cache), boot -> foyer | 0 | 0 | 0 | 81 ms |
+| Fresh AppData with the list, boot -> foyer | 0 | 0 | 0 | 83 ms |
+| Fresh AppData with the list, all rooms in reverse order with the water element (not a sweep route) | 4 | 1 (0.2 ms) | 0 | 77 ms |
+| Fresh AppData with the list, accuracy toggles off (`LM_ACCURACY=0`) | 0 | 0 | 0 | 36 ms |
+| `LuigisMansionRecomp` fresh install (setup -> game) | 0 | 0 | 0 | 51 ms |
+
+### The sweep (`tools/pipelines/sweep.py`)
+
+Regenerate the list after Aurora changes that alter `gx::PipelineConfig`/`ShaderConfig`
+(bump `GXPipelineConfigVersion` when the layout or meaning changes; rows of another version
+or size are ignored, so a stale list only costs coverage, never correctness):
+
+```
+python tools/pipelines/sweep.py --work <scratch dir> --jobs 4 [--merge data/pipelines.bin]
+```
+
+It runs `lmrecomp` with a scratch APPDATA per scenario (in parallel), `LM_PRECACHE=0`, and
+merges each scenario's `pipeline_cache.db` with `tools/pipelines/pipelines.py build`:
+boot (title, menus, file select, the opening unskipped, foyer), the same with cutscene skip,
+a teleport tour of every mansion room (points from the map's `jmp/furnitureinfo`, computed from
+the disc dump at sweep time: `tools/pipelines/rooms.py`) with vacuum/blow/A/stick input and
+the Game Boy Horror opened every 8 rooms, the tour with fire/water/ice, the Hidden Mansion
+with USA and PAL rules (mirrored), the unused-content shader variants (early ghost shading,
+GBH live camera), and maps 1, 3-13 (lab, training, Portrificationizer, unused 5/7/8, gallery,
+roof/Bowser, Chauncey, Boolossus, graveyard/Bogmire). About 20 minutes; per-scenario counts:
+boot 113, tour 757 (the tour ends at the roof and loads Bowser's map), fire 726, water 950,
+ice 445, Hidden Mansion 660/664, unused 280, maps 75-145 (graveyard 677).
+
+`pipelines.py info <list|db>` summarises a list; `aurora_pipeline_cache_export` writes the
+current known set in the same format.
+
+**Not covered yet** (these compile on first use, without dropping draws): the PAL game as the
+base (its rendering code is the same, but it was not swept), the full story path (boss fights
+past their intros, ending/credits, the gallery's portrait battles, Boo radar/King Boo), every
+ghost type's capture/death effects (rooms were visited, not cleared), menus reached only from
+a save with progress, MSAA levels (built from the same configs at the new layout, at runtime),
+and the model viewer. Merging pipeline_cache.db files from longer play sessions
+(`pipelines.py build -o data/pipelines.bin data/pipelines.bin <db>...`) closes the gaps.
+
+### Test aids
+
+- `LM_PIPELINE_LOG=1`: every pipeline creation (precache/demand, compile time), every draw
+  that waited, every MISS (needed but not precached), and a summary line every 5 s
+  (precache progress, demand-created, stalls, dropped draws, worst frame time).
+- `LM_PRECACHE=0`: no shipped list (cold-cache testing); `LM_PIPELINE_LIST=<file>`: another list.
+- `LM_PIPELINE_WAIT=0`: Aurora's old behaviour (skip draws whose pipeline is not ready), to
+  reproduce the flicker.
+- `LM_PIPELINE_THREADS=<n>`: compile threads.
+- A fresh scratch `APPDATA` (or `LM_CACHE_DIR`) gives empty `dawn_cache.db`/`pipeline_cache.db`;
+  the GPU driver's own shader cache is system-wide and stays warm, so first-ever runs on a new
+  machine are somewhat slower than measured here.
