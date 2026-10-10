@@ -270,6 +270,10 @@ void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective) {
     u64 id = u64(prim & 0xF8 | fmt) << 56 ^ u64(vertexSize(int(fmt))) << 40 ^ sBind[0].guest;
     for (int a = GX_VA_PNMTXIDX; a <= GX_VA_TEX7; a++) id = detail::mix(id ^ gx::vtxDesc(a));
     detail::noteDraw(id);
+    detail::drawLog("begin prim %02X fmt %u n %u vsize %u %s pos desc %u size %d tex0 desc %u size %d clr0 desc %u",
+                    prim & 0xF8, fmt, nVerts, vertexSize(int(fmt)), perspective ? "persp" : "ortho", gx::vtxDesc(GX_VA_POS),
+                    gx::vtxAttrSize(int(fmt), GX_VA_POS), gx::vtxDesc(GX_VA_TEX0), gx::vtxAttrSize(int(fmt), GX_VA_TEX0),
+                    gx::vtxDesc(GX_VA_CLR0));
     // CPU-built 3D geometry with direct float positions: blend the positions too.
     if (perspective && gx::vtxDesc(GX_VA_POS) == GX_DIRECT && gx::vtxAttrSize(int(fmt), GX_VA_POS) == 12) {
         u32 posOffset = 0;
@@ -295,6 +299,7 @@ void vtxDisplayList(u32 guestAddr, const u8* data, u32 size) {
     finishDirect();
     flushPending();
     detail::noteDraw(detail::mix(u64(guestAddr) << 24 ^ size ^ 0xD15Bull << 48));
+    detail::drawLog("dlist %08X size %u", guestAddr, size);
     parse(data, size, false);
 }
 

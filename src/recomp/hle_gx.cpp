@@ -640,6 +640,7 @@ GXHLE(GXSetArray) {
 GXHLE(GXBegin) {
     if (dropDraw()) return;
     sInBegin = true;
+    if (interp::drawLogActive()) interp::drawLogCaller(guestChain(c));
     if (interp::capturing()) interp::vtxBegin(c.r[3], c.r[4], c.r[5], sProj.type == GX_PERSPECTIVE);
     if (ws::active() && sProj.type == GX_ORTHOGRAPHIC && viewportFull()) {
         sHeld.active = true;
@@ -672,6 +673,7 @@ GXHLE(GXCallDisplayList) {
                   guestChain(c).c_str());
     prepareDraw(drawMode(ProjMode::Scaled), "dlist");
     GXCallDisplayList(hostp(c.r[3]), c.r[4]);
+    if (interp::drawLogActive()) interp::drawLogCaller(guestChain(c));
     if (interp::capturing()) interp::vtxDisplayList(c.r[3], hostp(c.r[3]), c.r[4]);
 }
 GXHLE(GXBeginDisplayList) {

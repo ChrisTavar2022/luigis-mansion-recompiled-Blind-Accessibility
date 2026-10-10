@@ -11,6 +11,8 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -21,7 +23,38 @@
 #include <unordered_map>
 #include <vector>
 
+namespace recomp {
+u32 copyDispCount();  // hle_gx.cpp
+}
+
 namespace recomp::interp {
+
+// LM_INTERP_DRAWS=<frame> (with LM_FRAME_DUMP numbering): log every draw and noted value of
+// that game frame's tape, with the caller chain and what each value was paired with.
+// LM_INTERP_DRAWS=<first>[,<last>].
+static u32 sDrawLogLast = 0;
+static const u32 sDrawLogFrame = [] {
+    const char* v = std::getenv("LM_INTERP_DRAWS");
+    if (!v) return ~0u;
+    char* end = nullptr;
+    const u32 first = u32(std::strtoul(v, &end, 10));
+    sDrawLogLast = *end == ',' ? u32(std::strtoul(end + 1, nullptr, 10)) : first;
+    return first;
+}();
+static bool drawLogFrame(u32 f) { return sDrawLogFrame != ~0u && f >= sDrawLogFrame && f <= sDrawLogLast; }
+bool drawLogActive() { return capturing() && drawLogFrame(copyDispCount() + 1); }
+void drawLogCaller(const std::string& chain) {
+    if (drawLogActive()) log("[draws] caller %s", chain.c_str());
+}
+void detail::drawLog(const char* fmt, ...) {
+    if (!drawLogActive()) return;
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    log("[draws] %s", buf);
+}
 
 u64 detail::mix(u64 h) {
     h ^= h >> 33;
@@ -45,8 +78,9 @@ struct Patch {
     u32 offset;   // first float, in tape bytes
     u16 count;    // floats (Verts: vertices)
     Kind kind;
-    u64 group;    // what it belongs to: kind, slot and the draw that follows it
-    u64 origin;   // kind, slot and source address (second-chance pairing)
+    u64 group;    // unused (kept for the draw log)
+    u64 origin;   // kind and source address (second-chance pairing)
+    u32 bundle = ~0u;  // the draw it belongs to (index into Tape::bundleIds)
     u32 source, slot;
     u16 stride = 0, posOffset = 0;  // Verts
 };
@@ -54,6 +88,7 @@ struct Patch {
 struct Tape {
     std::vector<u8> bytes;
     std::vector<Patch> patches;
+    std::vector<u64> bundleIds;  // per draw: what is drawn (display list, vertex layout)
     std::vector<std::vector<u8>> arrays;  // vertex-array copies the tape's array loads point at
     u64 arrayBytes = 0;
     u32 retrace = 0;
@@ -75,6 +110,7 @@ bool sSuspended = false;  // the game is recording its own display list
 u32 sBase = 0;            // start of the current capture segment in sScratch
 std::vector<Patch> sPatches;
 u32 sUngrouped = 0;  // patches from here on wait for their draw
+std::vector<u64> sBundleIds;
 bool sOverflowLogged = false;
 u32 sDumpAt = ~0u, sDumpFrame = 0;
 const void* sDumpPtr = nullptr;
@@ -149,21 +185,22 @@ bool compatible(const Patch& a, const Patch& b) {
     return a.kind == b.kind && a.count == b.count && a.stride == b.stride && a.posOffset == b.posOffset;
 }
 
-// Pairs the members of one group: nearest values first, so two instances of the same
-// mesh (or two bones of one skeleton loaded into the same slot) don't swap.
-void pairGroup(const Tape& a, const std::vector<u32>& A, const Tape& b, const std::vector<u32>& B,
-               std::vector<s32>& partner, std::vector<u8>& usedA) {
+// Pairs members of one group (draws, or leftover values): nearest first, so two instances of
+// the same mesh or two particles of one effect don't swap. `dist(i, j)` compares a[i], b[j].
+template <class Dist>
+void pairNearest(const std::vector<u32>& A, const std::vector<u32>& B, std::vector<s32>& partnerB,
+                 std::vector<u8>& usedA, Dist dist) {
     if (A.size() == 1 && B.size() == 1) {
-        if (!usedA[A[0]] && partner[B[0]] < 0 && compatible(a.patches[A[0]], b.patches[B[0]])) {
-            partner[B[0]] = s32(A[0]);
+        if (!usedA[A[0]] && partnerB[B[0]] < 0) {
+            partnerB[B[0]] = s32(A[0]);
             usedA[A[0]] = 1;
         }
         return;
     }
-    if (A.size() * B.size() > 4096) {  // large groups: in order
+    if (A.size() * B.size() > 250000) {  // huge groups (hundreds of particles): in order
         for (size_t k = 0; k < std::min(A.size(), B.size()); k++)
-            if (!usedA[A[k]] && partner[B[k]] < 0 && compatible(a.patches[A[k]], b.patches[B[k]])) {
-                partner[B[k]] = s32(A[k]);
+            if (!usedA[A[k]] && partnerB[B[k]] < 0) {
+                partnerB[B[k]] = s32(A[k]);
                 usedA[A[k]] = 1;
             }
         return;
@@ -173,15 +210,37 @@ void pairGroup(const Tape& a, const std::vector<u32>& A, const Tape& b, const st
     for (u32 i : A) {
         if (usedA[i]) continue;
         for (u32 j : B)
-            if (partner[j] < 0 && compatible(a.patches[i], b.patches[j]))
-                cand.emplace_back(distance(a, a.patches[i], b, b.patches[j]), i, j);
+            if (partnerB[j] < 0) cand.emplace_back(dist(i, j), i, j);
     }
     std::sort(cand.begin(), cand.end());
     for (const auto& [d, i, j] : cand)
-        if (!usedA[i] && partner[j] < 0) {
-            partner[j] = s32(i);
+        if (!usedA[i] && partnerB[j] < 0) {
+            partnerB[j] = s32(i);
             usedA[i] = 1;
         }
+}
+
+// The values noted for each draw of a tape, keyed by what is drawn and by the kinds and
+// sizes of the values (so two draws are only compared value by value when they line up).
+struct Bundles {
+    std::vector<std::vector<u32>> patches;  // per draw
+    std::vector<u64> key;
+};
+Bundles bundlesOf(const Tape& t) {
+    Bundles out;
+    out.patches.resize(t.bundleIds.size());
+    for (u32 i = 0; i < t.patches.size(); i++)
+        if (t.patches[i].bundle < out.patches.size()) out.patches[t.patches[i].bundle].push_back(i);
+    out.key.resize(t.bundleIds.size());
+    for (size_t k = 0; k < out.key.size(); k++) {
+        u64 h = t.bundleIds[k];
+        for (u32 i : out.patches[k]) {
+            const Patch& p = t.patches[i];
+            h = mix(h ^ (u64(p.kind) << 48 | u64(p.count) << 32 | u64(p.stride) << 16 | p.posOffset));
+        }
+        out.key[k] = h;
+    }
+    return out;
 }
 
 // A 3x3 (cols 3) or 3x4 (cols 4, row-major) matrix's 3x3 part as M = Q U: a rotation Q (as
@@ -281,18 +340,60 @@ void pairTapes(const Tape& a, Tape& b) {
     b.pairedWith = &a;
     b.partner.assign(b.patches.size(), -1);
     std::vector<u8> usedA(a.patches.size(), 0);
-    auto groups = [](const Tape& t, bool origin) {
-        std::unordered_map<u64, std::vector<u32>> g;
-        g.reserve(t.patches.size());
-        for (u32 i = 0; i < t.patches.size(); i++) g[origin ? t.patches[i].origin : t.patches[i].group].push_back(i);
-        return g;
-    };
-    // By draw first, then what is left by source address and slot.
-    for (int pass = sPairBySource ? 1 : 0; pass < 2; pass++) {
-        const auto ga = groups(a, pass == 1), gb = groups(b, pass == 1);
+    // 1. Draws: pair the draws of the same thing (display list, vertex layout) that carry the
+    //    same kinds of values, nearest values first, then their values one by one. Slots are
+    //    not part of it: J3D hands out matrix slots per frame.
+    if (!sPairBySource) {
+        const Bundles ba = bundlesOf(a), bb = bundlesOf(b);
+        std::unordered_map<u64, std::vector<u32>> ga, gb;
+        for (u32 k = 0; k < ba.key.size(); k++)
+            if (!ba.patches[k].empty()) ga[ba.key[k]].push_back(k);
+        for (u32 k = 0; k < bb.key.size(); k++)
+            if (!bb.patches[k].empty()) gb[bb.key[k]].push_back(k);
+        std::vector<s32> drawPartner(bb.key.size(), -1);
+        std::vector<u8> drawUsed(ba.key.size(), 0);
         for (const auto& [key, B] : gb) {
             const auto it = ga.find(key);
-            if (it != ga.end()) pairGroup(a, it->second, b, B, b.partner, usedA);
+            if (it == ga.end()) continue;
+            pairNearest(it->second, B, drawPartner, drawUsed, [&](u32 i, u32 j) {
+                float d = 0;
+                const auto& pa = ba.patches[i];
+                const auto& pb = bb.patches[j];
+                for (size_t k = 0; k < pa.size(); k++) d += distance(a, a.patches[pa[k]], b, b.patches[pb[k]]);
+                return d;
+            });
+        }
+        for (u32 j = 0; j < bb.key.size(); j++) {
+            if (drawPartner[j] < 0) continue;
+            const auto& pa = ba.patches[drawPartner[j]];
+            const auto& pb = bb.patches[j];
+            for (size_t k = 0; k < pb.size(); k++) {
+                b.partner[pb[k]] = s32(pa[k]);
+                usedA[pa[k]] = 1;
+            }
+        }
+    }
+    // 2. What is left: by kind and source address, only where that is unambiguous (pool and
+    //    scratch matrices are shared by many objects).
+    {
+        std::unordered_map<u64, std::vector<u32>> ga, gb;
+        for (u32 i = 0; i < a.patches.size(); i++)
+            if (!usedA[i]) ga[a.patches[i].origin].push_back(i);
+        for (u32 j = 0; j < b.patches.size(); j++)
+            if (b.partner[j] < 0) gb[b.patches[j].origin].push_back(j);
+        for (const auto& [key, B] : gb) {
+            const auto it = ga.find(key);
+            if (it == ga.end()) continue;
+            if (!sPairBySource && (B.size() != 1 || it->second.size() != 1)) continue;
+            const auto& A = it->second;
+            pairNearest(A, B, b.partner, usedA, [&](u32 i, u32 j) {
+                return compatible(a.patches[i], b.patches[j]) ? distance(a, a.patches[i], b, b.patches[j]) : 1e30f;
+            });
+            for (u32 j : B)  // never pair values of different shapes
+                if (b.partner[j] >= 0 && !compatible(a.patches[b.partner[j]], b.patches[j])) {
+                    usedA[b.partner[j]] = 0;
+                    b.partner[j] = -1;
+                }
         }
     }
     // A camera cut (or a teleport) moves nearly every object at once: show the new frame as is.
@@ -399,6 +500,7 @@ void beginTape() {
     if (sScratch.empty()) sScratch.resize(kCaptureSize);
     sBase = 0;
     sPatches.clear();
+    sBundleIds.clear();
     sUngrouped = 0;
     AuroraCaptureBegin(sScratch.data(), kCaptureSize);
     sCapturing = true;
@@ -424,6 +526,8 @@ void endTape(u32 retraceCount) {
     tape->bytes.assign(sScratch.begin(), sScratch.begin() + size);
     tape->patches = std::move(sPatches);
     sPatches = {};
+    tape->bundleIds = std::move(sBundleIds);
+    sBundleIds = {};
     tape->arrays = std::move(arrays);
     tape->arrayBytes = arrayBytes;
     tape->retrace = retraceCount;
@@ -441,6 +545,13 @@ void endTape(u32 retraceCount) {
         sDumpAt = ~0u;
     }
     if (sLastTape) pairTapes(*sLastTape, *tape);
+    if (drawLogFrame(sDumpFrame) && tape->dumpOffset != ~0u)
+        for (u32 i = 0; i < tape->patches.size(); i++) {
+            const Patch& p = tape->patches[i];
+            const s32 j = tape->partner.empty() ? -1 : tape->partner[i];
+            log("[draws] f%u pair #%u kind %u slot %u src %08X -> %d%s", sDumpFrame, i, u32(p.kind), p.slot, p.source, j,
+                j >= 0 && sLastTape->patches[j].group == p.group ? "" : j >= 0 ? " (by source)" : "");
+        }
     tape->done = Clock::now();
     tape->guestUs = u32(std::chrono::duration_cast<std::chrono::microseconds>(tape->done - t0).count());
     sLastTape = tape;
@@ -473,14 +584,21 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     // Aurora writes XF loads as 0x10, a u32 header, then the values.
     if (at + 5 + 4 * u32(first + nFloats) > sBase + AuroraCapturePos() || sScratch[at] != 0x10) return;
     Patch p{at + 5 + 4 * u32(first), u16(nFloats), kind, 0, 0, source, slot};
-    p.origin = mix(u64(kind) << 56 ^ u64(slot) << 40 ^ source);
+    p.origin = mix(u64(kind) << 56 ^ source);
+    detail::drawLog("  #%u kind %u slot %u src %08X first %.2f %.2f %.2f %.2f", u32(sPatches.size()), u32(kind), slot,
+                    source, loadBE(&sScratch[p.offset]), nFloats > 1 ? loadBE(&sScratch[p.offset + 4]) : 0.0f,
+                    nFloats > 2 ? loadBE(&sScratch[p.offset + 8]) : 0.0f, nFloats > 3 ? loadBE(&sScratch[p.offset + 12]) : 0.0f);
     sPatches.push_back(p);
 }
 
 void detail::noteDraw(u64 id) {
+    const u32 bundle = u32(sBundleIds.size());
+    sBundleIds.push_back(id);
     for (u32 i = sUngrouped; i < sPatches.size(); i++) {
         Patch& p = sPatches[i];
-        if (p.kind != Kind::Verts) p.group = mix(u64(p.kind) << 56 ^ u64(p.slot) << 40 ^ id);
+        if (p.kind == Kind::Verts) continue;  // already belongs to its own draw
+        p.group = id;
+        p.bundle = bundle;
     }
     sUngrouped = u32(sPatches.size());
 }
@@ -488,8 +606,11 @@ void detail::noteDraw(u64 id) {
 void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id) {
     if (!capturing() || count == 0 || count > 0xFFFF) return;
     Patch p{at, u16(count), Kind::Verts, mix(u64(Kind::Verts) << 56 ^ id), 0, 0, 0, u16(stride), u16(posOffset)};
+    detail::drawLog("  #%u verts %u stride %u pos@%u", u32(sPatches.size()), count, stride, posOffset);
     p.origin = p.group;
-    // Keep it out of the matrix grouping of the next draw.
+    // It belongs to the draw just begun (vtxBegin noted it), not to the next one.
+    if (sBundleIds.empty()) sBundleIds.push_back(id);
+    p.bundle = u32(sBundleIds.size() - 1);
     const bool tail = sUngrouped == sPatches.size();
     sPatches.push_back(p);
     if (tail) sUngrouped = u32(sPatches.size());

@@ -11,6 +11,7 @@
 // behind real time.
 #include "recomp/ctx.h"
 
+#include <string>
 #include <vector>
 
 namespace recomp::interp {
@@ -64,6 +65,11 @@ void noteDraw(u64 id);
 // bytes starting at tape offset `at`, position at `posOffset` in each.
 void noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id);
 u64 mix(u64 h);
+void drawLog(const char* fmt, ...);  // LM_INTERP_DRAWS
 }  // namespace detail
+
+// LM_INTERP_DRAWS: whether this draw is being logged, and its guest call chain.
+bool drawLogActive();
+void drawLogCaller(const std::string& chain);
 
 }  // namespace recomp::interp
