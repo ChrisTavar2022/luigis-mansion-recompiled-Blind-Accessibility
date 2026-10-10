@@ -17,3 +17,6 @@
 /out/
 /.vs/
 CMakeUserPresets.json
+
+# Super Mario Sunshine game data (separate port, never commit)
+/Mario Sunshine/
