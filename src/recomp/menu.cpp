@@ -261,6 +261,15 @@ void enhancedLightingTab() {
         "around them (through the game's own materials). Cost grows with the number of lights.");
     ImGui::BeginDisabled(!l.extraLights);
     sDirty |= ImGui::SliderFloat("Light intensity", &l.extraLightIntensity, 0.0f, 3.0f, "%.2f");
+    sDirty |= ImGui::Checkbox("Colored light shadows", &l.extraLightShadows);
+    ImGui::SetItemTooltip(
+        "The strongest colored lights (ghost lights: the two brightest) cast shadows: furniture and\n"
+        "characters between a ghost and a wall block its glow. Screen-space: a depth pre-pass of the\n"
+        "room and a ray march toward each light at half resolution. Moderate GPU cost.");
+    static const char* kXlQ[] = {"Low", "Medium", "High"};
+    ImGui::BeginDisabled(!l.extraLightShadows || l.preset != port::EnhancedPreset::Custom);
+    sDirty |= ImGui::Combo("Light shadow quality", &l.extraShadowQuality, kXlQ, 3);
+    ImGui::EndDisabled();
     ImGui::EndDisabled();
     // ---- Ghost lights (src/recomp/ghost_lights.cpp): the game-side source of colored lights ----
     ImGui::SeparatorText("Ghost lights");

@@ -12,10 +12,10 @@ index 574e7e1..7b0a3e7 100644
          lib/gfx/texture_convert.cpp
 diff --git a/include/aurora/enhanced.h b/include/aurora/enhanced.h
 new file mode 100644
-index 0000000..f9ee6f1
+index 0000000..c722d22
 --- /dev/null
 +++ b/include/aurora/enhanced.h
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,93 @@
 +#ifndef AURORA_ENHANCED_H
 +#define AURORA_ENHANCED_H
 +
@@ -65,6 +65,10 @@ index 0000000..f9ee6f1
 +  // Extra point lights (aurora/lights.h), per pixel on world geometry.
 +  bool extraLights;
 +  float extraLightIntensity;
++  // Shadows of the extra lights flagged ExtraLightCastShadows (up to 4 per frame): a depth
++  // pre-pass of the opaque world draws and a screen-space ray march toward each light.
++  bool extraShadows;
++  uint32_t extraShadowQuality; // 0 low (8 steps), 1 medium (16), 2 high (32)
 +
 +  // Volumetric flashlight beam (scene end, uses depth).
 +  bool volumetric;
@@ -249,10 +253,10 @@ index 1920bc8..c22fbec 100644
  void encode_op(wgpu::CommandEncoder& encoder, FramePacket& frame, const FrameOp& op);
 diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 new file mode 100644
-index 0000000..605ebf3
+index 0000000..20e9ee6
 --- /dev/null
 +++ b/lib/gfx/enhanced.cpp
-@@ -0,0 +1,1270 @@
+@@ -0,0 +1,1557 @@
 +// Enhanced lighting: configuration, extra lights, per-draw uniforms and the scene-end
 +// screen-space effects (bloom, volumetric flashlight beam, ambient occlusion).
 +// See include/aurora/enhanced.h and include/aurora/lights.h.
@@ -332,6 +336,20 @@ index 0000000..605ebf3
 +  bool lit = false;
 +};
 +std::vector<GlowDraw> g_glowDraws;
++
++// Extra-light shadows: lights flagged ExtraLightCastShadows get a mask slot (up to 4); the opaque
++// world draws are re-rendered depth-only (same mechanism as the glow draws) into a pre-pass
++// before the EFB pass they belong to, a ray-march pass writes the RGBA8 mask and it is copied
++// into a storage-buffer range that the world shaders of that pass read.
++constexpr uint32_t MaxShadowLights = 4;
++std::array<uint32_t, MaxExtraLights> g_shadowSlot{};
++uint32_t g_shadowCount = 0;
++std::vector<GlowDraw> g_depthDraws;
++Range g_maskRange{};
++bool g_maskReserved = false; // this frame
++size_t g_depthFlushed = 0;   // g_depthDraws already resolved and in a queued mask
++uint32_t g_maskW = 0, g_maskH = 0, g_maskPitch = 0; // pitch in u32 words
++std::vector<uint8_t> g_maskZeros;
 +constexpr auto GlowFormat = wgpu::TextureFormat::RGBA16Float;
 +constexpr size_t MaxGlowDraws = 4096;
 +
@@ -399,7 +417,9 @@ index 0000000..605ebf3
 +fn view_pos(px: vec2f, d: f32) -> vec3f {
 +  let dn = (d - fx.dr.x) / max(fx.dr.y - fx.dr.x, 1e-6);
 +  let ndc = vec2f((px.x - fx.vp.x) / fx.vp.z * 2.0 - 1.0, 1.0 - (px.y - fx.vp.y) / fx.vp.w * 2.0);
-+  let z = fx.projz.y / min(dn - fx.projz.x, -1e-7);
++  // Raw depth (reversed Z as the EFB stores it) = A + B / z_view (A, B from the GX projection).
++  let den = dn - fx.projz.x;
++  let z = fx.projz.y / select(den, 1e-7, abs(den) < 1e-7);
 +  let w = -z;
 +  return vec3f((ndc.x * w - fx.proj.z * z - fx.projz.z) / fx.proj.x, (ndc.y * w - fx.proj.w * z - fx.projz.w) / fx.proj.y, z);
 +}
@@ -505,6 +525,62 @@ index 0000000..605ebf3
 +    return d * (1.0 - fx.glowdepth.w);
 +  }
 +  return 1.0 - (1.0 - d) * (1.0 - fx.glowdepth.w);
++}
++
++// Extra-light shadow mask (pre-pass depth at mask resolution in tdepth): per shadowed light (up
++// to 4, fx.xl[i] = view position + reach), march from the surface toward the light through the
++// depth buffer; a stored surface in front of the ray (within a thickness) occludes it.
++// pp: steps, target pixels per mask pixel, light count.
++fn mask_view_pos(mp: vec2f) -> vec3f {
++  let dims = vec2i(textureDimensions(tdepth));
++  let d = textureLoad(tdepth, clamp(vec2i(mp), vec2i(0), dims - vec2i(1)), 0).r;
++  return view_pos((floor(mp) + vec2f(0.5)) * fx.pp.y, d);
++}
++@fragment
++fn fs_xlshadow(in: VsOut) -> @location(0) vec4f {
++  let mp = floor(in.pos.xy);
++  let dims = vec2i(textureDimensions(tdepth));
++  let d0 = textureLoad(tdepth, vec2i(mp), 0).r;
++  if (fx.pp.w > 0.5 && fx.pp.w < 1.5) { return vec4f(fract(d0 * 1000.0), fract(d0 * 100.0), d0 * 10.0, 1.0); } // debug: depth
++  if (d0 <= 1e-7) { return vec4f(0.0); } // nothing drawn (cleared to far)
++  let p = view_pos((mp + vec2f(0.5)) * fx.pp.y, d0);
++  let steps = max(fx.pp.x, 4.0);
++  let jitter = ign(mp + vec2f(fx.dr.z * 7.0, fx.dr.z * 3.0));
++  var occ = vec4f(0.0);
++  if (fx.pp.w > 1.5) {
++    return vec4f(-p.z / 3000.0, -fx.xl[0].z / 3000.0, length(fx.xl[0].xyz - p) / 3000.0, fx.pp.z / 4.0);
++  }
++  for (var s = 0u; s < u32(fx.pp.z); s++) {
++    let lp = fx.xl[s];
++    let toL = lp.xyz - p;
++    let dist = length(toL);
++    if (dist >= lp.w || dist < 1.0) { continue; }
++    let dir = toL / dist;
++    if (fx.pp.w > 1.5) { occ[s] = dist / 1000.0; continue; } // debug: distance to the light
++    // Start a little off the surface (self-shadowing), stop short of the light (its own body).
++    let t0 = max(3.0, dist * 0.02);
++    let len = dist * 0.92 - t0;
++    if (len <= 0.0) { continue; }
++    var o = 0.0;
++    for (var k = 0.0; k < steps; k = k + 1.0) {
++      let t = t0 + (k + jitter) / steps * len;
++      let q = p + dir * t;
++      let w = -q.z;
++      if (w <= 1.0) { break; }
++      let cx = (fx.proj.x * q.x + fx.proj.z * q.z + fx.projz.z) / w;
++      let cy = (fx.proj.y * q.y + fx.proj.w * q.z + fx.projz.w) / w;
++      let sp = vec2f(fx.vp.x + (cx * 0.5 + 0.5) * fx.vp.z, fx.vp.y + (0.5 - cy * 0.5) * fx.vp.w) / fx.pp.y;
++      if (any(sp < vec2f(0.0)) || any(sp >= vec2f(dims))) { break; }
++      let sz = mask_view_pos(sp).z;
++      let front = sz - q.z; // > 0: the stored surface is nearer to the camera than the ray point
++      if (front > 2.0 + t * 0.01 && front < 160.0) {
++        o = 1.0;
++        break;
++      }
++    }
++    occ[s] = o;
++  }
++  return occ;
 +}
 +
 +// Downsample (13-tap, as above without threshold).
@@ -710,6 +786,8 @@ index 0000000..605ebf3
 +  Tex volTex, aoTex, aoBlur;
 +  Tex glow, glowDepth, glowSrcDepth;
 +  wgpu::RenderPipeline glowDepthPipe;
++  Tex maskDepth, maskDepthR, mask;
++  wgpu::RenderPipeline maskPipe;
 +};
 +Gpu g_gpu;
 +
@@ -953,6 +1031,74 @@ index 0000000..605ebf3
 +  reset_bound_pipeline();
 +}
 +
++struct MaskJob {
++  std::vector<GlowDraw> draws;
++  Range uniform{};
++  uint32_t maskOffset = 0, maskW = 0, maskH = 0, pitchBytes = 0;
++  float scaleBack = 2.f; // EFB target pixels per mask pixel
++};
++
++// Extra-light shadow mask, before the EFB pass whose world draws read it: depth pre-pass of the
++// opaque world draws at mask resolution, ray march, copy into the storage buffer.
++void encode_mask(const wgpu::CommandEncoder& cmd, const MaskJob& job) {
++  if (!init_gpu()) {
++    return;
++  }
++  const uint32_t w = job.maskW, h = job.maskH;
++  const auto depthFormat = webgpu::g_graphicsConfig.depthFormat;
++  ensure_tex(g_gpu.maskDepth, w, h, depthFormat, wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding,
++             "Enhanced light-shadow depth");
++  ensure_tex(g_gpu.maskDepthR, w, h, wgpu::TextureFormat::R32Float,
++             wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding, "Enhanced light-shadow depth R");
++  ensure_tex(g_gpu.mask, w, h, wgpu::TextureFormat::RGBA8Unorm,
++             wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::TextureBinding,
++             "Enhanced light-shadow mask");
++  if (!g_gpu.maskPipe) {
++    g_gpu.maskPipe = make_pipeline("fs_xlshadow", wgpu::TextureFormat::RGBA8Unorm, 1, nullptr, wgpu::ColorWriteMask::All);
++  }
++  {
++    const wgpu::RenderPassDepthStencilAttachment da{
++        .view = g_gpu.maskDepth.view,
++        .depthLoadOp = wgpu::LoadOp::Clear,
++        .depthStoreOp = wgpu::StoreOp::Store,
++        .depthClearValue = gx::UseReversedZ ? 0.f : 1.f,
++    };
++    const wgpu::RenderPassDescriptor desc{.label = "Enhanced light-shadow depth", .depthStencilAttachment = &da};
++    const auto pass = cmd.BeginRenderPass(&desc);
++    reset_bound_pipeline();
++    pass.SetBindGroup(0, detail::resources().staticBindGroup);
++    pass.SetBindGroup(2, gx::g_emptyTextureBindGroup);
++    // Viewports are in EFB target pixels; the mask is bloom-level-0 sized.
++    const float sx = 1.f / std::max(job.scaleBack, 1e-3f), sy = sx;
++    for (const auto& g : job.draws) {
++      const auto& vp = g.viewport;
++      const float minDepth = gx::UseReversedZ ? 1.f - vp.zfar : vp.znear;
++      const float maxDepth = gx::UseReversedZ ? 1.f - vp.znear : vp.zfar;
++      pass.SetViewport(vp.left * sx, vp.top * sy, std::max(vp.width * sx, 1.f), std::max(vp.height * sy, 1.f), minDepth,
++                       maxDepth);
++      const auto& sc = g.scissor;
++      const uint32_t x0 = std::min(uint32_t(std::max(std::floor(float(sc.x) * sx), 0.f)), w);
++      const uint32_t y0 = std::min(uint32_t(std::max(std::floor(float(sc.y) * sy), 0.f)), h);
++      const uint32_t x1 = std::min(uint32_t(std::max(std::ceil(float(sc.x + sc.width) * sx), 0.f)), w);
++      const uint32_t y1 = std::min(uint32_t(std::max(std::ceil(float(sc.y + sc.height) * sy), 0.f)), h);
++      pass.SetScissorRect(x0, y0, x1 > x0 ? x1 - x0 : 0, y1 > y0 ? y1 - y0 : 0);
++      gx::render(g.data, pass);
++    }
++    pass.End();
++    reset_bound_pipeline();
++  }
++  tex_copy_conv::snapshot_depth(cmd, g_gpu.maskDepth.view, 1, g_gpu.maskDepthR.view);
++  run_pass(cmd, "Light-shadow mask", g_gpu.mask.view, g_gpu.maskPipe, bind(job.uniform, {}, {}, {}, g_gpu.maskDepthR.view),
++           false);
++  const wgpu::TexelCopyTextureInfo src{.texture = g_gpu.mask.texture};
++  const wgpu::TexelCopyBufferInfo dst{
++      .layout = {.offset = job.maskOffset, .bytesPerRow = job.pitchBytes, .rowsPerImage = h},
++      .buffer = detail::resources().storageBuffer,
++  };
++  const wgpu::Extent3D extent{w, h, 1};
++  cmd.CopyTextureToBuffer(&src, &dst, &extent);
++}
++
 +void encode_scene(const wgpu::CommandEncoder& cmd, const ScenePassTargets& t, const SceneJob& job) {
 +  if (!init_gpu()) {
 +    return;
@@ -1028,7 +1174,10 @@ index 0000000..605ebf3
 +  const wgpu::RenderPassDescriptor desc{.label = "Enhanced composite", .colorAttachmentCount = 1, .colorAttachments = &att};
 +  const auto pass = cmd.BeginRenderPass(&desc);
 +  pass.SetPipeline(g_gpu.composite);
-+  pass.SetBindGroup(0, bind(job.base, (job.mask & 8u) != 0 ? g_gpu.glow.view : bloomView, volView, aoView,
++  pass.SetBindGroup(0, bind(job.base,
++                            (job.mask & 8u) != 0 ? (g_glowDbg >= 8 && g_gpu.mask.view ? g_gpu.mask.view : g_gpu.glow.view)
++                                                 : bloomView,
++                            volView, aoView,
 +                            (job.mask & 16u) != 0 ? g_gpu.glowSrcDepth.view : wgpu::TextureView{}));
 +  pass.Draw(3);
 +  pass.End();
@@ -1053,7 +1202,8 @@ index 0000000..605ebf3
 +const AuroraEnhancedConfig& config() noexcept { return g_cfg; }
 +
 +uint8_t shader_class(const gx::ShaderConfig& sc, uint8_t drawClass, bool blended, bool additive) noexcept {
-+  if (!g_cfg.enabled || drawClass == AURORA_DRAW_CLASS_OTHER || additive || sc.lineMode != 0 || sc.wireframe) {
++  static const bool sNoVariant = std::getenv("AURORA_ENH_NOVARIANT") != nullptr; // debug aid
++  if (sNoVariant || !g_cfg.enabled || drawClass == AURORA_DRAW_CLASS_OTHER || additive || sc.lineMode != 0 || sc.wireframe) {
 +    return 0;
 +  }
 +  bool want = false;
@@ -1098,6 +1248,7 @@ index 0000000..605ebf3
 +        std::memcpy(w + 7, &l.intensity, 4);
 +        w[8] = l.flags;
 +        w[9] = l.id;
++        w[10] = g_shadowSlot[i];
 +      }
 +      g_lightRange = push_storage(reinterpret_cast<const uint8_t*>(words.data()), g_lightCount * 12 * sizeof(uint32_t));
 +      g_lightRangeValid = true;
@@ -1127,6 +1278,26 @@ index 0000000..605ebf3
 +    u.flags |= 8u;
 +    u.flashSoft = std::clamp(c.flashlightSoftness, 0.f, 1.f);
 +  }
++  if (c.extraLights && c.extraShadows && g_shadowCount > 0) {
++    if (!g_maskReserved) {
++      const auto size = get_render_target_size();
++      const auto [w, h] = bloom_base_size(size.x, size.y);
++      g_maskW = w;
++      g_maskH = h;
++      g_maskPitch = AURORA_ALIGN(w * 4, 256) / 4;
++      const size_t bytes = size_t(g_maskPitch) * 4 * h;
++      if (g_maskZeros.size() < bytes) {
++        g_maskZeros.assign(bytes, 0);
++      }
++      g_maskRange = push_storage(g_maskZeros.data(), bytes);
++      g_maskReserved = true;
++    }
++    u.maskBase = g_maskRange.offset / 4;
++    u.maskPitch = g_maskPitch;
++    u.maskDims = g_maskW | g_maskH << 16;
++    const auto size = get_render_target_size();
++    u.maskScale = float(g_maskW) / float(std::max(size.x, 1u));
++  }
 +  u.extraScale = c.extraLightIntensity;
 +  u.shadowRadius = std::max(c.softShadowRadius, 0.f);
 +  u.pcss = std::max(c.softShadowPenumbra, 0.f);
@@ -1140,6 +1311,14 @@ index 0000000..605ebf3
 +  }
 +  std::memcpy(g_lights.data(), lights, count * sizeof(ExtraLight));
 +  g_lightCount = count;
++  g_shadowCount = 0;
++  for (uint32_t i = 0; i < MaxExtraLights; ++i) {
++    g_shadowSlot[i] = UINT32_MAX;
++    if (i < count && (lights[i].flags & ExtraLightCastShadows) != 0 && g_shadowCount < MaxShadowLights &&
++        lights[i].intensity > 0.f && lights[i].radius > 0.f) {
++      g_shadowSlot[i] = g_shadowCount++;
++    }
++  }
 +  g_lightRangeValid = false;
 +  g_lastLightCount.store(count, std::memory_order_relaxed);
 +  gx::g_gxState.dirty |= gx::DirtyUniform;
@@ -1225,6 +1404,28 @@ index 0000000..605ebf3
 +  if (drawClass != AURORA_DRAW_CLASS_OTHER && g_cfg.bloom && g_cfg.bloomEmissive > 0.f && is_emissive(config) &&
 +      !is_offscreen()) {
 +    note_glow_draw(config, data);
++  }
++  if (drawClass == AURORA_DRAW_CLASS_WORLD && g_shadowCount > 0 && g_cfg.extraLights && g_cfg.extraShadows &&
++      config.depthCompare && config.depthUpdate && !(config.blendMode == GX_BM_BLEND && config.blendFacDst == GX_BL_ONE) &&
++      g_depthDraws.size() < MaxGlowDraws && !is_offscreen()) {
++    gx::PipelineConfig dc = config;
++    dc.colorUpdate = false;
++    dc.alphaUpdate = false;
++    dc.dstAlpha = UINT32_MAX;
++    static const RenderTargetLayout layout = [] {
++      RenderTargetLayout l{
++          .colorAttachmentCount = 0,
++          .depthStencilFormat = webgpu::g_graphicsConfig.depthFormat,
++          .sampleCount = 1,
++      };
++      detail::finalize_render_target_layout(l);
++      return l;
++    }();
++    GlowDraw g{.data = data, .viewport = current_viewport(), .scissor = current_scissor()};
++    g.data.pipeline = find_pipeline(dc, layout);
++    g.data.dstAlpha = UINT32_MAX;
++    std::tie(g.pass, g.command) = next_command_position();
++    g_depthDraws.push_back(g);
 +  }
 +  if (g_drawLogFrame != 0 && g_sceneEnds + 1 == g_drawLogFrame && (g_drawLogAll || is_emissive(config))) {
 +    const auto& sc = config.shaderConfig;
@@ -1320,8 +1521,90 @@ index 0000000..605ebf3
 +  }
 +}
 +
++void flush_shadows() noexcept {
++  // The mask is computed before every EFB pass that added opaque world draws, from all of the
++  // frame's opaque world draws so far (the pass's own included: they are recorded, not yet run).
++  if (g_log && g_depthDraws.size() != g_depthFlushed) {
++    Log.info("light shadows: {} lights, {} depth draws ({} new), mask reserved {} camera {}", g_shadowCount,
++             g_depthDraws.size(), g_depthDraws.size() - g_depthFlushed, g_maskReserved, g_camera.valid);
++    for (uint32_t i = 0; i < g_lightCount; ++i) {
++      Log.info("  light {} slot {} pos {} {} {} r {} I {}", i, g_shadowSlot[i], g_lights[i].pos[0], g_lights[i].pos[1],
++               g_lights[i].pos[2], g_lights[i].radius, g_lights[i].intensity);
++    }
++  }
++  if (g_depthDraws.size() == g_depthFlushed || !g_maskReserved || !g_camera.valid) {
++    return;
++  }
++  for (size_t i = g_depthFlushed; i < g_depthDraws.size(); ++i) {
++    auto& g = g_depthDraws[i];
++    if (const auto* d = gx_draw_at(g.pass, g.command)) {
++      g.data.vertRange = d->vertRange;
++      g.data.idxRange = d->idxRange;
++      g.data.vtxCount = d->vtxCount;
++      g.data.indexCount = d->indexCount;
++      g.data.instanceCount = d->instanceCount;
++    }
++  }
++  g_depthFlushed = g_depthDraws.size();
++  MaskJob job{.draws = g_depthDraws,
++              .maskOffset = static_cast<uint32_t>(g_maskRange.offset),
++              .maskW = g_maskW,
++              .maskH = g_maskH,
++              .pitchBytes = g_maskPitch * 4};
++  const auto size = get_render_target_size();
++  FxUniform u{};
++  u.size[0] = float(size.x);
++  u.size[1] = float(size.y);
++  const auto& vp = g_camera.vp;
++  u.vp[0] = vp.left;
++  u.vp[1] = vp.top;
++  u.vp[2] = std::max(vp.width, 1.f);
++  u.vp[3] = std::max(vp.height, 1.f);
++  u.proj[0] = g_camera.p00;
++  u.proj[1] = g_camera.p11;
++  u.proj[2] = g_camera.p02;
++  u.proj[3] = g_camera.p12;
++  u.projz[0] = g_camera.a;
++  u.projz[1] = g_camera.b;
++  u.projz[2] = g_camera.p03;
++  u.projz[3] = g_camera.p13;
++  u.dr[0] = gx::UseReversedZ ? 1.f - vp.zfar : vp.znear;
++  u.dr[1] = gx::UseReversedZ ? 1.f - vp.znear : vp.zfar;
++  static uint32_t sFrame = 0;
++  u.dr[2] = float(sFrame++ % 64);
++  const uint32_t q = std::min(g_cfg.extraShadowQuality, 2u);
++  u.pass[0] = q == 0 ? 8.f : q == 1 ? 16.f : 32.f;
++  u.pass[1] = float(size.x) / float(std::max(g_maskW, 1u));
++  for (uint32_t i = 0; i < g_lightCount; ++i) {
++    const uint32_t s = g_shadowSlot[i];
++    if (s >= MaxShadowLights) {
++      continue;
++    }
++    const auto& l = g_lights[i];
++    u.xl[s][0] = l.pos[0];
++    u.xl[s][1] = l.pos[1];
++    u.xl[s][2] = l.pos[2];
++    u.xl[s][3] = l.radius;
++  }
++  u.pass[2] = float(g_shadowCount);
++  u.pass[3] = g_glowDbg == 9 ? 1.f : g_glowDbg == 10 ? 2.f : 0.f;
++  job.scaleBack = u.pass[1];
++  if (g_log) {
++    Log.info("  mask uniform: size {} {} vp {} {} {} {} proj {} {} {} {} projz {} {} {} {} dr {} {} pass {} {} {}", u.size[0],
++             u.size[1], u.vp[0], u.vp[1], u.vp[2], u.vp[3], u.proj[0], u.proj[1], u.proj[2], u.proj[3], u.projz[0],
++             u.projz[1], u.projz[2], u.projz[3], u.dr[0], u.dr[1], u.pass[0], u.pass[1], u.pass[2]);
++  }
++  job.uniform = push_uniform(reinterpret_cast<const uint8_t*>(&u), sizeof(u));
++  std::vector<efb_ram::PassOp> ops;
++  ops.emplace_back([job = std::move(job)](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
++    encode_mask(cmd, job);
++  });
++  queue_pre_pass_ops(std::move(ops));
++}
++
 +void before_efb_copy() noexcept {
 +  if (g_cfg.enabled) {
++    flush_shadows();
 +    flush_glow();
 +  }
 +}
@@ -1339,10 +1622,17 @@ index 0000000..605ebf3
 +    g_glowDraws.clear();
 +    g_glowValid = false;
 +  }
++  if (fraction >= 0.5f && depth) {
++    g_depthDraws.clear();
++    g_depthFlushed = 0;
++  }
 +}
 +
 +void begin_frame() noexcept {
 +  g_glowDraws.clear();
++  g_depthDraws.clear();
++  g_depthFlushed = 0;
++  g_maskReserved = false;
 +  g_glowValid = false;
 +  g_lightRangeValid = false;
 +  g_camera.valid = false;
@@ -1352,6 +1642,7 @@ index 0000000..605ebf3
 +void scene_end() noexcept {
 +  const auto& c = g_cfg;
 +  ++g_sceneEnds;
++  flush_shadows();
 +  flush_glow();
 +  struct Reset {
 +    ~Reset() { g_segDraws[0] = g_segDraws[1] = g_segDraws[2] = 0; }
@@ -1525,10 +1816,10 @@ index 0000000..605ebf3
 +}
 diff --git a/lib/gfx/enhanced.hpp b/lib/gfx/enhanced.hpp
 new file mode 100644
-index 0000000..b85c035
+index 0000000..df08da9
 --- /dev/null
 +++ b/lib/gfx/enhanced.hpp
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,60 @@
 +#pragma once
 +// Enhanced lighting (include/aurora/enhanced.h, include/aurora/lights.h): configuration, the
 +// frame's extra lights, per-draw uniforms and the scene-end screen-space effects.
@@ -1554,8 +1845,12 @@ index 0000000..b85c035
 +  float shadowRadius = 1.f;
 +  float flashSoft = 0.f;
 +  float pcss = 1.f;
++  uint32_t maskBase = 0;  // extra-light shadow mask: u32 index into the storage buffer
++  uint32_t maskPitch = 0; // words per row
++  uint32_t maskDims = 0;  // width | height << 16 (0: no mask this frame)
++  float maskScale = 0.f;  // mask pixels per target pixel
 +};
-+static_assert(sizeof(DrawUniform) == 32);
++static_assert(sizeof(DrawUniform) == 48);
 +
 +// --- FIFO thread ---
 +// Takes a newly set configuration; true when it changed (pipelines must be re-derived).
@@ -1863,10 +2158,10 @@ index 0c4477e..735bffa 100644
  struct BindGroupRanges {
    std::array<gfx::Range, MaxIndexAttr> vaRanges{};
 diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
-index a041c4b..a729f69 100644
+index a041c4b..3e2a4a1 100644
 --- a/lib/gx/shader.cpp
 +++ b/lib/gx/shader.cpp
-@@ -872,6 +872,221 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8
+@@ -872,6 +872,243 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8
                       alpha ? "a"sv : ""sv);
  }
  
@@ -1953,9 +2248,29 @@ index a041c4b..a729f69 100644
 +
 +constexpr std::string_view EnhHelpers = R"""(
 +fn enh_ld(i: u32) -> f32 { return bitcast<f32>(abuf[i]); }
++// Shadow of extra light `slot` at a fragment: occlusion (0 lit .. 1 shadowed) from this frame's
++// mask (RGBA8, one channel per shadowed light, written into the storage buffer before the pass),
++// bilinear from 2x2 taps for a softer edge.
++fn enh_mask(frag: vec2f, slot: u32) -> f32 {
++  let dims = vec2i(i32(ubuf.enh_mask_dims & 0xFFFFu), i32(ubuf.enh_mask_dims >> 16u));
++  if (dims.x == 0) { return 0.0; }
++  let m = frag * ubuf.enh_mask_scale - vec2f(0.5);
++  let base = vec2i(floor(m));
++  let f = fract(m);
++  var acc = 0.0;
++  for (var k = 0; k < 4; k++) {
++    let o = vec2i(k & 1, k >> 1u);
++    let c = clamp(base + o, vec2i(0), dims - vec2i(1));
++    let word = abuf[ubuf.enh_mask_base + u32(c.y) * ubuf.enh_mask_pitch + u32(c.x)];
++    let v = f32((word >> (slot * 8u)) & 0xFFu) / 255.0;
++    let w = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1);
++    acc = acc + v * w;
++  }
++  return acc;
++}
 +// Extra point lights (aurora/lights.h), 12 words each in the storage buffer:
-+// pos xyz, radius, color rgb, intensity, flags, id, 0, 0.
-+fn enh_extra_lights(p: vec3f, n: vec3f, ghost: bool) -> vec3f {
++// pos xyz, radius, color rgb, intensity, flags, id, shadow slot (or ~0), 0.
++fn enh_extra_lights(p: vec3f, n: vec3f, ghost: bool, frag: vec2f) -> vec3f {
 +  var sum = vec3f(0.0);
 +  let cnt = min(ubuf.enh_light_count, 16u);
 +  let v = normalize(-p);
@@ -1973,7 +2288,9 @@ index a041c4b..a729f69 100644
 +    let fall = w / (1.0 + 8.0 * x2);
 +    var ndl = dot(n, l);
 +    ndl = select(max(ndl, 0.0), ndl * 0.5 + 0.5, ghost);
-+    let col = vec3f(enh_ld(b + 4u), enh_ld(b + 5u), enh_ld(b + 6u)) * enh_ld(b + 7u);
++    var col = vec3f(enh_ld(b + 4u), enh_ld(b + 5u), enh_ld(b + 6u)) * enh_ld(b + 7u);
++    let slot = abuf[b + 10u];
++    if (slot < 4u) { col = col * (1.0 - enh_mask(frag, slot)); }
 +    sum = sum + col * (ndl * fall);
 +    if ((flags & 4u) != 0u) {
 +      let h = normalize(l + v);
@@ -2088,7 +2405,7 @@ index a041c4b..a729f69 100644
  // ---- Integer TEV (GX_AURORA_ACCURACY_INT_TEV) -------------------------------------------------
  // The hardware combiner works on integers: A/B/C inputs are 8 bits (the low byte of a register),
  // D and the registers are signed 11-bit, C is widened to 0..256 (C + C>>7) for the lerp, and every
-@@ -1066,8 +1281,14 @@ std::string build_int_tev_stage(size_t idx, const ShaderConfig& config, const Te
+@@ -1066,8 +1303,14 @@ std::string build_int_tev_stage(size_t idx, const ShaderConfig& config, const Te
          const auto a = int_color_arg(stage.colorPass.a, idx, config, stage, false);
          const auto b = int_color_arg(stage.colorPass.b, idx, config, stage, false);
          cond = fmt::format("({} {} {})", int_cmp_key(op.op, a), rel, int_cmp_key(op.op, b));
@@ -2104,7 +2421,7 @@ index a041c4b..a729f69 100644
      }
      out += fmt::format("\n    let teva{} = {};", idx, expr);
    }
-@@ -1362,10 +1583,20 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1362,10 +1605,20 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
          auto value = color_arg_reg(carg, idx, config, stage);
          return fmt::format("vec3f({})", value);
        };
@@ -2129,7 +2446,7 @@ index a041c4b..a729f69 100644
        fragmentFn += fmt::format("\n    let teva{0} = {1};", idx, op);
        fragmentFn += fmt::format("\n    {0} = vec4f(tevc{1}, {0}.a);", regName[stage.colorOp.outReg], idx);
        fragmentFn += fmt::format("\n    {0}.a = teva{1};", outReg, idx);
-@@ -1448,6 +1679,37 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1448,6 +1701,37 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
      }
    }
  
@@ -2151,7 +2468,7 @@ index a041c4b..a729f69 100644
 +                       "\n    enh_n = select(enh_n, -enh_n, dot(enh_n, in.enh_pos) > 0.0);";
 +    }
 +    fragmentFnPre += fmt::format("\n    var enh_xl = vec3f(0.0);"
-+                                 "\n    if ((ubuf.enh_flags & 2u) != 0u) {{ enh_xl = enh_extra_lights(in.enh_pos, enh_n, {}); }}",
++                                 "\n    if ((ubuf.enh_flags & 2u) != 0u) {{ enh_xl = enh_extra_lights(in.enh_pos, enh_n, {}, in.pos.xy); }}",
 +                                 config.enhClass == 2 ? "true"sv : "false"sv);
 +    uniformPre += EnhHelpers;
 +  }
@@ -2167,7 +2484,7 @@ index a041c4b..a729f69 100644
    for (int i = 0; i < info.sampledColorChannels.size(); ++i) {
      if (!info.sampledColorChannels.test(i)) {
        continue;
-@@ -1455,6 +1717,11 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1455,6 +1739,11 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
  
      const auto& cc = config.colorChannels[i];
      const auto& cca = config.colorChannels[i + GX_ALPHA0];
@@ -2179,7 +2496,7 @@ index a041c4b..a729f69 100644
      if (cc.lightingEnabled && cc.ambSrc == GX_SRC_REG) {
        uniBufAttrs += fmt::format("\n    cc{0}_amb: vec4f,", i);
      }
-@@ -1490,6 +1757,25 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1490,6 +1779,25 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
          vtxXfrAttrs += fmt::format("\n    out.cc{0} = round(clamp(out.cc{0}, vec4f(0.0), vec4f(1.0)) * 255.0) / 255.0;", i);
        }
        fragmentFnPre += fmt::format("\n    var rast{0} = in.cc{0};", i);
@@ -2205,7 +2522,7 @@ index a041c4b..a729f69 100644
      }
    }
    for (int i = 0; i < info.sampledKColors.size(); ++i) {
-@@ -1916,6 +2202,18 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1916,6 +2224,22 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
    if (info.usesZTex) {
      uniBufAttrs += "\n    ztex_bias: vec4u,";
    }
@@ -2219,11 +2536,31 @@ index a041c4b..a729f69 100644
 +        "\n    enh_extra_scale: f32,"
 +        "\n    enh_shadow_radius: f32,"
 +        "\n    enh_flash_soft: f32,"
-+        "\n    enh_pcss: f32,";
++        "\n    enh_pcss: f32,"
++        "\n    enh_mask_base: u32,"
++        "\n    enh_mask_pitch: u32,"
++        "\n    enh_mask_dims: u32,"
++        "\n    enh_mask_scale: f32,";
 +  }
    if (config.intTev) {
      // Already wrapped to 8 bits after the last stage.
    } else if (!prevColorNormalized && !prevAlphaNormalized) {
+@@ -2444,6 +2768,15 @@ fn fs_main(in: VertexOutput) -> {10} {{{6}{5}{11}
+   if (EnableDebugPrints) {
+     Log.info("Generated shader (hash {:x}): {}", hash, shaderSource);
+   }
++  // Enhanced lighting debug aid: AURORA_SHADER_DUMP=<dir> writes every generated shader.
++  static const char* sDumpDir = std::getenv("AURORA_SHADER_DUMP");
++  if (sDumpDir != nullptr) {
++    const auto path = fmt::format("{}/{:016x}_e{}.wgsl", sDumpDir, hash, int(config.enhClass));
++    if (FILE* f = std::fopen(path.c_str(), "wb")) {
++      std::fwrite(shaderSource.data(), 1, shaderSource.size(), f);
++      std::fclose(f);
++    }
++  }
+ 
+   return shaderSource;
+ }
 diff --git a/lib/gx/shader_info.cpp b/lib/gx/shader_info.cpp
 index e382007..0ad71a9 100644
 --- a/lib/gx/shader_info.cpp

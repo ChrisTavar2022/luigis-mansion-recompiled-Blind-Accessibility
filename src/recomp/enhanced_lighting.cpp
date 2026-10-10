@@ -75,7 +75,8 @@ void addTestLights() {
         hueToRgb(float(i) / float(sTest.count), l.color);
         l.radius = sTest.radius;
         l.intensity = sTest.intensity;
-        l.flags = aurora::gfx::ExtraLightTranslucent | aurora::gfx::ExtraLightSpecular;
+        l.flags = aurora::gfx::ExtraLightTranslucent | aurora::gfx::ExtraLightSpecular |
+                  (i < 2 ? aurora::gfx::ExtraLightCastShadows : 0u);
         l.id = 0x7E570000u + u32(i);
         sPending[sPendingCount++] = l;
     }
@@ -112,16 +113,16 @@ void applySettings() {
     // Presets fill in the quality fields (Custom keeps whatever was set).
     switch (l.preset) {
     case port::EnhancedPreset::Low:
-        l.softShadowQuality = 0, l.volumetricQuality = 0;
+        l.softShadowQuality = 0, l.volumetricQuality = 0, l.extraShadowQuality = 0;
         break;
     case port::EnhancedPreset::Medium:
-        l.softShadowQuality = 1, l.volumetricQuality = 1;
+        l.softShadowQuality = 1, l.volumetricQuality = 1, l.extraShadowQuality = 1;
         break;
     case port::EnhancedPreset::High:
-        l.softShadowQuality = 2, l.volumetricQuality = 1;
+        l.softShadowQuality = 2, l.volumetricQuality = 1, l.extraShadowQuality = 1;
         break;
     case port::EnhancedPreset::Ultra:
-        l.softShadowQuality = 3, l.volumetricQuality = 2;
+        l.softShadowQuality = 3, l.volumetricQuality = 2, l.extraShadowQuality = 2;
         break;
     default:
         break;
@@ -141,6 +142,8 @@ void applySettings() {
     c.softShadowPenumbra = l.softShadowPenumbra;
     c.extraLights = l.extraLights;
     c.extraLightIntensity = l.extraLightIntensity;
+    c.extraShadows = l.extraLightShadows;
+    c.extraShadowQuality = u32(std::clamp(l.extraShadowQuality, 0, 2));
     c.volumetric = l.volumetricBeam;
     c.volumetricIntensity = l.volumetricIntensity;
     c.volumetricQuality = u32(std::clamp(l.volumetricQuality, 0, 2));

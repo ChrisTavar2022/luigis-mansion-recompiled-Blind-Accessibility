@@ -91,6 +91,8 @@ std::vector<Field> fields() {
         num("enhanced_lighting", "shadow_map_size", l.shadowMapSize),
         flag("enhanced_lighting", "extra_lights", l.extraLights),
         num("enhanced_lighting", "extra_light_intensity", l.extraLightIntensity),
+        flag("enhanced_lighting", "extra_light_shadows", l.extraLightShadows),
+        num("enhanced_lighting", "extra_shadow_quality", l.extraShadowQuality),
         flag("enhanced_lighting", "volumetric_beam", l.volumetricBeam),
         num("enhanced_lighting", "volumetric_intensity", l.volumetricIntensity),
         num("enhanced_lighting", "volumetric_quality", l.volumetricQuality),
