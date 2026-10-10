@@ -138,9 +138,23 @@ struct RenderingSettings {
     bool shadowAnyDistance = true;
 };
 
+// ---- Enhanced lighting > Ghost lights (src/recomp/ghost_lights.cpp; docs/RENDERING.md) ----
+// Every visible ghost lights the room around it in its own glow colour. Part of the optional
+// "Enhanced lighting" group: OFF by default, the original look stays one click away.
+struct GhostLightSettings {
+    bool enabled = false;
+    float intensity = 1.0f;     // 0..4, multiplies every ghost light
+    float radiusScale = 1.0f;   // 0.25..3, multiplies the per-ghost-size radius
+    bool dramatic = true;       // pulse, flare on appearing/attacking, flicker when stunned, vacuum struggle, capture burst
+    int maxLights = 8;          // 1..16, strongest ghosts first
+    bool shadows = true;        // the 1-2 strongest ghost lights cast shadows (if the renderer supports it)
+    float invisibleHint = 0.0f; // 0..0.3: faint glow of fully invisible ghosts (0 = none)
+};
+
 struct Settings {
     VideoSettings video;
     RenderingSettings rendering;
+    GhostLightSettings ghostLights;
     CrtSettings crt;
     AudioSettings audio;
     EnhancementSettings enhancements;

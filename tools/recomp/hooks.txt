@@ -59,6 +59,9 @@ set__7JUTRectFiiii
 # (early ghost shading).
 fn_8003CFC0 us pal
 fn_80060E70 us pal
+# Ghost lights (src/recomp/ghost_lights.cpp, docs/RENDERING.md "Enhanced lighting"): the game
+# scene draw, where the ghosts' lights are sent to the renderer before the room is drawn.
+fn_8000BB98 us pal
 # Gameplay / difficulty options (src/recomp/gameplay_hooks.cpp, docs/GAMEPLAY_OPTIONS.md):
 # damage, Luigi health, ghost HP, vacuum strength, recovery hearts.
 fn_800B9488 us pal
