@@ -526,7 +526,7 @@ const bool sBackdropInit = [] {
     }
     return true;
 }();
-bool sTwoSided = false;                                          // "Back faces": no back-face culling (Aurora patch 0011)
+bool sTwoSided = false;                                          // "Back faces": no back-face culling (Aurora patch 0012)
 float sGhostColor[4] = {0x40 / 255.0f, 0x40 / 255.0f, 0x40 / 255.0f, 1.0f};  // ghost actor +0xE9 (ambient; 404040FF in play)
 float sGhostAlpha = 1.0f;                                        // ghost actor +0xE3 (layer weight; FF when fully visible)
 bool sIsGhost = false;                                           // loaded model is a ghost

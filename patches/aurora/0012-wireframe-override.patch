@@ -275,10 +275,10 @@ index 0586fae..0c4477e 100644
  struct BindGroupRanges {
    std::array<gfx::Range, MaxIndexAttr> vaRanges{};
 diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
-index 543d5e3..887abff 100644
+index 039bab5..a041c4b 100644
 --- a/lib/gx/shader.cpp
 +++ b/lib/gx/shader.cpp
-@@ -1306,6 +1306,9 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1311,6 +1311,9 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
      vtxXfrAttrsPre += "\n    out.mv_nrm = mv_nrm;";
    }
  
@@ -288,7 +288,7 @@ index 543d5e3..887abff 100644
    uniBufAttrs += "\n    proj: mat4x4f,";
    uniBufAttrs += fmt::format("\n    postex_mtx: array<mat3x4f, {}>,", MaxPnMtx + MaxTexMtx);
    uniBufAttrs += fmt::format("\n    nrm_mtx: array<mat3x4f, {}>,", MaxPnMtx);
-@@ -1915,6 +1918,11 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1922,6 +1925,11 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
    } else if (!prevAlphaNormalized) {
      fragmentFn += "\n    prev.a = tev_overflow_f32(prev.a);";
    }

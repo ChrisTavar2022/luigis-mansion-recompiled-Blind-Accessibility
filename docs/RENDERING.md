@@ -91,7 +91,7 @@ it does make EFB depth copies: `fn_8005D8CC` copies Z16 (640x480, with clear) an
 around `0x8005EA5C` copies Z8. How those textures are sampled (and so whether the Z16 byte
 order matters) has not been checked yet.
 
-*Update (EFB copies to RAM, below):* the Z16 copy is Luigi's self-shadow map, read only as an
+*Update (EFB copies to RAM, below):* the Z16 copy is the game's shadow map (section "Shadows"), read only as an
 IA8 texture by a TEV `GR16` compare. The game's own depth-ramp LUT and swap tables make that
 compare consistent only if the IA8 view of the copy has I = depth bits 23..16 and A = bits
 15..8, i.e. the console stores a Z16 copy low byte first (the reverse of an ordinary big-endian
@@ -183,7 +183,7 @@ else there.
 
 | Destination | Copy | Read as | Code |
 |---|---|---|---|
-| shadow buffer (heap, 0x96000) | Z16 640x480, every frame | **IA8 640x480** texture (TEV `GR16` compare against a 256x256 IA8 depth ramp: Luigi's self-shadow) | `fn_8005D8CC` copy, `fn_8005D41C` texture, `fn_8005DD50` TEV setup |
+| shadow buffer (heap, 0x96000) | Z16 640x480, every frame | **IA8 640x480** texture (TEV `GR16` compare against a 256x256 IA8 depth ramp: the flashlight/lightning shadow map, see "Shadows") | `fn_8005D8CC` copy, `fn_8005D41C` texture, `fn_8005DD50` TEV setup |
 | `lbl_804D86BC` (0x8021E000) | RGB565 640x480, twice per frame | RGB565 same size | `fn_8005F518` / `fn_8005F8B8` |
 | `lbl_804D86B8` (0x802B4000) | RGBA8 320x240 (box-filtered) | RGBA8 same size | `fn_8005F498` |
 | 0x803A4D00 | RGB565 70x100 from (250,140 140x200) | same | `fn_80025C98` |
@@ -214,7 +214,8 @@ else there.
      run before the render pass that samples the texture, in the same frame, with no CPU sync.
      Partial overlaps start from the memory under the texture and lay each copy's bytes over it
      in copy order. Palette (C4/C8/C14X2) and CMPR reads keep Aurora's existing paths.
-   - Luigi's shadow map is the case that takes this path in LM: the Z16 copy is read as IA8.
+   - The shadow map is the case that takes this path in LM: the Z16 copy is read as IA8 (unless
+     "Shadow map at render resolution" is on, see "Shadows").
 3. **CPU/DMA writes**: when a texture is resolved over a recorded copy, the memory is re-hashed
    (once per frame per copy); if it changed, the copy is dropped and Aurora's pointer association
    evicted, so the texture comes from memory. (Fixes stale copies shown for reused heap memory
@@ -341,9 +342,109 @@ Remaining: blended draws are not quantized after blending; copy filter not appli
 copies (GXCopyTex); whether hardware normalizes transformed normals; fog range LUT with
 widescreen is untested (LM never enables fog).
 
-## Debug draw overrides (Aurora patch 0011)
+## Shadows
 
-`patches/aurora/0011-wireframe-override.patch`, used only by the model viewer
+**Symptom (user).** No real-time shadows anywhere: the flashlight cast no shadows of furniture,
+bears or Luigi onto walls and floors, and lightning flashes lit rooms without the big shadows
+they throw. In Dolphin with a widescreen hack, shadows stop at the 4:3 area.
+
+### How the game does it (US addresses; one technique for every dynamic shadow)
+
+All real-time shadows come from **one depth shadow map** per frame, rendered from the current
+light and compared per pixel in the TEV. Code in `auto_03_8005D3A4` (shadow object
+`lbl_803CFC0C`, functions `fn_8005D41C`..`fn_8005DF84`):
+
+1. **Light selection** (`fn_80029050`/`fn_80029488`, `fn_800293A8`): normally the flashlight
+   (eye/target from Luigi's hand, fovY/near/far into the camera); during a **lightning strike**
+   the room's thunder light. The room update `fn_800168EC` starts a strike when the room info's
+   `Thunder` field (`fn_8002D7C8`) is non-zero and a timer (`fn_8000FC60`) passes 1.87
+   (`lbl_804D9B30`); `fn_80029250` then switches the light for 60 frames and sets the shadow
+   strength to 150 (K3 alpha). Cutscenes (`fn_80114144`) can set the light from keyframes
+   (`fn_80116460`).
+2. **Caster pass** (`fn_8005EF84`, every gameplay frame while the shadow is enabled):
+   `fn_8005D984` turns the main camera `lbl_803A3820` into the light's camera (perspective
+   `MTXPerspective(fovY +0xA0, aspect +0x94, near, far)`, or orthographic), viewport 640x480,
+   scissor (1,1)-(639,479), sets `lbl_804D8080 = 1`, and builds the receivers' matrices:
+   `+0xB0` = `MTXLightPerspective` (y flipped) x light view, `+0xE0` = a depth-ramp matrix whose
+   s/q is the light-space window depth and t = 256 s (`fn_8005D7B8`). Furniture, actors and Luigi
+   are then drawn into the EFB from the light (`fn_80011824`, `fn_80060D44`, `fn_801588C8`,
+   `fn_80072230`).
+3. **Copy** (`fn_8005DBE4` -> `fn_8005D8CC`): `GXCopyTex` **Z16** 640x480 with clear (color 0,
+   Z = far) into the shadow buffer, camera restored, `lbl_804D8080 = 0`. The buffer is read as an
+   **IA8** 640x480 texture (`fn_8005D41C`, clamp, LINEAR): I = depth bits 23..16, A = 15..8.
+4. **Receivers** (rooms `fn_80015CF4`/`fn_8001566C`, actors `fn_80060E70`, Luigi/J3D
+   `fn_8005A550`, cutscene objects `fn_801142C4`/`fn_801144C4`): `fn_8005DD50` (plus
+   `fn_8005DCA0` for room geometry, `fn_80058A60` adds per-vertex `TEX0/1MTXIDX` for skinned
+   models) sets
+   - texcoord 0 = POS x (ramp matrix) -> 256x256 IA8 **depth ramp LUT** (`fn_8005D560`: texel
+     (x,y) = A x, I y; s clamped, t repeating), texcoord 1 = POS x (light projection) -> the
+     shadow map; both projective 3x4 (dual-tex post matrices PT18/PT19 for actors);
+   - TEV stage 0: PREV = ramp texel through swap table 1 (R = I, G = A);
+   - TEV stage 1: shadow map through swap table 2 (R = A, G = I); **alpha op `GR16_GT`**:
+     REG0.a = (PREV.GR16 > TEX.GR16) ? K3.a : 0, i.e. "receiver is deeper than the map" ->
+     shadow strength (0xA4, 0x96 for lightning);
+   - the material's own stages follow; two final stages (`fn_800154E4` for rooms) multiply the
+     strength by the light's **ALPHA1** channel (lit only by the shadow light, spot attenuation)
+     and lerp the color toward K3 (near black): shadows only appear where that light shines.
+   Other "shadow" assets (`/model/shadow.szp`, `bshadow*.szp`, `gshadow.bmd`, `kage_*.mdl`) are
+   ordinary ghost/boss models drawn as regular geometry; no other projection or stencil
+   technique exists.
+
+### Root causes and fixes
+
+| # | Cause | Effect | Fix |
+|---|-------|--------|-----|
+| 1 | **TEV color and alpha units did not read their inputs simultaneously.** Aurora wrote the stage's color result to its register before generating the alpha op; the shadow stage's alpha `GR16_GT` compares the *color* inputs A = PREV and B = TEXC, and the color op of that same stage had just overwritten PREV with 0 (its own compare result). The alpha compare saw 0 > map and was never true. Same bug in the integer and float TEV paths. | No shadow anywhere (flashlight, lightning) | Patch 0011 (`shader.cpp`): both units compute into temporaries (`tevcN`, `tevaN`) and store afterwards, as on hardware. Verified with a shader debug view: compare result now equals (ramp key > map key) on every pixel. |
+| 2 | **Widescreen/FOV projection applied to the light pass.** The host GX layer scales every full-viewport perspective projection (Hor+, FOV slider; orthographic: centered 4:3). The light's view got squeezed while the receivers projected the map with the game's unmodified matrices. | Shadows misplaced/missing at 16:9+ | `hle_gx.cpp` `drawMode`: while the game's shadow-pass flag `lbl_804D8080` is set, projections stay plain. |
+| 3 | **The light frustum only covers the 4:3 picture** (game design; the cause of the Dolphin widescreen-hack symptom). | No shadows near the left/right edges at 16:9..32:9 (e.g. nursery table/lamp in a lightning flash at 32:9) | `shadows.cpp` hooks `fn_8005D984` (US + PAL): during the setup call the camera aspect (+0x94) is divided by the widescreen factor, so the light projection, the receivers' `MTXLightPerspective` and the light's culling planes are all built from the same wider frustum by the game's own code (consistent by construction; 4:3 output unchanged pixel for pixel). `ws::setShadowLightSetup` keeps the view's Hor+/FOV culling adjustment off the light camera. Toggle **Widescreen shadows** (`shadow_widescreen`, on). |
+| 4 | **Shadow-map resolution.** The Z16 copy is read as IA8, so EFB-copies-to-RAM decoded it from the console bytes at 640x480 even at high internal resolutions (blocky, stair-stepped shadow edges and coarse self-shadow stripes). | Low-res shadows at 2x-8x | `efb_ram.cpp`: a Z16 copy read as IA8 of the same size/address uses Aurora's copy texture at the internal resolution (it holds exactly the IA8 view: I = bits 23..16, A = 15..8). Toggle **Shadow map at render resolution** (`shadow_render_resolution`, on; off = console 640x480 bytes). Without "EFB copies to RAM" the map always follows the render resolution. |
+| 5 | **MSAA crashed** at the first depth copy ("Depth tex copies from multisampled EFB targets are not supported"; the game copies Z16 every frame, so any MSAA setting aborted at boot). | Crash with MSAA | `tex_copy_conv.cpp`/`encoding.cpp`: depth-copy pipelines for multisampled depth (sample 0). |
+
+Not causes (checked): projective texgen with post-transform matrices and per-vertex texture
+matrix indices, the q divide, swap tables, the ALPHA1 spot channel, the LUT/shadow-map texture
+decode and the Z16 copy byte order (I = high byte, matches the game's swap/compare setup),
+interpolated frame rates (the shadow pass is replayed with the rest of the frame; shadows match
+Original 30), the copy-to-RAM decode path.
+
+Accuracy notes: the game samples both packed textures (LUT and map) with LINEAR filtering,
+which mixes the high/low depth bytes independently; the faint diagonal stripes this causes on
+self-shadowed curved surfaces (the nursery bears) are part of the hardware technique and become
+finer at higher shadow-map resolutions. Aurora filters in float and the integer TEV rounds the
+result to 8 bits (hardware: fixed-point weights), a +-1 LSB difference in the low byte.
+
+### Test aid: `LM_LIGHTNING=<first>[,<period>[,<type>]]`
+
+`src/recomp/lightning_test.cpp` (US): counts room updates (`fn_800168EC`, one per gameplay
+frame) and forces a strike on update `<first>` and every `<period>` after it (lowers the timer
+threshold for that call); with `<type>` a room without thunder uses that thunder type. Logged as
+`[lightning] forcing a strike at room-update call N`. Example (nursery, flashes every ~2 s):
+`LM_LIGHTNING=0,60,1 LM_TEST_STATE=poltergust LM_START_APPEAR=1 LM_INPUT_CLOCK=frames`.
+
+### Verification (US unless noted; frame dumps via `LM_FRAME_DUMP`, window captures)
+
+- Nursery, flashlight on the crib (frame 2950 of the deterministic nursery script): before, the
+  lit wall has no shadows; after, the bears, crib bars and Luigi's head cast shadows onto the
+  wall and the bears self-shadow. Forced lightning: Luigi, crib and bears throw long shadows
+  across floor and walls.
+- 4:3 / 16:9 / 21:9 / 32:9 lightning frames: the shadows in the 4:3 area are identical; at 32:9
+  the lamp, vase and chair at the right edge now cast shadows (missing without the widened light).
+  Flashlight at 21:9: shadows only with fixes 1+2.
+- 4x internal resolution: render-resolution map vs 640x480 map (window captures).
+- Original 30 vs Interpolated 60 (2x): same lightning shadows. MSAA 4x: shadows as without MSAA.
+- PAL build (GLMP01) at 21:9: flashlight shadows in the nursery (hooks and `VA()` addresses map).
+
+Cost: fix 1 none; fix 2/3 none (a different projection/aspect); render-resolution shadow map
+saves the per-frame 640x480 encode+decode (a full-resolution IA8 sample instead); MSAA depth
+copy: one extra full-screen pass only with MSAA.
+
+Remaining: the orthographic shadow light (fixed extents in `fn_800085D8`) is not widened (not
+seen in tested scenes); no reference capture from real hardware to compare shadow darkness or the
+LINEAR-filter stripe pattern exactly; "Shadow map at render resolution" off still uses the scaled
+copy when "EFB copies to RAM" is off.
+
+## Debug draw overrides (Aurora patch 0012)
+
+`patches/aurora/0012-wireframe-override.patch`, used only by the model viewer
 (docs/UNUSED_CONTENT.md, "Model viewer"): `GXSetWireframeAurora(enable, rgba)` draws every
 triangle-type draw (also the display-list optimiser's `GX_AURORA_DRAW_INDEXED` draws) as a
 line list of its triangle edges in one colour (no culling, no depth bias, no draw merging

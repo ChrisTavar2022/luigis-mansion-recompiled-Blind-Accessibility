@@ -35,6 +35,10 @@ float fovRatio(float m11);
 // True if full-screen 3D projections need adjusting (widescreen or FOV).
 bool adjusting();
 
+// Guest thread: the game's shadow light camera is being set up (fn_8005D984, shadows.cpp).
+// Its culling planes are the light's frustum, not the view's, so fn_80008D58 leaves them alone.
+void setShadowLightSetup(bool on);
+
 // HUD elements (guest thread). The game functions that draw one in-game HUD element
 // (the Game Boy Horror with everything on its screen, the health meter, ...) are hooked
 // and run inside an AnchorScope, so the element moves as one unit:

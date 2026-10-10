@@ -734,7 +734,7 @@ the viewer itself: the full-screen backdrop that clears the picture was drawn at
 depth range, so every part of a model further away than about 1000 times the near plane was
 behind it. The backdrop now sits exactly on the far plane, and the near/far planes are fitted
 around the model's bounds (vertices and joints at frame 0, or the room shells for maps) with
-wide margins. "Back faces" turns off back-face culling as well (Aurora patch 0011, below), to
+wide margins. "Back faces" turns off back-face culling as well (Aurora patch 0012, below), to
 see sky domes and rooms from outside.
 
 ### Ghost effects
@@ -749,9 +749,9 @@ see-through. The layer buffers (`lbl_804D86B8`/`BC`) are swapped for viewer-heap
 the draw (the game only has them in the game scene). Defaults are the values measured in play
 (colour 404040FF, alpha FF for a fully visible ghost); both are adjustable.
 
-### Wireframe (Aurora patch 0011)
+### Wireframe (Aurora patch 0012)
 
-`patches/aurora/0011-wireframe-override.patch` adds two debug draw commands:
+`patches/aurora/0012-wireframe-override.patch` adds two debug draw commands:
 `GXSetWireframeAurora(enable, rgba)` (`GX_AURORA_SET_WIREFRAME`): every triangle-type draw,
 including the display-list optimiser's pre-indexed draws, gets an index buffer of its
 triangle edges and a line-list pipeline (WebGPU has no polygon fill mode) whose fragment
