@@ -202,4 +202,6 @@ and title 0.1-0.3 ms.
 - Things the game snaps itself (Luigi's instant turns, a light switching on) stay snapped.
 - Particles that die or are born between two game frames vanish/appear at the first in-between
   frame instead of fading.
-- Replaying a tape starts from the GX state the previous replay left (unchanged from before).
+- (Fixed) Replaying a tape used to start from the GX state the previous replay left; each
+  replay now starts from the end state of the tape before it (Aurora patch 0021 replay state
+  slots, `replayPair`; from the SMS port).
