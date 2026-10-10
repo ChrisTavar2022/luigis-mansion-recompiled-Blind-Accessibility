@@ -516,6 +516,16 @@ float sWireColor[4] = {1.0f, 0.85f, 0.2f, 1.0f};
 bool sTextures = std::getenv("LM_DEV_VIEWER_NOTEX") == nullptr;  // test aid: LM_DEV_VIEWER_NOTEX=1
 const bool sGhostFxDefault = std::getenv("LM_DEV_VIEWER_GHOSTFX") == nullptr || std::atoi(std::getenv("LM_DEV_VIEWER_GHOSTFX")) != 0;
 bool sGhostFx = sGhostFxDefault;                                 // "Ghost effects" (ghost archives; test aid LM_DEV_VIEWER_GHOSTFX=0)
+// Backdrop colour (test aid LM_DEV_VIEWER_BG=RRGGBB). Ghosts are added to what is behind them:
+// on a dark backdrop they glow as in the dark mansion.
+float sBackdrop[3] = {0x30 / 255.0f, 0x34 / 255.0f, 0x3C / 255.0f};
+const bool sBackdropInit = [] {
+    if (const char* v = std::getenv("LM_DEV_VIEWER_BG")) {
+        const u32 rgb = u32(std::strtoul(v, nullptr, 16));
+        for (int k = 0; k < 3; k++) sBackdrop[k] = float((rgb >> (16 - 8 * k)) & 0xFF) / 255.0f;
+    }
+    return true;
+}();
 bool sTwoSided = false;                                          // "Back faces": no back-face culling (Aurora patch 0011)
 float sGhostColor[4] = {0x40 / 255.0f, 0x40 / 255.0f, 0x40 / 255.0f, 1.0f};  // ghost actor +0xE9 (ambient; 404040FF in play)
 float sGhostAlpha = 1.0f;                                        // ghost actor +0xE3 (layer weight; FF when fully visible)
@@ -808,7 +818,7 @@ void drawBackdrop(Ctx& c) {
     const float ident[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
     putMtx(kScratch + 0x000, ortho, 16);
     putMtx(kScratch + 0x040, ident, 12);
-    wr32(kScratch + 0x070, 0x30343CFF);  // backdrop colour
+    wr32(kScratch + 0x070, u32(sBackdrop[0] * 255) << 24 | u32(sBackdrop[1] * 255) << 16 | u32(sBackdrop[2] * 255) << 8 | 0xFF);
     gu::call(c, GU_SYM("GXSetProjection"), {kScratch, 1});
     gu::call(c, GU_SYM("GXSetViewport"), {}, {0, 0, 640, 480, 0, 1});
     gu::call(c, GU_SYM("GXSetScissor"), {0, 0, 640, 480});
@@ -1017,8 +1027,16 @@ void drawAll(Ctx& c, bool ghostLayerOnly) {
     loadProjection(c);
     gu::call(c, GU_SYM("GXSetZMode"), {1, 3, 1});
     gx::setUntextured(!sTextures);
+    // The S3D lights (fn_80057CFC / fn_80057E40, also the ghost glow lights of fn_800581E8)
+    // are placed relative to the game camera's view matrix (lbl_803A3820+0x18C): give them the
+    // viewer's camera, or ghosts are lit from wherever the game's camera happens to be.
+    const u32 gameView = VA(0x803A3820) + 0x18C;
+    u8 savedView[0x30];
+    std::memcpy(savedView, hostp(gameView), 0x30);
+    std::memcpy(hostp(gameView), hostp(kScratch + 0x140), 0x30);
     for (const Drawable& d : sDraw)
         if (d.kind == Kind::Mdl) drawMdl(c, d, ghostLayerOnly);
+    std::memcpy(hostp(gameView), savedView, 0x30);
     if (!ghostLayerOnly) {
         drawGraphs(c, 0);
         drawJ3Ds(c);
@@ -1406,7 +1424,9 @@ void guestFrame(Ctx& c) {
             size_t diff = 0;
             for (size_t i = 0; i < size_t(w) * h; i++) {
                 const u8* p = rgb + i * 3;
-                if (std::abs(p[0] - 0x30) > 2 || std::abs(p[1] - 0x34) > 2 || std::abs(p[2] - 0x3C) > 2) diff++;
+                bool differs = false;
+                for (int k = 0; k < 3; k++) differs |= std::abs(int(p[k]) - int(sBackdrop[k] * 255)) > 2;
+                diff += differs;
             }
             sSweep.coverage = 100.0 * double(diff) / double(size_t(w) * h);
             sSweepShotDone = true;
@@ -1615,6 +1635,8 @@ void window() {
     ImGui::Checkbox("Textures", &sTextures);
     ImGui::SameLine();
     ImGui::Checkbox("Back faces", &sTwoSided);
+    ImGui::SameLine();
+    ImGui::ColorEdit3("Backdrop", sBackdrop, ImGuiColorEditFlags_NoInputs);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Draw both sides of every triangle (no back-face culling),\ne.g. to see sky domes and rooms from outside.");
     if (sIsGhost) {

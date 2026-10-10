@@ -43,7 +43,7 @@ constexpr u32 kModelRegistry = 0x8034E46C;  // lbl_8034E46C, 0x34 per model
 constexpr u32 kEntrySize = 0x34;
 constexpr u32 kNumModels = 0x106;
 // Guest memory for the relocated early copies: host-backed, above the 24 MiB of MEM1 the game
-// uses, after the model viewer's heap (model_viewer.cpp ends it at 0x81F00000).
+// uses; the model viewer keeps 0x81810000-0x81812000 and its heap starts at 0x82000000.
 constexpr u32 kCopyBase = 0x81F00000, kCopyEnd = 0x81FF0000;
 u32 sNext = kCopyBase;
 
