@@ -149,3 +149,4 @@ fn_8002D7C8
 # Shadow-map enhancements (shadows.cpp): light camera setup of the shadow pass.
 fn_8005D984 us pal
 fn_800293A8 us pal
+fn_80029050

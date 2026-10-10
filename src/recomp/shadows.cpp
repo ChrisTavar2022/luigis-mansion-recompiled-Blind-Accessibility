@@ -18,9 +18,9 @@
 // distant light, or fov 31 near 619 far 2322 near the camera), so only a small region around
 // Luigi gets shadows; in big rooms the shadows of everything farther away drop out as he walks.
 // The light's position and direction are kept; its fov, aspect and near/far are widened so the
-// frustum contains both its original frustum and the player's view (from 1/4 of the
-// camera-to-target distance out to kViewDepth times it). (Re-aiming the light as well moved the
-// shadows of skinned characters: some of their shadow matrices keep the game's own direction.)
+// frustum contains both its original frustum and the player's view (sampled from 1/4 to 4x the
+// camera-to-target distance), clamped to the current room's bounds so the map stays as tight as
+// possible. Test aids: LM_SHADOW_LOG=1, LM_ROOMS_LIT=1 (docs/RENDERING.md).
 //
 // Resolution ("Shadow map at render resolution"): the receivers sample the Z16 copy at the
 // internal resolution (Aurora's copy texture) instead of the console's 640x480 bytes.
@@ -116,11 +116,28 @@ bool fitFrustum(u32 cam, float lightAspect, float viewAspect, Fit& fit) {
         frustumCorners(E, viewDir, V3{0, 1, 0}, std::tan(viewFov * 0.5f), viewAspect, z0, z1, corners);
         for (int i = 0; i < 8; i++) pts[8 + 4 * k + i] = corners[i];
     }
+    // Only what can receive a shadow in Luigi's room matters: the view samples are clamped to the
+    // current room's bounds (room table lbl_804D8170, 0x30 per room: min xyz +0x8, max xyz +0x14,
+    // ints), which keeps the widened frustum (and so the shadow map's texel size) as small as
+    // possible. Rooms seen through doorways keep the game's own coverage.
+    const u32 rooms = rd32(VA(0x804D8170));
+    const u32 roomNo = rd32(VA(0x803A3CA0) + 0xC) >> 24;
+    if ((rooms >> 28) == 8 && roomNo < 0x80) {
+        const u32 b = rooms + roomNo * 0x30;
+        const float lo[3] = {float(s32(rd32(b + 0x8))), float(s32(rd32(b + 0xC))), float(s32(rd32(b + 0x10)))};
+        const float hi[3] = {float(s32(rd32(b + 0x14))), float(s32(rd32(b + 0x18))), float(s32(rd32(b + 0x1C)))};
+        if (lo[0] < hi[0] && lo[1] < hi[1] && lo[2] < hi[2] && hi[0] - lo[0] < 20000.0f && hi[2] - lo[2] < 20000.0f) {
+            constexpr float kMargin = 50.0f;
+            for (size_t i = 8; i < std::size(pts); i++) {
+                pts[i].x = std::clamp(pts[i].x, lo[0] - kMargin, hi[0] + kMargin);
+                pts[i].y = std::clamp(pts[i].y, lo[1] - kMargin, hi[1] + kMargin);
+                pts[i].z = std::clamp(pts[i].z, lo[2] - kMargin, hi[2] + kMargin);
+            }
+        }
+    }
     const float zClip = std::max(kMinNear, n * 0.25f);
 
-    // The light keeps its direction: re-aiming it moved the shadows of skinned characters
-    // (something in their receiver/caster setup keeps the game's own light direction), while
-    // widening fov/aspect and the depth range stays consistent.
+    // The light keeps its direction (and so the look of the shadows); only the frustum widens.
     const V3 D2 = D;
     V3 r, u;
     basis(D2, up, r, u);
@@ -151,6 +168,20 @@ bool sGameplayLight = false;
 bool sFlashlightLight = false;
 
 }  // namespace
+
+// Test aid LM_ROOMS_LIT=1: rooms behave as lit (lights on, as after clearing them) for the shadow
+// light choice. fn_80029050 picks the flashlight as the shadow light when the room light object
+// (lbl_803A3CA0 +0x24) has its dark flag +0xAC set and mode +0x94 == 5; the flag is cleared for
+// the call, so the room shadow light (the one that follows Luigi) is used.
+HLE(fn_80029050) {
+    static const bool sLit = std::getenv("LM_ROOMS_LIT") != nullptr;
+    const u32 obj = sLit && !ver::pal() ? rd32(0x803A3CA0 + 0x24) : 0;
+    if ((obj >> 28) != 8) return callOriginal(c, "fn_80029050");
+    const u32 saved = rd32(obj + 0xAC);
+    wr32(obj + 0xAC, 0);
+    callOriginal(c, "fn_80029050");
+    wr32(obj + 0xAC, saved);
+}
 
 // Gameplay shadow light parameters (fov/near/far): the flashlight's (lbl_804D82E9 or
 // lbl_804D8304 set: fn_800985A0) or the light table's (room light following Luigi, lightning).
@@ -184,8 +215,8 @@ HLE(fn_8005D984) {
     static u32 sCalls = 0;
     if (sLog && active && (sCalls++ % 30) == 0) {
         const V3 eye = rdv(cam + kCamEye);
-        log("[shadow] %s eye %.0f %.0f %.0f at %.0f %.0f %.0f fov %.1f asp %.2f near %.0f far %.0f%s",
-            gameplay ? "game" : "other", eye.x, eye.y, eye.z, target.x, target.y, target.z, fov, wideAspect, zNear,
+        log("[shadow] k3a %u %s eye %.0f %.0f %.0f at %.0f %.0f %.0f fov %.1f asp %.2f near %.0f far %.0f%s",
+            rd32(VA(0x804D07E0) + 4) & 0xFF, gameplay ? "game" : "other", eye.x, eye.y, eye.z, target.x, target.y, target.z, fov, wideAspect, zNear,
             zFar, refit ? "" : " (kept)");
         const V3 ve = rdv(cam + kCamViewEye), vt = rdv(cam + kCamViewTarget);
         log("[shadow]   view eye %.0f %.0f %.0f at %.0f %.0f %.0f", ve.x, ve.y, ve.z, vt.x, vt.y, vt.z);
