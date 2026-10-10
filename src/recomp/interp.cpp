@@ -98,6 +98,7 @@ struct Tape {
     u64 seq = 0;  // capture order (consecutive tapes differ by 1); replay state slots
     std::vector<s32> partner;  // per patch: index into pairedWith->patches, or -1
     bool cut = false;          // a camera cut since pairedWith: shown as is
+    float camStep = 0;         // median relative move of the paired position matrices (cut check)
     u32 paired = 0, unpaired = 0;
     std::vector<std::pair<u32, u32>> lights;  // extra-light commands: offset of the first light, count
     u32 dumpOffset = ~0u;  // LM_INTERP_TEST: tape offset of the LM_FRAME_DUMP copy's target pointer
@@ -649,6 +650,8 @@ void pairTapes(const Tape& a, Tape& b) {
     b.phaseUs[3] = usSince(tp);
     // A camera cut (or a teleport) moves nearly every object at once: show the new frame as is.
     u32 pos = 0, jumps = 0;
+    static std::vector<float> rel;
+    rel.clear();
     b.paired = b.unpaired = 0;
     for (u32 i = 0; i < b.patches.size(); i++) {
         const Patch& p = b.patches[i];
@@ -663,8 +666,26 @@ void pairTapes(const Tape& a, Tape& b) {
         for (int k = 0; k < 12; k++) va[k] = val(a, q, k), vb[k] = val(b, p, k);
         pos++;
         if (!blendable(Kind::PosMtx, va, vb, 12)) jumps++;
+        float dd = 0, db = 0;
+        for (int r = 0; r < 3; r++) {
+            const float d = vb[4 * r + 3] - va[4 * r + 3];
+            dd += d * d, db += vb[4 * r + 3] * vb[4 * r + 3];
+        }
+        if (std::isfinite(dd) && std::isfinite(db)) rel.push_back(std::sqrt(dd) / std::max(std::sqrt(db), 300.0f));
     }
     b.cut = pos >= 8 && jumps * 2 > pos;
+    // A camera cut to a nearby viewpoint (the camera jumps a few hundred units) keeps far objects
+    // within the blend limits, so the test above misses it and the in-between frames would slide
+    // from one shot to the other. Steady camera motion moves the scene by about the same relative
+    // amount every game frame; a cut moves it by far more than the frame before did (SMS port).
+    if (rel.size() >= 8) {
+        std::nth_element(rel.begin(), rel.begin() + rel.size() / 2, rel.end());
+        b.camStep = rel[rel.size() / 2];
+        if (b.camStep > 0.08f && b.camStep > 4.0f * a.camStep) b.cut = true;
+    }
+    if (sTrace && (b.cut || b.camStep > 0.04f))
+        log("[interp] tape %llu: scene step %.3f (previous %.3f), %u of %u position matrices jump%s",
+            (unsigned long long)b.seq, b.camStep, a.camStep, jumps, pos, b.cut ? ": CUT" : "");
     b.phaseUs[4] = usSince(tp);
 }
 
@@ -739,10 +760,14 @@ bool blendable(Kind kind, const f32* a, const f32* b, int n) {
         for (int i = 0; i < n; i++)
             if (std::fabs(a[i] - b[i]) > 0.25f * std::max({std::fabs(a[i]), std::fabs(b[i]), 1e-3f})) return false;
         return true;
-    case Kind::Light:  // position xyz, direction xyz
-        for (int i = 0; i < 3; i++)
-            if (std::fabs(a[i] - b[i]) > 400.0f) return false;
-        return true;
+    case Kind::Light: {  // position xyz, direction xyz (view space)
+        // A jump larger than half its distance (at least 400 units) snaps: distant lights move by
+        // hundreds of units per frame as the camera turns (from the SMS port).
+        float da = 0, db = 0, dd = 0;
+        for (int i = 0; i < 3; i++) da += a[i] * a[i], db += b[i] * b[i], dd += (a[i] - b[i]) * (a[i] - b[i]);
+        if (!std::isfinite(dd)) return false;
+        return std::sqrt(dd) <= std::max(400.0f, 0.5f * std::sqrt(std::max(da, db)));
+    }
     default:
         return false;
     }
@@ -975,12 +1000,14 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             if (!((p.kind == Kind::PosMtx && p.count == 12 && blendRigid(va, vb, 4, alpha, out)) ||
                   (p.kind == Kind::NrmMtx && p.count == 9 && blendRigid(va, vb, 3, alpha, out)) ||
                   (p.kind == Kind::TexMtx && p.count == 8 && blendSpin(va, vb, alpha, out))))
-                for (int k = 0; k < p.count; k++) out[k] = va[k] + (vb[k] - va[k]) * alpha;
+                for (int k = 0; k < p.count; k++)
+                    out[k] = std::isfinite(va[k]) && std::isfinite(vb[k]) ? va[k] + (vb[k] - va[k]) * alpha : vb[k];
             if (p.kind == Kind::Light) {  // keep the direction's length (spot cone falloff)
                 const float la = std::sqrt(va[3] * va[3] + va[4] * va[4] + va[5] * va[5]);
                 const float lb = std::sqrt(vb[3] * vb[3] + vb[4] * vb[4] + vb[5] * vb[5]);
                 const float lo = std::sqrt(out[3] * out[3] + out[4] * out[4] + out[5] * out[5]);
-                if (lo > 1e-6f && la > 1e-6f && lb > 1e-6f) {
+                // (Directions of lights that have none can hold any bits: only rescale sane ones.)
+                if (lo > 1e-6f && la > 1e-6f && lb > 1e-6f && std::isfinite(la) && std::isfinite(lb) && std::isfinite(lo)) {
                     const float s = (la + (lb - la) * alpha) / lo;
                     for (int k = 3; k < 6; k++) out[k] *= s;
                 }

@@ -277,8 +277,11 @@ void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective) {
     finishDirect();
     flushPending();
     fmt &= 7;
-    // What is drawn: primitive, vertex layout and the position array.
-    u64 id = u64(prim & 0xF8 | fmt) << 56 ^ u64(vertexSize(int(fmt))) << 40 ^ sBind[0].guest;
+    // What is drawn: primitive, vertex layout and the position array (if positions are indexed:
+    // with direct positions the bound array is whatever the last indexed draw left, which changes
+    // from frame to frame, and then no draw of this kind ever found its partner; from the SMS port).
+    const bool posIndexed = gx::vtxDesc(GX_VA_POS) == GX_INDEX8 || gx::vtxDesc(GX_VA_POS) == GX_INDEX16;
+    u64 id = u64(prim & 0xF8 | fmt) << 56 ^ u64(vertexSize(int(fmt))) << 40 ^ (posIndexed ? sBind[0].guest : 0);
     for (int a = GX_VA_PNMTXIDX; a <= GX_VA_TEX7; a++) id = detail::mix(id ^ gx::vtxDesc(a));
     detail::noteDraw(id);
     detail::drawLog("begin prim %02X fmt %u n %u vsize %u %s pos desc %u size %d tex0 desc %u size %d clr0 desc %u",

@@ -168,6 +168,36 @@ with.
 - The scanner now sizes immediate-mode vertices with the layout as it was at `GXBegin` (the game
   changes it right after `GXEnd`); the "unparsed stream" (a full-screen 2D quad) is gone.
 
+## Fixes from the SMS port (October 2026)
+
+- Aurora 0022: `GXEnd`'s "vertex data not evenly divisible" check measures the draw in the
+  calling thread's recording, not the FIFO (which the host replaying tapes appends to and
+  resets). The draws were fine; the warnings were noise (LM: sporadic, 4-5 in some 60 fps runs,
+  none in the A/B runs, so the reduction is not measured here).
+- Immediate draws with direct positions: the draw identity no longer includes the bound
+  `GX_VA_POS` array (stale for direct positions). In LM's nursery the CPU-built vertex blocks
+  already paired (7.2 of 7.9 per tape before and after), so this changes nothing there; it keeps
+  LM safe if a direct-position draw follows indexed ones with changing arrays.
+- Light jump limit relative to distance (at least 400 units, else half the light's distance),
+  and non-finite light values never blended or rescaled.
+- Camera cuts to a nearby viewpoint: a tape is also a cut when the median relative move of its
+  paired position matrices exceeds 0.08 and four times the previous tape's (`Tape::camStep`;
+  `LM_INTERP_TRACE` logs "scene step"). In the opening cutscene it catches two shot changes the
+  half-of-matrices test missed (scene step 0.34 / 0.39 after ~0.003); gameplay walking in the
+  nursery and foyer stays at 0.04 or less (no false cuts).
+
+Measured with `LM_INTERP_TEST` (nursery walk at 60 and 120 fps, 210 frames each; foyer walk at
+60 fps, 160 frames): 0 stale pixels before and after; pairing statistics (position matrices,
+billboards, vertex blocks, jerky counts) within run-to-run noise of main.
+
+Open: in the attract-mode opening (crows on the branch, the second-to-last frame of that shot)
+the late replay of one tape draws the lit models darker than its fresh replay (88,685 px; the sky
+and grass are unchanged). It is the same with `LM_NO_SHADOW=1`, `LM_EFB_RAM=0` and with or
+without the replay state slots, so it is neither the shadow pass, copies to RAM nor carried GX
+state; display lists and vertex arrays are copied into the tape. Remaining suspects: data Aurora
+still reads by pointer at replay time (textures and TLUTs via `GX_AURORA_LOAD_TEXOBJ`), which the
+game may already have replaced for the next shot.
+
 ## Cost of closing a tape (guest thread)
 
 Pairing runs on the game thread when a tape is closed, so it eats into the 33 ms game frame.
