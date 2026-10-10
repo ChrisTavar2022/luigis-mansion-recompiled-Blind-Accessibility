@@ -1,5 +1,5 @@
 #pragma once
-// Enhanced lighting, port side (docs/RENDERING.md "Enhanced lighting"; Aurora patch 0014,
+// Enhanced lighting, port side (docs/RENDERING.md "Enhanced lighting"; Aurora patch 0016,
 // include/aurora/enhanced.h and include/aurora/lights.h).
 //
 // - Settings (F1 > Visuals > Enhanced lighting) are pushed to Aurora every host frame.

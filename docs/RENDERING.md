@@ -838,24 +838,26 @@ configs (`reason` 1 = failed creation, 2 = crash suspect, `crashes`).
 Optional effects layered on top of the accurate GX rendering: F1 > Visuals > Enhanced lighting
 (`[enhanced_lighting]` in settings.ini). **Master switch off by default**; off, the renderer
 emits nothing new (no draw-class commands, no scene-end marker, no shader variants), and frame
-dumps are byte-identical to main (nursery, 5 dump frames compared against the main build).
+dumps are byte-identical to the plain renderer (nursery: master off vs the plain frames of an
+`LM_ENHANCED_AB` run, and earlier against the main build).
 Every part has its own switch and strength/quality control; the Quality preset
 (Low/Medium/High/Ultra/Custom) sets soft-shadow, volumetric and colored-light-shadow quality.
-Code: Aurora patch `0014-enhanced-lighting.patch` (`lib/gfx/enhanced.cpp/.hpp`,
+Code: Aurora patch `0016-enhanced-lighting.patch` (`lib/gfx/enhanced.cpp/.hpp`,
 `include/aurora/enhanced.h`, `include/aurora/lights.h`, shader generator changes in
 `lib/gx/shader.cpp`), port side `src/recomp/enhanced_lighting.cpp/.h` (settings → Aurora,
-draw classes, scene bracket, test lights), `hle_gx.cpp` (draw class), `shadows.cpp` (shadow
-map size), `ghost_lights.cpp` (the ghost light provider, below).
+draw classes, scene bracket, test lights), `shadows.cpp` (caster-pass class, shadow map size),
+`unused_content.cpp` (ghost pass), `ghost_lights.cpp` (the ghost light provider, below).
 
 ### How it hooks in
 
 - **Draw classes** (`GXSetDrawClassAurora`, FIFO command `GX_AURORA_SET_DRAW_CLASS`, so it is
-  ordered with the draws and recorded in interpolation tapes): `hle_gx.cpp` `emitDrawClass` sends
-  WORLD for perspective draws into the full viewport outside the shadow-map pass
-  (`lbl_804D8080`) and outside the GBH's following sub-viewport; GHOST for those inside the
-  actor ghost pass (`fn_80060E70` pass 0x30, `unused_content.cpp`); OTHER for everything else
-  (2D/HUD, GBH sub-views, the light's-view caster pass, EFB-copy passes). Only sent while the
-  master switch is on.
+  ordered with the draws and recorded in interpolation tapes) are set only at hook boundaries,
+  never between the game's own GX commands: WORLD inside the main 3D view (`fn_8000BB98(0)`),
+  GHOST inside its ghost pass (`fn_80060E70` pass 0x30), OTHER inside the shadow-map caster pass
+  (`fn_8005D984` .. `fn_8005D8CC`) and everywhere else (HUD/2D, GBH, menus). Aurora additionally
+  treats non-perspective draws as OTHER (2D quads inside the view: screen copies, ghost-layer
+  composite). Only sent while the master switch is on. (A first version decided per draw in
+  `hle_gx.cpp`'s draw preparation; inserting commands there between raw FIFO writes was fragile.)
 - **Shader variants** (`ShaderConfig::enhClass`, chosen in `enhanced::shader_class`): 1 for
   WORLD, 2 for GHOST, 0 (the plain shader) for OTHER, for additive draws (light effects: the
   flashlight beam is built on GX vertex lighting and a color-texgen lookup), and for untextured
@@ -876,12 +878,12 @@ map size), `ghost_lights.cpp` (the ghost light provider, below).
 | Part (setting) | What | How |
 |---|---|---|
 | Per-pixel lighting (`per_pixel_lighting`) | The game's own GX lights evaluated per fragment with the same channel math (ambient/material sources, diffuse fn, spot/distance attenuation, clamps) | View-space position/normal interpolated to the fragment (`enh_pos`/`enh_nrm`; face normal from derivatives when the draw has no normals); WORLD draws only (ghost-pass draws keep vertex lighting: the ghost layer is composited from its own copy); channels that feed a color texgen keep their vertex result |
-| Flashlight quality (`flashlight_quality`, softness) | Round beam pool with a smooth penumbra | Spot channels evaluated per pixel with the GX angular term remapped through smoothstep (0 = GX curve, 1 = smooth) |
-| Soft shadows (`soft_shadows`, quality, softness, contact hardening) | Soft edges for the game's shadow map (flashlight, lightning, room light) | The TEV `GR16_GT` compare stage (receiver key vs packed Z16 map) becomes a filtered compare: PCF 8/16 taps on a rotated Vogel disk, or PCSS (blocker search + penumbra from receiver-blocker distance) 16/32; receiver key computed analytically from the depth-ramp texcoord (no LINEAR byte-wrap stripes), slope-scaled bias. Integer-TEV path included |
+| Flashlight quality (`flashlight_quality`, softness, beam highlights) | Round beam pool with a smooth penumbra; glossy highlights where the beam hits | Spot color channels evaluated per pixel; below the cone's full strength the GX angular term is remapped through smoothstep (0 = GX curve, 1 = smooth). Alpha channels stay exact (the shadow light's ALPHA1 scales the shadow strength: smoothing it weakened shadows). "Beam highlights" (`flashlight_specular`, 0.6) adds a Blinn-Phong term (exponent 28) per spot light, tinted by the material color |
+| Soft shadows (`soft_shadows`, quality, softness, contact hardening) | Soft edges for the game's shadow map (flashlight, lightning, room light) | The TEV `GR16_GT` compare stage (receiver key vs packed Z16 map) becomes a filtered compare: PCF 8/16 taps on a rotated Vogel disk, or PCSS (blocker search + penumbra from receiver-blocker distance) 16/32; receiver key computed analytically from the depth-ramp texcoord where it agrees with the TEV's key (no LINEAR byte-wrap stripes); capped slope-scaled bias on the off-centre taps only and a penumbra capped at 1.5x the radius (with a grazing shadow light, e.g. a ballroom ghost's own light near the floor, a full receiver-plane bias and wide penumbras erased thin casters' shadows); early out when the centre and 4 outer taps agree. Integer-TEV path included |
 | Shadow map size (`shadow_map_size`) | 2048x1536 / 4096x3072 shadow map independent of the render resolution | `shadows.cpp`: the caster pass (`fn_8005D984` … `fn_8005D8CC`, new US+PAL hook) renders into an Aurora offscreen target (`GXCreateFrameBuffer`) of that size; the Z16 copy comes from it. Needs "Shadow map at render resolution" |
 | Dynamic colored lights (`extra_lights`, intensity) | Up to 16 point lights per pixel on world geometry | `aurora/lights.h` interface below; added to the lit color channel (× material color) so the game's TEV decides the response; smooth (1-x²)² falloff to the radius, half-Lambert on ghost draws, optional specular |
 | Colored light shadows (`extra_light_shadows`, quality) | Lights flagged `ExtraLightCastShadows` (up to 4; ghost lights flag the two strongest) are blocked by furniture/characters | Screen space, current frame: the opaque world draws are re-rendered depth-only (same pipelines, depth layout) into a half-resolution pre-pass **before** the EFB pass that draws them (pass pre-op), a ray-march pass (8/16/32 steps, thickness 160 units) writes an RGBA8 mask (one channel per light), which is copied into a reserved storage-buffer range; the world shaders read it (`enh_mask`, bilinear) |
-| Volumetric beam (`volumetric_beam`, intensity, quality) | Haze in the flashlight beam, stopped by walls | Scene end: ray march along each view ray (16/24/48 steps, 1/4 or 1/2 resolution) through the flashlight's GX spot attenuation (the flashlight = the bright angular spot light nearest the camera among the world draws' lights), forward-scattering phase, depth-limited |
+| Volumetric beam (`volumetric_beam`, intensity 2.0, quality) | Dusty haze in the flashlight beam, stopped by walls | Scene end: ray march along each view ray (16/24/48 steps, 1/4 or 1/2 resolution) through the flashlight's GX spot attenuation (the flashlight = the bright angular spot light nearest the camera among the world draws' lights), forward-scattering phase, depth-limited; density modulated by slowly drifting 3D value noise (dust motes) |
 | Bloom / glow (`bloom`, intensity, light sources, colored light glow, bright surfaces, threshold, radius, flashlight-lit walls) | Light sources glow, the HUD never | Scene end, HDR (RGBA16F) chain at ≤ 720 lines: bright pass = **glow buffer** (emissive) + soft-knee scene highlights × "bright surfaces" (suppressed where the flashlight is the only reason a wall is bright) + **light glows**; 6-level 13-tap downsample / tent upsample; composited additively onto the EFB |
 | Ambient occlusion (`ssao`, intensity, radius; off by default, experimental) | Contact darkening | Scene end, half resolution, 12 hemisphere samples from the depth buffer, depth-aware blur, multiplied onto the EFB |
 
@@ -929,15 +931,28 @@ the first two cast shadows).
 deterministic nursery script `LM_START_MAP=2 LM_START_APPEAR=1 LM_TEST_STATE=poltergust
 LM_SKIP_CUTSCENES=1 LM_SKIP_AUTO=30 LM_INPUT_CLOCK=frames` with `LM_ENHANCED=1 LM_ENHANCED_AB=1`)
 
-- Master off vs main build: identical dumps. AB plain frames vs master off: identical.
-- `nursery_beam_off_on.png`: flashlight on the door: rounder pool, beam glow, volumetric haze.
+- Master off vs the AB run's plain frames: identical (5 frames); earlier against the main build.
+- `nursery_beam_off_on.png`, `nursery_beam_crop_off_on.png`: flashlight on the door: dusty
+  volumetric haze in the beam, smoother pool, lens glow.
 - `nursery_lightning_off_on.png` (`LM_LIGHTNING=0,60,1`), `lightning_shadows_crop_plain_hard_soft.png`
   (plain / enhanced with soft shadows off = identical hard shadows / PCSS).
 - `colored_light_shadows_off_on_mask.png` (`LM_TEST_LIGHTS=4`): colored pools on walls and floor,
   shadows of crib and bears, and the shadow mask (`AURORA_ENH_GLOWDBG=8`).
-- `ballroom_ghostlights_off_on.png` (`LM_GHOST_LIGHTS=1 LM_TELEPORT=1800,0,-1400,100`), ghost
-  lights + glow; `ghost_layer_ghostlight_ab_diff.png` (gold ghosts, room 42, ghost lights A/B with
-  difference): changes only at the lit ghost and its light pool, no duplicate ghost shapes.
+- Ballroom shadows (`LM_TELEPORT=1800,0,-1400,100`; the shadow light there is a dancing
+  ghost's own light near the floor, so the long shadows change every frame with the dance):
+  `ballroom_shadows_per_part.png` (enhanced frames of AB runs that are frame-aligned with each
+  other, rows: everything off, per-pixel, flashlight quality, bloom, volumetric, soft shadows,
+  default minus soft shadows) and `ballroom_shadows_alloff_default_ghostlights.png`: the game's
+  shadows are kept in every configuration. The earlier report of missing shadows came from
+  comparing different game frames (consecutive AB frames differ in the dance) plus two real
+  issues fixed since: the penumbra smoothing was applied to the shadow light's ALPHA1 mask, and
+  the soft-shadow bias/penumbra erased thin casters with a grazing light. Remaining visible
+  difference: bloom brightens the white floor (bright surfaces 0.12 by default).
+- `ghost_layer_ghostlight_ab_diff.png` (gold ghosts, room 42, ghost lights A/B with difference):
+  changes only at the lit ghost and its light pool, no duplicate ghost shapes (the faint shapes
+  in the ghost-lights agent's capture images are other ghosts at different times).
+- Showcase: `ballroom_dark_showcase.png` (+ `_full_2560x1440`, `showcase2`, contact sheet):
+  Ultra, ghost lights, bloom, ambient_scale 0.35, 16:9, render scale 3, window captures.
 - `ws21x9_off_on.png` (21:9, render scale 2), `msaa4x_scale4_16x9_off_on.png` (MSAA 4x, scale 4,
   16:9), `pal_base_off_on.png` (European game via LuigisMansionRecomp setup),
   `hidden_mansion_off_on.png` (`LM_HM_FORCE=1`).
