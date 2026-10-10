@@ -608,7 +608,7 @@ bool sIsGhost = false;                                           // loaded model
 // Maps.
 int sMapSel = 2, sRoomSel = -1;  // -1 = all rooms
 bool sFurniture = true;
-bool sFurnitureAnims = false;    // play every furniture's <name>_1.anm action in a loop
+bool sFurnitureAnims = std::getenv("LM_DEV_VIEWER_FURNANIM") != nullptr;  // play every furniture's <name>_1.anm action in a loop
 struct RoomName {
     int index;
     std::string path;
@@ -1574,9 +1574,13 @@ void collectAnims() {
             sChoice.j3d.push_back(m);
             sChoice.j3dOn.push_back(named);
         }
+        // None named after the model: all of them when it is the directory's only model (an
+        // effect folder), none in shared folders (kt_static: every item's animations together).
+        int modelsInDir = 0;
+        for (size_t x = 0; x < sMdls.size(); x++) modelsInDir += sMdlKinds[x] == Kind::J3D && dirName(sMembers[sMdls[x]].path) == dir;
         bool bck = false;
         for (size_t j = 0; j < sChoice.j3d.size(); j++) {
-            if (!anyNamed) sChoice.j3dOn[j] = 1;
+            if (!anyNamed && modelsInDir <= 1) sChoice.j3dOn[j] = 1;
             // One joint animation at a time (it is the root joint's matrix calculator).
             if (sChoice.j3dOn[j] && endsWith(sMembers[sChoice.j3d[j]].path, ".bck")) {
                 if (bck) sChoice.j3dOn[j] = 0;
@@ -2216,6 +2220,12 @@ void guestFrame(Ctx& c) {
     setupCamera(c);
     drawScene(c);
     fitAfterDraw();
+    // Test aid: LM_DEV_VIEWER_SCREENSHOT=1 presses "Screenshot" once the first load is framed.
+    static bool sAutoShot = std::getenv("LM_DEV_VIEWER_SCREENSHOT") != nullptr;
+    if (sAutoShot && sFit.phase == Fit::Off && sGuestFrames > 30) {
+        sAutoShot = false;
+        requestScreenshot();
+    }
     // Sweep: grab the picture once the model has been drawn for a few frames (and framed).
     if (sSweep.on && sSweep.phase == Sweep::Drawing && s32(sGuestFrames - sSweep.loadFrame) + 1 >= sSweep.frames &&
         sFit.phase == Fit::Off) {

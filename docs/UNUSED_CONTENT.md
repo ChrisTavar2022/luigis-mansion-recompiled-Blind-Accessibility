@@ -848,21 +848,22 @@ nothing), then with back faces. `LM_DEV_VIEWER_SHOTS=<dir>` writes a 160x120 thu
 model (`efbcopy::requestNamedDump`), `LM_DEV_VIEWER_SWEEP_START=<n>` resumes,
 `LM_DEV_VIEWER_SWEEP_EXIT=1` quits at the end.
 
-Last full run (US): 1432 drawn, 26 with an empty picture, 0 failures; all 1458 load without
-errors. What does not draw is empty by design:
+Last full run (US, with animations and the picture fit): 1443 drawn, 15 with an empty
+picture, 0 failures; all 1458 load without errors. What does not draw is empty by design:
 
 - placeholders with no visible geometry: `dummy.mdl`/`dummy2.mdl` (all vertices at the origin;
   `/model` and both `game*.szp`), `Nakamura` `oba23ge0`/`oba23gp0` (portrait 23's effect
   mesh, all 170 vertices within 0.3 units), and six 416/544-byte room-renderer stubs
   (`room_00` `ot.bin`/`ozou.bin`, `room_21` `o_e1.bin`, `room_33` `bednul.bin`,
-  `room_41` `room.bin`, `room_47` `onuno.bin`: one node and a single batch that draws nothing visible);
-- J3D effects whose colour or alpha only comes from their animation (`ef_ash_bomb`,
-  `sentaku`, `oryap`, `snet_b`, `doki_a`, `babyp`, `kek_a`, `warp`): drawn, but invisible
-  at rest. With "Wireframe: Only" every one of them shows its geometry (a wireframe sweep of
-  all 76 `j3d_effect` models and `warp.bmd` finds nothing empty).
+  `room_41` `room.bin`, `room_47` `onuno.bin`: one node and a single batch that draws nothing visible).
 
-108 animated models were empty in their first animation frames (parts grown by the
-animation) and are drawn in their bind pose instead.
+The 11 J3D effects that used to be invisible at rest (`ef_ash_bomb`, `sentaku`, `oryap`,
+`snet_b`, `doki_a`, `babyp`, `kek_a`, `warp`...) now draw with their animations (every
+`j3d_effect` model of every map and `kt_static`). 27 animated models are empty in their first
+animation frames (parts grown by the animation) and are drawn in their bind pose instead (108
+before the picture fit, which frames the whole animation). Test aids for the new parts:
+`LM_DEV_VIEWER_SCREENSHOT=1` presses Screenshot once the first model is framed,
+`LM_DEV_VIEWER_FURNANIM=1` turns on furniture animations for `LM_DEV_VIEWER_MAP`.
 
 Test aids: `LM_DEV_VIEWER=<archive>[#<model name part>][|<key name part>]` (`|-` = bind pose),
 e.g. `/model/baby.szp|akubi`, `/Game/game_usa.szp#luige|wait`, `/Map/map2.szp#gold`;
