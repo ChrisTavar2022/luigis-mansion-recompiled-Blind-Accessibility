@@ -24,7 +24,7 @@ void OSResetSystem(int reset, u32 resetCode, BOOL forceMenu) {
 
 void OSSetProgressiveMode(u32) {}  // output mode is the host window's concern
 
-void GXSetCopyClamp(GXFBClamp) {}  // EFB copies on PC never read outside the source rect
+// GXSetCopyClamp: Aurora (patch 0018: copy filter edge lines of texture copies).
 BOOL OSGetResetSwitchState() { return FALSE; }
 
 // Values for a 1:1 EFB-to-XFB copy (NTSC 640x480 render modes used by LM).

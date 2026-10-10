@@ -358,8 +358,12 @@ patch 0102), with LM specifics:
   taps in `GXState::copyVFilter`.
 - `resolve_pass_into` packs the weights of the line above (taps 0+1), the line (2+3+4) and the
   line below (5+6) into `tex_copy_conv::Uniforms::filterTaps` (0 = off: pass-through taps, depth
-  copies, or the toggle off) plus one EFB line in uv (`1 / logical EFB height`, so it scales with
-  the render resolution). `sample_efb` applies it to RGB before the format conversion and the
+  copies, or the toggle off). The neighbour taps are **one row of the copy source** apart: exactly
+  the hardware's three lines at native resolution; above it they only soften. (Taps one EFB line
+  apart, as first ported, put two sharp duplicates of the image a few rows above and below into
+  every upscaled copy: "ghost copies" at 3x; SMS found it, its patch 0110.) `GXSetCopyClamp`
+  (now forwarded to Aurora; BP 0x52 bits 0-1 kept in `GXState::copyClamp`) makes the source
+  rectangle's top/bottom row its own neighbour. `sample_efb` applies it to RGB before the format conversion and the
   5/6/5 quantization; alpha comes from the line itself. Filtered copies that would have been a
   plain `CopyTextureToTexture` take the blit shader instead (`RenderPass::resolveFiltered`).
 - Depth copies (the Z16 shadow map) are never filtered.
@@ -374,6 +378,15 @@ Verification (US, `LM_FRAME_DUMP` with `LM_ACCURACY=3` vs `7`): title frame mean
 (max 4); in the nursery the static background differs only along horizontal edges (vertical
 gradient energy -30%, horizontal -6%: the 6/52/6 vertical blur and less vertical dither), no
 shift, no seams at copy edges. Not compared with a console capture.
+
+Ghost-copy fix (row spacing, from SMS patch 0110 / its crt.cpp): the display copy filter
+(`dcopy_filter` in crt.cpp) likewise averages the whole EFB line for the taps above and below
+(the line itself stays one row), so the presented frame softens instead of showing sharp copies
+one EFB line away. Measured in the nursery with window captures at 1920x1440 (3x): the
+autocorrelation of the vertical gradient had spikes at 3 rows (+0.50) and 6 rows (+0.11) before
+(duplicate edges from the texture copy and the display filter); after, it decays smoothly
+(+0.40, +0.18, +0.12, +0.09, ~0 from 5 rows). At 1x, native frame dumps of the old and new
+spacing are identical (max 0-5 levels on a few pixels where the copy clamp now applies).
 
 ## Indirect effects
 
