@@ -155,3 +155,5 @@ fn_80029050
 # game scene is bracketed to send the frame's extra lights and the scene-end marker (bloom,
 # volumetric beam, ambient occlusion are applied there, before the HUD).
 fn_8000BB98 us pal
+# Enhanced "Shadow map size": the shadow map's Z16 copy ends the offscreen caster pass (shadows.cpp).
+fn_8005D8CC us pal

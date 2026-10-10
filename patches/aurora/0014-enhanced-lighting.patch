@@ -249,10 +249,10 @@ index 1920bc8..c22fbec 100644
  void encode_op(wgpu::CommandEncoder& encoder, FramePacket& frame, const FrameOp& op);
 diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 new file mode 100644
-index 0000000..4ba7359
+index 0000000..605ebf3
 --- /dev/null
 +++ b/lib/gfx/enhanced.cpp
-@@ -0,0 +1,1256 @@
+@@ -0,0 +1,1270 @@
 +// Enhanced lighting: configuration, extra lights, per-draw uniforms and the scene-end
 +// screen-space effects (bloom, volumetric flashlight beam, ambient occlusion).
 +// See include/aurora/enhanced.h and include/aurora/lights.h.
@@ -469,7 +469,10 @@ index 0000000..4ba7359
 +  // Ordinary lit surfaces only glow by the "scene highlights" amount; light sources come from the
 +  // glow buffer (additive/emissive draws re-rendered depth-tested at this resolution) and from
 +  // the light glows below.
-+  col = col * fx.bloom2.x + textureSampleLevel(t1, samp, uv, 0.0).rgb * fx.bloom2.y;
++  // The glow buffer is compressed (Reinhard on luma) so large additive areas such as the
++  // flashlight beam pointing at the camera glow softly instead of blowing out.
++  let gl = textureSampleLevel(t1, samp, uv, 0.0).rgb * fx.bloom2.y;
++  col = col * fx.bloom2.x + gl / (1.0 + luma(gl));
 +  let nl = u32(fx.bloom2.w);
 +  if (nl > 0u && fx.bloom2.z > 0.0) {
 +    let px = uv * fx.size.xy;
@@ -1162,8 +1165,19 @@ index 0000000..4ba7359
 +  if (g_glowDbg >= 3 && g_glowDbg != 4) {
 +    return c.colorUpdate;
 +  }
-+  return c.colorUpdate && c.blendMode == GX_BM_BLEND && c.blendFacDst == GX_BL_ONE &&
-+         (c.blendFacSrc == GX_BL_SRCALPHA || c.blendFacSrc == GX_BL_ONE || c.blendFacSrc == GX_BL_SRCCLR);
++  if (!(c.colorUpdate && c.blendMode == GX_BM_BLEND && c.blendFacDst == GX_BL_ONE &&
++        (c.blendFacSrc == GX_BL_SRCALPHA || c.blendFacSrc == GX_BL_ONE || c.blendFacSrc == GX_BL_SRCCLR))) {
++    return false;
++  }
++  // The flashlight beam volume (handlight_ef: its alpha is a color-texgen lookup of the spot
++  // light) is a big soft haze already; glowing it again washes the picture out when it points at
++  // the camera. Its lens sprite and the volumetric beam option cover the beam's glow.
++  for (const auto& tcg : c.shaderConfig.tcgs) {
++    if (tcg.type == GX_TG_SRTG) {
++      return false;
++    }
++  }
++  return true;
 +}
 +
 +void note_glow_draw(const gx::PipelineConfig& config, const gx::DrawData& data) noexcept {

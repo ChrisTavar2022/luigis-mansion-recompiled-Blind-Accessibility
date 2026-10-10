@@ -180,6 +180,16 @@ void endScene() {
     if (active()) GXSceneEndAurora();
 }
 
+uint32_t shadowMapWidth() {
+    if (!active()) return 0;
+    static const int sForce = [] {
+        const char* v = std::getenv("LM_SHADOW_MAP");  // test override: 0 render res, 1 2048, 2 4096
+        return v ? std::atoi(v) : -1;
+    }();
+    const int size = sForce >= 0 ? sForce : port::settings().enhancedLighting.shadowMapSize;
+    return size == 1 ? 2048 : size == 2 ? 4096 : 0;
+}
+
 bool worldToView(const float world[3], float view[3]) {
     const u32 cam = VA(0x803A3820);
     const float eye[3] = {rdf32(cam + kCamViewEye), rdf32(cam + kCamViewEye + 4), rdf32(cam + kCamViewEye + 8)};

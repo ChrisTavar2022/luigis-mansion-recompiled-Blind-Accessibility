@@ -37,6 +37,9 @@ void endScene();
 // World (game) space -> view space with the current camera (lbl_803A3820 view eye/target).
 // False if there is no camera yet.
 bool worldToView(const float world[3], float view[3]);
+// Enhanced "Shadow map size": width of the offscreen shadow map (height 3/4 of it), 0 = the
+// EFB (render resolution).
+uint32_t shadowMapWidth();
 }  // namespace enh
 
 }  // namespace recomp

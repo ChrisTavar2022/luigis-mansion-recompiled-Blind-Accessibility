@@ -285,6 +285,16 @@ void enhancedLightingTab() {
     sDirty |= ImGui::SliderFloat("Contact hardening", &l.softShadowPenumbra, 0.0f, 20.0f, "%.1f");
     ImGui::SetItemTooltip("High/Ultra only: how quickly shadows soften with distance from the object casting them.");
     ImGui::EndDisabled();
+    static const char* kMapSize[] = {"Render resolution", "2048 x 1536", "4096 x 3072"};
+    ImGui::BeginDisabled(!port::settings().rendering.shadowRenderResolution);
+    sDirty |= ImGui::Combo("Shadow map size", &l.shadowMapSize, kMapSize, 3);
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip(
+        "Resolution of the flashlight/lightning shadow map. Render resolution: as the accurate\n"
+        "renderer (the shadow pass uses the internal resolution). 2048/4096: the shadow pass is\n"
+        "drawn into its own target of that size, so shadows stay sharp at low render resolutions.\n"
+        "Needs Visuals > Rendering > \"Shadow map at render resolution\". Cost: one larger depth\n"
+        "pass per frame (4096: noticeable on weak GPUs).");
 
     ImGui::SeparatorText("Atmosphere");
     sDirty |= ImGui::Checkbox("Volumetric flashlight beam", &l.volumetricBeam);

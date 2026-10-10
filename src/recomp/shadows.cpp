@@ -25,12 +25,14 @@
 // Resolution ("Shadow map at render resolution"): the receivers sample the Z16 copy at the
 // internal resolution (Aurora's copy texture) instead of the console's 640x480 bytes.
 #include "port/settings.h"
+#include "recomp/enhanced_lighting.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
 
 #include <aurora/efb_ram.h>
+#include <dolphin/gx/GXAurora.h>
 
 #include <algorithm>
 #include <cmath>
@@ -49,6 +51,8 @@ constexpr u32 kCamAspect = 0x94;                                 // f32 (MTXPers
 constexpr u32 kCamLightFov = 0xA0, kCamLightNear = 0xA4, kCamLightFar = 0xA8;
 
 constexpr float kDegToRad = 3.14159265f / 180.0f;
+
+bool sShadowOffscreen = false;  // the caster pass renders offscreen (enhanced "Shadow map size")
 
 struct V3 {
     float x, y, z;
@@ -224,6 +228,17 @@ HLE(fn_8005D984) {
             log("[shadow]   refit fov %.1f asp %.2f near %.0f far %.0f", fit.fov, fit.aspect, fit.zNear, fit.zFar);
     }
 
+    // Enhanced lighting "Shadow map size": the caster pass renders into an offscreen target of
+    // that size instead of the EFB; the Z16 copy (fn_8005D8CC) then comes from it at that size.
+    // Needs "Shadow map at render resolution" (receivers sample Aurora's copy texture).
+    if (active && !sShadowOffscreen && r.shadowRenderResolution) {
+        if (const u32 w = enh::shadowMapWidth()) {
+            GXCreateFrameBuffer(w, w * 3 / 4);
+            sShadowOffscreen = true;
+            static bool sLogged = false;
+            if (!sLogged) log("[shadow] caster pass offscreen at %ux%u", w, w * 3 / 4), sLogged = true;
+        }
+    }
     ws::setShadowLightSetup(true);
     if (refit) {
         wrf32(cam + kCamLightFov, fit.fov);
@@ -239,6 +254,15 @@ HLE(fn_8005D984) {
     wrf32(cam + kCamLightNear, zNear);
     wrf32(cam + kCamLightFar, zFar);
     ws::setShadowLightSetup(false);
+}
+
+// The shadow map's Z16 copy (with clear) ends the caster pass.
+HLE(fn_8005D8CC) {
+    callOriginal(c, "fn_8005D8CC");
+    if (sShadowOffscreen) {
+        GXRestoreFrameBuffer();
+        sShadowOffscreen = false;
+    }
 }
 
 }  // namespace recomp
