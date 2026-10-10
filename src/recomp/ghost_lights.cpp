@@ -15,7 +15,8 @@
 //    /param/ctp/<type>.prm), which the game copies to the actor at +0xE4 (RGBA) and uses for
 //    the ghost's light effects (EnZako::fn_800C1FFC, the capture code at 0x8013B808). The
 //    actor's own copy is read so runtime changes show; the parameter table is the fallback, a
-//    small per-element/per-class table the last resort.
+//    small per-class table the last resort. Elemental ghosts (parameter Element 1 fire, 2 water,
+//    3 ice) glow in their element's colour.
 //  - Visibility/fade: actor +0xE3 (the alpha the ghost layer is drawn with: 0 invisible ..
 //    255 fully visible).
 //  - State: the CharacterEvent messages the game sends to the ghost's AI (fn_800C0F08, hooked in
@@ -74,6 +75,10 @@ void set_extra_lights(const ExtraLight*, uint32_t count) {
 #endif
 }  // namespace aurora::gfx
 
+namespace recomp {
+u32 viRetraceCount();  // hle_vi.cpp
+}
+
 namespace recomp::ghostlights {
 namespace {
 
@@ -87,7 +92,7 @@ constexpr u32 kFlagShadow = 1, kFlagSpecular = 4;  // bit1 (light ghosts) stays 
 #define kTypeTable VA(0x8033B590)   // lbl_8033B590: character types, 0x1C each
 #define kEnTypes VA(0x804D8C80)     // Koga::EnTypesManager::sManager
 #define kCamera VA(0x803A3820)      // lbl_803A3820: game camera
-constexpr u32 kCamViewMtx = 0x18C;  // 3x4 GX view matrix (fn_80057CFC)
+#define kCamViewMtx VOFF(0x18C, 0x198)  // 3x4 GX view matrix (fn_80057CFC; +0xC on the European camera)
 constexpr u32 kMaxSlots = 128;      // lbl_803D48A0 is 0x200 bytes
 constexpr u32 kTypeCount = 0x29C8 / 0x1C;
 
@@ -210,21 +215,28 @@ bool isGhostActor(u32 a) {
     return type < kTypeCount && (rd16(kTypeTable + type * kTypeStride + kTypeFlags) & kTypeFlagGhost);
 }
 
-void fallbackColor(int element, int cls, u32 rgb[3]) {
+// Ghost element (EnemyParam "Element"): 1 fire, 2 water, 3 ice. Read from the weakness test at
+// 0x800C75F8: element 1 is hurt by attack element 2 (water), 2 by 3 (ice), 3 by 1 (fire).
+const u32* elementColor(int element) { return element == 1 ? kFire : element == 2 ? kWater : element == 3 ? kIce : nullptr; }
+
+void fallbackColor(int cls, u32 rgb[3]) {
     static const u32 kGhost[3] = {150, 170, 255};  // ordinary ghosts: cold blue-white
     static const u32 kBoss[3] = {200, 140, 255};   // portrait ghosts / bosses: violet
-    const u32* c = element == 2 ? kFire : element == 3 ? kWater : element == 4 ? kIce : cls >= 3 ? kBoss : kGhost;
+    const u32* c = cls >= 3 ? kBoss : kGhost;
     for (int i = 0; i < 3; i++) rgb[i] = c[i];
 }
 
-// Ghost size: light radius (world units) and emission height above the actor origin.
+// Ghost size: light radius (world units). The emission point is the actor position (+0x44),
+// which floats at the ghost's body: it is where the game itself puts the small GX light some
+// ghosts carry (EnZako::fn_800C1FFC -> fn_80016C98(0, actor + 0x44, BrightColor x alpha, ...)).
 void sizeFor(int cls, float& radius, float& height) {
+    height = 0.0f;
     switch (cls) {
-    case 1: radius = 380.0f; height = 30.0f; break;    // bats, mice, Boos, small fry
-    case 2: radius = 560.0f; height = 70.0f; break;    // ordinary ghosts
-    case 3: radius = 720.0f; height = 90.0f; break;    // portrait ghosts
-    case 4: radius = 1100.0f; height = 140.0f; break;  // bosses
-    default: radius = 480.0f; height = 60.0f; break;
+    case 1: radius = 380.0f; break;   // bats, mice, Boos, small fry
+    case 2: radius = 560.0f; break;   // ordinary ghosts
+    case 3: radius = 720.0f; break;   // portrait ghosts
+    case 4: radius = 1100.0f; break;  // bosses
+    default: radius = 480.0f; break;
     }
 }
 
@@ -265,6 +277,21 @@ void diffDump(u32 actor) {
 
 bool enabled() { return sForce || port::settings().ghostLights.enabled; }
 
+// LM_GHOST_LIGHT_LOG: once the enemy parameters are loaded, every ghost type's glow colour.
+void dumpTypes() {
+    static bool sDone = false;
+    if (sDone || !paramBase(0)) return;
+    sDone = true;
+    for (u32 type = 0; type < kTypeCount; type++) {
+        const u32 e = kTypeTable + type * kTypeStride;
+        if (!(rd16(e + kTypeFlags) & kTypeFlagGhost)) continue;
+        const u32 pb = paramBase(type);
+        log("[ghostlight] type %3u %-10s cls %2d life %4d element %d bright %08X amb %08X", type, typeName(type),
+            s16(rd16(e + kTypeClass)), int(rd32(pb + kParamLife)), int(rd32(pb + kParamElement)), rd32(pb + kParamBright),
+            rd32(pb + 0x210));
+    }
+}
+
 void update(Ctx& c) {
     const auto& s = port::settings().ghostLights;
     sFrame++;
@@ -281,6 +308,7 @@ void update(Ctx& c) {
     const float t = float(sFrame) / 30.0f;
     constexpr float kBase = 1.6f;  // ghost light strength at intensity 1
 
+    if (sLog) dumpTypes();
     float view[12];
     for (int i = 0; i < 12; i++) view[i] = rdf32(kCamera + kCamViewMtx + 4 * i);
 
@@ -289,6 +317,12 @@ void update(Ctx& c) {
     std::vector<Candidate> cands;
     const u32 count = std::min(rd32(kActorCount), kMaxSlots);
     const bool logNow = sLog > 0 && sFrame % u32(std::max(sLog, 1)) == 0;
+    if (logNow) {
+        const u32 l = rd32(kActorSlots);
+        if (guestPtr(l))
+            log("[ghostlight] f%u retrace %u luigi %.0f,%.0f,%.0f", sFrame, viRetraceCount(), rdf32(l + kActPos),
+                rdf32(l + kActPos + 4), rdf32(l + kActPos + 8));
+    }
     for (u32 i = 0; i < count; i++) {
         const u32 a = rd32(kActorSlots + 4 * i);
         if (!isGhostActor(a)) continue;
@@ -330,7 +364,11 @@ void update(Ctx& c) {
         u32 rgb[3] = {rd8(a + kActBright), rd8(a + kActBright + 1), rd8(a + kActBright + 2)};
         if (rgb[0] + rgb[1] + rgb[2] < 24 && pb)
             for (int k = 0; k < 3; k++) rgb[k] = rd8(pb + kParamBright + k);
-        if (rgb[0] + rgb[1] + rgb[2] < 24) fallbackColor(element, cls, rgb);
+        if (rgb[0] + rgb[1] + rgb[2] < 24) fallbackColor(cls, rgb);
+        // Elemental ghosts all share one pale glow colour (C1DCF7) in the parameters; their light
+        // takes the element's colour instead (fire orange, water blue, ice cyan).
+        if (const u32* ec = elementColor(element))
+            for (int k = 0; k < 3; k++) rgb[k] = ec[k];
         toLinearNormalized(rgb, tr.color);
         float color[3] = {tr.color[0], tr.color[1], tr.color[2]};
         // Element hits tint the light with the element for a moment (fire spray on a water ghost...).
@@ -346,8 +384,12 @@ void update(Ctx& c) {
         tr.radius = radius * radiusScale;
         tr.world = {rdf32(a + kActPos), rdf32(a + kActPos + 4) + height, rdf32(a + kActPos + 8)};
 
-        // State.
+        // State. Actors are pooled and reused: capture marks only last for the capture itself.
+        if (tr.captureStart && sFrame - tr.captureStart > 60) tr.captureStart = 0;
+        if (tr.captureEnd && sFrame - tr.captureEnd > 30) tr.captureEnd = 0;
         if (tr.hp >= 0 && hp < tr.hp) tr.lastDrain = sFrame;
+        // Vacuumed down to 0 HP while held: the capture (also signalled by message 3).
+        if (tr.hp > 0 && hp <= 0 && (recent(tr.lastHeld, 10) || recent(tr.lastDrain, 10)) && !tr.captureStart) tr.captureStart = sFrame;
         tr.hp = hp;
         tr.maxHp = maxHp;
         if (alpha > tr.alpha + 0.02f && tr.alpha < 0.9f)  // fading in: appear flare
