@@ -960,6 +960,38 @@ LM_SKIP_CUTSCENES=1 LM_SKIP_AUTO=30 LM_INPUT_CLOCK=frames` with `LM_ENHANCED=1 L
   converge monotonically on the next game frame, the last step is identical to the captured
   frame; extra lights move smoothly (`interp_120fps_steps.png`).
 
+### Cost
+
+RTX 3090 Ti, nursery gameplay with 4 test lights, render scale 8 (5120x3840), uncapped at
+320 fps target (the 120 Hz display caps at ~120), Ultra preset + AO + 4096 shadow map.
+`LM_ENH_PERF_AB=6,<part>` switches one part off/on every 6 s within a run and `LM_FPS_LOG=1`
+logs presented fps with the phase; numbers are the mean over ~18 two-second samples per phase
+(other agents' game instances shared the GPU, so +-0.5 ms is noise):
+
+| Part | Cost per frame at 5120x3840 |
+|---|---|
+| Everything (master switch) | +0.6 ms (after the fixes below; was +3.8 ms) |
+| Per-pixel lighting | below noise (-0.3 ms) |
+| Flashlight quality + highlights | +0.1 ms |
+| Soft shadows (PCSS 32) | +0.45 ms (was +5 ms before the early out) |
+| Colored lights (4) | +1.6 ms |
+| Colored light shadows (2 lights, 32 steps) | below noise |
+| Volumetric beam (High) | +0.05 ms (was +4.4 ms before capping its target at 720 lines) |
+| Bloom | +0.6 ms |
+| Ambient occlusion | +0.1 ms |
+| Shadow map 4096x3072 | below noise |
+
+At 1x-3x render scale every part is well below a millisecond. Turning the master switch on
+compiles the enhanced shader variants once (a short hitch with the pipeline precache warm).
+
+### Look
+
+One shared look for colored light: "Light color vibrance" (`extra_light_saturation`, 1.6)
+pushes every extra light's color away from its gray (keeping its brightest channel), for every
+provider (all ghost lights, test lights) and their bloom halos; the flashlight, lamps, candles,
+fireplaces, lightning and element effects get the same treatment through per-pixel lighting,
+highlights and the emissive glow buffer. Each part keeps its own toggle and slider.
+
 ### Debug aids (Aurora, env)
 
 `AURORA_ENH_LOG=1` (scene-end/flashlight/glow/light-shadow log), `AURORA_ENH_DRAWLOG=<n>`
