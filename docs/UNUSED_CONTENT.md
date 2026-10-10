@@ -3,7 +3,10 @@
 Everything here also works on the European game (GLMP01): addresses go through `VA()` and
 the hooks are tagged `us pal` (docs/SETUP.md, *Version-aware code*). European differences:
 the GBH sub-view clear is `fn_8000B7CC` there (no hook needed); the end-of-frame hook is the European
-`LMChangeFrameBuffer` (`fn_80007940`).
+`LMChangeFrameBuffer` (`fn_80007940`); the instruction patches (ghost tracker, E3 clock) have
+their own European lines in hooks.txt; the font test already prints Latin lines (its *Latin last
+line* fix is USA-only); the leftover-room visits are still USA-only. Checked feature by feature:
+docs/PAL_PARITY.md.
 
 Two pre-release features are still in the US `main.dol`. Both are switched on from
 **F1 > Enhancements** and are implemented as hooks that call the original function and
@@ -122,7 +125,9 @@ Not reconstructed: the shipped GBH first-person "ghost scan" pulse (dst-alpha pu
 ## Unused assets (`src/recomp/unused_assets.cpp`)
 
 All of these are under F1 > Enhancements > Unused content and are off by default. The hooks
-are US-only (`tools/recomp/hooks.txt`) and gated with `port::usCodeFeature()` in the menu.
+are tagged `us pal` (the European functions are identical) and the tables go through `VA()`;
+the door table is reached through the map table (`lbl_802FF218[2] + 0x18`), which finds the
+European copy too.
 Data patches only overwrite a value that matches the expected retail original (or the patched
 value when you switch an option off). Anything else is left alone and logged once.
 

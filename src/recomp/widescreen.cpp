@@ -164,6 +164,14 @@ HLE(fn_80114E18) {
     AnchorScope s(rd32(VA(0x804D846C)) == 3 ? 1 : 0);
     callOriginal(c, "fn_80114E18");
 }
+// Game Boy Horror map screen (the frame loop's scene for it): the map is drawn into a viewport
+// over the GBH's screen (112,84 416x312, fn_8002AC8C), which the bezel overlaps in 4:3. Left
+// plain, that viewport is stretched across the wide frame and the map shows beside the
+// centered bezel; inside a (centered) scope it is placed like the picture-in-picture views.
+HLE(fn_8000C598) {
+    AnchorScope s(0);
+    callOriginal(c, "fn_8000C598");
+}
 // Room name when entering a room: the floor (top right) and the room's name (top left).
 HLE(fn_80045BDC) {
     AnchorScope s(kAnchorBySide);

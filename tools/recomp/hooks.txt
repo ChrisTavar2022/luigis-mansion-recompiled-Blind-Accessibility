@@ -78,6 +78,9 @@ fn_800115F8 us pal
 fn_80114E18 us pal
 fn_80045BDC us pal
 fn_800417F8 us pal
+# Game Boy Horror map screen (its frame-loop scene): the map's viewport follows the centered
+# bezel in widescreen (src/recomp/widescreen.cpp).
+fn_8000C598 us pal
 # Early ghost lighting (cheat-equivalent, src/recomp/unused_content.cpp)
 fn_8005A5D4 us pal
 
