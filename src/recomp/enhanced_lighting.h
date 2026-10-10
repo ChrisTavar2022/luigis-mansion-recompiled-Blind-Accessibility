@@ -24,6 +24,8 @@ void submitExtraLights(const aurora::gfx::ExtraLight* lights, uint32_t count);
 namespace enh {
 // Master switch as last applied (host and guest thread; cheap).
 bool active();
+// Master switch only (active() is also false on the plain frames of LM_ENHANCED_AB).
+bool masterOn();
 // F1 settings -> Aurora (host thread, every frame).
 void applySettings();
 // Ghost actor pass (fn_80060E70 pass 0x30): draws in it are class GHOST.

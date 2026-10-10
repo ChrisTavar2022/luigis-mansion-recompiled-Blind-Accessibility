@@ -19,6 +19,7 @@
 #include <mutex>
 
 namespace recomp {
+u32 copyDispCount();  // hle_gx.cpp
 namespace gx {
 void recheckDrawState();  // hle_gx.cpp: re-evaluate the draw class before the next raw draw
 }
@@ -89,7 +90,21 @@ void submitExtraLights(const aurora::gfx::ExtraLight* lights, uint32_t count) {
 
 namespace enh {
 
-bool active() { return sActive.load(std::memory_order_relaxed); }
+// LM_ENHANCED_AB=<n>: A/B test aid. Game frames alternate in blocks of n between the enhanced
+// rendering and the plain one (draws classed "other", no extra lights, no scene end: exactly
+// the plain renderer), so LM_FRAME_DUMP frames of one run compare both. With n = 1 odd dump
+// frames are enhanced, even ones plain.
+const u32 sAb = [] {
+    const char* v = std::getenv("LM_ENHANCED_AB");
+    return v ? u32(std::max(std::atoi(v), 0)) : 0u;
+}();
+bool frameOn() {
+    if (sAb == 0) return true;
+    return ((copyDispCount() + 1) / sAb) % 2 == 1;  // copyDispCount() + 1: the dump number of this frame
+}
+
+bool active() { return sActive.load(std::memory_order_relaxed) && frameOn(); }
+bool masterOn() { return sActive.load(std::memory_order_relaxed); }
 
 void applySettings() {
     auto& l = port::settings().enhancedLighting;
@@ -133,6 +148,9 @@ void applySettings() {
     c.bloomThreshold = l.bloomThreshold;
     c.bloomRadius = l.bloomRadius;
     c.bloomFlashlightSuppress = l.bloomFlashlightSuppress;
+    c.bloomScene = l.bloomScene;
+    c.bloomEmissive = l.bloomEmissive;
+    c.bloomLightGlow = l.bloomLightGlow;
     c.ssao = l.ssao;
     c.ssaoIntensity = l.ssaoIntensity;
     c.ssaoRadius = l.ssaoRadius;

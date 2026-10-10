@@ -171,6 +171,9 @@ struct EnhancedLightingSettings {
     float bloomThreshold = 0.72f;      // 0..1
     float bloomRadius = 1.0f;          // 0.25..2
     float bloomFlashlightSuppress = 0.6f;  // 0..1: less glow from walls lit by the flashlight
+    float bloomScene = 0.3f;           // 0..1: glow of ordinary bright surfaces (above the threshold)
+    float bloomEmissive = 1.0f;        // 0..2: glow of light-emitting effects (glows, fire, beams, sparks)
+    float bloomLightGlow = 1.0f;       // 0..2: glow around colored light sources (ghosts)
     // Screen-space ambient occlusion (contact darkening in corners and under furniture).
     bool ssao = false;
     float ssaoIntensity = 0.6f;        // 0..2

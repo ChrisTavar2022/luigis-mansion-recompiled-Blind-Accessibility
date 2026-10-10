@@ -231,12 +231,12 @@ void traceNote(const char* fmt, ...) {
 // (and each interpolation tape) starts by setting it.
 u8 sDrawClass = 0xFF;
 void emitDrawClass() {
-    if (!enh::active()) {
+    if (!enh::masterOn()) {
         sDrawClass = 0xFF;
         return;
     }
     u8 cls = AURORA_DRAW_CLASS_OTHER;
-    if (sProj.type == GX_PERSPECTIVE && viewportFull() && !sVpFollow && rd32(VA(0x804D8080)) == 0)
+    if (enh::active() && sProj.type == GX_PERSPECTIVE && viewportFull() && !sVpFollow && rd32(VA(0x804D8080)) == 0)
         cls = enh::ghostPass() ? AURORA_DRAW_CLASS_GHOST : AURORA_DRAW_CLASS_WORLD;
     if (cls == sDrawClass) return;
     GXSetDrawClassAurora(cls);

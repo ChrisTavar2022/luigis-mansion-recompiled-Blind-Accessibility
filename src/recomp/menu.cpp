@@ -270,8 +270,16 @@ void enhancedLightingTab() {
         "cost hardly depends on the render resolution.");
     ImGui::BeginDisabled(!l.bloom);
     sDirty |= ImGui::SliderFloat("Glow intensity", &l.bloomIntensity, 0.0f, 2.0f, "%.2f");
+    sDirty |= ImGui::SliderFloat("Light sources", &l.bloomEmissive, 0.0f, 2.0f, "%.2f");
+    ImGui::SetItemTooltip("Glow of light-emitting effects: lamp and candle glows, fire, the flashlight lens and\n"
+                          "beam, ghost auras, sparkles, lightning and nozzle effects.");
+    sDirty |= ImGui::SliderFloat("Colored light glow", &l.bloomLightGlow, 0.0f, 2.0f, "%.2f");
+    ImGui::SetItemTooltip("Halo around the dynamic colored lights (ghosts), hidden by walls and objects in front.");
+    sDirty |= ImGui::SliderFloat("Bright surfaces", &l.bloomScene, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("Glow of ordinary surfaces that are brighter than the threshold (lit walls, white\n"
+                          "objects). Low keeps the glow on actual light sources.");
     sDirty |= ImGui::SliderFloat("Glow threshold", &l.bloomThreshold, 0.0f, 1.0f, "%.2f");
-    ImGui::SetItemTooltip("Brightness where glow starts. Lower: more of the scene glows.");
+    ImGui::SetItemTooltip("Brightness where bright surfaces start to glow. Lower: more of the scene glows.");
     sDirty |= ImGui::SliderFloat("Glow radius", &l.bloomRadius, 0.25f, 2.0f, "%.2f");
     sDirty |= ImGui::SliderFloat("Flashlight-lit walls glow less", &l.bloomFlashlightSuppress, 0.0f, 1.0f, "%.2f");
     ImGui::SetItemTooltip("Surfaces that are only bright because the flashlight shines on them glow less\n"
