@@ -80,9 +80,9 @@ struct Patch {
     Kind kind;
     u64 group;    // unused (kept for the draw log)
     u64 origin;   // kind and source address (second-chance pairing)
-    u32 bundle = ~0u;  // the draw it belongs to (index into Tape::bundleIds)
     u32 source, slot;
     u16 stride = 0, posOffset = 0;  // Verts
+    u32 bundle = ~0u;  // the draw it belongs to (index into Tape::bundleIds)
 };
 
 struct Tape {
@@ -176,7 +176,10 @@ float distance(const Tape& ta, const Patch& a, const Tape& tb, const Patch& b) {
     for (int i = 0; i < a.count; i++) {
         const float diff = std::fabs(val(ta, a, i) - val(tb, b, i));
         // Matrices: rotation/scale entries are ~1, translations are in world units.
-        d += (a.kind == Kind::PosMtx && (i & 3) != 3) ? diff * 100.0f : diff;
+        // Small texture matrices (a sprite's spin) tell particles of one effect apart well.
+        d += (a.kind == Kind::PosMtx && (i & 3) != 3) ? diff * 100.0f
+             : (a.kind == Kind::TexMtx && a.count == 8)  ? diff * 30.0f
+                                                           : diff;
     }
     return d;
 }
@@ -214,10 +217,27 @@ void pairNearest(const std::vector<u32>& A, const std::vector<u32>& B, std::vect
     }
     std::sort(cand.begin(), cand.end());
     for (const auto& [d, i, j] : cand)
-        if (!usedA[i] && partnerB[j] < 0) {
+        if (d < 1e29f && !usedA[i] && partnerB[j] < 0) {
             partnerB[j] = s32(i);
             usedA[i] = 1;
         }
+}
+
+// Where a draw is (view space): the translation of its first position matrix, or its first
+// CPU-built vertex. False if it has neither.
+bool bundlePos(const Tape& t, const std::vector<u32>& patches, float out[3]) {
+    for (u32 i : patches) {
+        const Patch& p = t.patches[i];
+        if (p.kind == Kind::PosMtx) {
+            for (int r = 0; r < 3; r++) out[r] = val(t, p, 4 * r + 3);
+            return true;
+        }
+        if (p.kind == Kind::Verts) {
+            for (int c = 0; c < 3; c++) out[c] = vtx(t, p, 0, c);
+            return true;
+        }
+    }
+    return false;
 }
 
 // The values noted for each draw of a tape, keyed by what is drawn and by the kinds and
@@ -334,6 +354,54 @@ bool blendRigid(const f32* a, const f32* b, int cols, float t, f32* out) {
     return true;
 }
 
+// A 2x4 texture matrix that turns texture coordinates in their plane (a spinning
+// particle sprite): [c -s 0 tx; s c 0 ty] times a uniform scale.
+struct Spin {
+    float angle, scale;
+};
+bool spin2D(const f32* m, Spin& out) {
+    const float sc = std::sqrt(m[0] * m[0] + m[4] * m[4]);
+    if (!(sc > 1e-6f) || std::fabs(m[2]) > 1e-4f || std::fabs(m[6]) > 1e-4f) return false;
+    if (std::fabs(m[0] - m[5]) > 0.02f * sc || std::fabs(m[1] + m[4]) > 0.02f * sc) return false;
+    out = {std::atan2(m[4], m[0]), sc};
+    return true;
+}
+float angleDelta(float from, float to) {
+    float d = std::remainder(to - from, 6.2831853f);
+    return d;
+}
+
+// Blends two spinning texture matrices by angle and scale about their common pivot (the
+// sprite's centre), so the texture turns instead of shrinking through an entrywise blend.
+bool blendSpin(const f32* a, const f32* b, float t, f32* out) {
+    Spin sa, sb;
+    if (!spin2D(a, sa) || !spin2D(b, sb)) return false;
+    const float d = angleDelta(sa.angle, sb.angle);
+    if (std::fabs(d) > 2.6f || sb.scale > 2.0f * sa.scale || sa.scale > 2.0f * sb.scale) return false;
+    // Pivot c with t = c - M c, i.e. (I - M) c = t; from whichever matrix turns more.
+    auto pivot = [](const f32* m, float& cx, float& cy) {
+        const float a00 = 1 - m[0], a01 = -m[1], a10 = -m[4], a11 = 1 - m[5];
+        const float det = a00 * a11 - a01 * a10;
+        if (std::fabs(det) < 1e-3f) return false;
+        cx = (m[3] * a11 - a01 * m[7]) / det;
+        cy = (a00 * m[7] - a10 * m[3]) / det;
+        return true;
+    };
+    float cx, cy, cx2, cy2;
+    const bool pa = pivot(a, cx, cy), pb = pivot(b, cx2, cy2);
+    const float ang = sa.angle + d * t, sc = sa.scale + (sb.scale - sa.scale) * t;
+    const float c = std::cos(ang) * sc, s = std::sin(ang) * sc;
+    out[0] = c, out[1] = -s, out[2] = 0, out[4] = s, out[5] = c, out[6] = 0;
+    if (pa && pb && std::fabs(cx - cx2) < 0.05f && std::fabs(cy - cy2) < 0.05f) {
+        out[3] = cx - (c * cx - s * cy);
+        out[7] = cy - (s * cx + c * cy);
+    } else {
+        out[3] = a[3] + (b[3] - a[3]) * t;
+        out[7] = a[7] + (b[7] - a[7]) * t;
+    }
+    return true;
+}
+
 bool blendable(Kind kind, const f32* a, const f32* b, int n);
 
 void pairTapes(const Tape& a, Tape& b) {
@@ -355,7 +423,47 @@ void pairTapes(const Tape& a, Tape& b) {
         for (const auto& [key, B] : gb) {
             const auto it = ga.find(key);
             if (it == ga.end()) continue;
-            pairNearest(it->second, B, drawPartner, drawUsed, [&](u32 i, u32 j) {
+            // Many draws of one thing (particles of an effect): a particle that died and one
+            // that was born elsewhere are not the same one, even if nothing closer is left.
+            // The camera moves all of them alike (view space): take the common motion out, as
+            // the median of each one's move to its nearest predecessor, then allow 12 units
+            // plus 1% of the distance from the camera of motion of its own per game frame.
+            const auto& A = it->second;
+            const bool many = A.size() > 1 || B.size() > 1;
+            float common[3] = {0, 0, 0};
+            if (many && A.size() * B.size() <= 250000) {
+                std::vector<float> moves[3];
+                for (u32 j : B) {
+                    float pb[3], pa[3], best = 1e30f, bm[3] = {};
+                    if (!bundlePos(b, bb.patches[j], pb)) continue;
+                    for (u32 i : A) {
+                        if (!bundlePos(a, ba.patches[i], pa)) continue;
+                        const float d = (pa[0] - pb[0]) * (pa[0] - pb[0]) + (pa[1] - pb[1]) * (pa[1] - pb[1]) +
+                                        (pa[2] - pb[2]) * (pa[2] - pb[2]);
+                        if (d < best) best = d, bm[0] = pb[0] - pa[0], bm[1] = pb[1] - pa[1], bm[2] = pb[2] - pa[2];
+                    }
+                    if (best < 1e30f)
+                        for (int c = 0; c < 3; c++) moves[c].push_back(bm[c]);
+                }
+                for (int c = 0; c < 3; c++)
+                    if (!moves[c].empty()) {
+                        std::nth_element(moves[c].begin(), moves[c].begin() + moves[c].size() / 2, moves[c].end());
+                        common[c] = moves[c][moves[c].size() / 2];
+                    }
+            }
+            pairNearest(A, B, drawPartner, drawUsed, [&](u32 i, u32 j) {
+                if (many) {
+                    float pa[3], pb[3];
+                    if (bundlePos(a, ba.patches[i], pa) && bundlePos(b, bb.patches[j], pb)) {
+                        float d2 = 0, r2 = 0;
+                        for (int c = 0; c < 3; c++) {
+                            const float e = pb[c] - pa[c] - common[c];
+                            d2 += e * e, r2 += pb[c] * pb[c];
+                        }
+                        const float lim = 12.0f + 0.01f * std::sqrt(r2);
+                        if (d2 > lim * lim) return 1e30f;
+                    }
+                }
                 float d = 0;
                 const auto& pa = ba.patches[i];
                 const auto& pb = bb.patches[j];
@@ -458,6 +566,12 @@ bool blendable(Kind kind, const f32* a, const f32* b, int n) {
         float big = 0;
         for (int i = 0; i < n; i++) za &= a[i] == 0.0f, zb &= b[i] == 0.0f, big = std::max(big, std::fabs(b[i]));
         if (za || zb) return za && zb;
+        if (n == 8) {  // a spinning sprite: up to ~150 degrees per game frame
+            Spin sa, sb;
+            if (spin2D(a, sa) && spin2D(b, sb))
+                return std::fabs(angleDelta(sa.angle, sb.angle)) <= 2.6f && sb.scale <= 2.0f * sa.scale &&
+                       sa.scale <= 2.0f * sb.scale;
+        }
         if (big <= 4.0f) {  // texture-coordinate scale/scroll: a wrap jumps by about 1
             for (int i = 0; i < n; i++)
                 if (std::fabs(a[i] - b[i]) > 0.5f) return false;
@@ -655,6 +769,10 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 if (jump > 200.0f) {
                     sSnapped++;
                     sSnapKinds[u32(p.kind)]++;
+                    if (sLogSnaps && sLoggedSnaps[u32(p.kind)]++ < 12)
+                        log("[interp]   snap verts %u stride %u jump %.1f: v0 (%.1f %.1f %.1f) > (%.1f %.1f %.1f)", p.count,
+                            p.stride, jump, vtx(*a, q, 0, 0), vtx(*a, q, 0, 1), vtx(*a, q, 0, 2), vtx(b, p, 0, 0),
+                            vtx(b, p, 0, 1), vtx(b, p, 0, 2));
                     continue;
                 }
                 for (u32 v = 0; v < p.count; v++)
@@ -683,7 +801,8 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 continue;
             }
             if (!((p.kind == Kind::PosMtx && p.count == 12 && blendRigid(va, vb, 4, alpha, out)) ||
-                  (p.kind == Kind::NrmMtx && p.count == 9 && blendRigid(va, vb, 3, alpha, out))))
+                  (p.kind == Kind::NrmMtx && p.count == 9 && blendRigid(va, vb, 3, alpha, out)) ||
+                  (p.kind == Kind::TexMtx && p.count == 8 && blendSpin(va, vb, alpha, out))))
                 for (int k = 0; k < p.count; k++) out[k] = va[k] + (vb[k] - va[k]) * alpha;
             if (p.kind == Kind::Light) {  // keep the direction's length (spot cone falloff)
                 const float la = std::sqrt(va[3] * va[3] + va[4] * va[4] + va[5] * va[5]);
@@ -724,11 +843,16 @@ void diagnoseMatching(const Tape& t0, const Tape& t1, const Tape& t2) {
     std::vector<s32> next(t1.patches.size(), -1);
     for (u32 k = 0; k < t2.patches.size(); k++)
         if (t2.partner[k] >= 0) next[t2.partner[k]] = s32(k);
-    u32 total = 0, unmatched01 = 0, unmatched12 = 0, jerky = 0, logged = 0;
+    u32 total = 0, unmatched01 = 0, unmatched12 = 0, jerky = 0, logged = 0, bbTotal = 0, bbTracked = 0, bbJerky = 0;
     for (u32 i = 0; i < t1.patches.size(); i++) {
         const Patch& p = t1.patches[i];
         if (p.kind != Kind::PosMtx) continue;
         total++;
+        // Camera-facing sprites (particles, billboards): no rotation in view space.
+        const bool billboard = std::fabs(val(t1, p, 1)) + std::fabs(val(t1, p, 2)) + std::fabs(val(t1, p, 4)) +
+                                   std::fabs(val(t1, p, 6)) + std::fabs(val(t1, p, 8)) + std::fabs(val(t1, p, 9)) <
+                               1e-3f;
+        bbTotal += billboard;
         const s32 j0 = t1.partner[i], j2 = next[i];
         if (j0 < 0) unmatched01++;
         if (j2 < 0) unmatched12++;
@@ -746,6 +870,14 @@ void diagnoseMatching(const Tape& t0, const Tape& t1, const Tape& t2) {
                 rot = std::max(rot, std::fabs(val(t0, q0, m) - 2 * val(t1, p, m) + val(t2, q2, m)));
             }
         }
+        if (billboard) {
+            bbTracked++;
+            if (jerk > 0.5f * step + 3.0f && bbJerky++ < 6)
+                log("[interp]   billboard bundle %u: (%.1f %.1f %.1f s%.2f) (%.1f %.1f %.1f s%.2f) (%.1f %.1f %.1f s%.2f)", p.bundle,
+                    val(t0, q0, 3), val(t0, q0, 7), val(t0, q0, 11), val(t0, q0, 0), val(t1, p, 3), val(t1, p, 7),
+                    val(t1, p, 11), val(t1, p, 0), val(t2, q2, 3), val(t2, q2, 7), val(t2, q2, 11), val(t2, q2, 0));
+            else if (jerk > 0.5f * step + 3.0f) bbJerky++;
+        }
         if (jerk > 0.5f * step + 5.0f || rot > 0.2f) {
             jerky++;
             if (logged++ < 4)
@@ -757,9 +889,9 @@ void diagnoseMatching(const Tape& t0, const Tape& t1, const Tape& t2) {
     for (u32 i = 0; i < t1.patches.size(); i++)
         if (t1.patches[i].kind == Kind::Verts && t1.partner[i] >= 0) verts++;
     log("[interp] match f%u: %u pos matrices, %u not in previous, %u not in next, %u jerky; cut %d; nrm %u tex %u "
-        "proj %u light %u verts %u (%u paired)",
+        "proj %u light %u verts %u (%u paired); billboards %u, %u tracked over 3 frames, %u jerky",
         t1.dumpFrame, total, unmatched01, unmatched12, jerky, int(t1.cut), kinds[1], kinds[2], kinds[3], kinds[4],
-        kinds[5], verts);
+        kinds[5], verts, bbTotal, bbTracked, bbJerky);
 }
 
 bool testReplay() {
