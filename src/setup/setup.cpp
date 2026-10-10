@@ -2,6 +2,7 @@
 #include "setup/setup.h"
 
 #include "port/dol.h"
+#include "recomp/precache.h"
 #include "setup/disc.h"
 #include "setup/hm_overlay.h"
 #include "setup/module_builder.h"
@@ -174,7 +175,7 @@ void browse(int slot, const std::string& current) {
                            dir.empty() ? nullptr : dir.c_str(), false);
 }
 
-enum class Screen { Pick, Working, Failed };
+enum class Screen { Pick, Working, Shaders, Failed };
 
 }  // namespace
 
@@ -237,10 +238,15 @@ bool run(const Options& opts, LaunchInfo& launch) {
         if (job && screen == Screen::Working) {
             std::lock_guard lk(job->m);
             if (job->done) {
-                if (job->ok) finished = true;
-                else screen = Screen::Failed;
+                if (!job->ok) screen = Screen::Failed;
+                // Setup was visible (first run, disc change, rebuild after an update): also finish
+                // compiling the shaders here, so the first game session runs as smoothly as later
+                // ones. Later launches compile whatever is missing in the background (precache.h).
+                else if ((showUi || !plan.empty()) && !recomp::precache::progress().finished()) screen = Screen::Shaders;
+                else finished = true;
             }
         }
+        if (screen == Screen::Shaders && recomp::precache::progress().finished()) finished = true;
         if (finished) break;
         if (!aurora_begin_frame()) continue;
 
@@ -308,7 +314,16 @@ bool run(const Options& opts, LaunchInfo& launch) {
                 f = job->fraction;
                 error = job->error;
             }
-            if (screen == Screen::Working) {
+            if (screen == Screen::Shaders) {
+                const auto pr = recomp::precache::progress();
+                ImGui::TextWrapped("Compiling shaders for your graphics card. This happens once (and again after a "
+                                   "driver or game update).");
+                ImGui::Dummy(ImVec2(0, 8 * scale));
+                ImGui::ProgressBar(pr.fraction(), ImVec2(-1, 0));
+                ImGui::Text("Compiling shaders: %u / %u", pr.done, pr.total);
+                ImGui::Dummy(ImVec2(0, 8 * scale));
+                if (ImGui::Button("Play now (finish in the background)")) finished = true;
+            } else if (screen == Screen::Working) {
                 ImGui::TextWrapped("Preparing the game. This happens once per disc (and again after updates).");
                 ImGui::Dummy(ImVec2(0, 8 * scale));
                 ImGui::ProgressBar(f, ImVec2(-1, 0));

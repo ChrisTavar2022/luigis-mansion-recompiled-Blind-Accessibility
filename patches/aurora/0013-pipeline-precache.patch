@@ -16,10 +16,10 @@ index ed94d61..574e7e1 100644
      target_sources(aurora_gx PRIVATE
 diff --git a/include/aurora/pipeline_cache.h b/include/aurora/pipeline_cache.h
 new file mode 100644
-index 0000000..17fbe45
+index 0000000..3da63c4
 --- /dev/null
 +++ b/include/aurora/pipeline_cache.h
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,60 @@
 +#ifndef AURORA_PIPELINE_CACHE_H
 +#define AURORA_PIPELINE_CACHE_H
 +
@@ -50,6 +50,7 @@ index 0000000..17fbe45
 +  uint64_t maxStallNs;      // longest single wait
 +  uint32_t workerThreads;   // pipeline compile threads
 +  uint32_t seeded;          // configs added by aurora_pipeline_cache_seed
++  uint32_t droppedDraws;    // draws skipped: pipeline creation failed, or not ready with waiting disabled
 +} AuroraPipelineStats;
 +
 +/** Adds the pipeline configs in a precache list file (format below) to the known set; they
@@ -67,6 +68,9 @@ index 0000000..17fbe45
 +void aurora_pipeline_cache_get_stats(AuroraPipelineStats* out);
 +/** Logs every pipeline creation (source, time) and every draw that waits. */
 +void aurora_pipeline_cache_set_log(bool enabled);
++/** Testing: false restores Aurora's original behaviour of skipping a draw whose pipeline is not
++ *  ready yet (objects missing for a few frames = the first-run flicker). Default true. */
++void aurora_pipeline_cache_set_wait(bool enabled);
 +/** Worker threads compiling pipelines (default: half the hardware threads, 1..8). Takes effect
 + *  at initialization; call before aurora_initialize. */
 +void aurora_pipeline_cache_set_threads(uint32_t threads);
@@ -77,10 +81,10 @@ index 0000000..17fbe45
 +
 +#endif
 diff --git a/lib/gfx/pipeline_cache.cpp b/lib/gfx/pipeline_cache.cpp
-index 4dc6337..acc1f48 100644
+index 4dc6337..54fa60c 100644
 --- a/lib/gfx/pipeline_cache.cpp
 +++ b/lib/gfx/pipeline_cache.cpp
-@@ -30,10 +30,39 @@
+@@ -30,10 +30,41 @@
  #include <absl/container/flat_hash_set.h>
  #include <fmt/format.h>
  #include <tracy/Tracy.hpp>
@@ -107,6 +111,8 @@ index 4dc6337..acc1f48 100644
 +static std::atomic<uint64_t> g_maxStallNs{0};
 +static std::atomic<uint32_t> g_seeded{0};
 +static std::atomic_bool g_pipelineLog{false};
++static std::atomic_bool g_waitForPipelines{true};
++static std::atomic<uint32_t> g_droppedDraws{0};
 +static uint32_t g_requestedThreads = 0;
 +static uint32_t g_workerThreadCount = 0;
 +static std::optional<uint32_t> g_rebuildAccuracy; // GX accuracy flags the known set was last built for
@@ -120,7 +126,7 @@ index 4dc6337..acc1f48 100644
  constexpr int PipelineCacheSchema = 1;
  constexpr const char* InitialPipelineCacheName = "initial_pipeline_cache.db";
  constexpr const char* SdlVfsName = "aurora_pipeline_cache_sdl_vfs";
-@@ -43,6 +72,7 @@ using NewPipelineCallback = std::function<CompiledPipeline()>;
+@@ -43,6 +74,7 @@ using NewPipelineCallback = std::function<CompiledPipeline()>;
  struct PendingPipeline {
    PipelineRef hash;
    NewPipelineCallback create;
@@ -128,7 +134,7 @@ index 4dc6337..acc1f48 100644
  };
  
  struct PipelineCacheWrite {
-@@ -80,7 +110,7 @@ constexpr size_t BuildPipelinesPerFrame = 5;
+@@ -80,7 +112,7 @@ constexpr size_t BuildPipelinesPerFrame = 5;
  #else
  constexpr size_t BuildPipelinesPerFrame = 1;
  #endif
@@ -137,7 +143,7 @@ index 4dc6337..acc1f48 100644
  static std::atomic_bool g_pipelineThreadEnd = false;
  static std::condition_variable g_pipelineQueueCv;
  static std::condition_variable g_pipelineReadyCv;
-@@ -91,6 +121,7 @@ static std::deque<PendingPipeline> g_pipelineQueue;
+@@ -91,6 +123,7 @@ static std::deque<PendingPipeline> g_pipelineQueue;
  static std::deque<PendingPipeline> g_backgroundPipelineQueue;
  static absl::flat_hash_set<PipelineRef> g_pendingPipelines;
  static std::atomic_bool g_gpuCachePrunePending = false;
@@ -145,7 +151,7 @@ index 4dc6337..acc1f48 100644
  
  static sqlite3* g_pipelineCacheDb = nullptr;
  static sqlite3_stmt* g_pipelineCacheLoadStmt = nullptr;
-@@ -482,6 +513,9 @@ static PipelineRef find_pipeline_impl(PipelineRef runtimeKey, NewPipelineCallbac
+@@ -482,6 +515,9 @@ static PipelineRef find_pipeline_impl(PipelineRef runtimeKey, NewPipelineCallbac
          notifyWorker = priority != PipelinePriority::Background;
        }
      } else if (!g_hasPipelineThread && (blocking || g_pipelinesPerFrame < BuildPipelinesPerFrame)) {
@@ -155,7 +161,7 @@ index 4dc6337..acc1f48 100644
        auto result = cb();
        pipelineCount = result.pipeline_count();
        g_pipelines.try_emplace(runtimeKey, std::move(result));
-@@ -492,7 +526,17 @@ static PipelineRef find_pipeline_impl(PipelineRef runtimeKey, NewPipelineCallbac
+@@ -492,7 +528,17 @@ static PipelineRef find_pipeline_impl(PipelineRef runtimeKey, NewPipelineCallbac
        PendingPipeline pending{
            .hash = runtimeKey,
            .create = std::move(cb),
@@ -173,7 +179,7 @@ index 4dc6337..acc1f48 100644
        switch (priority) {
        case PipelinePriority::Background:
          g_backgroundPipelineQueue.emplace_back(std::move(pending));
-@@ -955,22 +999,33 @@ static void pipeline_cache_writer() {
+@@ -955,22 +1001,33 @@ static void pipeline_cache_writer() {
    }
  }
  
@@ -213,7 +219,7 @@ index 4dc6337..acc1f48 100644
        } else if (g_pipelineQueue.empty() && g_backgroundPipelineQueue.empty()) {
          return;
        }
-@@ -981,13 +1036,12 @@ static void pipeline_worker() {
+@@ -981,13 +1038,12 @@ static void pipeline_worker() {
        pending = std::move(source.front());
        source.pop_front();
      }
@@ -228,7 +234,7 @@ index 4dc6337..acc1f48 100644
      }
      if (!g_hasPipelineThread) {
        g_pipelinesPerFrame += std::max(1u, pipelineCount);
-@@ -996,6 +1050,61 @@ static void pipeline_worker() {
+@@ -996,6 +1052,61 @@ static void pipeline_worker() {
    }
  }
  
@@ -290,7 +296,7 @@ index 4dc6337..acc1f48 100644
  template <typename PipelineConfig>
  static size_t load_pipeline_cache_entries(ShaderType type, uint32_t configVersion) {
    if (!prepare_pipeline_cache_db()) {
-@@ -1122,16 +1231,42 @@ void rebuild_pipeline_cache() {
+@@ -1122,16 +1233,42 @@ void rebuild_pipeline_cache() {
      }
    }
    std::ranges::sort(known, {}, &KnownPipeline::firstFrameUsed);
@@ -335,7 +341,7 @@ index 4dc6337..acc1f48 100644
  }
  
  void initialize_pipeline_cache() {
-@@ -1142,15 +1277,26 @@ void initialize_pipeline_cache() {
+@@ -1142,15 +1279,26 @@ void initialize_pipeline_cache() {
  
    if (webgpu::g_backendType == wgpu::BackendType::WebGPU) {
      g_hasPipelineThread = false;
@@ -365,7 +371,7 @@ index 4dc6337..acc1f48 100644
    }
  
    if (!g_pipelineCacheBroken) {
-@@ -1160,10 +1306,16 @@ void initialize_pipeline_cache() {
+@@ -1160,10 +1308,16 @@ void initialize_pipeline_cache() {
  
  void shutdown_pipeline_cache() {
    if (g_hasPipelineThread) {
@@ -384,7 +390,7 @@ index 4dc6337..acc1f48 100644
    }
    g_hasPipelineThread = false;
  
-@@ -1172,6 +1324,8 @@ void shutdown_pipeline_cache() {
+@@ -1172,6 +1326,8 @@ void shutdown_pipeline_cache() {
    g_pipelineCacheBroken = false;
    g_pipelinesPerFrame = 0;
    g_gpuCachePrunePending = false;
@@ -393,7 +399,7 @@ index 4dc6337..acc1f48 100644
    g_pipelines.clear();
    g_knownPipelines.clear();
    g_pipelineLayoutKey.reset();
-@@ -1187,7 +1341,8 @@ void begin_pipeline_frame() {
+@@ -1187,7 +1343,8 @@ void begin_pipeline_frame() {
    if (!g_hasPipelineThread) {
      g_pipelinesPerFrame = 0;
    }
@@ -403,7 +409,7 @@ index 4dc6337..acc1f48 100644
      rebuild_pipeline_cache();
    }
  }
-@@ -1199,13 +1354,207 @@ void end_pipeline_frame() {
+@@ -1199,13 +1356,219 @@ void end_pipeline_frame() {
  }
  
  bool get_pipeline(PipelineRef ref, CompiledPipeline& pipeline) {
@@ -415,14 +421,23 @@ index 4dc6337..acc1f48 100644
 +    const auto it = g_pipelines.find(ref);
 +    if (it != g_pipelines.end()) {
 +      if (!it->second.main) {
-+        return false; // creation failed
++        ++g_droppedDraws; // creation failed
++        return false;
 +      }
 +      pipeline = it->second;
 +      return true;
 +    }
 +  }
 +  // Not built yet: never drop the draw, wait for it.
-+  return wait_for_pending_pipeline(ref, pipeline);
++  if (!g_waitForPipelines.load(std::memory_order_relaxed)) {
++    ++g_droppedDraws;
++    return false;
++  }
++  if (!wait_for_pending_pipeline(ref, pipeline)) {
++    ++g_droppedDraws;
++    return false;
++  }
++  return true;
 +}
 +
 +// ---- Precache list files (include/aurora/pipeline_cache.h) ----------------------------------
@@ -436,14 +451,13 @@ index 4dc6337..acc1f48 100644
 +template <typename T>
 +bool read_le(const uint8_t*& p, const uint8_t* end, T& out) {
 +  if (static_cast<size_t>(end - p) < sizeof(T)) {
-     return false;
-   }
--  pipeline = it->second;
++    return false;
++  }
 +  std::memcpy(&out, p, sizeof(T)); // little-endian hosts only (x86/ARM)
 +  p += sizeof(T);
-   return true;
- }
- 
++  return true;
++}
++
 +template <typename T>
 +void write_le(std::vector<uint8_t>& buf, T value) {
 +  const auto* b = reinterpret_cast<const uint8_t*>(&value);
@@ -475,13 +489,14 @@ index 4dc6337..acc1f48 100644
 +  Config config;
 +  std::memcpy(&config, bytes, sizeof(config));
 +  if (config.version != version) {
-+    return false;
-+  }
+     return false;
+   }
+-  pipeline = it->second;
 +  remember_pipeline_config(type, config, firstFrame, false);
-+  return true;
-+}
+   return true;
+ }
 +} // namespace
-+
+ 
  } // namespace aurora::gfx
 +
 +using namespace aurora::gfx;
@@ -610,8 +625,11 @@ index 4dc6337..acc1f48 100644
 +  out->maxStallNs = g_maxStallNs.load(std::memory_order_relaxed);
 +  out->workerThreads = g_workerThreadCount;
 +  out->seeded = g_seeded.load(std::memory_order_relaxed);
++  out->droppedDraws = g_droppedDraws.load(std::memory_order_relaxed);
 +}
 +
 +void aurora_pipeline_cache_set_log(bool enabled) { g_pipelineLog = enabled; }
++
++void aurora_pipeline_cache_set_wait(bool enabled) { g_waitForPipelines = enabled; }
 +
 +void aurora_pipeline_cache_set_threads(uint32_t threads) { g_requestedThreads = std::min(threads, 32u); }

@@ -48,6 +48,9 @@ void init() {
     // wait for its pipeline, and a summary line every 5 s with the worst frame time.
     sLog = std::getenv("LM_PIPELINE_LOG") != nullptr;
     aurora_pipeline_cache_set_log(sLog);
+    // LM_PIPELINE_WAIT=0 (testing): skip draws whose pipeline is not ready, as Aurora did before
+    // patch 0013 (reproduces the first-run flicker).
+    if (const char* w = std::getenv("LM_PIPELINE_WAIT"); w && std::atoi(w) == 0) aurora_pipeline_cache_set_wait(false);
     // The GX accuracy flags select shader variants; set them before the first frame builds the
     // known pipelines, or the first build is for the default flags and wasted.
     recomp::gx::applyAccuracySettings();
@@ -79,9 +82,10 @@ void frame() {
     aurora_pipeline_cache_get_stats(&s);
     if (sLog && now - window >= std::chrono::seconds(5)) {
         log("[precache] %.0fs: precache %u/%u, pending %u, demand-created %u, stalled draws %u (%.1f ms total, "
-            "max %.1f ms), worst frame %.1f ms over %u frames, %u threads",
+            "max %.1f ms), dropped draws %u, worst frame %.1f ms over %u frames, %u threads",
             std::chrono::duration<double>(now - start).count(), s.precacheDone, s.precacheTotal, s.pending,
-            s.demandCreated, s.stalledDraws, s.stallNs / 1e6, s.maxStallNs / 1e6, worstMs, frames, s.workerThreads);
+            s.demandCreated, s.stalledDraws, s.stallNs / 1e6, s.maxStallNs / 1e6, s.droppedDraws, worstMs, frames,
+            s.workerThreads);
         window = now;
         worstMs = 0.0f;
         frames = 0;

@@ -119,6 +119,9 @@ function(lm_runtime_target tgt)
     target_compile_definitions(${tgt} PRIVATE TARGET_PC=1)
     target_link_libraries(${tgt} PRIVATE aurora::main aurora::core aurora::gx aurora::vi aurora::pad
         aurora::si aurora::os aurora::dvd aurora::card)
+    # Shipped shader/pipeline precache list (tools/pipelines/sweep.py; docs/RENDERING.md).
+    add_custom_command(TARGET ${tgt} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/data/pipelines.bin $<TARGET_FILE_DIR:${tgt}>)
     if (WIN32)
         target_link_libraries(${tgt} PRIVATE dbghelp)
         add_custom_command(TARGET ${tgt} POST_BUILD
@@ -174,6 +177,7 @@ install(CODE "
 install(PROGRAMS ${LM_LLVM_DIR}/clang${CMAKE_EXECUTABLE_SUFFIX} ${LM_LLVM_DIR}/lld-link${CMAKE_EXECUTABLE_SUFFIX}
     DESTINATION llvm/bin OPTIONAL)
 install(FILES NOTICE.md DESTINATION .)
+install(FILES data/pipelines.bin DESTINATION .)
 install(FILES packaging/LLVM-LICENSE.TXT DESTINATION llvm)
 
 # lmrecomp: developer build with the game recompiled at build time and linked in
