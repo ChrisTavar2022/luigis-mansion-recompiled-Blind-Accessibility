@@ -211,6 +211,30 @@ HLE(fn_8005D984) {
     // Only the gameplay room/lightning light: the flashlight's frustum is its beam (shadows only
     // show where it shines), cutscene lights are authored per shot.
     const bool gameplay = sGameplayLight && !sFlashlightLight;
+
+    // Enhanced lighting: when the game switches its single shadow light (flashlight <-> room
+    // light / lightning / a cutscene light), the new light's shadows fade in over about six
+    // game frames instead of popping in (the shadow strength, K3 alpha in lbl_804D07E0 +4, is
+    // read by the receivers' setup fn_8005DD50 after this pass; the game sets it again every
+    // frame). Plain renderer (master switch off): untouched.
+    if (active) {
+        static int sKind = -1;
+        static float sFade = 1.0f;
+        static V3 sEye{};
+        const int kind = sFlashlightLight ? 1 : sGameplayLight ? 2 : 3;
+        const V3 eye = rdv(cam + kCamEye);
+        const V3 de = sub(eye, sEye);
+        const bool jumped = dot(de, de) > 1500.0f * 1500.0f;  // a different light of the same kind
+        if (kind != sKind || jumped) sFade = sKind < 0 ? 1.0f : 0.0f;
+        sKind = kind;
+        sEye = eye;
+        if (enh::active() && sFade < 1.0f) {
+            const u32 k3 = VA(0x804D07E0) + 4;
+            const u32 a = rd32(k3) & 0xFFu;
+            wr32(k3, (rd32(k3) & ~0xFFu) | u32(float(a) * sFade * sFade * (3.0f - 2.0f * sFade) + 0.5f));
+        }
+        sFade = std::min(1.0f, sFade + 1.0f / 6.0f);
+    }
     sGameplayLight = false;
 
     const float aspect = rdf32(cam + kCamAspect);
@@ -223,7 +247,8 @@ HLE(fn_8005D984) {
 
     static const bool sLog = std::getenv("LM_SHADOW_LOG") != nullptr;
     static u32 sCalls = 0;
-    if (sLog && active && (sCalls++ % 30) == 0) {
+    static const int sEvery = [] { const char* e = std::getenv("LM_SHADOW_LOG"); return e ? std::max(1, std::atoi(e) == 1 ? 30 : 1) : 30; }();
+    if (sLog && active && (sCalls++ % sEvery) == 0) {
         const V3 eye = rdv(cam + kCamEye);
         log("[shadow] k3a %u %s eye %.0f %.0f %.0f at %.0f %.0f %.0f fov %.1f asp %.2f near %.0f far %.0f%s",
             rd32(VA(0x804D07E0) + 4) & 0xFF, gameplay ? "game" : "other", eye.x, eye.y, eye.z, target.x, target.y, target.z, fov, wideAspect, zNear,

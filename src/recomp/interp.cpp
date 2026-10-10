@@ -999,6 +999,18 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     const f32 va = loadBE(la + 4 * k), vb = loadBE(lb + 4 * k);
                     storeBE(out + 4 * k, va + (vb - va) * alpha);
                 }
+                // Shadow weight (flags bits 8..15, 0 = full when casting; bit 0 = casts a shadow)
+                // blended too, so a fading shadow fades smoothly at high frame rates.
+                const auto weight = [&](const u8* l) {
+                    const u32 f = u32At(l + 32);
+                    if ((f & 1u) == 0) return 0.0f;
+                    const u32 w = (f >> 8) & 0xFFu;
+                    return w ? float(w) / 255.0f : 1.0f;
+                };
+                const float wa = weight(la), wb = weight(lb), w = wa + (wb - wa) * alpha;
+                u32 fl = u32At(lb + 32) & ~0xFF01u;
+                if (w > 0.002f) fl |= 1u | (std::clamp(u32(w * 255.0f + 0.5f), 1u, 255u) << 8);
+                for (int k = 0; k < 4; k++) out[32 + k] = u8(fl >> (24 - 8 * k));
             }
         }
     }

@@ -140,6 +140,8 @@ struct Track {
     V3 world{};          // last emission point (world)
     float color[3]{};    // linear RGB, max channel 1
     float radius = 0;
+    float outI = 0;      // submitted intensity, smoothed (no frame-to-frame jumps)
+    float shadowW = 0;   // 0..1 weight of this light's shadow, faded in/out over a few frames
 };
 
 // The last moments of a captured ghost after it left the actor list.
@@ -173,6 +175,16 @@ float noise(u32 a, u32 b) {
     h *= 0x2C1B3C6Du;
     h ^= h >> 12;
     return float(h & 0xFFFF) / 32767.5f - 1.0f;
+}
+
+// Smooth noise in [-1, 1]: the hash noise at every 6th game frame, interpolated (smoothstep)
+// in between, so the flicker breathes instead of jumping every frame (a light that jumps every
+// frame makes its shadows and bloom flicker).
+float smoothNoise(u32 frame, u32 b) {
+    const u32 k = frame / 6;
+    float f = float(frame % 6) / 6.0f;
+    f = f * f * (3.0f - 2.0f * f);
+    return noise(k, b) * (1.0f - f) + noise(k + 1, b) * f;
 }
 
 const char* typeName(u32 type) {
@@ -429,12 +441,12 @@ void update(Ctx& c) {
             k *= 1.0f + 1.3f * tr.flare;
             radiusK += 0.2f * tr.flare;
             // Flashlight: a nervous flicker that brightens with exposure.
-            if (tr.stun > 0.01f) k *= 1.0f + tr.stun * (0.35f + 0.45f * noise(sFrame, a));
+            if (tr.stun > 0.01f) k *= 1.0f + tr.stun * (0.35f + 0.45f * smoothNoise(sFrame, a));
             // Vacuum struggle: ramps as the HP drains, with a fast tremor.
             // (not during the capture: the burst on top of the struggle peaked at ~17x and
             // washed the whole room out in the first in-game capture)
             if (tr.struggle > 0.01f && !capturing) {
-                k *= 1.0f + 1.6f * tr.struggle + 0.5f * tr.struggle * noise(sFrame, a ^ 0x55u);
+                k *= 1.0f + 1.6f * tr.struggle + 0.5f * tr.struggle * smoothNoise(sFrame, a ^ 0x55u);
                 radiusK += 0.25f * tr.struggle;
             }
             // Capture: burst, then fade while it is pulled into the nozzle.
@@ -451,7 +463,13 @@ void update(Ctx& c) {
         if (vis <= 0.01f) vis = capturing && dramatic ? 1.0f : hint;  // the capture burst shows even as it shrinks away
         if (!drawn || tr.captureEnd) vis = 0.0f;
 
-        const float lightI = intensity * kBase * k * vis;
+        const float rawI = intensity * kBase * k * vis;
+        // Smoothed: ghosts fade, hide and flare from one game frame to the next (the dance
+        // switches visibility often); a light that jumps makes its pool, its shadows and the
+        // bloom pop. Fast attack, slower release (about 3 / 5 frames).
+        tr.outI += (rawI - tr.outI) * (rawI > tr.outI ? 0.45f : 0.3f);
+        if (rawI <= 0.0f && tr.outI < 0.005f) tr.outI = 0.0f;
+        const float lightI = tr.outI;
         const V3 vp = toView(view, tr.world);
         if (logNow)
             log("[ghostlight] f%u id %08X type %u %s cls %d el %d state %s a %.2f hp %d/%d flags %08X rgb %02X%02X%02X "
@@ -505,8 +523,35 @@ void update(Ctx& c) {
     if (cands.size() > maxLights) cands.resize(maxLights);
     ExtraLight lights[aurora::gfx::MaxExtraLights];
     u32 n = 0;
+    // Shadow casters: the two strongest lights, chosen with hysteresis (a light that already
+    // casts a shadow keeps it unless another is clearly stronger), and each light's shadow fades
+    // in/out over about five game frames instead of switching (the dancers trade places every
+    // few frames; a hard switch made shadows appear and vanish). The weight goes to Aurora in
+    // flags bits 8..15 (0 = full); Aurora has four shadow slots, so fading-out shadows fit.
+    {
+        std::vector<std::pair<float, u32>> ranked;
+        for (auto& cd : cands) {
+            if (!s.shadows || cd.light.intensity <= 0.3f) continue;
+            const auto it = sTracks.find(cd.light.id);
+            const bool holding = it != sTracks.end() && it->second.shadowW > 0.5f;
+            ranked.push_back({cd.score * (holding ? 1.35f : 1.0f), cd.light.id});
+        }
+        std::sort(ranked.begin(), ranked.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
+        for (auto& [id, tr] : sTracks) {
+            bool want = false;
+            for (size_t r = 0; r < ranked.size() && r < 2; r++) want |= ranked[r].second == id;
+            tr.shadowW += ((want ? 1.0f : 0.0f) - tr.shadowW) * 0.25f;
+            if (tr.shadowW < 0.02f && !want) tr.shadowW = 0.0f;
+        }
+    }
+    u32 shadowed = 0;
     for (auto& cd : cands) {
-        if (s.shadows && n < 2 && cd.light.intensity > 0.3f) cd.light.flags |= kFlagShadow;
+        const auto it = sTracks.find(cd.light.id);
+        const float w = it != sTracks.end() ? it->second.shadowW : 0.0f;
+        if (s.shadows && w > 0.0f && shadowed < 4) {
+            cd.light.flags |= kFlagShadow | (std::clamp(u32(w * 255.0f + 0.5f), 1u, 255u) << 8);
+            shadowed++;
+        }
         lights[n++] = cd.light;
     }
     if (logNow && n)

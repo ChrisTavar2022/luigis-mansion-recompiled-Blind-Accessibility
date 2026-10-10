@@ -708,6 +708,39 @@ actor pass gives ghosts the shadow stages too); the jagged edge of a grazing lig
 the shadow map's own resolution along the receiver (raise "Shadow map size"); the 2-player mode's
 second view uses the shadow map fitted to player 1's view.
 
+### Stable shadows with many lights (shadows-4, ballroom dance)
+
+User report: in the ballroom dance (ghost lights, Ultra) shadows flickered, overlapped and
+vanished, and the flashlight on the ghosts made everything "wonky". Measured with consecutive
+frame dumps (`LM_TELEPORT=1800,0,-1400,100`, Ultra, ghost lights, ambient 0.35, 120 fps target,
+frames 2720-2840, standing still and with a scripted flashlight sweep across the dancers;
+`LM_SHADOW_LOG=2` logs the shadow light every frame). The game's own shadow light there is the
+flashlight the whole time (no switching except lightning); the popping came from the colored
+light side:
+
+| Cause | Fix |
+|---|---|
+| Ghost light intensity jumped between game frames (dance visibility toggles, appear flares, a per-frame random "nervous" flicker while in the beam), so pools, their shadows and the bloom popped; the room's mean brightness jumped by 10% in single frames | `ghost_lights.cpp`: submitted intensity smoothed per ghost (attack ~3, release ~5 frames); the beam/struggle flicker uses smooth noise (keys every 6 frames, smoothstep in between) |
+| The two shadow-casting ghost lights were re-chosen every frame by a score that changes as the dancers move: shadows appeared and vanished | Hysteresis (a light that casts a shadow keeps it unless another is 35% stronger) and per-light shadow weights that fade over ~5 game frames, sent in `ExtraLight::flags` bits 8..15 (0 = full); `interp.cpp` blends the weight between game frames; Aurora uses up to 4 slots so fading shadows fit (patch 0020) |
+| Screen-space light shadows: a binary per-pixel occlusion test with a step jitter that changed every rendered frame (crawling, noisy edges, different on each interpolated replay) | Patch 0020: the jitter is fixed per pixel, occlusion is soft (ramps over the thickness and toward the light), and the receivers sample the half-resolution mask with four bilinear taps (4x4 tent) |
+| The game's shadow light switching (flashlight <-> room light / lightning / cutscene light) popped the new light's shadows in | `shadows.cpp` (enhanced lighting only): after a switch (or a jump of the light by more than 1500 units) the shadow strength (K3 alpha, read by `fn_8005DD50` after the pass) fades in over ~6 game frames. The old light's shadows still end at once (one shadow map per frame in the game) |
+
+Per-light combination: each extra light's shadow removes only that light (mask × weight on its own
+term), the game's shadow keeps the extra lights and part of the ambient (0019), so overlapping
+shadows never double-darken a pixel lit by another light.
+
+Results (`build/shadows4/`): temporal flicker (mean |L(t-1) + L(t+1) - 2 L(t)| / 2 over the room,
+HUD excluded) with the sweep 4.57 -> 4.11 (dark pixels 2.50 -> 2.24, pixels above 8 levels
+11.5% -> 10.3%); standing still 3.28 -> 3.21 (the dancers' own motion dominates); the room's mean
+brightness no longer jumps (sweep: 44.4 -> 27.0 -> 48.0 before, 43.9 -> 44.7 -> 48.2 after).
+Strips of consecutive frames, top before / bottom after: `strip_sweep.png`, `strip_still.png`,
+`strip_lightning.png`. Master switch off: frame-identical to the previous build (nursery
+lightning, 10 frames).
+
+Not done: separate shadow maps per light with a true cross-fade of the game's light (the old
+map is gone the moment the game renders the new one); a temporal filter of the screen-space mask
+(the static pattern + blur made it stable enough at 30 and 120 fps).
+
 ## Debug draw overrides (Aurora patch 0012)
 
 `patches/aurora/0012-wireframe-override.patch`, used only by the model viewer
