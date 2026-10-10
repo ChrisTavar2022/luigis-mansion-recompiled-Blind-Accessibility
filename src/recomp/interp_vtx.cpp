@@ -217,7 +217,18 @@ struct {
     u64 id = 0;
 } sDirect;
 
+// The immediate-mode draw opened by GXBegin: its vertices are scanned once complete, with the
+// vertex layout as it was at GXBegin (the game changes it right after GXEnd, so parsing the
+// stream later would size the vertices wrongly).
+struct {
+    bool active = false;
+    int fmt = 0;
+    u32 count = 0, size = 0;
+    std::vector<u8> bytes;
+} sImm;
+
 void finishDirect() {
+    sImm.active = false;
     if (!sDirect.active) return;
     sDirect.active = false;
     if (sDirect.at != ~0u && sDirect.stride && sDirect.bytes == sDirect.count * sDirect.stride)
@@ -280,16 +291,27 @@ void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective) {
         for (int a = GX_VA_PNMTXIDX; a < GX_VA_POS; a++) posOffset += u32(std::max(0, gx::vtxAttrSize(int(fmt), a)));
         sDirect = {true, ~0u, 0, nVerts, vertexSize(int(fmt)), posOffset, detail::mix(id ^ nVerts)};
     }
-    // Feed the parser the header Aurora wrote, then the vertices arrive as raw writes.
-    sPending.push_back(u8((prim & 0xF8) | (fmt & 7)));
-    sPending.push_back(u8(nVerts >> 8));
-    sPending.push_back(u8(nVerts));
+    const u32 vs = vertexSize(int(fmt));
+    sImm.active = vs != 0 && nVerts != 0;
+    sImm.fmt = int(fmt);
+    sImm.count = nVerts;
+    sImm.size = vs;
+    sImm.bytes.clear();
+    if (!sImm.active && nVerts != 0) sUnparsed++;
 }
 
 void vtxBytes(u32 v, int size) {
     if (sDirect.active) {
         if (sDirect.at == ~0u) sDirect.at = mark();
         sDirect.bytes += u32(size);
+    }
+    if (sImm.active) {
+        for (int b = size - 1; b >= 0; b--) sImm.bytes.push_back(u8(v >> (8 * b)));
+        if (sImm.bytes.size() >= size_t(sImm.count) * sImm.size) {
+            scanVertices(sImm.fmt, sImm.bytes.data(), sImm.count, sImm.size);
+            sImm.active = false;
+        }
+        return;
     }
     for (int b = size - 1; b >= 0; b--) sPending.push_back(u8(v >> (8 * b)));
     if (sPending.size() - sPendingPos >= 4096) flushPending();
@@ -312,6 +334,7 @@ void vtxBeginTape() {
     sPending.clear();
     sPendingPos = 0;
     sDirect.active = false;
+    sImm.active = false;
     // Self-contained tapes: load the arrays the guest has bound now.
     for (int s = 0; s < kArrays; s++) {
         sBind[s].cmd = -1;
