@@ -5,6 +5,7 @@
 #include "recomp/gameplay.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
+#include "recomp/lightning_test.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
@@ -163,7 +164,7 @@ HLE(fn_8006D1B8) {
 // (both the lit-room x0.6 path and the unlit path); the gameplay options add their own factor
 // (gameplay::ambientFactor() combines both). The current room record's RGB bytes are scaled
 // for the duration of the call.
-HLE(fn_800168EC) {
+static void roomUpdateAmbient(Ctx& c) {
     const float k = gameplay::ambientFactor();
     if (k == 1.0f) return callOriginal(c, "fn_800168EC");
     // Same record layout in both releases (European: read by the PAL-only fn_800179F8).
@@ -180,6 +181,11 @@ HLE(fn_800168EC) {
     if (hm::palActive()) HM_FIRST("fn_800168EC room ambient x0.2");
     callOriginal(c, "fn_800168EC");
     for (int i = 0; i < 3; i++) hostp(rec + 0x2C + i)[0] = saved[i];
+}
+HLE(fn_800168EC) {
+    const bool strike = lightning::beginRoomUpdate();  // LM_LIGHTNING test aid
+    roomUpdateAmbient(c);
+    lightning::endRoomUpdate(strike);
 }
 
 // ---- Bosses ------------------------------------------------------------------------------
