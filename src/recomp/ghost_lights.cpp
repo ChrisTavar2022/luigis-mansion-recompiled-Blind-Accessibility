@@ -58,8 +58,12 @@ namespace {
 
 using aurora::gfx::ExtraLight;
 
-// Translucent (light the ghost layer) stays off: a ghost would light itself.
-constexpr u32 kFlagShadow = aurora::gfx::ExtraLightCastShadows, kFlagSpecular = aurora::gfx::ExtraLightSpecular;
+// The renderer classes every blended draw like a ghost draw (extra lights reach them only with
+// ExtraLightTranslucent), and much of a room is drawn blended (in the ballroom the floor and walls
+// stayed dark without it). So the flag is set: the ghost's own body also catches its light,
+// which reads as the glow it gives off.
+constexpr u32 kFlagShadow = aurora::gfx::ExtraLightCastShadows;
+constexpr u32 kFlagBase = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent;
 
 // USA addresses (VA() maps them on the European game).
 #define kActorSlots VA(0x803D48A0)  // lbl_803D48A0: live characters (slot 0 = Luigi)
@@ -200,17 +204,19 @@ void fallbackColor(int cls, u32 rgb[3]) {
     for (int i = 0; i < 3; i++) rgb[i] = c[i];
 }
 
-// Ghost size: light radius (world units). The emission point is the actor position (+0x44),
-// which floats at the ghost's body: it is where the game itself puts the small GX light some
-// ghosts carry (EnZako::fn_800C1FFC -> fn_80016C98(0, actor + 0x44, BrightColor x alpha, ...)).
+// Ghost size: light radius (world units) and how far above the actor position (+0x44) the light
+// sits. +0x44 is where the game itself puts the small GX light some ghosts carry
+// (EnZako::fn_800C1FFC -> fn_80016C98(0, actor + 0x44, BrightColor x alpha, ...)), but for
+// walking ghosts it is near the floor (e.g. the ballroom's shy-guy ghosts at y 60), where a point
+// light only grazes the floor; lifting it to about the body's middle lights the floor around the
+// ghost and the walls and furniture nearby.
 void sizeFor(int cls, float& radius, float& height) {
-    height = 0.0f;
     switch (cls) {
-    case 1: radius = 380.0f; break;   // bats, mice, Boos, small fry
-    case 2: radius = 560.0f; break;   // ordinary ghosts
-    case 3: radius = 720.0f; break;   // portrait ghosts
-    case 4: radius = 1100.0f; break;  // bosses
-    default: radius = 480.0f; break;
+    case 1: radius = 380.0f; height = 40.0f; break;    // bats, mice, Boos, small fry
+    case 2: radius = 560.0f; height = 90.0f; break;    // ordinary ghosts
+    case 3: radius = 720.0f; height = 110.0f; break;   // portrait ghosts
+    case 4: radius = 1100.0f; height = 160.0f; break;  // bosses
+    default: radius = 480.0f; height = 80.0f; break;
     }
 }
 
@@ -427,7 +433,7 @@ void update(Ctx& c) {
                 tr.world.x, tr.world.y, tr.world.z, vp.x, vp.y, vp.z, lightI, tr.radius * radiusK);
         if (lightI <= 0.005f) continue;
         Candidate cd{};
-        cd.light = {{vp.x, vp.y, vp.z}, {color[0], color[1], color[2]}, tr.radius * radiusK, lightI, kFlagSpecular, a};
+        cd.light = {{vp.x, vp.y, vp.z}, {color[0], color[1], color[2]}, tr.radius * radiusK, lightI, kFlagBase, a};
         const float dist = std::sqrt(vp.x * vp.x + vp.y * vp.y + vp.z * vp.z);
         cd.score = lightI * cd.light.radius / (1.0f + dist / 1500.0f);
         cands.push_back(cd);
@@ -461,7 +467,7 @@ void update(Ctx& c) {
         const V3 vp = toView(view, it->world);
         Candidate cd{};
         cd.light = {{vp.x, vp.y, vp.z}, {it->color[0], it->color[1], it->color[2]}, it->radius * (1.0f + 0.3f * std::min(b, 1.0f)),
-                    intensity * kBase * b, kFlagSpecular, it->id};
+                    intensity * kBase * b, kFlagBase, it->id};
         cd.score = cd.light.intensity * cd.light.radius;
         cands.push_back(cd);
         if (logNow) log("[ghostlight] f%u burst id %08X age %u I %.2f view %.0f,%.0f,%.0f", sFrame, it->id, sFrame - it->start, cd.light.intensity, vp.x, vp.y, vp.z);
@@ -481,6 +487,10 @@ void update(Ctx& c) {
             log("[ghostlight] f%u light %u id %08X view %.0f,%.0f,%.0f rgb %.2f,%.2f,%.2f r %.0f I %.2f flags %u", sFrame, i,
                 lights[i].id, lights[i].pos[0], lights[i].pos[1], lights[i].pos[2], lights[i].color[0], lights[i].color[1],
                 lights[i].color[2], lights[i].radius, lights[i].intensity, lights[i].flags);
+    // Test aid LM_GHOST_LIGHT_AB=1: lights only on even game frames, so consecutive frame dumps
+    // (LM_FRAME_DUMP) compare with/without in nearly the same scene.
+    static const bool sAB = envFlag("LM_GHOST_LIGHT_AB");
+    if (sAB && (sFrame & 1)) n = 0;
     submitExtraLights(lights, n);  // enhanced_lighting.cpp sends them with the main view
 }
 
