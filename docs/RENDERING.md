@@ -741,6 +741,40 @@ Not done: separate shadow maps per light with a true cross-fade of the game's li
 map is gone the moment the game renders the new one); a temporal filter of the screen-space mask
 (the static pattern + blur made it stable enough at 30 and 120 fps).
 
+### Shadows and frame interpolation (shadows-5)
+
+User report: waving the flashlight at a ballroom chair, its shadow jittered quickly; only with
+frame interpolation (Original 30 stable). The user's clip (120 fps) shows the pixels at the edge
+of the chair's shadow on the wall going back and forth every other presented frame
+(`build/shadows5/user_clip_oscillation_map.png`, red = back-and-forth pixels).
+
+**Cause.** In an interpolated replay the shadow map is rendered from the caster pass with its
+matrices blended (light projection element-wise, light-view x model rigidly: slerp), while the
+receivers' shadow texture matrices (light projection x model, fn_8005DCA0; post matrices
+PT18/PT19, fn_8005DD50) are blended element-wise as projection-style texture matrices. With
+the light turning quickly the two blends give different in-between lights, so the shadow is
+looked up in a map from a slightly different light: the shadow slides away and back inside
+every game frame.
+
+**Fix** (`shadows.cpp`, `interp::pushNoBlend`): the caster pass (fn_8005D984 .. fn_8005D8CC)
+and the receivers' shadow texgen (fn_8005DCA0, fn_8005DD50 hooks, US + PAL) record no blend
+patches, so they replay exactly as captured: the shadow map, its light projection and the
+receivers' lookup always come from the same game frame. Shadows then move at the game's 30 Hz
+(as in Original 30) while everything else stays smooth. Original 30 is unchanged (no tapes are
+recorded there; plain-renderer frame dumps identical).
+`LM_SHADOW_SNAP=0` restores the old blending, `=2` blends the caster pass element-wise instead
+(smooth but only half as consistent).
+
+Measured (`LM_INTERP_TEST=4`, 120 fps, ballroom `LM_TELEPORT=1800,0,-1400,100`, Ultra, Luigi
+turning left/right every 4 game frames; the shadow term isolated as the difference to a run with
+`LM_NO_SHADOW=1`; pixels whose shadow goes back and forth within one game interval): blended
+4004 px per interval, snapped 631 (run-to-run noise floor), linear caster pass 1226.
+`chair_shadow_only_strip.png`: shadow term over two game frames (each 4 replays), top before
+(blobs that appear only in the in-between frames), bottom after.
+
+Test aids added: `LM_NO_SHADOW=1` (shadow strength 0), C-stick tokens `CUP/CDOWN/CLEFT/CRIGHT`
+in `--input`.
+
 ## Debug draw overrides (Aurora patch 0012)
 
 `patches/aurora/0012-wireframe-override.patch`, used only by the model viewer

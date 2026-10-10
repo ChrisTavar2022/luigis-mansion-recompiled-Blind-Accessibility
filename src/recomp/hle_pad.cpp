@@ -25,6 +25,7 @@ struct ScriptedPress {
     u32 start, frames;
     u16 buttons;
     s8 stickX, stickY;
+    s8 substickX = 0, substickY = 0;  // C stick: CUP/CDOWN/CLEFT/CRIGHT
 };
 
 std::vector<ScriptedPress> parseScript(const std::string& script) {
@@ -64,6 +65,10 @@ std::vector<ScriptedPress> parseScript(const std::string& script) {
             else if (b == "STICKDOWN") p.stickY = -100;
             else if (b == "STICKLEFT") p.stickX = -100;
             else if (b == "STICKRIGHT") p.stickX = 100;
+            else if (b == "CUP") p.substickY = 100;
+            else if (b == "CDOWN") p.substickY = -100;
+            else if (b == "CLEFT") p.substickX = -100;
+            else if (b == "CRIGHT") p.substickX = 100;
         }
         out.push_back(p);
     }
@@ -107,6 +112,8 @@ void applyScript(PADStatus* pads) {
             if (p.buttons & PAD_TRIGGER_R) st.triggerRight = 0xFF;
             if (p.stickX) st.stickX = p.stickX;
             if (p.stickY) st.stickY = p.stickY;
+            if (p.substickX) st.substickX = p.substickX;
+            if (p.substickY) st.substickY = p.substickY;
             st.err = PAD_ERR_NONE;
         }
     }

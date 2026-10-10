@@ -27,6 +27,7 @@
 #include "port/settings.h"
 #include "recomp/enhanced_lighting.h"
 #include "recomp/hle.h"
+#include "recomp/interp.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
@@ -172,6 +173,14 @@ bool fitFrustum(u32 cam, float lightAspect, float viewAspect, Fit& fit) {
     return true;
 }
 
+bool sCasterSnap = false;
+// LM_SHADOW_SNAP=0 (test aid): blend the shadow pass and the receivers' shadow matrices as before.
+int shadowInterpMode() {  // LM_SHADOW_SNAP: 0 blend as before, 1 snap (default), 2 linear caster pass
+    static const int v = [] { const char* e = std::getenv("LM_SHADOW_SNAP"); return e ? std::atoi(e) : 1; }();
+    return v;
+}
+bool shadowSnap() { return shadowInterpMode() == 1; }
+
 // Set by fn_800293A8, the gameplay shadow light's parameter setup, which fn_8005EF84 calls right
 // before the pass (cutscene shadow passes, fn_80114144, use their own keyframed lights).
 bool sGameplayLight = false;
@@ -236,6 +245,10 @@ HLE(fn_8005D984) {
         sFade = std::min(1.0f, sFade + 1.0f / 6.0f);
     }
     sGameplayLight = false;
+    // Test aid LM_NO_SHADOW=1: shadow strength 0 (the frame without the game's shadows, for
+    // isolating them by difference).
+    static const bool sNoShadow = std::getenv("LM_NO_SHADOW") != nullptr;
+    if (sNoShadow && active) wr32(VA(0x804D07E0) + 4, rd32(VA(0x804D07E0) + 4) & ~0xFFu);
 
     const float aspect = rdf32(cam + kCamAspect);
     const float wideAspect = r.shadowWidescreen && ws::active() ? aspect / ws::factor() : aspect;
@@ -260,6 +273,17 @@ HLE(fn_8005D984) {
     }
 
     if (active) enh::setCasterPass(true);
+    // Frame interpolation: the shadow map and the light projection it is rendered with are
+    // replayed exactly as captured (not blended), like the receivers' shadow texture matrices
+    // (fn_8005DCA0 / fn_8005DD50 below): blending the caster pass (rigid slerp of the light-view
+    // matrices, element-wise projection) and the receivers' projection matrices (row-wise) gave
+    // two different in-between light positions, so the shadows slid back and forth at
+    // 60/120 fps while the flashlight moved.
+    if (active && shadowInterpMode() != 0 && !sCasterSnap) {
+        if (shadowSnap()) interp::pushNoBlend();
+        else interp::pushLinearPosMtx();
+        sCasterSnap = true;
+    }
     // Enhanced lighting "Shadow map size": the caster pass renders into an offscreen target of
     // that size instead of the EFB; the Z16 copy (fn_8005D8CC) then comes from it at that size.
     // Needs "Shadow map at render resolution" (receivers sample Aurora's copy texture).
@@ -296,6 +320,27 @@ HLE(fn_8005D8CC) {
         sShadowOffscreen = false;
     }
     enh::setCasterPass(false);
+    if (sCasterSnap) {
+        if (shadowSnap()) interp::popNoBlend();
+        else interp::popLinearPosMtx();
+        sCasterSnap = false;
+    }
+}
+
+// Receivers' shadow texgen: room geometry (fn_8005DCA0: TEXMTX0 = depth ramp x model,
+// TEXMTX1 = light projection x model) and actors (fn_8005DD50: post-transform matrices
+// PT18/PT19 = ramp / light projection x inverse view). Snapped like the caster pass.
+HLE(fn_8005DCA0) {
+    if (!shadowSnap()) return callOriginal(c, "fn_8005DCA0");
+    interp::pushNoBlend();
+    callOriginal(c, "fn_8005DCA0");
+    interp::popNoBlend();
+}
+HLE(fn_8005DD50) {
+    if (!shadowSnap()) return callOriginal(c, "fn_8005DD50");
+    interp::pushNoBlend();
+    callOriginal(c, "fn_8005DD50");
+    interp::popNoBlend();
 }
 
 }  // namespace recomp

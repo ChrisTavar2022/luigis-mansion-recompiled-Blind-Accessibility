@@ -29,6 +29,16 @@ void endTape(u32 retraceCount);   // closes it and hands it to the host (LM_INTE
 // `first` is the index of the first blended float in the block.
 u32 mark();
 void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first = 0);
+// While set, note() records nothing: the values are replayed exactly as captured (snapped to
+// the tape's own game frame). Used for the shadow map: its caster pass and the receivers'
+// shadow texture matrices must come from the same frame (shadows.cpp). Nests by count.
+void pushNoBlend();
+void popNoBlend();
+// While set, position matrices are blended linearly (element-wise, like projection-style texture
+// matrices) instead of rigidly: the shadow map's caster pass, so the in-between shadow map matches
+// the receivers' element-wise blended light projection (shadows.cpp).
+void pushLinearPosMtx();
+void popLinearPosMtx();
 
 // Enhanced lighting extra lights (GX_AURORA_SET_EXTRA_LIGHTS written at `at`, `count`
 // lights): blended between tapes by light id.

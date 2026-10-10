@@ -850,8 +850,18 @@ void noteExtraLights(u32 at, u32 count) {
     sLights.emplace_back(at + 4, count);
 }
 
+namespace {
+int sNoBlend = 0;
+int sLinearPos = 0;
+}  // namespace
+void pushNoBlend() { sNoBlend++; }
+void popNoBlend() { sNoBlend = sNoBlend > 0 ? sNoBlend - 1 : 0; }
+void pushLinearPosMtx() { sLinearPos++; }
+void popLinearPosMtx() { sLinearPos = sLinearPos > 0 ? sLinearPos - 1 : 0; }
+
 void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
-    if (at == ~0u || !capturing()) return;
+    if (at == ~0u || !capturing() || sNoBlend > 0) return;
+    if (sLinearPos > 0 && kind == Kind::PosMtx) kind = Kind::TexMtx;  // element-wise, own pairing key
     // Aurora writes XF loads as 0x10, a u32 header, then the values.
     if (at + 5 + 4 * u32(first + nFloats) > sBase + AuroraCapturePos() || sScratch[at] != 0x10) return;
     Patch p{at + 5 + 4 * u32(first), u16(nFloats), kind, 0, 0, source, slot};
