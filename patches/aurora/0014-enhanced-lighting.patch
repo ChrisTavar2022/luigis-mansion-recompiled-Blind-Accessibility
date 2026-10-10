@@ -249,10 +249,10 @@ index 1920bc8..c22fbec 100644
  void encode_op(wgpu::CommandEncoder& encoder, FramePacket& frame, const FrameOp& op);
 diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 new file mode 100644
-index 0000000..4219126
+index 0000000..4ba7359
 --- /dev/null
 +++ b/lib/gfx/enhanced.cpp
-@@ -0,0 +1,1249 @@
+@@ -0,0 +1,1256 @@
 +// Enhanced lighting: configuration, extra lights, per-draw uniforms and the scene-end
 +// screen-space effects (bloom, volumetric flashlight beam, ambient occlusion).
 +// See include/aurora/enhanced.h and include/aurora/lights.h.
@@ -1057,14 +1057,21 @@ index 0000000..4219126
 +  for (const auto& cc : sc.colorChannels) {
 +    want = want || cc.lightingEnabled;
 +  }
-+  for (u32 i = 0; i < sc.tevStageCount && !want; ++i) {
++  // Surfaces have textures; untextured lit draws are effect volumes whose color/alpha *is* the
++  // lighting result (e.g. the flashlight's darkness/haze volumes in the nursery): left alone.
++  bool textured = false;
++  for (u32 i = 0; i < sc.tevStageCount; ++i) {
 +    const auto& st = sc.tevStages[i];
-+    want = st.alphaOp.op == GX_TEV_COMP_GR16_GT && st.colorPass.b == GX_CC_TEXC;
++    textured = textured || st.texMapId != GX_TEXMAP_NULL;
++    want = want || (st.alphaOp.op == GX_TEV_COMP_GR16_GT && st.colorPass.b == GX_CC_TEXC);
 +  }
-+  if (!want) {
++  if (!want || !textured) {
 +    return 0;
 +  }
-+  return drawClass == AURORA_DRAW_CLASS_GHOST || blended ? 2 : 1;
++  // Only the ghost pass gets the ghost variant (extra lights reach it only with their
++  // translucent flag); blended room geometry is ordinary world geometry.
++  (void)blended;
++  return drawClass == AURORA_DRAW_CLASS_GHOST ? 2 : 1;
 +}
 +
 +DrawUniform draw_uniform() noexcept {
@@ -1410,10 +1417,10 @@ index 0000000..4219126
 +      }
 +      // Core of the glow: a small fraction of the light's reach.
 +      u.xl[n * 2][0] = l.pos[0], u.xl[n * 2][1] = l.pos[1], u.xl[n * 2][2] = l.pos[2];
-+      u.xl[n * 2][3] = std::clamp(l.radius * 0.06f, 6.f, 40.f);
-+      u.xl[n * 2 + 1][0] = l.color[0] * l.intensity * 0.5f;
-+      u.xl[n * 2 + 1][1] = l.color[1] * l.intensity * 0.5f;
-+      u.xl[n * 2 + 1][2] = l.color[2] * l.intensity * 0.5f;
++      u.xl[n * 2][3] = std::clamp(l.radius * 0.03f, 4.f, 20.f);
++      u.xl[n * 2 + 1][0] = l.color[0] * l.intensity * 0.35f;
++      u.xl[n * 2 + 1][1] = l.color[1] * l.intensity * 0.35f;
++      u.xl[n * 2 + 1][2] = l.color[2] * l.intensity * 0.35f;
 +      ++n;
 +    }
 +    u.bloom2[3] = float(n);
@@ -1791,7 +1798,7 @@ index 7171691..de395dd 100644
      const f32 frontOffset = reader.read<f32>();
      const f32 frontScale = reader.read<f32>();
 diff --git a/lib/gx/gx.cpp b/lib/gx/gx.cpp
-index f261f05..5a87ea4 100644
+index f261f05..e38366c 100644
 --- a/lib/gx/gx.cpp
 +++ b/lib/gx/gx.cpp
 @@ -10,6 +10,7 @@
@@ -1802,16 +1809,16 @@ index f261f05..5a87ea4 100644
  #include "gx_fmt.hpp"
  #include "dolphin/gx/GXAurora.h"
  
-@@ -491,6 +492,9 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
-       }
-     }
-   }
+@@ -531,6 +532,9 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
+       .alphaUpdate = alphaUpdate,
+       .colorUpdate = g_gxState.colorUpdate,
+   };
 +  config.shaderConfig.enhClass =
-+      gfx::enhanced::shader_class(config.shaderConfig, g_gxState.drawClass, g_gxState.blendMode != GX_BM_NONE,
-+                                  g_gxState.blendMode == GX_BM_BLEND && g_gxState.blendFacDst == GX_BL_ONE);
-   const auto cullMode =
-       config.shaderConfig.lineMode == 0 && !config.shaderConfig.wireframe && !g_gxState.twoSided ? g_gxState.cullMode
-                                                                                                  : GX_CULL_NONE;
++      gfx::enhanced::shader_class(config.shaderConfig, g_gxState.drawClass, config.blendMode != GX_BM_NONE,
++                                  config.blendMode == GX_BM_BLEND && config.blendFacDst == GX_BL_ONE);
+ }
+ 
+ GXBindGroups build_bind_groups(const ShaderInfo& info) noexcept {
 diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
 index 0c4477e..735bffa 100644
 --- a/lib/gx/gx.hpp
