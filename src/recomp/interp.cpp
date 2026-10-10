@@ -95,6 +95,7 @@ struct Tape {
     Clock::time_point done;
     // Pairing with the tape captured before this one (`pairedWith`, compared by identity).
     const Tape* pairedWith = nullptr;
+    u64 seq = 0;  // capture order (consecutive tapes differ by 1); replay state slots
     std::vector<s32> partner;  // per patch: index into pairedWith->patches, or -1
     bool cut = false;          // a camera cut since pairedWith: shown as is
     u32 paired = 0, unpaired = 0;
@@ -115,6 +116,7 @@ u32 usSince(std::chrono::steady_clock::time_point& t) {
 
 // --- guest side (guest thread only) ---
 std::vector<u8> sScratch;
+u64 sSeq = 0;  // tapes captured so far
 bool sCapturing = false;
 bool sSuspended = false;  // the game is recording its own display list
 u32 sBase = 0;            // start of the current capture segment in sScratch
@@ -782,6 +784,7 @@ void endTape(u32 retraceCount) {
         return;
     }
     auto tape = std::make_shared<Tape>();
+    tape->seq = ++sSeq;
     tape->bytes.assign(sScratch.begin(), sScratch.begin() + size);
     tape->patches = std::move(sPatches);
     sPatches = {};
@@ -913,6 +916,8 @@ void resumeAfterDisplayList() {
 
 namespace {
 
+u64 sEndSeq[4] = {};  // per replay state slot: the tape whose end state it holds (host side)
+
 // Builds tape b with its values blended from a toward b (alpha 1 = b as captured) into
 // sReplay and submits it. `dump` redirects the LM_FRAME_DUMP copy (LM_INTERP_TEST).
 void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
@@ -1028,7 +1033,18 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
         const u64 ptr = u64(reinterpret_cast<uintptr_t>(dump));
         for (int k = 0; k < 8; k++) sReplay[b.dumpOffset + k] = u8(ptr >> (56 - 8 * k));
     }
+    // Each replay starts from the GX state the tape started from on the console: the state after
+    // the previous tape (Aurora replay state slots, patch 0021; from the SMS port). A tape is
+    // replayed several times (once per presented frame); without this every replay after the
+    // first started from its own end state, so a frame relying on state left by the previous one
+    // (vertex layout, arrays, TEV setup) drew differently in its fresh and late replays. The end
+    // state of each tape is saved after it is replayed (four slots: LM_INTERP_TEST replays tape N
+    // before the late replays of N-1); a tape whose predecessor was never replayed (dropped, or
+    // drawn directly since reset()) starts from the current state.
+    if (b.seq > 1 && sEndSeq[(b.seq - 1) & 3] == b.seq - 1) GXRestoreStateAurora(u8((b.seq - 1) & 3));
     AuroraReplay(sReplay.data(), u32(sReplay.size()));
+    GXSaveStateAurora(u8(b.seq & 3));
+    sEndSeq[b.seq & 3] = b.seq;
 }
 
 // --- LM_INTERP_TEST host side ---
@@ -1237,6 +1253,8 @@ bool replay(bool final) {
 
 void reset() {
     std::lock_guard lk(sM);
+    // Frames are drawn directly from now on: the saved replay states are out of date.
+    std::fill(std::begin(sEndSeq), std::end(sEndSeq), 0);
     // The FIFO may still be reading the last replay's array copies.
     if (sPrevious) sRetired.push_back(std::move(sPrevious));
     if (sNewest) sRetired.push_back(std::move(sNewest));

@@ -54,12 +54,28 @@ struct Crt {
 // vertical filter of GXSetCopyFilter over the line above / this line / the line below (in EFB
 // lines, so it scales with the render resolution; edge lines repeat, as with the copy clamp),
 // then the GXSetDispCopyGamma curve.
+// Above native resolution an EFB line is several rows; the taps above and below average their
+// whole line, so the filter softens like the console's instead of adding sharp copies of the
+// image one EFB line above and below (exactly the hardware's three lines at native resolution).
+fn dcopy_line(uv: vec2f, line: f32, dy: f32, rows: i32, rowStep: f32) -> vec3f {
+    var sum = vec3f(0.0);
+    for (var j = 0; j < rows; j++) {
+        let y = uv.y + line * dy + (f32(j) - 0.5 * f32(rows - 1)) * rowStep;
+        sum += textureSampleLevel(tex0, aurora_linear, vec2f(uv.x, y), 0.0).rgb;
+    }
+    return sum / f32(rows);
+}
+
 @fragment
 fn dcopy_filter(in: AuroraPostFxVertex) -> @location(0) vec4f {
     let dy = 1.0 / max(crt.dcopy2.y, 1.0);
-    let above = textureSampleLevel(tex0, aurora_linear, in.uv - vec2f(0.0, dy), 0.0).rgb;
+    let texH = f32(textureDimensions(tex0).y);
+    let rows = clamp(i32(round(dy * texH)), 1, 8);
+    let rowStep = 1.0 / texH;
+    let above = dcopy_line(in.uv, -1.0, dy, rows, rowStep);
+    // The line itself stays one row: the presented picture keeps the render resolution.
     let here = textureSampleLevel(tex0, aurora_linear, in.uv, 0.0).rgb;
-    let below = textureSampleLevel(tex0, aurora_linear, in.uv + vec2f(0.0, dy), 0.0).rgb;
+    let below = dcopy_line(in.uv, 1.0, dy, rows, rowStep);
     var col = above * crt.dcopy.x + here * crt.dcopy.y + below * crt.dcopy.z;
     col = pow(clamp(col, vec3f(0.0), vec3f(1.0)), vec3f(1.0 / crt.dcopy2.x));
     return vec4f(col, 1.0);

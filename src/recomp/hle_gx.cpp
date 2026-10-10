@@ -1280,6 +1280,7 @@ GXHLE(GXSetDispCopyGamma) {
 GXHLE(GXSetCopyClamp) {
     gxAudit("GXSetCopyClamp %u", c.r[3]);
     sDisplayCopy.clamp = u8(c.r[3] & 3);
+    GXSetCopyClamp(GXFBClamp(c.r[3] & 3));  // texture copies: copy filter edge lines (patch 0018)
 }
 GXHLE(GXSetCopyFilter) {
     if (c.r[6]) gxAudit("GXSetCopyFilter aa=%u vf=%u vfilter=%u,%u,%u,%u,%u,%u,%u", c.r[3], c.r[5], rd8(c.r[6]), rd8(c.r[6] + 1), rd8(c.r[6] + 2), rd8(c.r[6] + 3), rd8(c.r[6] + 4), rd8(c.r[6] + 5), rd8(c.r[6] + 6));
