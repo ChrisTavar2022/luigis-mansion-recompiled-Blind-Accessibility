@@ -1111,6 +1111,12 @@ GXHLE(GXSetTevIndWarp) {
     // a known pattern: intensity 15 (offset 0) in the left half, 0 (offset -5 texels in s and t)
     // in the right half.
     static const bool sPattern = [] { const char* e = std::getenv("LM_IND_PATTERN"); return e && e[0] == '1'; }();
+    // LM_IND_TEXGENS=<n> (test aid): the painting warp (fn_8005FDD4) never calls GXSetNumTexGens and
+    // inherits 1 from the previous draw, so its indirect texcoord 1 is not generated (Aurora, like
+    // the usual emulator convention, reads it as (0,0): a uniform offset instead of the per-texel
+    // noise the game's 64x64 random texture was made for). n = 2 shows the noise for comparison.
+    static const int sTexGens = [] { const char* e = std::getenv("LM_IND_TEXGENS"); return e ? std::atoi(e) : 0; }();
+    if (sTexGens > 0) GXSetNumTexGens(u8(sTexGens));
     if (const u32 img = sMapImage[sInd.order[c.r[4] & 3][1] & 7]; sPattern && img) {
         u8* tex = hostp(0x80000000u | img);
         for (u32 i = 0; i < 64 * 64; i++) {
