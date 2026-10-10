@@ -608,3 +608,73 @@ and the model viewer. Merging pipeline_cache.db files from longer play sessions
 - A fresh scratch `APPDATA` (or `LM_CACHE_DIR`) gives empty `dawn_cache.db`/`pipeline_cache.db`;
   the GPU driver's own shader cache is system-wide and stays warm, so first-ever runs on a new
   machine are somewhat slower than measured here.
+
+## Enhanced lighting
+
+### Ghost lights
+
+F1 > Visuals > Enhanced lighting > "Ghost lights" (`[ghost_lights]` in settings.ini; needs the
+Enhanced lighting master switch and "Dynamic colored lights"; off by default). Every ghost the
+game draws becomes a coloured point light in the renderer's extra-light list
+(`aurora/lights.h`), so ghosts light the floor, walls and furniture around them in their own
+glow colour. Code: `src/recomp/ghost_lights.cpp` (US + PAL).
+
+**Where the data comes from** (USA addresses; `VA()` / `VOFF()` for the European game):
+
+| What | Source |
+|---|---|
+| Ghost actors | live character slots `lbl_803D48A0` (count `lbl_804D8750`), the list the actor draw pass `fn_80060E70` walks. A ghost = type (actor +0x3C) with type flag 8 in `lbl_8033B590` (0x1C per type: +0x08 u16 flags, +0x14 s16 class 1 small / 2 normal / 3 portrait / 4 boss, +0x18 name) |
+| Drawn this frame | the draw pass's own test: actor +0x40 flags (0x6000 not drawn, 0x100 hidden from the normal passes, 0x200 any room) and room byte (+0xB4 >> 24) visible through `fn_8001CE1C(room, -1)` |
+| Position | actor +0x44, lifted 40/90/110/160 units (class 1/2/3/4): +0x44 is where the game puts the small GX light some ghosts carry (`EnZako::fn_800C1FFC` → `fn_80016C98(0, actor+0x44, BrightColor × alpha, 40, 80)`), but walking ghosts have it near the floor (ballroom shy-guy ghosts at y 60), where a point light only grazes the floor |
+| Colour | the ghost's glow colour, EnemyParam "BrightColor" (`/param/ctp/<type>.prm`, `Koga::EnTypesManager::sManager`+4, 0x218 per type, value at +0x1FC; same layout on PAL), which the game copies to actor +0xE4 and uses for the ghost's light effects. The actor copy is read; parameter and a per-class table are fallbacks |
+| Element ghosts | EnemyParam Element (+0x198): 1 fire, 2 water, 3 ice (from the weakness test at 0x800C75F8). They all share the pale glow C1DCF7, so their light is fire orange / water blue / ice cyan instead |
+| Visibility | actor +0xE3, the alpha the ghost layer is drawn with (0 invisible .. 255) |
+| HP | actor +0xFC (s16), maximum = EnemyParam life (+0x1C) |
+| States | `Koga::CharacterEvent` messages to the ghost's AI (`fn_800C0F08`, hooked in gameplay_hooks.cpp; message → observer slot from `receiveMessage`'s jump table): 2 in the flashlight beam (every frame), 3 capture begin, 4 capture end (also sent when a ghost vanishes/escapes), 9 fishing begin (hooked by the Poltergust), 12 collided with Luigi, 13/14/15 fire/ice/water spray, 16/17/18 fire/ice/water ball. The Poltergust capture update `fn_80081BCC` (ghost at capture +0x18) runs every frame a ghost is held |
+| Camera | GX view matrix `lbl_803A3820`+0x18C (+0x198 on PAL), the matrix `fn_80057CFC` uses to put the S3D lights in eye space for `GXLoadLightObjImm`; identical to `enh::worldToView` (checked) |
+
+Per-type glow colours (US, `LM_GHOST_LIGHT_LOG` dumps the table): gold ghost `mgyapoo1`
+F19726, Chauncey `bbaby` CCFF99, Boolossus/Boos `btelesa`/`telesa` white, Mr. Luggs `eater`
+CC74F0, waiters A3DDE0, ballroom shy-guy ghosts `heypo1..8` red/green/white/brown/orange/
+yellow/pink/purple, blue/ice ghosts `iyapoo*` 5ACBE1, gold mice F5C50F, Bogmire `bshadow`
+white, Neville `situji` 0032FF.
+
+**Behaviour** ("Dramatic ghost light effects", on by default): gentle two-frequency pulse; a
+flare when a ghost fades in or collides with Luigi; a nervous flicker that brightens while the
+flashlight beam is on it; while the Poltergust holds it the light ramps with lost HP
+(0.35 + 0.65 × (1 − HP/max)) with a fast tremor and a larger radius; capture (message 3, or HP
+reaching 0 while held) gives a ~3× burst that fades over 1.5 s and follows the ghost into the
+nozzle (and stays at its last position if the actor leaves the list); element hits tint the
+light with the element for 20 frames. Invisible ghosts give no light ("Invisible ghost glow"
+0..0.3 adds a faint hint). Lights are sorted by strength / distance; "Max ghost lights"
+(default 8, renderer limit 16) keeps the strongest, the strongest two get the cast-shadows flag
+when "Shadows from ghost lights" is on (the renderer does not implement extra-light shadows
+yet). Radius by class 380/560/720/1100 × "Ghost light radius"; ids = actor pointer, so
+interpolation pairs them. Actors are pooled and reused, so capture marks expire.
+
+The lights carry `ExtraLightTranslucent`: the renderer classes every blended draw as a ghost
+draw, and much of a room is drawn blended (without the flag the ballroom floor and walls got no
+light). Side effect: the ghost's own body also catches its light.
+
+Built at the start of the main view `fn_8000BB98(0)` (enhanced_lighting.cpp's hook calls
+`ghostlights::onMainView` before `enh::beginScene`) and submitted with
+`recomp::submitExtraLights`; frames without the game scene have none.
+
+**Verification** (US unless noted; build/ghostlights/*.png): `LM_GHOST_LIGHT_AB=1` sends the
+lights only on every other game frame so consecutive `LM_FRAME_DUMP` frames compare with/without
+in the same scene (frame brightness then alternates by ~7.5e6 per frame in the ballroom).
+Ballroom (`LM_TELEPORT=1800,0,-1400,100`): coloured pools around the shy-guy ghosts on the floor
+and the chandelier (`ballroom_ab.png`); Chauncey (`LM_START_MAP=10`): green light on the
+balcony floor and balustrade (`chauncey_ab.png`); Boolossus (map 11): white light, collide
+events flare it (`boolossus_ab.png`). Logged in game: gold ghost in the training room
+(`LM_START_MAP=3`; appear flare, in-beam events, flee/despawn with message 4), Mr. Luggs and the
+waiters in the dining room, the ballroom ghosts. PAL base (map 11): same ghost, colour, view
+positions and events. Not yet exercised in play: a full stun → vacuum → capture (no scripted
+capture exists; the vacuum/capture inputs are the game's own capture update and messages 3/9),
+element ghosts and element hits.
+
+Test aids: `LM_GHOST_LIGHTS=1` (on regardless of the settings; with `LM_ENHANCED=1`),
+`LM_GHOST_LIGHT_LOG=1|N` (every ghost each N frames: id, type, class, element, state, alpha,
+HP, flags, colour, world and view position, intensity, radius; the lights sent; every event;
+vacuum holds; the type colour table once), `LM_GHOST_LIGHT_DIFF=1` (changed bytes 0..0x200 of
+drawn ghosts, research aid), `LM_GHOST_LIGHT_AB=1`.
