@@ -4,6 +4,7 @@
 #include "port/settings.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
+#include "recomp/version.h"
 
 #include <dolphin/dvd.h>
 
@@ -53,20 +54,20 @@ void applyPatches(const P* list, size_t n, bool on, const char* what, Rd rd, Wr 
 }
 
 // Portrificationizer: table lbl_8036E52C (0x18 per ghost; read by fn_80121E14/fn_80124890).
-// Field +4 of every entry is 0x60, the generic blue blob; each ghost's own portrait-scene
-// models are the unused ids below (the same values as the known Gecko code).
-constexpr Patch32 kPortrait[] = {
-    {0x8036E548, 0x60, 0x064}, {0x8036E560, 0x60, 0x121}, {0x8036E578, 0x60, 0x125}, {0x8036E590, 0x60, 0x129},
-    {0x8036E5A8, 0x60, 0x12D}, {0x8036E5C0, 0x60, 0x131}, {0x8036E5D8, 0x60, 0x135}, {0x8036E5F0, 0x60, 0x139},
-    {0x8036E608, 0x60, 0x13D}, {0x8036E620, 0x60, 0x141}, {0x8036E638, 0x60, 0x145}, {0x8036E650, 0x60, 0x149},
-    {0x8036E668, 0x60, 0x14D}, {0x8036E680, 0x60, 0x151}, {0x8036E698, 0x60, 0x155}, {0x8036E6B0, 0x60, 0x159},
-    {0x8036E6C8, 0x60, 0x15D}, {0x8036E6E0, 0x60, 0x161}, {0x8036E6F8, 0x60, 0x165}, {0x8036E710, 0x60, 0x169},
-    {0x8036E728, 0x60, 0x16D},
-};
+// Field +4 of entries 1..21 is 0x60, the generic blue blob; each ghost's own portrait-scene
+// models are the unused ids below (the same values as the known Gecko code). The European
+// table has the same layout (VA() maps it).
+#define kPortraitTable VA(0x8036E52C)
+constexpr u32 kPortraitModels[] = {0x064, 0x121, 0x125, 0x129, 0x12D, 0x131, 0x135, 0x139, 0x13D, 0x141, 0x145,
+                                   0x149, 0x14D, 0x151, 0x155, 0x159, 0x15D, 0x161, 0x165, 0x169, 0x16D};
 
 void applyPortraits() {
     static const bool sForce = envFlag("LM_UNUSED_PORTRAITS");
-    applyPatches(kPortrait, std::size(kPortrait), sForce || opt().unusedPortraitModels, "portrait table",
+    static std::vector<Patch32> sList;
+    if (sList.empty() && kPortraitTable)
+        for (size_t i = 0; i < std::size(kPortraitModels); i++)
+            sList.push_back({kPortraitTable + 0x18 * u32(i + 1) + 4, 0x60, kPortraitModels[i]});
+    applyPatches(sList.data(), sList.size(), sForce || opt().unusedPortraitModels, "portrait table",
                  [](u32 a) { return rd32(a); }, [](u32 a, u32 v) { wr32(a, v); });
 }
 
@@ -75,15 +76,25 @@ void applyPortraits() {
 // (fn_8011496C: scene 3 + (type-1)*4 + ..., i.e. oo/co/ho/nodemoNN.szp). Types 07 (heart) and
 // 08 (star) have models and all four cutscenes but no door uses them. Door 46 is the Nursery
 // (Chauncey) door, door 45 the Twins' room door; both ship as type 01.
-constexpr Patch8 kHeartDoor[] = {{0x80303488 + 6, 0x01, 0x07}};
-constexpr Patch8 kStarDoor[] = {{0x8030346C + 6, 0x01, 0x08}};
+// Reached through the map table (lbl_802FF218[2] +0x18; USA 0x80302F80), which also finds the
+// European copy (identical doors at another address).
+constexpr u32 kDoorSize = 0x1C, kHeartDoorNo = 46, kStarDoorNo = 45;
+u32 mansionDoors() {
+    const u32 map2 = rd32(VA(0x802FF218) + 4 * 2);
+    const u32 doors = (map2 >> 28) == 8 ? rd32(map2 + 0x18) : 0;
+    return (doors >> 28) == 8 ? doors : 0;
+}
 
 void applyDoors() {
     static const bool sHeart = envFlag("LM_HEART_DOOR"), sStar = envFlag("LM_STAR_DOOR");
     auto rd = [](u32 a) { return u8(rd8(a)); };
     auto wr = [](u32 a, u8 v) { wr8(a, v); };
-    applyPatches(kHeartDoor, 1, sHeart || opt().heartDoor, "heart door", rd, wr);
-    applyPatches(kStarDoor, 1, sStar || opt().starDoor, "star door", rd, wr);
+    const u32 doors = mansionDoors();
+    if (!doors) return;
+    const Patch8 heart[] = {{doors + kDoorSize * kHeartDoorNo + 6, 0x01, 0x07}};
+    const Patch8 star[] = {{doors + kDoorSize * kStarDoorNo + 6, 0x01, 0x08}};
+    applyPatches(heart, 1, sHeart || opt().heartDoor, "heart door", rd, wr);
+    applyPatches(star, 1, sStar || opt().starDoor, "star door", rd, wr);
 }
 
 // ---- Host-side archive reading (for the beta GBH-map Luigi) ------------------------------
@@ -184,8 +195,8 @@ u32 guestString(const char* s) {
 // Map 2's sky descriptor (lbl_80300B60, via lbl_80300C7C[map]) loads /vrball01.bmd and
 // /vrball01.btk from /Iwamoto/vrball_M.szp. The always-mounted game archive
 // (fn_80066FB4) also carries an older sky under iwamoto/vrbox/ that nothing loads.
-constexpr u32 kSkyDesc = 0x804D8380;      // current sky descriptor (lbl_804D8380)
-constexpr u32 kMansionSky = 0x80300B60;   // map 2 descriptor
+#define kSkyDesc VA(0x804D8380)     // current sky descriptor (lbl_804D8380)
+#define kMansionSky VA(0x80300B60)  // map 2 descriptor
 bool sSkyLoading = false;
 
 u32 gameArchive(Ctx& c) {
@@ -290,7 +301,7 @@ u32 copyDispCount();  // hle_gx.cpp
 void unusedAssetsFrame(Ctx& c) {
     static const bool sDump = envFlag("LM_NOZZLE_DUMP");
     if (!sDump) return;
-    const u32 actor = rd32(0x803D48A0);  // actor slot 0 = Luigi
+    const u32 actor = rd32(VA(0x803D48A0));  // actor slot 0 = Luigi
     if (actor < 0x80000000u || actor >= 0x81800000u) return;
     constexpr u32 kSize = 0x1400;
     static std::vector<u8> idle(kSize), prev(kSize), noisy(kSize);

@@ -103,7 +103,7 @@ HLE(fn_8003CFC0) {
         int at = 300;
         std::sscanf(sTp, "%f,%f,%f,%d", &x, &y, &z, &at);
         if (++sFrames == at) {
-            const u32 actor = rd32(0x803D48A0);
+            const u32 actor = rd32(VA(0x803D48A0));
             if (actor >= 0x80000000u && actor < 0x81800000u) {
                 wr32(actor + 0x44, std::bit_cast<u32>(x));
                 wr32(actor + 0x48, std::bit_cast<u32>(y));

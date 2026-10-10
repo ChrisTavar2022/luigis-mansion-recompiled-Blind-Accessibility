@@ -142,8 +142,8 @@ def main():
     missing = []
     for line in (ROOT / "tools" / "recomp" / "hooks.txt").read_text(encoding="utf-8").splitlines():
         words = line.split("#")[0].split()
-        if len(words) < 2 or "pal" not in words[1:]:
-            continue
+        if len(words) < 2 or "pal" not in words[1:] or words[0] == "patch":
+            continue  # (patch lines carry their own PAL address)
         m = PALFN_RE.fullmatch(words[0])
         addr = int(m[1], 16) if m and int(m[1], 16) in pal.fat else us_to_pal.get(words[0])
         if addr is None:

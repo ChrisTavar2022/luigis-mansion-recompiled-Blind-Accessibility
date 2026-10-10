@@ -83,20 +83,20 @@ fn_8005A5D4 us pal
 
 # Unused assets (src/recomp/unused_assets.cpp, docs/UNUSED_CONTENT.md): portrait table readers,
 # map setup (door table), sky load callback, archive resource lookup/size (sky + GBH-map Luigi).
-fn_80121E14
-fn_80124890
-fn_800122BC
-fn_8002F4DC
-getResource__10JKRArchiveFPCc
-getResSize__10JKRArchiveCFPCv
+fn_80121E14 us pal
+fn_80124890 us pal
+fn_800122BC us pal
+fn_8002F4DC us pal
+getResource__10JKRArchiveFPCc us pal
+getResSize__10JKRArchiveCFPCv us pal
 
 # Unused air/water Poltergust nozzles (src/recomp/nozzles.cpp): Luigi's Poltergust mode
 # selector, which re-types the nozzle actor.
-fn_800B36B8
+fn_800B36B8 us pal
 
 # Unused model swaps (src/recomp/unused_models.cpp, early_luigi.cpp): model archive setup
 # (registry entry); unused models / the early Luigi .mdl are swapped in after it.
-fn_80061C94
+fn_80061C94 us pal
 
 # Developer tools (src/recomp/dev_tools.cpp, docs/UNUSED_CONTENT.md): map warps through the
 # scene manager (+ LM_START_MAP), the game's JUTReport queue (debug text overlay), and the
@@ -127,26 +127,34 @@ fn_8003DF88 pal
 fn_800DBE8C pal
 fn_800B84E4 pal
 # Action Replay debug modes as toggles (dev_tools.cpp): Luigi draw-pass callback, HUD test sprites.
-fn_800B172C
-fn_8003BEEC
+fn_800B172C us pal
+fn_8003BEEC us pal
 fn_8003EBB0
 # Leftover room visits (room_swap.cpp): Luigi's start position for the visited room.
 findLuigiAppearIndex__Q24Koga9EnManagerFPQ24Koga8ToolDataUl
 getValue__Q24Koga8ToolDataCFiPCcPf
 
 # Runtime-switchable instruction patches: "patch <id> <address> <instruction word> [us] [pal]".
-# The replacement runs while switch <id> is on (setPatch, src/recomp/runtime.h).
+# The replacement runs while switch <id> is on (setPatch, src/recomp/runtime.h). The address is
+# the running release's own: a patch for both releases is two lines, the USA one (untagged or
+# `us`) and the European one tagged `pal` (same instruction in the matched function, checked
+# with tools/pal_diff.py show).
 # Unused Game Boy Horror ghost tracker (TCRF): fn_8004463C loads r0 = 0 at 0x8004472C, which
 # keeps the tracking code from running; 1 = far mode (swaying, smooth), 2 = close mode (accurate).
+# European fn_80045B30 is identical: 0x80045C20.
 patch 1 8004472C 38000001
 patch 2 8004472C 38000002
+patch 1 80045C20 38000001 pal
+patch 2 80045C20 38000002 pal
 # Cut E3 Game Boy Horror clock + radar screen (TCRF): GBH screen mode 1 draws it once the mode
-# switch in fn_8003CFC0 branches to it (0x8003D544 b +0xBC -> b +0xD8).
+# switch in fn_8003CFC0 branches to it (0x8003D544 b +0xBC -> b +0xD8). European fn_8003E43C:
+# 0x8003E9C0, same branch.
 patch 3 8003D544 480000D8
+patch 3 8003E9C0 480000D8 pal
 # Lightning test aid (lightning_test.cpp, LM_LIGHTNING): room Thunder field (the room update
 # fn_800168EC is hooked once, in hidden_mansion_hooks.cpp, and calls the aid).
-fn_8002D7C8
+fn_8002D7C8 us pal
 # Shadow-map enhancements (shadows.cpp): light camera setup of the shadow pass.
 fn_8005D984 us pal
 fn_800293A8 us pal
-fn_80029050
+fn_80029050 us pal
