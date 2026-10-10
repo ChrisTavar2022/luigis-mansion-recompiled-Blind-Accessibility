@@ -219,6 +219,7 @@ bool run(const Options& opts, LaunchInfo& launch) {
     else if (opts.autoStart && (slots[0].valid || slots[1].valid)) begin();
 
     bool finished = false;
+    int framesDrawn = 0;  // the background precache is queued by the first frame (Aurora patch 0013)
     while (!finished) {
         for (const AuroraEvent* ev = aurora_update(); ev && ev->type != AURORA_NONE; ++ev) {
             if (ev->type == AURORA_EXIT) return false;
@@ -235,7 +236,7 @@ bool run(const Options& opts, LaunchInfo& launch) {
                 }
             }
         }
-        if (job && screen == Screen::Working) {
+        if (job && screen == Screen::Working && framesDrawn > 0) {
             std::lock_guard lk(job->m);
             if (job->done) {
                 if (!job->ok) screen = Screen::Failed;
@@ -345,6 +346,7 @@ bool run(const Options& opts, LaunchInfo& launch) {
         }
         ImGui::End();
         aurora_end_frame();
+        framesDrawn++;
     }
     job.reset();
 
