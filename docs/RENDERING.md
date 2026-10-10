@@ -454,3 +454,47 @@ GX_CULL_NONE. Both are FIFO commands (`GX_AURORA_SET_WIREFRAME` 0x0050,
 interpolation tape. The game never issues them: pipelines and shaders are unchanged unless a
 viewer turns them on (`ShaderConfig::wireframe` uses a former padding bit, so the pipeline
 cache keys of existing pipelines do not change).
+
+### Shadows at any distance (enhancement) and the room shadow light
+
+**Original behaviour.** Outside the flashlight, the gameplay shadow light is a light that follows
+Luigi (`fn_80029050`/`fn_80028CF0`: placed from Luigi's position along the room's light angles,
+eye `lbl_803CCD28` + offset, `fn_80029488`), with fov/near/far from the light table
+(`fn_800293A8`: e.g. fov 17, near 3000, far 5000 for a high distant light in the training room and
+map 6; fov 31, near 619, far 2322 for the foyer). Only what lies inside that small frustum casts
+or receives shadows; receivers outside it compare against the map's clear value or clamped
+coordinates and stay lit, so in big rooms the shadows of things farther from Luigi drop out as he
+walks. The flashlight's own frustum (fov 70, near 60, far 5110) is its beam: shadows only show
+where it shines, so it is left alone. Not a port bug (`LM_SHADOW_LOG=1` logs the light camera).
+
+**Enhancement** (`shadows.cpp`, `fn_8005D984` hook; F1 > Visuals > Rendering "Shadows at any
+distance", `[rendering] shadow_any_distance`, on by default; off = the original values exactly):
+for the gameplay room/lightning light (detected through `fn_800293A8`, not the flashlight or
+cutscene lights) the light keeps its position and direction (re-aiming it moved the shadows of
+skinned characters, so it is not done) and its fov, aspect and near/far are widened so the
+frustum contains both its own frustum and the player's view frustum (sampled from 1/4 to 4x the
+camera-target distance; half-angle capped at 75 degrees; near never below 1/4 of the original
+for Z16 precision). The game builds the light projection, the receivers' texture/ramp matrices
+and the light's culling from those fields, so everything stays consistent.
+
+Verification (16:9, frame dumps): map 6 (lit gallery-style hall, Luigi and E. Gadd) and the
+training room: the refit is applied every frame (e.g. fov 17 -> 27, far 5000 -> 9500) and only
+shadow pixels change (`build/shadows2/m6_any_distance_off_on.png`, left off / right on).
+**Not fully verified:** a lit, cleared mansion room where the user saw the dropout could not be
+reached with the test aids; in the foyer (dark, room light in front of the camera) a coverage
+debug view showed most of the visible floor outside the light's map with the option on or off,
+i.e. the light sits where a perspective map cannot cover what the camera sees. Covering such
+cases would need a different light projection (e.g. a second map or an orthographic fit),
+which the game's receiver code (perspective ramp) does not support without further hooks.
+
+### Shader compilation and missing objects (Luigi's body)
+
+Aurora compiles GPU pipelines in the background and **skips draws** whose pipeline is not ready.
+In the nursery walk test (interpolation docs), the first time the flashlight faces the camera
+Luigi's body (actor drawn without the shadow stages, `fn_80060E70` when `fn_800093EC` says the
+light faces the view) needs new pipelines and was missing for ~4 frames (2608-2611) at Original
+30 too. Not GX state: forcing all suspect states, disabling copies, the shadow pass or array
+snapshots made no difference; blocking compilation fixed it. Aurora patch 0013 adds
+`GXSetAuroraBlockingPipelines`; F1 > Visuals > Rendering "Wait for shader compilation"
+(`wait_for_shaders`, on): the frame waits once per new pipeline (cached afterwards). Before/after:
+`build/shadows2/luigi_body_before_after.png` (top off, bottom on, frames 2607-2610).

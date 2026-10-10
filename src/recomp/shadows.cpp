@@ -36,6 +36,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <initializer_list>
+#include <iterator>
 
 namespace recomp {
 namespace {
@@ -102,10 +103,20 @@ bool fitFrustum(u32 cam, float lightAspect, float viewAspect, Fit& fit) {
     if (!(dist > 1.0f) || !(viewFov > 0.0f && viewFov < 3.0f) || !(lightTanY > 0.0f) || !(f > n * 1.01f))
         return false;
 
-    V3 pts[16];
+    // The light's own frustum, and the view's frustum sampled at several depths (the room light
+    // can sit inside the visible region, e.g. beyond Luigi facing the camera; then only the part
+    // in front of it can be covered, as wide as kMaxHalfAngle allows).
+    constexpr float kDepths[] = {kViewNear, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f, 3.0f, kViewDepth};
+    V3 pts[8 + 4 * std::size(kDepths)];
     frustumCorners(L, D, up, lightTanY, lightAspect, n, f, pts);
-    frustumCorners(E, norm(sub(C, E)), V3{0, 1, 0}, std::tan(viewFov * 0.5f), viewAspect, kViewNear * dist,
-                   kViewDepth * dist, pts + 8);
+    const V3 viewDir = norm(sub(C, E));
+    for (size_t k = 0; k < std::size(kDepths); k += 2) {
+        V3 corners[8];
+        const float z0 = kDepths[k] * dist, z1 = kDepths[k + 1] * dist;
+        frustumCorners(E, viewDir, V3{0, 1, 0}, std::tan(viewFov * 0.5f), viewAspect, z0, z1, corners);
+        for (int i = 0; i < 8; i++) pts[8 + 4 * k + i] = corners[i];
+    }
+    const float zClip = std::max(kMinNear, n * 0.25f);
 
     // The light keeps its direction: re-aiming it moved the shadows of skinned characters
     // (something in their receiver/caster setup keeps the game's own light direction), while
@@ -117,7 +128,7 @@ bool fitFrustum(u32 cam, float lightAspect, float viewAspect, Fit& fit) {
     for (const V3& p : pts) {
         const V3 v = sub(p, L);
         const float z = dot(v, D2);
-        if (z < 1.0f) continue;  // behind the light: a perspective map cannot cover it
+        if (z < zClip) continue;  // behind (or right at) the light: a perspective map cannot cover it
         zMin = std::min(zMin, z);
         zMax = std::max(zMax, z);
         tx = std::max(tx, std::fabs(dot(v, r)) / z);
