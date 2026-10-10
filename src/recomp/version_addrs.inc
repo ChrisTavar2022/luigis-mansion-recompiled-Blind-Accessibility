@@ -34,6 +34,8 @@
     {0x804D81B4u, 0x804C5884u},  // lbl_804D81B4: 4 matching reference(s)
     {0x804D81B6u, 0x804C5886u},  // lbl_804D81B6: 3 matching reference(s)
     {0x804D8230u, 0x804C5900u},  // lbl_804D8230: 6 matching reference(s)
+    {0x804D82E9u, 0x804C59B9u},  // lbl_804D82E9: 4 matching reference(s)
+    {0x804D8304u, 0x804C59D4u},  // lbl_804D8304: 4 matching reference(s)
     {0x804D846Cu, 0x804C5B3Cu},  // lbl_804D846C: 5 matching reference(s)
     {0x804D851Cu, 0x804C5BECu},  // lbl_804D851C: 2 matching reference(s)
     {0x804D86B0u, 0x804C5D98u},  // lbl_804D86B0: same instruction in 1 matched function(s)

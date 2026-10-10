@@ -185,6 +185,12 @@ void renderingTab() {
         "with the screen, so lightning and flashlight shadows reach the left/right edges at 16:9 and\n"
         "wider (slightly lower horizontal shadow detail). Off: objects near the edges cast no\n"
         "shadows, like widescreen hacks on the original. No cost. Only matters in widescreen.");
+    sDirty |= ImGui::Checkbox("Shadows at any distance", &r.shadowAnyDistance);
+    ImGui::SetItemTooltip(
+        "The original game only draws shadows within a limited distance band around Luigi: in big\n"
+        "rooms, shadows of things farther away (or close to the camera) drop out as he walks.\n"
+        "On: the shadow light's range covers everything in view, so all shadows always render.\n"
+        "Off: the original behaviour. No cost.");
 }
 
 // Frame rate: 30 (the game's own rate, drawn directly) up to 320, or the display's refresh rate.
