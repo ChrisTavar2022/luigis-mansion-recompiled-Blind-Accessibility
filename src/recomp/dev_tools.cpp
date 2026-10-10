@@ -43,8 +43,9 @@ namespace {
 // Compiled-in debug switches that nothing in the retail game sets (docs/UNUSED_CONTENT.md).
 #define kParticleReportFlag VA(0x804D8E04)  // byte; fn_80160138 prints emitter/particle counts
 #define kDepthBlurFlag VA(0x804D86B0)       // word; fn_8005E9EC depth-of-field style blur pass
-constexpr u32 kHudTestFlag = 0x804D854A;         // byte; fn_800433B4 HUD sprite test
-constexpr u32 kFontTestFlag = 0x804D8488;        // u16; fn_8003EBB0 font test (PAL 0x804C5B58)
+#define kHudTestFlag VA(0x804D854A)         // byte; fn_800433B4 HUD sprite test
+#define kFontTestFlag VA(0x804D8488)        // u16; fn_8003EBB0 font test (PAL 0x804C5B58)
+// USA only: the European font test (table lbl_80309AF8) already prints Latin lines.
 constexpr u32 kFontTestLine11 = 0x80304C18;      // font-test string table lbl_80304BEC[11]
 constexpr u32 kFontTestLine11Orig = 0x80304BC0;  // katakana line (retail)
 constexpr u32 kFontTestLatin = 0x80304C1C;       // "alphabet 123" (what the PAL code points it at)
@@ -271,7 +272,7 @@ HLE(fn_800B172C) {
 HLE(fn_8003BEEC) {
     static const int sEnvHud = envInt("LM_DEV_HUD_TEST", -1);
     const int mode = sEnvHud >= 0 ? sEnvHud : port::settings().enhancements.dbgHudTest;
-    if (c.lr == 0x80043930u && (mode == 2 || mode == 3)) c.r[3] = c.r[3] - 0xA90 + (mode == 2 ? u32(-0x300) : 0xFA0u);
+    if (c.lr == VA(0x80043930) && (mode == 2 || mode == 3)) c.r[3] = c.r[3] - 0xA90 + (mode == 2 ? u32(-0x300) : 0xFA0u);
     callOriginal(c, "fn_8003BEEC");
 }
 
@@ -296,7 +297,7 @@ HLE(LMChangeFrameBuffer__Fv) {
     static const int sEnvFont = envInt("LM_DEV_FONT_TEST", -1);
     const int font = sEnvFont >= 0 ? sEnvFont : (e.dbgFontTest ? (e.dbgFontTestLatin ? 2 : 1) : 0);
     wr16(kFontTestFlag, font ? 1 : 0);
-    wr32(kFontTestLine11, font == 2 ? kFontTestLatin : kFontTestLine11Orig);
+    if (!ver::pal()) wr32(kFontTestLine11, font == 2 ? kFontTestLatin : kFontTestLine11Orig);
 
     // Test aid: LM_DEV_WARPS=<map>[:<appear>]@<frame>,... queues warps at given frame counts.
     static std::vector<std::array<int, 3>> sEnvWarps = [] {
@@ -365,7 +366,6 @@ bool capturesInput() { return viewer::isOpen(); }
 
 bool handleKey(const SDL_Event& ev) {
     if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) return false;
-    if (port::usCodeFeature() != port::Avail::Yes) return false;  // US addresses only
     if (ev.key.key == SDLK_F3) {
         sInfoOverlay = !sInfoOverlay;
         return true;
@@ -463,7 +463,10 @@ void unusedSection() {
 
     ImGui::SeparatorText("Unused rooms");
     ImGui::TextDisabled("Leftover room models. Go warps to the retail room and shows the old model for that visit only.");
-    ImGui::BeginDisabled(!sStatus.inGame);
+    // Its hooks (Luigi's start position for the visited room) are written against the USA code.
+    const bool roomsHere = !ver::pal();
+    if (!roomsHere) ImGui::TextDisabled("(%s)", port::availNote(port::Avail::NotYet));
+    ImGui::BeginDisabled(!sStatus.inGame || !roomsHere);
     int nr = 0;
     const rooms::LeftoverRoom* lr = rooms::list(&nr);
     if (ImGui::BeginTable("unusedrooms", 2, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
@@ -512,10 +515,12 @@ void debugSection() {
     dirty |= ImGui::Checkbox("Font test", &e.dbgFontTest);
     helpMarker("Twelve lines of kanji / kana / symbols printed with the game font (flag 0x804D8488;\n"
                "PAL code 0A4B8590 0201 / 024C5B58 0001).");
-    ImGui::BeginDisabled(!e.dbgFontTest);
+    ImGui::BeginDisabled(!e.dbgFontTest || ver::pal());
     ImGui::SameLine();
     dirty |= ImGui::Checkbox("Latin last line (PAL fix)", &e.dbgFontTestLatin);
     ImGui::EndDisabled();
+    if (ver::pal() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("The European version's font test already prints Latin lines.");
     if (dirty) port::saveSettings();
 
     ImGui::SeparatorText("Visit area");

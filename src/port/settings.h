@@ -29,7 +29,7 @@ struct VideoSettings {
     bool vsync = true;          // applied at next launch
     int msaa = 1;               // 1, 2, 4, 8; applied at next launch
     bool hudKeep4x3 = true;     // keep 2D/HUD at 4:3 (centered) in widescreen
-    bool pal60 = false;         // PAL game only: 59.94 Hz retrace (PAL60, 20% faster) instead of 50 Hz
+    bool pal60 = false;         // PAL game only: 59.94 Hz retrace (PAL60) instead of 50 Hz (game speed unchanged)
 };
 
 // CRT post-process filter (src/recomp/crt.cpp). Beam sigmas are fractions of the

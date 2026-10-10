@@ -450,10 +450,9 @@ void unusedContentTab() {
         ImGui::SetTooltip("Toads wear the unused green texture set of the never-placed kinopio2 character\n"
                           "(TCRF's Action Replay code), with the unused green-capped dialogue icon.");
     {
-        Gate g(port::usCodeFeature());
         auto item = [&](const char* label, bool& v, const char* note) {
             sDirty |= ImGui::Checkbox(label, &v);
-            if (note && g.a == port::Avail::Yes) pending(note);
+            if (note) pending(note);
         };
         item("Beta skybox", e.betaSkybox, "next map load");
         item("Heart door (Chauncey's room)", e.heartDoor, "next map load");
@@ -475,28 +474,22 @@ void unusedContentTab() {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("The E3 2001 Poltergust model still on the disc (/model/vbody.szp): a red canister\n"
                               "on a wheeled base instead of the retail tank.");
-        if (g.a == port::Avail::Yes) pending("next map load");
+        pending("next map load");
         sDirty |= ImGui::Checkbox("Early Bogmire model", &e.earlyBogmire);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Bogmire uses his unused early model (/model/shadow.szp): longer wings, thinner\n"
                               "hanging flaps, a defined chin and a wavy ghost tail, with its own animations.");
-        if (g.a == port::Avail::Yes) pending("next map load");
+        pending("next map load");
     }
     ImGui::Separator();
-    {
-        Gate g(port::usCodeFeature());
-        recomp::dev::unusedSection();
-    }
+    recomp::dev::unusedSection();
 }
 
 // Gameplay toggles, difficulty and cheats.
 void gameplayTab() { gameplaySection(); }
 
 // Debug features left in the game, warps and viewers.
-void debugTab() {
-    Gate g(port::usCodeFeature());
-    recomp::dev::debugSection();
-}
+void debugTab() { recomp::dev::debugSection(); }
 
 void enhancementsTab() {
     if (ImGui::BeginTabBar("enhancements")) {

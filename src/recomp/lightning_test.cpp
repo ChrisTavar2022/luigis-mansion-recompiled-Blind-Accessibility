@@ -1,4 +1,4 @@
-// LM_LIGHTNING=<first>[,<period>[,<type>]] (testing, US game): forces lightning strikes so
+// LM_LIGHTNING=<first>[,<period>[,<type>]] (testing, both releases): forces lightning strikes so
 // the lightning shadows (the shadow map rendered from the window, docs/RENDERING.md
 // "Shadows") can be captured deterministically.
 //
@@ -21,7 +21,7 @@
 namespace recomp {
 namespace {
 
-constexpr u32 kThreshold = 0x804D9B30;  // f32, sdata2
+#define kThreshold VA(0x804D9B30)  // f32, sdata2
 
 struct Config {
     long first = -1, period = 0, type = 0;
@@ -52,7 +52,7 @@ bool beginRoomUpdate() {
     const long n = sCalls++;
     const bool strike = cfg.first >= 0 &&
                         (n == cfg.first || (cfg.period > 0 && n > cfg.first && (n - cfg.first) % cfg.period == 0));
-    if (!strike || ver::pal()) return false;  // US addresses (the European room update is not mapped)
+    if (!strike || !kThreshold) return false;
     sSavedThreshold = rd32(kThreshold);
     wr32(kThreshold, 0xFF800000u);  // -inf: any fn_8000FC60() result starts the strike
     sForcing = true;

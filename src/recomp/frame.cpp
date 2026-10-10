@@ -22,6 +22,7 @@
 
 namespace recomp {
 u32 viRetraceCount();
+u32 frameStamp();  // hle_vi.cpp: the frame's time stamp in NTSC fields
 }
 
 namespace recomp::frame {
@@ -182,7 +183,7 @@ void present(Ctx& c, u32, bool) {
     const u32 presents = ++sPresents;
     if (presents % 30 == 0 || presents < 60) log("[frame] %u presents, %u retraces", presents, viRetraceCount());
     if (sGuestDecoupled) {
-        interp::endTape(viRetraceCount());
+        interp::endTape(frameStamp());
         if (sStopping) throw sched::ThreadExit{};
         if (sStayDecoupled) {
             interp::beginTape();

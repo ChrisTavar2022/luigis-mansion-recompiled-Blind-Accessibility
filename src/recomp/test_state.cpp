@@ -12,6 +12,7 @@
 //               (Luigi +0x1188 = 100.0; the record's +0x52 meter level is derived from it).
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
+#include "recomp/version.h"
 
 #include <bit>
 #include <cstdlib>
@@ -21,7 +22,7 @@
 namespace recomp {
 namespace {
 
-constexpr u32 kActorSlots = 0x803D48A0;  // lbl_803D48A0[0] = Luigi
+#define kActorSlots VA(0x803D48A0)  // lbl_803D48A0[0] = Luigi
 constexpr u32 kLuigiFlags = 0x792;       // u16: 4 = Poltergust, 8 = Game Boy Horror
 constexpr u32 kLuigiElement = 0x1184;    // 1 none (L blows air), 2 fire, 3 water, 4 ice
 constexpr u32 kLuigiElemAmount = 0x1188; // f32 0..100 (meter level = amount / 10)
