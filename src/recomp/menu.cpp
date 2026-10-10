@@ -712,6 +712,21 @@ void draw() {
     recomp::enh::applySettings();
     recomp::crt::update();
     if (port::settings().enhancements.showFps) fpsOverlay();
+    // LM_FPS_LOG=1: presented host frames per second every 2 s (performance measurements).
+    static const bool sFpsLog = std::getenv("LM_FPS_LOG") != nullptr;
+    if (sFpsLog) {
+        using clock = std::chrono::steady_clock;
+        static auto last = clock::now();
+        static int frames = 0;
+        frames++;
+        const float dt = std::chrono::duration<float>(clock::now() - last).count();
+        if (dt >= 2.0f) {
+            std::printf("[fps] %.1f\n", frames / dt);
+            std::fflush(stdout);
+            frames = 0;
+            last = clock::now();
+        }
+    }
     recomp::dev::drawOverlays();
     if (!sOpen) return;
     ImGui::SetNextWindowSize(ImVec2(680, 400), ImGuiCond_FirstUseEver);

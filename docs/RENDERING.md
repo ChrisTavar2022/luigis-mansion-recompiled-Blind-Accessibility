@@ -611,6 +611,128 @@ and the model viewer. Merging pipeline_cache.db files from longer play sessions
 
 ## Enhanced lighting
 
+Optional effects layered on top of the accurate GX rendering: F1 > Visuals > Enhanced lighting
+(`[enhanced_lighting]` in settings.ini). **Master switch off by default**; off, the renderer
+emits nothing new (no draw-class commands, no scene-end marker, no shader variants), and frame
+dumps are byte-identical to main (nursery, 5 dump frames compared against the main build).
+Every part has its own switch and strength/quality control; the Quality preset
+(Low/Medium/High/Ultra/Custom) sets soft-shadow, volumetric and colored-light-shadow quality.
+Code: Aurora patch `0014-enhanced-lighting.patch` (`lib/gfx/enhanced.cpp/.hpp`,
+`include/aurora/enhanced.h`, `include/aurora/lights.h`, shader generator changes in
+`lib/gx/shader.cpp`), port side `src/recomp/enhanced_lighting.cpp/.h` (settings → Aurora,
+draw classes, scene bracket, test lights), `hle_gx.cpp` (draw class), `shadows.cpp` (shadow
+map size), `ghost_lights.cpp` (the ghost light provider, below).
+
+### How it hooks in
+
+- **Draw classes** (`GXSetDrawClassAurora`, FIFO command `GX_AURORA_SET_DRAW_CLASS`, so it is
+  ordered with the draws and recorded in interpolation tapes): `hle_gx.cpp` `emitDrawClass` sends
+  WORLD for perspective draws into the full viewport outside the shadow-map pass
+  (`lbl_804D8080`) and outside the GBH's following sub-viewport; GHOST for those inside the
+  actor ghost pass (`fn_80060E70` pass 0x30, `unused_content.cpp`); OTHER for everything else
+  (2D/HUD, GBH sub-views, the light's-view caster pass, EFB-copy passes). Only sent while the
+  master switch is on.
+- **Shader variants** (`ShaderConfig::enhClass`, chosen in `enhanced::shader_class`): 1 for
+  WORLD, 2 for GHOST, 0 (the plain shader) for OTHER, for additive draws (light effects: the
+  flashlight beam is built on GX vertex lighting and a color-texgen lookup), and for untextured
+  lit draws (effect volumes whose color/alpha *is* the lighting result; the nursery's beam haze
+  depends on one). Which parts run inside a variant is a uniform (`enh_flags`), so toggling a
+  part never rebuilds pipelines; only the master switch does (one-time compile hitch).
+- **Scene bracket**: `fn_8000BB98(0)` (main 3D view, US+PAL hook) is wrapped: before it the
+  frame's extra lights are sent (`aurora::gfx::set_extra_lights`), after it `GXSceneEndAurora`
+  marks the end of the 3D scene, before the HUD: bloom, volumetric beam and ambient occlusion
+  are composited onto the EFB there, so the HUD never glows and the CRT filter comes after.
+- **A/B test aid** `LM_ENHANCED_AB=<n>`: game frames alternate in blocks of n between enhanced
+  and plain (draws classed OTHER, no lights, no scene end: the plain renderer), so consecutive
+  `LM_FRAME_DUMP` frames of one deterministic run compare both (with n = 1, odd dump frames are
+  enhanced). The plain frames are byte-identical to a run with the master switch off.
+
+### The parts
+
+| Part (setting) | What | How |
+|---|---|---|
+| Per-pixel lighting (`per_pixel_lighting`) | The game's own GX lights evaluated per fragment with the same channel math (ambient/material sources, diffuse fn, spot/distance attenuation, clamps) | View-space position/normal interpolated to the fragment (`enh_pos`/`enh_nrm`; face normal from derivatives when the draw has no normals); WORLD draws only (ghost-pass draws keep vertex lighting: the ghost layer is composited from its own copy); channels that feed a color texgen keep their vertex result |
+| Flashlight quality (`flashlight_quality`, softness) | Round beam pool with a smooth penumbra | Spot channels evaluated per pixel with the GX angular term remapped through smoothstep (0 = GX curve, 1 = smooth) |
+| Soft shadows (`soft_shadows`, quality, softness, contact hardening) | Soft edges for the game's shadow map (flashlight, lightning, room light) | The TEV `GR16_GT` compare stage (receiver key vs packed Z16 map) becomes a filtered compare: PCF 8/16 taps on a rotated Vogel disk, or PCSS (blocker search + penumbra from receiver-blocker distance) 16/32; receiver key computed analytically from the depth-ramp texcoord (no LINEAR byte-wrap stripes), slope-scaled bias. Integer-TEV path included |
+| Shadow map size (`shadow_map_size`) | 2048x1536 / 4096x3072 shadow map independent of the render resolution | `shadows.cpp`: the caster pass (`fn_8005D984` … `fn_8005D8CC`, new US+PAL hook) renders into an Aurora offscreen target (`GXCreateFrameBuffer`) of that size; the Z16 copy comes from it. Needs "Shadow map at render resolution" |
+| Dynamic colored lights (`extra_lights`, intensity) | Up to 16 point lights per pixel on world geometry | `aurora/lights.h` interface below; added to the lit color channel (× material color) so the game's TEV decides the response; smooth (1-x²)² falloff to the radius, half-Lambert on ghost draws, optional specular |
+| Colored light shadows (`extra_light_shadows`, quality) | Lights flagged `ExtraLightCastShadows` (up to 4; ghost lights flag the two strongest) are blocked by furniture/characters | Screen space, current frame: the opaque world draws are re-rendered depth-only (same pipelines, depth layout) into a half-resolution pre-pass **before** the EFB pass that draws them (pass pre-op), a ray-march pass (8/16/32 steps, thickness 160 units) writes an RGBA8 mask (one channel per light), which is copied into a reserved storage-buffer range; the world shaders read it (`enh_mask`, bilinear) |
+| Volumetric beam (`volumetric_beam`, intensity, quality) | Haze in the flashlight beam, stopped by walls | Scene end: ray march along each view ray (16/24/48 steps, 1/4 or 1/2 resolution) through the flashlight's GX spot attenuation (the flashlight = the bright angular spot light nearest the camera among the world draws' lights), forward-scattering phase, depth-limited |
+| Bloom / glow (`bloom`, intensity, light sources, colored light glow, bright surfaces, threshold, radius, flashlight-lit walls) | Light sources glow, the HUD never | Scene end, HDR (RGBA16F) chain at ≤ 720 lines: bright pass = **glow buffer** (emissive) + soft-knee scene highlights × "bright surfaces" (suppressed where the flashlight is the only reason a wall is bright) + **light glows**; 6-level 13-tap downsample / tent upsample; composited additively onto the EFB |
+| Ambient occlusion (`ssao`, intensity, radius; off by default, experimental) | Contact darkening | Scene end, half resolution, 12 hemisphere samples from the depth buffer, depth-aware blur, multiplied onto the EFB |
+
+**Glow buffer (emissive-aware bloom).** Additive draws (blend SRCALPHA/ONE etc.: glows, lens
+sprite, sparkles, fire, dust, lightning and nozzle effects; not the beam volume itself, whose
+alpha is a color-texgen lookup: glowing it again washed the picture out when it points at the
+camera) are recorded with a copy of their pipeline for a RGBA16F target and re-rendered right
+after the EFB pass they were drawn in (before a later EFB copy could change textures), depth
+tested (inclusive, no write) against that pass's depth, at bloom level-0 resolution. The copy
+takes the draw's final state (Aurora merges consecutive draws into the recorded command later;
+the first version re-rendered only the first fragment of the beam cone, a wedge pointing the
+wrong way). The game draws the 3D scene, copies it (RGB565 640x480, color clear, depth kept),
+draws the ghost layer and pastes the scene back before the HUD: glow draws survive that copy;
+a color + depth clear (a new scene) drops them. Ordinary lit surfaces only glow through "bright
+surfaces" (0.25 by default), so walls do not bloom; the glow buffer is Reinhard-compressed.
+**Light glows**: each extra light adds a small screen-space halo at its position (core =
+3% of its radius), hidden when the depth buffer shows a surface in front of it.
+
+### Extra light interface (`include/aurora/lights.h`)
+
+```cpp
+namespace aurora::gfx {
+struct ExtraLight {
+  float pos[3];       // VIEW space (GX eye space, same space as GXLoadLightObjImm positions)
+  float color[3];     // linear RGB, may exceed 1
+  float radius;       // world units; smooth falloff to 0 at radius
+  float intensity;    // multiplier
+  uint32_t flags;     // bit0: cast shadows, bit1: affects ghosts/translucent, bit2: specular
+  uint32_t id;        // stable per-source id for interpolation pairing (0 = none)
+};
+void set_extra_lights(const ExtraLight* lights, uint32_t count);  // once per game frame
+}
+```
+
+Port side: `recomp::submitExtraLights(lights, count)` (guest thread, once per game frame,
+strongest first, up to 16); `enh::worldToView` converts world positions with the current
+camera. The set is written into the GX FIFO (`GX_AURORA_SET_EXTRA_LIGHTS`) at the start of the
+main view, so it is part of interpolation tapes: `interp.cpp` blends position, color, radius and
+intensity between game frames by `id` (unpaired lights are shown as captured; jumps > 600 units
+are not blended). "Translucent" (bit1) lets a light reach ghost-pass draws; ghost lights leave it
+off. Test aid: `LM_TEST_LIGHTS=<count>[,<radius>[,<intensity>]]` (colored lights orbiting Luigi,
+the first two cast shadows).
+
+### Verification (US unless noted; `build/enhanced/*.png`; native 640x480 frame dumps of the
+deterministic nursery script `LM_START_MAP=2 LM_START_APPEAR=1 LM_TEST_STATE=poltergust
+LM_SKIP_CUTSCENES=1 LM_SKIP_AUTO=30 LM_INPUT_CLOCK=frames` with `LM_ENHANCED=1 LM_ENHANCED_AB=1`)
+
+- Master off vs main build: identical dumps. AB plain frames vs master off: identical.
+- `nursery_beam_off_on.png`: flashlight on the door: rounder pool, beam glow, volumetric haze.
+- `nursery_lightning_off_on.png` (`LM_LIGHTNING=0,60,1`), `lightning_shadows_crop_plain_hard_soft.png`
+  (plain / enhanced with soft shadows off = identical hard shadows / PCSS).
+- `colored_light_shadows_off_on_mask.png` (`LM_TEST_LIGHTS=4`): colored pools on walls and floor,
+  shadows of crib and bears, and the shadow mask (`AURORA_ENH_GLOWDBG=8`).
+- `ballroom_ghostlights_off_on.png` (`LM_GHOST_LIGHTS=1 LM_TELEPORT=1800,0,-1400,100`), ghost
+  lights + glow; `ghost_layer_ghostlight_ab_diff.png` (gold ghosts, room 42, ghost lights A/B with
+  difference): changes only at the lit ghost and its light pool, no duplicate ghost shapes.
+- `ws21x9_off_on.png` (21:9, render scale 2), `msaa4x_scale4_16x9_off_on.png` (MSAA 4x, scale 4,
+  16:9), `pal_base_off_on.png` (European game via LuigisMansionRecomp setup),
+  `hidden_mansion_off_on.png` (`LM_HM_FORCE=1`).
+- Interpolation at 120 fps (`LM_INTERP_TEST=4`, walking, test lights): the in-between replays
+  converge monotonically on the next game frame, the last step is identical to the captured
+  frame; extra lights move smoothly (`interp_120fps_steps.png`).
+
+### Debug aids (Aurora, env)
+
+`AURORA_ENH_LOG=1` (scene-end/flashlight/glow/light-shadow log), `AURORA_ENH_DRAWLOG=<n>`
+(+`AURORA_ENH_DRAWLOG_ALL`: every draw of the n-th scene with class, blend, lighting, TEV),
+`AURORA_ENH_GLOWDBG=1` (show the glow buffer), `=2` (one glow draw per frame), `=3/5/6` (all
+world draws into the glow buffer / without depth test / inverted test), `=7` (glow pass depth),
+`=8` (light-shadow mask), `=9/10` (mask pass depth / light distance), `AURORA_ENH_HIDE_ADDITIVE=1`
+(drop additive world draws), `AURORA_ENH_NOVARIANT=1` (no shader variants),
+`AURORA_SHADER_DUMP=<dir>` (every generated WGSL shader). Port: `LM_ENHANCED=0|1`,
+`LM_ENHANCED_AB=<n>`, `LM_TEST_LIGHTS`, `LM_SHADOW_MAP=0|1|2`, `LM_LIGHT_TRACE=1` (each distinct
+`GXLoadLightObjImm` call with its guest chain).
+
 ### Ghost lights
 
 F1 > Visuals > Enhanced lighting > "Ghost lights" (`[ghost_lights]` in settings.ini; needs the
