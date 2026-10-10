@@ -253,10 +253,10 @@ index 1920bc8..c22fbec 100644
  void encode_op(wgpu::CommandEncoder& encoder, FramePacket& frame, const FrameOp& op);
 diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 new file mode 100644
-index 0000000..20e9ee6
+index 0000000..4632e14
 --- /dev/null
 +++ b/lib/gfx/enhanced.cpp
-@@ -0,0 +1,1557 @@
+@@ -0,0 +1,1571 @@
 +// Enhanced lighting: configuration, extra lights, per-draw uniforms and the scene-end
 +// screen-space effects (bloom, volumetric flashlight beam, ambient occlusion).
 +// See include/aurora/enhanced.h and include/aurora/lights.h.
@@ -280,6 +280,7 @@ index 0000000..20e9ee6
 +#include <mutex>
 +#include <string>
 +#include <tuple>
++#include <unordered_map>
 +#include <vector>
 +
 +namespace aurora::gfx::enhanced {
@@ -1388,7 +1389,14 @@ index 0000000..20e9ee6
 +             .vtxCount = data.vtxCount,
 +             .tevStages = config.shaderConfig.tevStageCount,
 +             .lit = config.shaderConfig.colorChannels[0].lightingEnabled};
-+  g.data.pipeline = find_pipeline(gc, layout);
++  // The variant follows from the draw's own pipeline: cached by its ref (FIFO thread).
++  static std::unordered_map<PipelineRef, PipelineRef> sVariants;
++  if (const auto it = sVariants.find(data.pipeline); it != sVariants.end()) {
++    g.data.pipeline = it->second;
++  } else {
++    g.data.pipeline = find_pipeline(gc, layout);
++    sVariants.emplace(data.pipeline, g.data.pipeline);
++  }
 +  std::tie(g.pass, g.command) = next_command_position();
 +  g.data.dstAlpha = UINT32_MAX;
 +  g_glowDraws.push_back(g);
@@ -1422,7 +1430,13 @@ index 0000000..20e9ee6
 +      return l;
 +    }();
 +    GlowDraw g{.data = data, .viewport = current_viewport(), .scissor = current_scissor()};
-+    g.data.pipeline = find_pipeline(dc, layout);
++    static std::unordered_map<PipelineRef, PipelineRef> sVariants;
++    if (const auto it = sVariants.find(data.pipeline); it != sVariants.end()) {
++      g.data.pipeline = it->second;
++    } else {
++      g.data.pipeline = find_pipeline(dc, layout);
++      sVariants.emplace(data.pipeline, g.data.pipeline);
++    }
 +    g.data.dstAlpha = UINT32_MAX;
 +    std::tie(g.pass, g.command) = next_command_position();
 +    g_depthDraws.push_back(g);

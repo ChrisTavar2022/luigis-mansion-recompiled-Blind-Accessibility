@@ -238,8 +238,8 @@ void enhancedLightingTab() {
     static const char* kPresets[] = {"Low", "Medium", "High", "Ultra", "Custom"};
     sDirty |= combo("Quality preset", l.preset, kPresets, 5);
     ImGui::SetItemTooltip(
-        "Sets the soft shadow and volumetric quality. Low suits weaker GPUs; Ultra is for high-end\n"
-        "cards at high resolutions. Custom keeps the values chosen below.");
+        "Sets the soft shadow, volumetric beam and colored-light shadow quality. Low suits weaker\n"
+        "GPUs; Ultra is for high-end cards at high resolutions. Custom keeps the values chosen below.");
     const bool custom = l.preset == port::EnhancedPreset::Custom;
 
     ImGui::SeparatorText("Lighting");
@@ -319,14 +319,14 @@ void enhancedLightingTab() {
     ImGui::EndDisabled();
     sDirty |= ImGui::Checkbox("Bloom / glow", &l.bloom);
     ImGui::SetItemTooltip(
-        "Light sources glow: lamps, candles, fireplaces, the flashlight lens and beam, ghost auras,\n"
+        "Light sources glow: lamps, candles, fireplaces, the flashlight lens, ghost lights and auras,\n"
         "lightning, nozzle effects. The HUD never glows. Computed at a capped resolution, so the\n"
         "cost hardly depends on the render resolution.");
     ImGui::BeginDisabled(!l.bloom);
     sDirty |= ImGui::SliderFloat("Glow intensity", &l.bloomIntensity, 0.0f, 2.0f, "%.2f");
     sDirty |= ImGui::SliderFloat("Light sources", &l.bloomEmissive, 0.0f, 2.0f, "%.2f");
-    ImGui::SetItemTooltip("Glow of light-emitting effects: lamp and candle glows, fire, the flashlight lens and\n"
-                          "beam, ghost auras, sparkles, lightning and nozzle effects.");
+    ImGui::SetItemTooltip("Glow of light-emitting effects (what the game draws as added light): lamp and candle\n"
+                          "glows, fire, the flashlight lens, ghost auras, sparkles, lightning and nozzle effects.");
     sDirty |= ImGui::SliderFloat("Colored light glow", &l.bloomLightGlow, 0.0f, 2.0f, "%.2f");
     ImGui::SetItemTooltip("Halo around the dynamic colored lights (ghosts), hidden by walls and objects in front.");
     sDirty |= ImGui::SliderFloat("Bright surfaces", &l.bloomScene, 0.0f, 1.0f, "%.2f");
@@ -339,10 +339,10 @@ void enhancedLightingTab() {
     ImGui::SetItemTooltip("Surfaces that are only bright because the flashlight shines on them glow less\n"
                           "than actual light sources.");
     ImGui::EndDisabled();
-    sDirty |= ImGui::Checkbox("Ambient occlusion", &l.ssao);
+    sDirty |= ImGui::Checkbox("Ambient occlusion (experimental)", &l.ssao);
     ImGui::SetItemTooltip(
         "Darkens corners, creases and the floor under furniture (screen-space, from the depth\n"
-        "buffer). One half-resolution pass plus a blur.");
+        "buffer). One half-resolution pass plus a blur. Experimental: can darken large areas.");
     ImGui::BeginDisabled(!l.ssao);
     sDirty |= ImGui::SliderFloat("Occlusion intensity", &l.ssaoIntensity, 0.0f, 2.0f, "%.2f");
     sDirty |= ImGui::SliderFloat("Occlusion radius", &l.ssaoRadius, 10.0f, 200.0f, "%.0f");

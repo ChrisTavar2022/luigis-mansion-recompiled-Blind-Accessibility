@@ -192,7 +192,7 @@ struct EnhancedLightingSettings {
     float bloomLightGlow = 0.6f;       // 0..2: glow around colored light sources (ghosts)
     // Screen-space ambient occlusion (contact darkening in corners and under furniture).
     bool ssao = false;
-    float ssaoIntensity = 0.6f;        // 0..2
+    float ssaoIntensity = 0.4f;        // 0..2
     float ssaoRadius = 60.0f;          // world units
 };
 
