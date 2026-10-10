@@ -16,6 +16,7 @@
 #include "recomp/menu.h"
 #include "recomp/hle.h"
 #include "recomp/module_loader.h"
+#include "recomp/precache.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
 #include "recomp/widescreen.h"
@@ -152,7 +153,9 @@ int main(int argc, char* argv[]) {
         config.windowHeight = 960;
         config.windowWidth = u32(960.0f * opts.aspectRatio + 0.5f);
     }
+    precache::configure();
     aurora_initialize(argc, argv, &config);
+    precache::init();
     ws::init();
 
 #ifdef LM_STATIC_MODULE
@@ -263,6 +266,7 @@ int main(int argc, char* argv[]) {
         ws::beginFrame();
         const bool running = frame::hostFrame();
         menu::draw();
+        precache::frame();
         aurora_end_frame();
         frame::pace();
         if (!running || menu::quitRequested()) break;
