@@ -442,6 +442,53 @@ seen in tested scenes); no reference capture from real hardware to compare shado
 LINEAR-filter stripe pattern exactly; "Shadow map at render resolution" off still uses the scaled
 copy when "EFB copies to RAM" is off.
 
+### Shadows at any distance (enhancement) and the room shadow light
+
+**Original behaviour.** Which light casts the shadow map is chosen per frame by `fn_80029050`:
+in a dark room (room light object `lbl_803A3CA0` +0x24, dark flag +0xAC set, mode +0x94 == 5)
+it is the flashlight (its frustum is the beam: shadows only show where it shines). In a lit room
+(after it is cleared, hallways, the training room) and during lightning it is a light that
+follows Luigi (`fn_80028CF0`/`fn_80028B74`: target 300 above Luigi, eye at a table distance
+toward the upper part of the room, `fn_80029488`) with fov/near/far from the light table
+(`fn_800293A8`; e.g. fov 17, near 3000, far 5000 in the 1F rooms and hallways; lightning fov 31,
+near 619, far 2322). Shadow strength is K3 alpha: 0x5C lit rooms, 0x96 lightning, 0 when the
+light object's +0x89 flag disables shadows. Only what lies inside that small frustum casts and
+receives shadows, so in big rooms the shadows of objects away from Luigi (the ballroom's chairs
+and curtains at the back wall) are missing and appear/disappear as he walks: the game's own
+limit, not a port bug. (`LM_SHADOW_LOG=1` logs the light camera and strength.)
+
+**Enhancement** (`src/recomp/shadows.cpp`, hook on `fn_8005D984`; F1 > Visuals > Rendering
+"Shadows at any distance", `[rendering] shadow_any_distance`, on by default; off leaves every
+value as the game set it). For the gameplay room/lightning light (detected through
+`fn_800293A8`; the flashlight and cutscene lights are untouched) the light keeps its position
+and direction, and its fov, aspect and near/far are refitted so the frustum contains its own
+frustum plus the receivers that matter: the player's view frustum sampled from 1/4 to 4x the
+camera-target distance, **clamped to the current room's bounds** (room table `lbl_804D8170`,
+0x30 per room, int min/max xyz at +0x8/+0x14), so the map is no wider than the visible part of
+the room (texel size stays close to the original; near is never below 1/4 of the original for
+Z16 precision). The game then builds the light projection, the receivers' light/ramp texture
+matrices (`+0xB0`/`+0xE0`, used by `fn_8005DCA0`/`fn_8005DB90`) and the light's culling from those
+fields itself, so the map and the TEV compare stay consistent.
+
+Why no cascades/second map: the case that looked uncovered (foyer, light "near the camera")
+turned out to be the flashlight's beam frustum (dark foyer) and the lightning light, both
+handled; in every lit room tested the room light sits far out in front/above (about 3000-4000
+units), so one perspective map fitted to the room covers everything visible.
+
+**Test aid** `LM_ROOMS_LIT=1` (US): rooms behave as lit for the shadow light choice (the dark
+flag is cleared for the `fn_80029050` call; ambient and lamps are not changed). With
+`LM_TELEPORT=x,y,z,frames` (room centres from the room table: ballroom 1800,0,-1400; dining room
+-1600,0,-1400; 1F hallway -2400,0,-985; foyer 0,0,200) and a scripted walk.
+
+**Verification** (16:9, frame dumps, `build/shadows2/`): a temporary coverage overlay (green =
+inside the shadow map, red = outside) in the lit ballroom shows the back wall, curtains and chairs
+outside the map with the option off and the whole room inside with it on (`cov_rooms.png`
+rows 1-2, `cov2.png`); the dining room has a small uncovered sliver off, none on; the lit foyer
+and the 1F hallway are fully covered either way (`hcov.png`). Rendered frames: ballroom chairs at
+the back gain their shadows, the long shadows near Luigi are unchanged except edge pixels
+(`rooms_onoff2.png`: off / on / difference, red = darker with the option on);
+`ballroom_walk_off_on.png` is a walk through the room (left off, right on).
+
 ## Debug draw overrides (Aurora patch 0012)
 
 `patches/aurora/0012-wireframe-override.patch`, used only by the model viewer

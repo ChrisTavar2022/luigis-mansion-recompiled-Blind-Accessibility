@@ -132,6 +132,10 @@ struct RenderingSettings {
     // Widescreen: the shadow light's frustum is widened by the same factor as the view, so
     // shadows reach the extra side areas (the game only covers what a 4:3 screen shows).
     bool shadowWidescreen = true;
+    // The game's shadow light only covers a depth band around Luigi (e.g. 619..2322 units from the
+    // room light), so shadows vanish on things farther away. On: the band is extended to what the
+    // player's view shows (enhancement). Off: the original range.
+    bool shadowAnyDistance = true;
 };
 
 struct Settings {

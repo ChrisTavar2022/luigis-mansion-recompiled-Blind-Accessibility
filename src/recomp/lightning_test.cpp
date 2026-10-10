@@ -9,8 +9,10 @@
 // This aid counts calls of fn_800168EC (one per gameplay frame) and, on call <first> and then
 // every <period> calls, lowers the threshold for that call; with <type> (1..n) a room without
 // thunder gets that thunder type. Each forced strike is logged with its call number.
+#include "recomp/lightning_test.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
+#include "recomp/version.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -38,26 +40,31 @@ const Config& config() {
 
 long sCalls = 0;
 bool sForcing = false;
+u32 sSavedThreshold = 0;
 
 }  // namespace
 
-HLE(fn_800168EC) {
+namespace lightning {
+// Called around every room update (fn_800168EC, hooked in hidden_mansion_hooks.cpp together with
+// the room ambient scaling): returns whether this call forces a strike (threshold lowered).
+bool beginRoomUpdate() {
     const Config& cfg = config();
     const long n = sCalls++;
     const bool strike = cfg.first >= 0 &&
                         (n == cfg.first || (cfg.period > 0 && n > cfg.first && (n - cfg.first) % cfg.period == 0));
-    if (!strike) {
-        callOriginal(c, "fn_800168EC");
-        return;
-    }
-    const u32 saved = rd32(kThreshold);
+    if (!strike || ver::pal()) return false;  // US addresses (the European room update is not mapped)
+    sSavedThreshold = rd32(kThreshold);
     wr32(kThreshold, 0xFF800000u);  // -inf: any fn_8000FC60() result starts the strike
     sForcing = true;
     log("[lightning] forcing a strike at room-update call %ld", n);
-    callOriginal(c, "fn_800168EC");
-    sForcing = false;
-    wr32(kThreshold, saved);
+    return true;
 }
+void endRoomUpdate(bool strike) {
+    if (!strike) return;
+    sForcing = false;
+    wr32(kThreshold, sSavedThreshold);
+}
+}  // namespace lightning
 
 // Room info "Thunder" field: (room info, room number) -> thunder type, 0 = none.
 HLE(fn_8002D7C8) {

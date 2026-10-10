@@ -143,8 +143,10 @@ patch 2 8004472C 38000002
 # Cut E3 Game Boy Horror clock + radar screen (TCRF): GBH screen mode 1 draws it once the mode
 # switch in fn_8003CFC0 branches to it (0x8003D544 b +0xBC -> b +0xD8).
 patch 3 8003D544 480000D8
-# Lightning test aid (lightning_test.cpp, LM_LIGHTNING): room thunder update, room Thunder field.
-fn_800168EC
+# Lightning test aid (lightning_test.cpp, LM_LIGHTNING): room Thunder field (the room update
+# fn_800168EC is hooked once, in hidden_mansion_hooks.cpp, and calls the aid).
 fn_8002D7C8
 # Shadow-map enhancements (shadows.cpp): light camera setup of the shadow pass.
 fn_8005D984 us pal
+fn_800293A8 us pal
+fn_80029050

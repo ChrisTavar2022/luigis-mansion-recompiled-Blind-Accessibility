@@ -69,6 +69,7 @@ std::vector<Field> fields() {
         flag("rendering", "efb_copy_to_ram", sSettings.rendering.efbCopyToRam),
         flag("rendering", "shadow_render_resolution", r.shadowRenderResolution),
         flag("rendering", "shadow_widescreen", r.shadowWidescreen),
+        flag("rendering", "shadow_any_distance", r.shadowAnyDistance),
         flag("crt", "enabled", c.enabled),
         enm("crt", "preset", c.preset),
         enm("crt", "scanlines", c.scanlines),
