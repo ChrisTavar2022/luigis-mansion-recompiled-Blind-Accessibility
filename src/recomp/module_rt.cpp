@@ -4,6 +4,32 @@
 // may reference. FREESTANDING: no system headers.
 #include "recomp/module_abi.h"
 
+// Stack probe for frames larger than a page (Windows x64: frame size in rax; only flags may
+// change). Windows grows thread stacks through a guard page, so a function whose frame is
+// bigger than 4 KiB must touch each page in order or it faults past the guard page. The
+// compiler calls this (stack probes are on in module_builder.cpp); same algorithm as the
+// CRT's __chkstk, which the freestanding module cannot link.
+extern "C" __attribute__((naked)) void __chkstk() {
+    asm volatile(
+        "pushq %rcx\n\t"
+        "pushq %rax\n\t"
+        "leaq 24(%rsp), %rcx\n\t"
+        "cmpq $0x1000, %rax\n\t"
+        "jb 2f\n\t"
+        "1:\n\t"
+        "subq $0x1000, %rcx\n\t"
+        "orq $0, (%rcx)\n\t"
+        "subq $0x1000, %rax\n\t"
+        "cmpq $0x1000, %rax\n\t"
+        "ja 1b\n\t"
+        "2:\n\t"
+        "subq %rax, %rcx\n\t"
+        "orq $0, (%rcx)\n\t"
+        "popq %rax\n\t"
+        "popq %rcx\n\t"
+        "retq");
+}
+
 namespace recomp {
 
 extern const GameModule kGameModule;  // func_table.cpp (generated)

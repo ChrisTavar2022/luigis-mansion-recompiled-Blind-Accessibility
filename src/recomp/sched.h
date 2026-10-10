@@ -47,7 +47,11 @@ void postIrq(std::function<void(Ctx&)> fn);
 void postIrqAfter(double seconds, std::function<void(Ctx&)> fn);
 bool inIrq();
 
+// Ends every guest thread: each one leaves at its next scheduling point (throws ThreadExit).
 void shutdown();
+// After shutdown(): waits until the created guest threads (not the boot thread) have unwound,
+// at most `seconds`; false on timeout.
+bool waitForThreads(double seconds);
 void dumpThreads();
 void serviceOnThread(Ctx& c);
 

@@ -67,6 +67,8 @@ constexpr u16 kStateReady = 1, kStateRunning = 2, kStateWaiting = 4, kStateMorib
 std::mutex sM;
 std::vector<GuestThread*> sThreads;  // creation order breaks priority ties
 GuestThread* sRunning = nullptr;
+int sLive = 0;                        // created guest threads whose host thread has not finished
+std::condition_variable sExitCv;      // signalled when sLive drops
 GuestThread sIrqMarker;  // sRunning while the idle CPU services interrupts
 thread_local GuestThread* tSelf = nullptr;
 thread_local bool tInIrq = false;
@@ -159,6 +161,7 @@ void finishThread(GuestThread* t, u32 val) {
     for (auto* o : sThreads)
         if (o->st == GuestThread::St::Waiting && o->waitQueue == t->guest + kQueueJoin) o->st = GuestThread::St::Ready;
     if (sRunning == t) handOff(pick(nullptr));
+    if (--sLive == 0) sExitCv.notify_all();
 }
 
 void threadMain(GuestThread* t) {
@@ -240,6 +243,7 @@ bool create(u32 guest, u32 entry, u32 arg, u32 stackTop, u32 stackSize, s32 prio
         // A thread struct can be reused once its previous thread has terminated.
         std::erase_if(sThreads, [&](GuestThread* o) { return o->guest == guest && o->st == GuestThread::St::Moribund; });
         sThreads.push_back(t);
+        ++sLive;
     }
     t->host = std::thread(threadMain, t);
     t->host.detach();
@@ -442,6 +446,11 @@ void shutdown() {
     std::lock_guard lk(sM);
     g_shutdown = true;
     for (auto* t : sThreads) t->cv.notify_all();
+}
+
+bool waitForThreads(double seconds) {
+    std::unique_lock lk(sM);
+    return sExitCv.wait_for(lk, std::chrono::duration<double>(seconds), [] { return sLive == 0; });
 }
 
 void serviceOnThread(Ctx& c) {

@@ -106,10 +106,19 @@ LuigisMansionRecomp.exe                     module.dll (no imports, no CRT)
   (MMIO, interrupts, HLE lookups, SPRs, tracing, fatal errors) goes through the
   `RuntimeApi` function pointers.
 - The module is compiled with `-ffreestanding -nostdinc -fno-exceptions -fno-rtti
-  -fno-threadsafe-statics -fno-math-errno -fno-stack-protector -mno-stack-arg-probe` and
+  -fno-threadsafe-statics -fno-math-errno -fno-stack-protector -funwind-tables` and
   linked `/dll /noentry /nodefaultlib`; `module_rt.cpp` provides `memcpy`/`memset`/
-  `memmove`/`memcmp`, `_fltused`, and `fma`/`trunc`/`nearbyint`/`sqrt` (forwarded to the
-  runtime's CRT).
+  `memmove`/`memcmp`, `_fltused`, `__chkstk`, and `fma`/`trunc`/`nearbyint`/`sqrt`
+  (forwarded to the runtime's CRT).
+- Unwind tables are required: the runtime ends guest threads (OSExitThread, OSCancelThread,
+  shutdown) by throwing `sched::ThreadExit` through the module's frames, and Windows can only
+  unwind frames that have `.pdata`. Without them closing the window ended the process with
+  0xE06D7363 (an exception that could not be unwound). Stack probes stay on (`__chkstk` in
+  `module_rt.cpp`, the CRT algorithm): a generated function with a frame above 4 KiB would
+  otherwise step over the stack guard page. Both were found in the SMS port.
+- On exit, `frame::stop` waits (at most 2 s) for the guest threads to unwind before Aurora
+  and audio are torn down; the thread running guest code only leaves at its next present or
+  scheduling point.
 - Bump `kModuleAbiVersion` (ctx.h) when `Ctx`, `GameModule` or `RuntimeApi` change.
 
 ### Developer builds

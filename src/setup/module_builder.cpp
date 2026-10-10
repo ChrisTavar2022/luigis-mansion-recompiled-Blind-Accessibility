@@ -24,10 +24,14 @@ namespace {
 
 // Flags for the generated code. Freestanding: no headers, no C runtime (module_rt.cpp
 // provides the few symbols the compiler may call), no thread-safe statics (they need the
-// CRT; only one guest thread runs at a time), no stack probes (__chkstk is in the CRT).
+// CRT; only one guest thread runs at a time). Stack probes stay on (module_rt.cpp provides
+// __chkstk: a generated function with a frame above a page would otherwise skip the stack
+// guard page and fault). Unwind tables are required: the runtime ends guest threads
+// (OSExitThread, OSCancelThread, shutdown) by throwing sched::ThreadExit through the module's
+// frames, which Windows can only unwind with .pdata (both fixes found in the SMS port).
 const std::vector<std::string> kCompileFlags = {
     "--target=x86_64-pc-windows-msvc", "-std=c++20", "-O2", "-ffreestanding", "-nostdinc", "-fno-exceptions",
-    "-fno-rtti", "-fno-threadsafe-statics", "-fno-math-errno", "-fno-stack-protector", "-mno-stack-arg-probe",
+    "-fno-rtti", "-fno-threadsafe-statics", "-fno-math-errno", "-fno-stack-protector", "-funwind-tables",
     "-Wno-unused-label", "-Wno-unused-variable"};
 const std::vector<std::string> kLinkFlags = {"/dll", "/noentry", "/nodefaultlib", "/machine:x64", "/opt:ref",
                                              "/incremental:no"};

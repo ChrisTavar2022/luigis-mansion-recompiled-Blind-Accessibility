@@ -167,6 +167,17 @@ void stop() {
         sCv.notify_all();
     }
     sched::shutdown();
+    // Let the guest threads unwind (ThreadExit) before the caller tears down Aurora and audio:
+    // the one running guest code only leaves at its next present/scheduling point and would
+    // otherwise still be calling into GX while it is destroyed. Bounded, in case a thread
+    // spins without reaching one.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    {
+        std::unique_lock lk(sM);
+        sCv.wait_until(lk, deadline, [] { return sFinished; });
+    }
+    const double left = std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count();
+    if (!sched::waitForThreads(std::max(left, 0.0))) log("[frame] guest threads still running at exit");
     if (sBoot.joinable()) sBoot.detach();
 }
 

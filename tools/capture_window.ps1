@@ -56,6 +56,7 @@ $g = [System.Drawing.Graphics]::FromImage($bmp)
 $hdc = $g.GetHdc()
 [Win]::PrintWindow($h, $hdc, 3) | Out-Null
 $g.ReleaseHdc($hdc)
-$bmp.Save((Join-Path $root $Out), [System.Drawing.Imaging.ImageFormat]::Png)
+$outPath = if ([System.IO.Path]::IsPathRooted($Out)) { $Out } else { Join-Path $root $Out }
+$bmp.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Png)
 "saved $Out (${w}x$hgt)"
 if (-not $KeepRunning) { Stop-Process $p -Force }

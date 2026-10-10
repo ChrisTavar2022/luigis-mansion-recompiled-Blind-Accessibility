@@ -98,6 +98,7 @@ struct Section {
 struct Dol {
     const std::vector<u8>& data;
     std::vector<Section> sections;  // in header order, non-empty only
+    size_t textCount = 0;           // the first textCount entries are text sections
 
     explicit Dol(const std::vector<u8>& d) : data(d) {
         if (d.size() < 0x100) throw std::runtime_error("main.dol is too small");
@@ -106,6 +107,7 @@ struct Dol {
             if (size) {
                 if (size_t(off) + size > d.size()) throw std::runtime_error("main.dol section out of range");
                 sections.push_back({addr, off, size});
+                if (i < 7) textCount = sections.size();
             }
         }
     }
@@ -374,8 +376,8 @@ private:
         std::vector<u32> starts;
         for (auto& [a, f] : funcs) starts.push_back(a);
         std::vector<std::pair<u32, u32>> text;
-        for (const auto& s : dol.sections)
-            if (s.addr < 0x80200000 && s.addr >= 0x80003100) text.push_back({s.addr, s.addr + s.size});
+        for (size_t i = 0; i < dol.textCount; i++)
+            text.push_back({dol.sections[i].addr, dol.sections[i].addr + dol.sections[i].size});
         std::unordered_set<u32> jt;
         for (auto& [name, o] : objs)
             if (name.rfind("jumptable_", 0) == 0)

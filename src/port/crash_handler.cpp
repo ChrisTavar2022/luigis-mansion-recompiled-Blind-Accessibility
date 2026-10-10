@@ -54,6 +54,30 @@ void onAbort(int) {
 }
 
 #ifdef _WIN32
+// First chance, before anything unwinds: stack overflows and faults in the game module DLL
+// may never reach the unhandled-exception filter with enough stack to symbolize, so report
+// the code, the faulting address and the module it is in with minimal stack use.
+LONG WINAPI onVectored(EXCEPTION_POINTERS* info) {
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    if (code != EXCEPTION_STACK_OVERFLOW && code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION)
+        return EXCEPTION_CONTINUE_SEARCH;
+    static volatile LONG sOnce = 0;
+    if (InterlockedExchange(&sOnce, 1)) return EXCEPTION_CONTINUE_SEARCH;
+    char buf[256];
+    HMODULE mod = nullptr;
+    char name[128] = "?";
+    const void* pc = info->ExceptionRecord->ExceptionAddress;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCSTR>(pc), &mod))
+        GetModuleFileNameA(mod, name, sizeof(name));
+    const int n = wsprintfA(buf, "\n=== exception 0x%08lX at %p (%s+0x%lX), rsp %p ===\n", code, pc, name,
+                            static_cast<unsigned long>(static_cast<const char*>(pc) - reinterpret_cast<const char*>(mod)),
+                            reinterpret_cast<void*>(info->ContextRecord->Rsp));
+    DWORD written = 0;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), buf, DWORD(n), &written, nullptr);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 LONG WINAPI onException(EXCEPTION_POINTERS* info) {
     char reason[64];
     std::snprintf(reason, sizeof(reason), "exception 0x%08lX", info->ExceptionRecord->ExceptionCode);
@@ -72,6 +96,7 @@ void installCrashHandler() {
     });
 #ifdef _WIN32
     SetUnhandledExceptionFilter(onException);
+    AddVectoredExceptionHandler(1, onVectored);
     // Route CRT abort() through SIGABRT instead of an immediate fast-fail.
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif
