@@ -179,8 +179,9 @@ HLE(fn_800AE1A4) {
 HLE(fn_800C0F08) {
     const u32 self = c.r[3];
     const u32 msg = inMem1(c.r[4]) ? rd32(c.r[4]) : 0;
-    if (inMem1(self)) ghostlights::onCharacterEvent(rd32(self + 0x808), msg);  // ghost_lights.cpp
+    if (inMem1(self)) ghostlights::onCharacterEvent(rd32(self + 0x808), msg, self, c.r[4]);  // ghost_lights.cpp
     callOriginal(c, "fn_800C0F08");
+    if (msg == 21 && inMem1(self) && ghostlights::testForceLit(rd32(self + 0x808))) c.r[3] = 1;  // LM_GHOST_HUNT_BEAM
     const float k = current().ghostHealthScale;
     if (k == 1.0f || (msg != 6 && msg != 7)) return;
     const u32 actor = rd32(self + 0x808);

@@ -669,12 +669,44 @@ balcony floor and balustrade (`chauncey_ab.png`); Boolossus (map 11): white ligh
 events flare it (`boolossus_ab.png`). Logged in game: gold ghost in the training room
 (`LM_START_MAP=3`; appear flare, in-beam events, flee/despawn with message 4), Mr. Luggs and the
 waiters in the dining room, the ballroom ghosts. PAL base (map 11): same ghost, colour, view
-positions and events. Not yet exercised in play: a full stun → vacuum → capture (no scripted
-capture exists; the vacuum/capture inputs are the game's own capture update and messages 3/9),
-element ghosts and element hits.
+positions and events.
+
+**Stun → vacuum → capture attempt** (gold ghosts, map 2 room 42 = enemyinfo room 39,
+`LM_TELEPORT=0,550,-3300,100`; the ghosts spawn as soon as Luigi is in the room). What the
+game does (US): the gold ghost strategy (`lbl_8035B6E4`) cycles AI states 4 appear → 5 approach
+→ 8 hover in front of Luigi (~50 frames) → 0xA attack (fully visible) → vanish → 4. Its beam
+handler (`fn_800C7824`) only reacts in states 5/8/9 (`fn_800C8F88`): it starts the light-bind
+sub-strategy at strategy +0x504 (`fn_800C8FE8`, pointer at +0x590), which counts frames the
+ghost is still lit (message 21 = EnThought +0x908 > 0; message 2 sets +0x908) against
+`fn_800DBE8C`: the type's LightBindFrame (gold ghost 25) scaled by distance between the
+Min/MaxLightBindRange 100..400 (closer = more frames). In state 5 it also starts fleeing.
+Reaching sub-state 3 shows the ghost's heart and its HP counter (stunned; second row of
+`gold_ghost_stun_ab.png`), and it fades away again if not vacuumed.
+- Aiming the real flashlight from a script did not work: the hovering ghost is ~200 units
+  above Luigi's floor and the beam rarely reaches it, and lighting it in state 5 makes it flee.
+- `LM_GHOST_HUNT` (a reactive pad driver, below) with `LM_GHOST_HUNT_BEAM=89` (delivers the
+  game's own beam message 2 to the AI in states 8/9 at 100..`LM_GHOST_HUNT_DMAX` units) does
+  stun it: sub-state 0 → 1 → 3 within 2-4 frames, heart and HP shown.
+- The vacuum never hooks it: R does nothing in this test state (the known LM_TEST_STATE issue:
+  no vacuum request is raised after teleporting in from the start of the game), so the
+  Poltergust capture update and messages 9/3 never come. Vacuum brightening and the capture
+  burst therefore remain unverified in play; they need a save past the lab sequence.
+
+Frame dumps of the stun window with `LM_GHOST_LIGHT_AB=1` (`gold_ghost_stun_ab.png`, off /
+on / difference): the gold ghost's orange light on the wall and floor next to it while it is
+lit (flicker) and while its heart shows.
+
+Element ghosts and element hits have not been exercised in play.
 
 Test aids: `LM_GHOST_LIGHTS=1` (on regardless of the settings; with `LM_ENHANCED=1`),
 `LM_GHOST_LIGHT_LOG=1|N` (every ghost each N frames: id, type, class, element, state, alpha,
 HP, flags, colour, world and view position, intensity, radius; the lights sent; every event;
 vacuum holds; the type colour table once), `LM_GHOST_LIGHT_DIFF=1` (changed bytes 0..0x200 of
-drawn ghosts, research aid), `LM_GHOST_LIGHT_AB=1`.
+drawn ghosts, research aid), `LM_GHOST_LIGHT_AB=1`, and the hunting aids (US, research):
+`LM_GHOST_HUNT=1|<AI state hex>` steers Luigi (after `--input`: faces away from the target
+ghost while it hovers, turns to it in the given state, holds R and closes in with the nozzle
+tilted up once it is stunned, pulls away when hooked), `LM_GHOST_HUNT_BEAM=<states>`,
+`LM_GHOST_HUNT_DMAX`, `LM_GHOST_HUNT_DELAY`, `LM_GHOST_HUNT_R`, `LM_GHOST_HUNT_TURN`,
+`LM_GHOST_HUNT_CY`, `LM_GHOST_HUNT_DIV`, `LM_GHOST_HUNT_FLIP`. The log line's `ai` field is the
+ghost's strategy state (EnThought +0x800 → +0x0E; decorator inner state in the high half), and
+the first AI of each type logs its strategy vtable.

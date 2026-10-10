@@ -132,6 +132,7 @@ struct Track {
     // Event/frame stamps (0 = never).
     u32 lastBeam = 0, lastHeld = 0, lastDrain = 0, fishStart = 0, captureStart = 0, captureEnd = 0;
     u32 elementHit = 0;
+    u32 thought = 0;  // the ghost's EnThought (AI), from its messages
     const u32* elementTint = nullptr;
     float flare = 0;     // appear/attack flare 0..1, decays
     float struggle = 0;  // 0..1, smoothed vacuum struggle
@@ -256,6 +257,16 @@ void diffDump(u32 actor) {
 }
 
 // Ghost lights need the Enhanced lighting master switch and its "Dynamic colored lights" part.
+// EnThought +0x800: the active EnemyStrategy; its current state (+0x0E), and the wrapped
+// "tsuri" (vacuum) strategy's state when it is a decorator (+0x14). Logged as tsuri<<16 | state.
+u32 aiState(u32 thought) {
+    if (!guestPtr(thought)) return 0xFFFF;
+    const u32 st = rd32(thought + 0x800);
+    if (!guestPtr(st)) return 0xFFFE;
+    const u32 inner = rd32(st + 0x14);
+    return (guestPtr(inner) ? rd16(inner + 0xE) << 16 : 0) | rd16(st + 0xE);
+}
+
 bool enabled() {
     const auto& st = port::settings();
     return sForce || (st.ghostLights.enabled && st.enhancedLighting.enabled && st.enhancedLighting.extraLights);
@@ -270,9 +281,9 @@ void dumpTypes() {
         const u32 e = kTypeTable + type * kTypeStride;
         if (!(rd16(e + kTypeFlags) & kTypeFlagGhost)) continue;
         const u32 pb = paramBase(type);
-        log("[ghostlight] type %3u %-10s cls %2d life %4d element %d bright %08X amb %08X", type, typeName(type),
-            s16(rd16(e + kTypeClass)), int(rd32(pb + kParamLife)), int(rd32(pb + kParamElement)), rd32(pb + kParamBright),
-            rd32(pb + 0x210));
+        log("[ghostlight] type %3u %-10s cls %2d life %4d element %d bright %08X amb %08X bind %d frames %.0f..%.0f",
+            type, typeName(type), s16(rd16(e + kTypeClass)), int(rd32(pb + kParamLife)), int(rd32(pb + kParamElement)),
+            rd32(pb + kParamBright), rd32(pb + 0x210), int(rd32(pb + 0x94)), rdf32(pb + 0xA8), rdf32(pb + 0xBC));
     }
 }
 
@@ -304,8 +315,22 @@ void update(Ctx& c) {
     if (logNow) {
         const u32 l = rd32(kActorSlots);
         if (guestPtr(l))
-            log("[ghostlight] f%u retrace %u luigi %.0f,%.0f,%.0f", sFrame, viRetraceCount(), rdf32(l + kActPos),
-                rdf32(l + kActPos + 4), rdf32(l + kActPos + 8));
+            log("[ghostlight] f%u retrace %u luigi %.0f,%.0f,%.0f room %u", sFrame, viRetraceCount(), rdf32(l + kActPos),
+                rdf32(l + kActPos + 4), rdf32(l + kActPos + 8), rd32(VA(0x803A3CA0) + 0xC) >> 24);
+        // Once: the room table (lbl_804D8170, 0x30 per room, int bounds at +0x8/+0x14), to find
+        // rooms for LM_TELEPORT.
+        static bool sRooms = false;
+        const u32 rooms = rd32(VA(0x804D8170));
+        if (!sRooms && guestPtr(rooms)) {
+            sRooms = true;
+            for (u32 r = 0; r < 80; r++) {
+                const u32 b = rooms + r * 0x30;
+                const int lo[3] = {s32(rd32(b + 8)), s32(rd32(b + 12)), s32(rd32(b + 16))};
+                const int hi[3] = {s32(rd32(b + 20)), s32(rd32(b + 24)), s32(rd32(b + 28))};
+                if (hi[0] <= lo[0] || hi[0] - lo[0] > 20000) continue;
+                log("[ghostlight] room %2u min %d,%d,%d max %d,%d,%d", r, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+            }
+        }
     }
     for (u32 i = 0; i < count; i++) {
         const u32 a = rd32(kActorSlots + 4 * i);
@@ -326,6 +351,7 @@ void update(Ctx& c) {
             tr.captureEnd = events.captureEnd;
             tr.elementHit = events.elementHit;
             tr.elementTint = events.elementTint;
+            tr.thought = events.thought;
             tr.flare = events.flare;
             tr.type = type;
             tr.cls = cls;
@@ -428,9 +454,9 @@ void update(Ctx& c) {
         const V3 vp = toView(view, tr.world);
         if (logNow)
             log("[ghostlight] f%u id %08X type %u %s cls %d el %d state %s a %.2f hp %d/%d flags %08X rgb %02X%02X%02X "
-                "world %.0f,%.0f,%.0f view %.0f,%.0f,%.0f I %.2f r %.0f",
+                "world %.0f,%.0f,%.0f view %.0f,%.0f,%.0f I %.2f r %.0f ai %X",
                 sFrame, a, type, typeName(type), cls, element, state, alpha, hp, maxHp, flags, rgb[0], rgb[1], rgb[2],
-                tr.world.x, tr.world.y, tr.world.z, vp.x, vp.y, vp.z, lightI, tr.radius * radiusK);
+                tr.world.x, tr.world.y, tr.world.z, vp.x, vp.y, vp.z, lightI, tr.radius * radiusK, aiState(tr.thought));
         if (lightI <= 0.005f) continue;
         Candidate cd{};
         cd.light = {{vp.x, vp.y, vp.z}, {color[0], color[1], color[2]}, tr.radius * radiusK, lightI, kFlagBase, a};
@@ -496,9 +522,19 @@ void update(Ctx& c) {
 
 }  // namespace
 
-void onCharacterEvent(u32 actor, u32 msg) {
+void onCharacterEvent(u32 actor, u32 msg, u32 thought, u32 event) {
     if (!enabled() || !isGhostActor(actor)) return;
     Track& tr = sTracks[actor];
+    tr.thought = thought;
+    static u32 sVtTypes[8] = {}, sVtN = 0;
+    const u32 vtType = rd32(actor + kActType);
+    const bool sVt = std::find(sVtTypes, sVtTypes + sVtN, vtType) != sVtTypes + sVtN || sVtN >= 8;
+    if (sLog && !sVt && guestPtr(thought) && guestPtr(rd32(thought + 0x800))) {
+        sVtTypes[sVtN++] = vtType;
+        const u32 st = rd32(thought + 0x800), in = rd32(st + 0x14);
+        log("[ghostlight] AI of %s: thought vt %08X, strategy %08X vt %08X, inner %08X vt %08X", typeName(rd32(actor + kActType)),
+            rd32(thought + 0x804), st, rd32(st), in, guestPtr(in) ? rd32(in) : 0);
+    }
     switch (msg) {
     case kMsgInBeam: tr.lastBeam = sFrame; break;
     case kMsgCaptureBegin: if (!tr.captureStart) tr.captureStart = sFrame; break;
@@ -511,7 +547,10 @@ void onCharacterEvent(u32 actor, u32 msg) {
     default: return;
     }
     if (sLog && msg != kMsgInBeam) log("[ghostlight] f%u event %u -> %08X %s", sFrame, msg, actor, typeName(rd32(actor + kActType)));
-    if (sLog && msg == kMsgInBeam && (sFrame % 15) == 0) log("[ghostlight] f%u in beam %08X %s", sFrame, actor, typeName(rd32(actor + kActType)));
+    if (sLog && msg == kMsgInBeam && (sFrame % 15) == 0)
+        log("[ghostlight] f%u in beam %08X %s ai %X ev %08X %08X %08X %08X %08X %08X %08X %08X", sFrame, actor,
+            typeName(rd32(actor + kActType)), aiState(thought), rd32(event), rd32(event + 4), rd32(event + 8),
+            rd32(event + 12), rd32(event + 16), rd32(event + 20), rd32(event + 24), rd32(event + 28));
 }
 
 void onVacuumTick(u32 actor) {
@@ -521,9 +560,147 @@ void onVacuumTick(u32 actor) {
         log("[ghostlight] f%u vacuum holds %08X %s hp %d", sFrame, actor, typeName(rd32(actor + kActType)), s16(rd16(actor + kActHp)));
 }
 
+void testPad(u16& buttons, s8& stickX, s8& stickY, s8& cY, u8& triggerR) {
+    static const bool sHunt = envFlag("LM_GHOST_HUNT");
+    // LM_GHOST_HUNT=1 turns the flashlight onto the ghost when its AI enters state 0xA (the
+    // attack, fully visible); =<hex> another state.
+    static const u32 sTrigger = [] {
+        const u32 v = u32(std::strtoul(std::getenv("LM_GHOST_HUNT") ? std::getenv("LM_GHOST_HUNT") : "1", nullptr, 16));
+        return v <= 1 ? 0xAu : v;
+    }();
+    if (!sHunt || !enabled()) return;
+    const u32 l = rd32(kActorSlots);
+    if (!guestPtr(l) || sFrame < 150) return;
+    // Target: the nearest drawn, visible ghost.
+    const V3 lp{rdf32(l + kActPos), rdf32(l + kActPos + 4), rdf32(l + kActPos + 8)};
+    u32 best = 0;
+    float bestD = 1e9f;
+    for (auto& [a, tr] : sTracks) {
+        if (tr.lastFrame + 2 < sFrame || (tr.alpha < 0.05f && !recent(tr.lastHeld, 3))) continue;
+        const float dx = tr.world.x - lp.x, dz = tr.world.z - lp.z, d = std::sqrt(dx * dx + dz * dz);
+        if (d < bestD) bestD = d, best = a;
+    }
+    // The flashlight is always on (holding R puts it out while vacuuming); where Luigi faces
+    // decides what it lights.
+    enum { Wait, Aim, Pull };
+    static int sMode = Wait;
+    static u32 sModeFrame = 0, sLastSeen = 0, sLastAimLog = 0;
+    static const u32 sRDelay = u32(std::getenv("LM_GHOST_HUNT_R") ? std::atoi(std::getenv("LM_GHOST_HUNT_R")) : 15);
+    static const u32 sDelay = u32(std::atoi(std::getenv("LM_GHOST_HUNT_DELAY") ? std::getenv("LM_GHOST_HUNT_DELAY") : "0"));
+    static const int sTurn = std::getenv("LM_GHOST_HUNT_TURN") ? std::atoi(std::getenv("LM_GHOST_HUNT_TURN")) : 6;
+    constexpr u16 kPadR = 0x0020;  // PAD_TRIGGER_R
+    if (!best) {
+        if (sMode != Wait) log("[ghosthunt] f%u no target", sFrame);
+        sMode = Wait;
+        return;
+    }
+    const Track& tr = sTracks[best];
+    const u32 ai = aiState(tr.thought) & 0xFFFF;
+    const float dx = tr.world.x - lp.x, dz = tr.world.z - lp.z;
+    const float len = std::max(1.0f, std::sqrt(dx * dx + dz * dz));
+    // Camera looks along -z: stick up = -z, right = +x.
+    static const int sFlip = std::getenv("LM_GHOST_HUNT_FLIP") ? std::atoi(std::getenv("LM_GHOST_HUNT_FLIP")) : 0;
+    const s8 towardX = s8(std::clamp((sFlip & 1 ? -dx : dx) / len * 127.0f, -127.0f, 127.0f));
+    const s8 towardY = s8(std::clamp((sFlip & 2 ? dz : -dz) / len * 127.0f, -127.0f, 127.0f));
+    const bool held = recent(tr.lastHeld, 3) || recent(tr.fishStart, 3);
+    switch (sMode) {
+    case Wait:  // face away (the light would scare it off) until it attacks
+        if (sFrame % 10 < 2 && bestD < 700.0f) stickX = s8(-towardX / 3), stickY = s8(-towardY / 3);
+        static u32 sInTrigger = 0;
+        sInTrigger = ai == sTrigger ? sInTrigger + (sFrame != sLastSeen ? 1 : 0) : 0;
+        sLastSeen = sFrame;
+        if (ai == sTrigger && sInTrigger >= sDelay && bestD < 600.0f && sFrame - sModeFrame > 20) {
+            sMode = Aim, sModeFrame = sFrame;
+            log("[ghosthunt] f%u target %08X a %.2f d %.0f ai %X: aim", sFrame, best, tr.alpha, bestD, ai);
+        }
+        break;
+    case Aim:  // turn the light onto it; vacuum once the beam has been on it a moment
+        if (int(sFrame - sModeFrame) < sTurn) stickX = s8(towardX / 2), stickY = s8(towardY / 2);  // turn, barely walk
+        if (recent(tr.lastBeam, 2) && sFrame - tr.lastBeam < 2 && sFrame - sModeFrame > 4) {
+            static u32 sBeamFrames = 0;
+            if (++sBeamFrames % 10 == 0) log("[ghosthunt] f%u beam on target, ai %X", sFrame, ai);
+        }
+        if (sFrame % 5 == 0 && sFrame != sLastAimLog) {
+            sLastAimLog = sFrame;
+            log("[ghosthunt] f%u aim: ai %X a %.2f d %.0f beam %d", sFrame, aiState(tr.thought), tr.alpha, bestD, int(recent(tr.lastBeam, 2)));
+        }
+        {
+            // The ghost's light-bind sub-strategy (gold ghost strategy +0x590, state 3 = bound /
+            // stunned): then hold R and close in so the nozzle hooks it.
+            const u32 st = guestPtr(tr.thought) ? rd32(tr.thought + 0x800) : 0, sub = guestPtr(st) ? rd32(st + 0x590) : 0;
+            const bool bound = guestPtr(sub) && rd16(sub + 0xE) == 3;
+            if (bound || (recent(tr.lastBeam, 3) && sFrame - sModeFrame > sRDelay)) buttons |= kPadR, triggerR = 0xFF;
+            static const int sCY = std::getenv("LM_GHOST_HUNT_CY") ? std::atoi(std::getenv("LM_GHOST_HUNT_CY")) : 100;
+            static const int sDiv = std::getenv("LM_GHOST_HUNT_DIV") ? std::atoi(std::getenv("LM_GHOST_HUNT_DIV")) : 1;
+            if (bound) cY = s8(sCY);  // tilt the nozzle up at the floating ghost (C stick)
+            if (bound && bestD > 120.0f) stickX = s8(towardX / sDiv), stickY = s8(towardY / sDiv);
+            if (bound && sFrame % 5 == 1) log("[ghosthunt] f%u bound (stunned), closing in d %.0f", sFrame, bestD);
+        }
+        if (held) {
+            sMode = Pull, sModeFrame = sFrame;
+            log("[ghosthunt] f%u hooked %08X hp %d ai %X: pulling", sFrame, best, tr.hp, ai);
+        } else if (sFrame - sModeFrame > 120) {
+            sMode = Wait, sModeFrame = sFrame;
+            log("[ghosthunt] f%u not hooked (ai %X): wait", sFrame, ai);
+        }
+        break;
+    case Pull:  // hold R and pull away from the ghost
+        buttons |= kPadR, triggerR = 0xFF;
+        cY = 100;
+        stickX = s8(-towardX), stickY = s8(-towardY);
+        if (!held && sFrame - sModeFrame > 30) {
+            sMode = Wait, sModeFrame = sFrame;
+            log("[ghosthunt] f%u released (hp %d)", sFrame, tr.hp);
+        }
+        break;
+    }
+}
+
 // Main view of the game scene (enhanced_lighting.cpp's fn_8000BB98 hook, view 0: fn_8000BCE8
 // calls it after setting that view's camera): the lights are built from the current camera
 // before anything is drawn and submitted for this frame.
-void onMainView(Ctx& c) { update(c); }  // update() restores the registers
+u32 sForcedActor = 0, sForcedFrame = 0;
+bool testForceLit(u32 actor) { return actor == sForcedActor && sFrame - sForcedFrame <= 2; }
+
+void onMainView(Ctx& c) {
+    update(c);  // update() restores the registers
+    // Test aid LM_GHOST_HUNT_BEAM=<states hex, e.g. 8A>: while the nearest ghost is in one of
+    // those AI states and 100..400 units from Luigi, deliver the game's own "in the flashlight
+    // beam" message (CharacterEvent 2) to its AI each frame, as the flashlight would. Stands in
+    // for aiming the beam (the scripted stick cannot aim it up at a hovering ghost).
+    static const char* sBeam = std::getenv("LM_GHOST_HUNT_BEAM");
+    if (!sBeam || !enabled()) return;
+    const u32 l = rd32(kActorSlots);
+    if (!guestPtr(l)) return;
+    static const u32 ev = [] {
+        const u32 p = hleAlloc(0x40, 8);
+        for (u32 i = 0; i < 0x40; i += 4) wr32(p + i, 0);
+        return p;
+    }();
+    static const u32 thoughtFn = guestSymbol("fn_800C0F08");
+    for (auto& [a, tr] : sTracks) {
+        if (tr.lastFrame != sFrame || !guestPtr(tr.thought) || tr.alpha < 0.05f) continue;
+        const u32 ai = aiState(tr.thought) & 0xFFFF;
+        bool want = false;
+        for (const char* p = sBeam; *p; p++) {
+            const char ch[2] = {*p, 0};
+            if (std::strtoul(ch, nullptr, 16) == ai) want = true;
+        }
+        const float dx = tr.world.x - rdf32(l + kActPos), dz = tr.world.z - rdf32(l + kActPos + 8);
+        const float d = std::sqrt(dx * dx + dz * dz);
+        static const float sDMax = std::getenv("LM_GHOST_HUNT_DMAX") ? float(std::atof(std::getenv("LM_GHOST_HUNT_DMAX"))) : 400.0f;
+        if (!want || d < 100.0f || d > sDMax) continue;
+        sForcedActor = a, sForcedFrame = sFrame;
+        wr32(ev, kMsgInBeam);
+        const Ctx saved = c;
+        const u32 r = guestCall(c, thoughtFn, tr.thought, ev);
+        c = saved;
+        const u32 st = rd32(tr.thought + 0x800), sub = guestPtr(st) ? rd32(st + 0x590) : 0;
+        log("[ghosthunt] f%u beam message -> %08X ai %X d %.0f result %u lit %d sub %08X st %X t %u n %u", sFrame, a, ai, d, r,
+            s32(rd32(tr.thought + 0x908)), sub, guestPtr(sub) ? rd16(sub + 0xE) : 0xFFFF, guestPtr(sub) ? rd32(sub + 0x10) : 0,
+            guestPtr(sub) ? rd32(sub + 0x14) : 0);
+        break;
+    }
+}
 
 }  // namespace recomp::ghostlights
