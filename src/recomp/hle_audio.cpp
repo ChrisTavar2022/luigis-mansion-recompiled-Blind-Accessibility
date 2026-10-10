@@ -10,6 +10,7 @@
 // command packets go to our microcode stand-in (audio_dsp.cpp), and every
 // DSPReleaseHalt mixes one subframe and then raises the DSP interrupt that
 // JAudio's audio thread waits for. See docs/AUDIO.md.
+#include "port/settings.h"
 #include "recomp/audio.h"
 #include "recomp/hle.h"
 #include "recomp/sched.h"
@@ -17,6 +18,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <thread>
 
 namespace recomp {
@@ -29,7 +32,9 @@ std::atomic<bool> sDmaRunning{false};
 std::atomic<u32> sDspRate{0};  // 0 = 32 kHz, 1 = 48 kHz
 std::thread sDmaThread;
 
-u32 rateHz() { return sDspRate.load() ? 48000 : 32000; }
+// The console's real rates (audio.h): the game's audio clock runs at these, so music
+// tempo and pitch match the console (0.09% above the nominal 32000 Hz).
+double rateHz() { return sDspRate.load() ? audio::kConsoleRate48 : audio::kConsoleRate32; }
 
 void dmaThread() {
     using clock = std::chrono::steady_clock;
@@ -116,6 +121,98 @@ HLE(DSPAssertInt) {}
 }  // namespace recomp
 
 namespace recomp {
+// ---- The game's sound mode (docs/AUDIO.md, "Surround") ----
+// The options menu, and the code that applies saved options (fn_8005582C, fn_800558C8,
+// options struct byte 0: 0 mono, 1 stereo, 2 surround), all go through fn_8018A70C(mode),
+// which stores the mode in JAIBasic +0x41 (sequences then take their Dolby surround
+// send from their own table in mode 2, 0 otherwise), sets JAudio's output mode (0 mono:
+// centred pan, no surround send; 1 otherwise) and the AFC streamer's mono flag. The port's
+// F1 > Sound > Output is the same setting: saved options are overridden with it, the
+// game's own menu changes it, and changing it in F1 applies it to the game.
+namespace {
+int sGameMode = -1;           // last mode applied through fn_8018A70C
+bool sApplyingSaved = false;  // inside fn_8005582C / fn_800558C8
+bool sPortApplying = false;   // our own call (syncSoundMode)
+u32 sOptions = 0;             // the game's options struct (byte 0 = sound mode)
+
+int modeFor(port::AudioOutput o) {
+    switch (o) {
+    case port::AudioOutput::Mono: return 0;
+    case port::AudioOutput::Stereo: return 1;
+    default: return 2;
+    }
+}
+
+// The game asked for `mode` from its own options menu: F1 follows (keeping 5.1 / 7.1 when
+// the game chose surround and one of those was already selected).
+void adoptGameMode(int mode) {
+    auto& a = port::settings().audio;
+    if (modeFor(a.output) == mode) return;
+    a.output = mode == 0 ? port::AudioOutput::Mono : mode == 1 ? port::AudioOutput::Stereo : port::AudioOutput::Surround;
+    port::saveSettings();
+    if (audio::g_log) log("[audio] game options: sound mode %d -> F1 output %d", mode, int(a.output));
+}
+
+void applySavedOptions(Ctx& c, const char* name) {
+    sOptions = c.r[3];
+    const int want = modeFor(port::settings().audio.output);
+    wr8(sOptions, u32(want));
+    sApplyingSaved = true;
+    callOriginal(c, name);
+    sApplyingSaved = false;
+    wr8(sOptions, u32(want));  // the original forces mono when the console's SRAM says mono
+}
+
+// F1 changed the output: apply it to the game (from JAudio's audio thread, where the
+// mode is read). Only once the game has set a mode itself (JAudio is up).
+void syncSoundMode(Ctx& c) {
+    // Test aid: LM_AUDIO_SWITCH=<subframe>:<output> changes F1 > Sound > Output (0 stereo,
+    // 1 mono, 2 surround, 3 5.1, 4 7.1) after that many DSP subframes (400 per second).
+    static const char* sSwitch = std::getenv("LM_AUDIO_SWITCH");
+    if (sSwitch && *sSwitch) {
+        static u32 sCount = 0, sAt = 0, sTo = 0;
+        if (!sCount) std::sscanf(sSwitch, "%u:%u", &sAt, &sTo);
+        if (++sCount == sAt) port::settings().audio.output = port::AudioOutput(sTo);
+    }
+    if (sGameMode < 0) return;
+    const int want = modeFor(port::settings().audio.output);
+    if (want == sGameMode) return;
+    static const u32 fn = guestSymbol("fn_8018A70C");
+    if (!fn) return;
+    sPortApplying = true;
+    guestCall(c, fn, u32(want));
+    sPortApplying = false;
+    if (sOptions) wr8(sOptions, u32(want));  // the options menu shows it, saves keep it
+}
+}  // namespace
+
+int audio::gameSoundMode() { return sGameMode; }
+
+HLE(fn_8005582C) { applySavedOptions(c, "fn_8005582C"); }
+HLE(fn_800558C8) { applySavedOptions(c, "fn_800558C8"); }
+HLE(fn_8018A70C) {
+    const int req = int(c.r[3]);
+    if (sApplyingSaved || sPortApplying) {
+        c.r[3] = u32(modeFor(port::settings().audio.output));
+    } else {
+        adoptGameMode(req);
+    }
+    if (audio::g_log && int(c.r[3]) != sGameMode)
+        log("[audio] sound mode %d (game asked %d%s)", int(c.r[3]), req,
+            sApplyingSaved ? ", saved options" : sPortApplying ? ", F1" : ", options menu");
+    sGameMode = int(c.r[3]);
+    callOriginal(c, "fn_8018A70C");
+}
+
+// Jac_imixcopy(bufR, bufL, dac, frames): Jac_VframeWork interleaves the finished DSP
+// buffer pair into the next AI block. The output keeps that buffer's side data (centre /
+// surround buses) for when the block plays (discrete 5.1 / 7.1).
+HLE(Jac_imixcopy__FPsPsPsl) {
+    const u32 bufL = c.r[4], dac = c.r[5], frames = c.r[6];
+    callOriginal(c, "Jac_imixcopy__FPsPsPsl");
+    audio::outTagBlock(dac, bufL, frames);
+}
+
 // JAudio DSP driver hooks (tools/recomp/hooks.txt).
 HLE(DspBoot__Fv) {}  // nothing to upload: the "microcode" is audio_dsp.cpp
 
@@ -132,6 +229,7 @@ HLE(DSPSendCommands__FPUlUl) {
 // Releasing it mixes the next subframe; its completion interrupt (__DspSync ->
 // DspSync) wakes JAudio's audio thread for the next update.
 HLE(DSPReleaseHalt__Fv) {
+    syncSoundMode(c);
     if (!audio::dspRunSubframe()) return;
     static const u32 dspSync = guestSymbol("DspSync__Fv");
     sched::postIrq([](Ctx& ic) { guestCall(ic, dspSync); });

@@ -179,7 +179,7 @@ bool sFlashlightLight = false;
 // the call, so the room shadow light (the one that follows Luigi) is used.
 HLE(fn_80029050) {
     static const bool sLit = std::getenv("LM_ROOMS_LIT") != nullptr;
-    const u32 obj = sLit && !ver::pal() ? rd32(0x803A3CA0 + 0x24) : 0;
+    const u32 obj = sLit ? rd32(VA(0x803A3CA0) + 0x24) : 0;
     if ((obj >> 28) != 8) return callOriginal(c, "fn_80029050");
     const u32 saved = rd32(obj + 0xAC);
     wr32(obj + 0xAC, 0);

@@ -14,6 +14,7 @@
 #include "port/settings.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
+#include "recomp/version.h"
 
 #include <cstdlib>
 
@@ -31,7 +32,7 @@ bool enabled() {
         const char* v = std::getenv("LM_NOZZLES");
         return v && *v && *v != '0';
     }();
-    return (sEnv || port::settings().enhancements.airWaterNozzles) && port::usCodeFeature() == port::Avail::Yes;
+    return sEnv || port::settings().enhancements.airWaterNozzles;
 }
 
 bool inMem1(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
@@ -41,7 +42,9 @@ bool inMem1(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
 // The game loads a model when a map needs it (fn_8006227C at map setup; per-event models via
 // fn_800620F4 from the event code, JmpMessage). wpwater/wpair are never needed, so their
 // entries stay empty and re-typing the nozzle to them would leave it without a model.
-constexpr u32 kTypeTable = 0x8033B590, kModelRegistry = 0x8034E46C;
+// Both releases (European fn_800B36B8/fn_800B9064 are identical; VA() maps the tables).
+#define kTypeTable VA(0x8033B590)
+#define kModelRegistry VA(0x8034E46C)
 
 u32 modelEntry(u32 type) { return kModelRegistry + 0x34 * rd32(kTypeTable + 0x1C * type); }
 

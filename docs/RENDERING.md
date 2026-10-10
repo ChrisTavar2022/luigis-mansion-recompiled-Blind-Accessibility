@@ -186,9 +186,10 @@ else there.
 | shadow buffer (heap, 0x96000) | Z16 640x480, every frame | **IA8 640x480** texture (TEV `GR16` compare against a 256x256 IA8 depth ramp: the flashlight/lightning shadow map, see "Shadows") | `fn_8005D8CC` copy, `fn_8005D41C` texture, `fn_8005DD50` TEV setup |
 | `lbl_804D86BC` (0x8021E000) | RGB565 640x480, twice per frame | RGB565 same size | `fn_8005F518` / `fn_8005F8B8` |
 | `lbl_804D86B8` (0x802B4000) | RGBA8 320x240 (box-filtered) | RGBA8 same size | `fn_8005F498` |
-| 0x803A4D00 | RGB565 70x100 from (250,140 140x200) | same | `fn_80025C98` |
+| 0x803A4D00 | RGB565, box-filtered half size of a screen region (70x100 from (250,140 140x200) in the foyer, 134x114 from (186,126 268x228) in the 2F Bathroom) | same | `fn_80025C98` |
 | transition captures | RGB565 640x480 | same | `fn_800081A8` (LMDisplayUtil) |
 | title/file select | 4 x RGB565 148x116 | same | `fn_800494E4` |
+| event 5/6 render targets (heap, +0x28 of the objects at `r13+0x768`/`+0x76C`) | IA4 (event 5) / RGB5A3 (event 6) 128x128, every frame while the event runs | same, warped by the indirect stage (Mario painting; see "Indirect effects") | `fn_8006033C` |
 
 - The shadow buffer is the one copy read with a different format. It and the two screen
   buffers are also reused as scratch memory for ARAM/DVD loads (Game Boy Horror archive,
@@ -283,7 +284,7 @@ configured/all-off every s seconds and log fps per phase, for A/B screenshots of
 | Fog | only `GX_FOG_NONE` seen; range adjust enabled (center 0), `GXInitFogAdjTable` once | range factor from a guessed NDC formula (much weaker than the table) | **Fixed model**: LUT built from the table (entry i = 256x factor at 32(i+1) EFB px from center, interpolated, 1.0 at center, last entry beyond), in EFB pixels at any resolution. Not visible in tested scenes (fog off) |
 | Texture filtering | min LINEAR/NEAR, edge LOD, no mips | hw min-filter decode had NEAR_MIP_LIN/LIN_MIP_NEAR swapped | **Fixed** decode table (raw-BP texture setups). LOD bias/edge LOD fine |
 | Lighting | spot (clamp diffuse), specular (shininess form), dist-attn fns, SRTG from COLOR0 | per-vertex, same formulas | **Reviewed, no change** (SRTG lit-color fix is in 0008). Open: Aurora normalizes transformed normals; hardware may not |
-| Indirect | ghost layer (`fn_8005FDD4`, `GXSetTevIndWarp`; only drawn while `r13+0x768` holds its 128x128 warp texture, which the per-map setup table at `0x803002C4` creates for one map), J3D indirect materials | float offsets | Texel rounding added in integer mode; the rest of the indirect path is unchanged. **Not exercised by LM in any tested scene**: `AURORA_GX_AUDIT=1` logged no indirect stage and `LM_TRACE=8005FDD4` no call through boot, title, file select, lab, training room (gold ghost), Portrificationizer, foyer, nursery, gallery (map 6), GBH scan/map/inventory screens. Ghosts (gold ghost in the training room) are not drawn with indirect warping |
+| Indirect | Only the Mario painting at the Secret Altar (`fn_8005FDD4`, event 6) and an invisible copy of it in event 5; J3D materials on the disc have no indirect stages | float offsets | **Fixed** (patch 0014, see "Indirect effects"): integer offsets (s1.10 x s8 >> 3, scale shift, 1/128-texel fixed-point coordinates) in integer TEV mode; ITF_5/4/3 low-bit offsets and positive-modulo wraps always. Offsets are in logical texels, so they scale with resolution |
 | Lines/points | width 6 (1 px), viewport jitter field=1 only | width/6, perpendicular expansion | No change needed for LM (hardware widens along x/y; noted) |
 | Logic ops, dst alpha | no logic op; dst alpha used | fine | No change |
 
@@ -292,7 +293,7 @@ configured/all-off every s seconds and log fps per phase, for A/B screenshots of
 | Toggle (ini key) | What it does | Visible effect | Cost (measured below) |
 |---|---|---|---|
 | Integer-accurate TEV (`integer_tev`) | TEV stages evaluated in integer WGSL (8-bit A/B/C, s11 D/registers, per-stage rounding/clamp) | +-1 level on ~40-45% of pixels, unbiased (mean +0.06); nothing structural | see table |
-| EFB color depth (`efb_color_depth`) | fragment output quantized to the EFB format (RGBA6 / RGB565) with the PE's 2x2 dither when the draw enables it | ~1.4 levels darker on average (LM draws much of the scene with dither off, where the PE truncates), 6-bit banding rings in smooth gradients (flashlight pool on the floor), dither grain where dither is on | see table |
+| EFB color depth (`efb_color_depth`) | fragment output quantized to the EFB format (RGBA6 / RGB565) with the PE's 2x2 dither when the draw enables it; texture copies to RGB565/RGB5A3 keep their format's precision (patch 0014) | ~1.4 levels darker on average (LM draws much of the scene with dither off, where the PE truncates), 6-bit banding rings in smooth gradients (flashlight pool on the floor), dither grain where dither is on | see table |
 | Display copy filter (`display_copy_filter`) | present-time pass (`dcopy_filter` in crt.cpp, ahead of the CRT chain) with the game's GXSetCopyFilter taps + GXSetDispCopyGamma | ~5% less vertical high-frequency detail (6/52/6 of 64), no color shift (mean 0.2 levels); only runs when the taps/gamma change the picture | see table |
 
 The fog range LUT and the texture min-filter decode are plain correctness fixes with no
@@ -341,6 +342,156 @@ full-screen pass with three texture taps.
 Remaining: blended draws are not quantized after blending; copy filter not applied to texture
 copies (GXCopyTex); whether hardware normalizes transformed normals; fog range LUT with
 widescreen is untested (LM never enables fog).
+
+## Indirect effects
+
+Aurora patch `0014-indirect-and-copy-format-accuracy.patch`; logging and test aids in
+`src/recomp/hle_gx.cpp` (`LM_IND_*`).
+
+### What uses indirect texturing (US; the European game has the same code)
+
+- **Static search.** In the DOL, the GX indirect calls (`GXSetIndTexOrder/CoordScale/Mtx`,
+  `GXSetNumIndStages`, `GXSetTevIndirect/IndWarp`) are made only from `fn_8005FDD4`, from
+  `GXInit`/`GXSetTevDirect`, and from J3D (`J3DSys::drawInit` resets, `J3DInd*::load`). None of the
+  J3D models on the disc (`Effect/*.bmd` are MAT2, the rest are in `game*.szp`, `Iwamoto/vr*.szp` and
+  `Map/map*.szp`) has an indirect material block, so `fn_8005FDD4` is the only indirect effect.
+- **Runtime sweep** (`LM_IND_LOG=1` + `AURORA_GX_AUDIT=1`, which also reports indirect state that
+  arrives as raw BP writes in display lists): boot, title, file select, foyer, every map 0-13 by warp
+  (with and without entry events: Bowser, Chauncey, Boolossus, Bogmire, map 12), the mansion appear
+  points 3/5/7/9 (Balcony Boos, Sealed Room, King Boo at the Secret Altar), the lab, Portrificationizer,
+  the fire and ice elements with L/R held in the foyer and nursery, the PAL Hidden Mansion
+  (`LM_HM_FORCE=1`: foyer, appear point 3, map 12). Indirect draws only appear in
+  events 5 and 6 (below). Ghosts, Boos, the vacuum vortex, elements, water, the GBH, mirrors and
+  screen transitions do not use indirect texturing (the mirrors and transitions are EFB copies, below).
+
+### The effect: `fn_8005FDD4` (warped render-to-texture)
+
+What starts it is not a per-map table: `0x803002C4`, `0x80300478` and `0x8030062C` are three parallel
+arrays of 109 function pointers (init, per-frame update, end) indexed by **event number** (followed by
+the string `/Event/event%02d.szp`). Two events use the effect:
+
+| Event | Where | Init / end | What is rendered |
+|---|---|---|---|
+| 6 | Secret Altar, King Boo's talk (mansion appear point 9, trigger at 2313,-550,-6457) | `fn_8002CD48` / `fn_8002CEB0` | two S3D models (`fn_800605BC`) into two 128x128 **RGB5A3** copies, cross-faded (`r13-0x7758` and 255 minus it): **Mario in the painting** |
+| 5 | 2F Bathroom (trigger at -1649,550,-4889, character `fat`, flag 38) | `fn_8002CC8C` / `fn_8002CD14` | the model of the actor of type 0x5F into one 128x128 **IA4** copy |
+
+`event05.szp`/`event06.szp` are empty placeholder scripts; the effect comes only from these code
+slots. Each frame `fn_8006033C` renders the model with its own perspective into a 128x128 viewport
+and `GXCopyTex`es it to the object (+0x28, format from +0x00); `fn_80060A9C` (scene draw,
+`fn_8000BB98`) then calls `fn_8005FDD4(texObj, alpha)` for each object:
+
+- TEXMAP0 = the 128x128 copy; TEXMAP1 = a 64x64 IA4 texture at `0x803CFD40` that `fn_8005FD80`
+  (from `BootScene::init`) fills with random intensities 0-15 (alpha 0);
+- indirect stage 0: texcoord 1 (vertex TEX1, identity), scale 1; TEV stage 0
+  `GXSetTevIndWarp(signed, no replace, ITM_0)` = ITF_8, bias STU, no wrap;
+- matrix `[[f f 0] [f f 0]]`, exponent 1, with `f` = `r13+0x760` = 0.01 (s1.10: 10/1024), so
+  offset_s = offset_t = 2 x 10/1024 x (I - 256) texels, -5..0 texels of the 128x128 copy;
+- colour = the copy, alpha = copy alpha x `alpha`, blended over the scene; a world-space quad at
+  fixed coordinates (`0x80339B80`: x 2220..2375, y -180..-375, z -7306, the painting frame at the
+  Secret Altar), s 0.1..0.9, t 0..1. Event 5 draws the same quad there, so nothing of it is visible
+  in the bathroom; its IA4 copy is also an extra TEV stage of the draw in `fn_80027D28`
+  (`fn_80027B30`, reached from `fn_80011824`).
+
+**Texcoord 1 is beyond the texgen count** (Aurora patch 0015). `fn_8005FDD4` sets a texgen for
+texcoord 1 (vertex TEX1, identity) but never calls `GXSetNumTexGens`; the count it inherits is 1 (from
+`fn_80025E9C`'s draw just before, in both versions). Aurora, like the usual emulator convention, read
+such a coordinate as (0,0): every pixel read noise texel (0,0) (intensity 51 at the boot seed), so the
+painting was only shifted by a uniform -4 texels and Mario looked clean.
+
+A real-console capture of the scene (King Boo's talk, "Get me outta heeeeere!") shows Mario
+scattered over the whole painting, with the grain of the 64x64 noise texture across the painting
+(about 1/64 of its width per cell, white speckles in the cap emblem, a broken-up moustache) and
+the displacement of a few texels. So the console produces a varying coordinate 1, not a constant.
+Candidates and what they predict:
+
+| Rule for a coordinate >= numTexGens | Painting |
+|---|---|
+| (0,0) / any constant (stale per-pixel value) | uniform shift, clean Mario: contradicted by the capture |
+| stale rasterizer setup from an earlier primitive | depends on whatever was drawn before; would change with the camera and Mario's animation and show a seam between the quad's two triangles: not what the capture shows |
+| generated from its texgen registers as if counted (TEX1 here, 0..1 over the quad) | 64 x 64 noise cells over the painting: matches |
+| a copy of texcoord 0 (s 0.1..0.9) | 51 x 64 cells: also close; the capture is too soft to separate it from the previous rule |
+
+Patch 0015 implements the third rule (`GX_AURORA_TEXGEN_BEYOND_GENERATE`, the default): a
+coordinate a TEV stage samples, or an indirect stage reads, at or beyond `numTexGens` is generated
+from its texgen registers when they are a matrix texgen whose source the vertex provides (TEX0-7,
+POS, NRM); anything else keeps (0,0). It changes only draws that read such a coordinate:
+`LM_TEXGEN_LOG=1` (host side) and Aurora's one-time "texcoord N read beyond numTexGens" log found
+exactly the painting's two draws (texcoord 1, numTexGens 1, source TEX1) through boot, title, file
+select, foyer, nursery with the vacuum and GBH screens, and the Secret Altar; two identical nursery
+runs with the old and new rule differ no more than two runs with the same rule. The magnitude
+then follows from the game's own data with no tuning: the 0.01 matrix x 2 gives 0..-5 texels of the
+128x128 copy (both axes, so the smear is diagonal), and the noise texture and copy are sampled the
+way the game set them up (noise point-sampled, 64x64 repeat; copy bilinear, clamp). At 4x the copy
+is rendered at 512x512 and the offsets stay in its 128-texel units, so the picture is the same,
+only sharper (image 7). `LM_TEXGEN_BEYOND=0|1|2` switches between (0,0), the default and
+texcoord 0 for comparison (image 8).
+
+### Hardware semantics vs Aurora (patch 0014)
+
+| | Hardware | Aurora before | Now |
+|---|---|---|---|
+| Matrix | s1.10 entries (`GXSetIndTexMtx` truncates x1024), exponent 2^(n) | floats of the same entries | unchanged (exact) |
+| Offset | integer `M x (s,t,u)` (s8 after bias) >> 3 = texels with 7 fractional bits, then the scale shift (right shifts floor) | float product x 2^n | integer TEV mode: the same integer steps (`floor(floor(raw/8) x 2^n)/128`); float mode unchanged |
+| Base coordinate | fixed point, texel units, 7 fractional bits | float | integer TEV mode: floor to 1/128 texel; dynamic S/T matrices likewise (`uv128 x s >> 8`) |
+| ITF_5/4/3 | offset = low 5/4/3 bits, high bits = bump alpha | high bits (`floor(v/8)`...) | low bits (matches Aurora's own bump-alpha masks) |
+| Wrap 16..256 | masks the fixed-point coordinate (positive modulo) | WGSL `%` (negative stays negative) | `x - m floor(x/m)` |
+| Units | texels of the sampled texture | texels of the game's texture object (`GXTexObj` size, not the upscaled copy) | unchanged: offsets keep their size at any internal resolution and aspect |
+| Indirect texel | 8-bit components (.abg = s,t,u) | rounded in integer mode (0010) | unchanged |
+| Texcoord beyond numTexGens | not documented; the console capture shows it varying (see above) | (0,0) (patch 0001) | generated from its texgen registers (patch 0015) |
+
+Not changed (LM never uses them): `indLOD` (LOD from the unmodified coordinates), add-previous after
+a direct stage (Aurora does not carry a direct stage's coordinate into `t_TexCoord`), wrap/add-prev on
+stages whose indirect stage index is >= `numIndStages`.
+
+For the painting the integer path changes each offset by at most a few 1/128 texel (e.g. -4.016
+instead of -4.004 texels); no visible change. The 1x/4x and 16:9 checks below are the real verification of the scaling.
+
+### EFB copies met along the way
+
+- The painting copies (RGB5A3) were blitted without the format's precision; IA4 copies (event 5)
+  were already quantized. Patch 0014 adds an RGB5A3 conversion (alpha >= 0xE0: RGB555 opaque,
+  otherwise RGB444 + 3-bit alpha, channels expanded by bit replication) and 5/6/5 precision for
+  RGB565 copies, under the "EFB color depth" toggle (`GX_AURORA_ACCURACY_EFB_DEPTH`, default on; off
+  keeps 8 bits). The painting copies hold only opaque and alpha-0 texels (`LM_IND_LOG` with
+  `LM_EFB_READBACK_ALL=1` counts them: about 9300 opaque, 7050 alpha 0, 0 translucent).
+- RGB565 copies in LM: the full-screen scene copy that `fn_8005F8B8` redraws every frame (the PAL
+  Hidden Mansion mirror flips it), the box-filtered half-size region copy at `0x803A4D00`
+  (`fn_80025C98`; 268x228 -> 134x114 in the 2F Bathroom), transition captures (`fn_800081A8`) and
+  the title/file-select thumbnails. Since the scene copy is redrawn, every frame now has 5-bit red
+  and blue as on the console: mean |d| ~1 level per channel, at most 8-21 levels where the copy
+  filter and blending meet a 5-bit step (image 6); no structural change.
+- The upscaled fast path keeps copies at render resolution; a box-filtered (mip) copy averages the
+  matching render pixels.
+
+### Verification (US, `LM_FRAME_DUMP` native frames, `LM_INPUT_CLOCK=frames`)
+
+Images in `build/indirect_fx/` (not in git):
+1. `1_painting_warp_off_on_diff.png`: `LM_IND_OFF=1` / default / |difference| x4, same frame of
+   two deterministic runs; only the painting differs (Mario 4 texels right/down, top edge rows).
+2. `2_exaggerated_warp_1x_vs_4x.png`: `LM_IND_EXP=3` (32 texels) at internal resolution 1x and 4x,
+   same frame: identical displacement; `2b_..._16x9.png` the same at 4x 16:9.
+3. (replaced by 7 and 8)
+4. `4_painting_before_after_diffx16.png`, 6. `6_copy_precision_before_after_diffx16.png`: main build
+   (before) vs patch 0014, same frame: RGB5A3/RGB565 precision only (difference x16).
+5. `5_event5_bathroom_mirror.png`: event 5 running in the bathroom (no visible warp).
+7. `7_console_vs_port_1x_vs_4x.png`: the console capture (left; a low-resolution video capture,
+   so softer) next to the port at internal resolution 1x and 4x, same frame (window captures
+   `cap_1x.png`, `cap_4x.png`). Images 1, 2 and 4 predate patch 0015 (painting without scatter).
+8. `8_console_vs_rules_zero_generate_tc0_generate4x.png`: console, then `LM_TEXGEN_BEYOND` 0, 1,
+   2 and 1 at 4x (native frame dumps, same frame).
+
+### Test aids
+
+- `LM_IND_LOG=1`: each frame's draws with indirect stages, grouped by guest call chain and state
+  (indirect/TEV stages, texmaps with image address/size/format and the first indirect texture bytes,
+  texgen matrix, indirect matrices, `numTexGens`, RGB5A3 texel classes), printed when a frame's set
+  changes. Combine with `AURORA_GX_AUDIT=1` for state from display lists.
+- `LM_IND_OFF=1` (indirect never enabled), `LM_IND_EXP=<n>` (matrix exponent + n),
+  `LM_IND_PATTERN=1` (left half of the indirect texture intensity 15, right half 0),
+  `LM_TEXGEN_BEYOND=0|1|2` (texcoords beyond numTexGens: (0,0) / generated (default) /
+  texcoord 0), `LM_TEXGEN_LOG=1` (each draw that reads a texcoord beyond numTexGens, once).
+- Reaching the effects: event 6 `LM_DEV_WARPS=2:9@2800` with `[debug] warp_skip_events=0` in
+  settings.ini; event 5 `LM_TELEPORT=-1648.7,550,-4889,200` from the foyer of a new game.
 
 ## Shadows
 
@@ -608,6 +759,79 @@ and the model viewer. Merging pipeline_cache.db files from longer play sessions
 - A fresh scratch `APPDATA` (or `LM_CACHE_DIR`) gives empty `dawn_cache.db`/`pipeline_cache.db`;
   the GPU driver's own shader cache is system-wide and stays warm, so first-ever runs on a new
   machine are somewhat slower than measured here.
+
+### Cache robustness (Aurora patch 0017)
+
+**Problem:** a crash once left a bad pipeline config in `pipeline_cache.db`; every later launch
+rebuilt it at startup and crashed again. Aurora trusted whatever the caches held: the shader
+generator aborts (FATAL) on enum values it does not know and indexes fixed arrays with
+stage/texcoord/texmap ids, a Dawn error is an uncaptured error (FATAL), and Dawn even throws
+(terminating the process) when a pipeline is created from a shader module that failed to
+compile.
+
+**What happens now** (`lib/gfx/pipeline_cache.cpp`, `lib/webgpu/gpu_cache.cpp`, a few lines in
+`lib/gx/pipeline.cpp`):
+
+- **Every cached config is validated before use.** `pipeline_cache.db` schema 2 (older caches
+  are dropped): the stored `hash` (xxh3 of the config bytes seeded by the shader type, the cache
+  key) is recomputed as a per-entry checksum, then every field the generator switches on or
+  indexes with is range-checked (`validate_config`: blend/depth/cull, TEV args/ops/konst/order/
+  swap/indirect state, texgens of the texcoords the shader reads, vertex attributes, colour
+  channels, alpha compare, fog, padding bytes). Invalid rows are skipped and deleted with a
+  `pipeline cache: skipping invalid entry ...: <reason>` line.
+- **Pipeline creation is guarded** (`guarded_create`): Validation/Internal/OOM error scopes
+  around each creation (Dawn error scopes are per thread, so the compile threads do not see each
+  other's errors), and the GX shader module is checked before a pipeline is made from it. A
+  failure gives an empty pipeline (its draws are skipped, `droppedDraws`), and a validation/
+  compile failure records the config in the `pipeline_bad` table: it is never built again and is
+  removed from the cache.
+- **Crash journal** (`pipeline_cache.journal` next to the caches, 4 KB, memory-mapped): every
+  thread writes the key of the config it is building into its slot while it builds it, and the
+  file holds the session phase (startup until the first precache pass finished and 300 frames
+  were shown, then running, clean after `aurora_shutdown`). Stores to a shared mapping survive a
+  crash of the process, so the next launch knows:
+  - configs that were being built when the process died become **crash suspects**: not precached
+    any more, still built when a draw needs one (the quarantine is lifted when that works),
+    refused after a second crash;
+  - a death **during startup** with nothing in flight (e.g. a damaged Dawn blob) deletes
+    `pipeline_cache.db` and `dawn_cache.db`; a second consecutive startup death deletes them
+    too; from the third, the shipped list is also ignored for that run ("safe mode"). Reaching
+    the running phase or a clean exit resets the count.
+  Caveat: killing the process during startup (test scripts) counts as a startup crash; it
+  costs a cache rebuild or the precache of the few configs that were in flight, never
+  correctness.
+- **Damaged database files** (not a database, truncated, damaged pages: `PRAGMA quick_check`
+  at open, `SQLITE_CORRUPT`/`NOTADB` later) are deleted and recreated, for both
+  `pipeline_cache.db` and `dawn_cache.db`, instead of running without a cache.
+- **`dawn_cache.db`** schema 3 stores an XXH3 checksum of each uncompressed blob. Dawn asks for
+  an entry's size before reading it; the entry is decompressed and verified on that size query,
+  so a damaged blob is deleted and reported as a miss (Dawn rebuilds it) instead of being handed
+  to the driver.
+- **Shipped list** `data/pipelines.bin` format 2: CRC-32 of the payload and of every row
+  (`tools/pipelines/pipelines.py` writes it; Aurora still reads format 1). Rows with a bad CRC
+  or failing `validate_config` are skipped with a log line; the header's raw size is capped at
+  64 MB.
+
+**Tested** (scratch `APPDATA`/`LM_CACHE_DIR`, `LM_PIPELINE_LOG=1`, boot -> opening, each run
+closed cleanly unless noted; the corruption scripts are not in the repo): random bytes in a
+`pipeline_cache.db` entry (checksum mismatch, deleted); entries with an invalid blend mode, fog
+type and depth function and a recomputed hash (validation, deleted); an entry with a 7-component
+position attribute and a recomputed hash (valid ranges, WGSL fails to compile: recorded as bad,
+not rebuilt next launch; before the fix this terminated the process inside Dawn); wrong schema
+version (dropped); a row of another config version (ignored); the db truncated to 40 %, overwritten
+with random bytes, or 200 random bytes flipped in its pages (recreated); 40 Dawn blobs damaged
+(checksum mismatch or decompression failure: deleted, rebuilt), `dawn_cache.db` truncated /
+random / page damage (recreated); shipped lists with 20 rows flipped (CRC), an invalid enum, a
+non-compiling row, a truncated file, and a format 1 list; startup kills: one with configs in
+flight (suspects recorded, no reset), then repeated kills at 3 s (reset after the first with
+nothing in flight and after the second, safe mode from the third, back to normal after a run
+that reached the running phase). The real list (2148 configs) has 0 rows rejected by the
+validator.
+
+Test aids: `LM_PIPELINE_LIST=<file>` (a damaged list), `LM_CACHE_DIR=<dir>`; the journal is
+`<cache dir>/pipeline_cache.journal` (u32 magic "AUJN", version, phase 0 clean / 1 startup /
+2 running, consecutive startup crashes, then 64 slots); the `pipeline_bad` table lists recorded
+configs (`reason` 1 = failed creation, 2 = crash suspect, `crashes`).
 
 ## Enhanced lighting
 

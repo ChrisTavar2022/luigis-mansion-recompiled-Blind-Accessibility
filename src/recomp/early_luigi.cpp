@@ -29,6 +29,7 @@
 #include "recomp/hle.h"
 #include "recomp/rarc.h"
 #include "recomp/runtime.h"
+#include "recomp/version.h"
 
 #include <array>
 #include <cstdlib>
@@ -39,7 +40,7 @@
 namespace recomp {
 namespace {
 
-constexpr u32 kModelRegistry = 0x8034E46C;  // lbl_8034E46C, 0x34 per model
+#define kModelRegistry VA(0x8034E46C)  // lbl_8034E46C, 0x34 per model (same layout in both releases)
 constexpr u32 kEntrySize = 0x34;
 constexpr u32 kNumModels = 0x106;
 // Guest memory for the relocated early copies: host-backed, above the 24 MiB of MEM1 the game
@@ -56,7 +57,7 @@ bool envFlag() {
 }
 
 bool enabled() {
-    return (envFlag() || port::settings().enhancements.earlyLuigi) && port::usCodeFeature() == port::Avail::Yes;
+    return envFlag() || port::settings().enhancements.earlyLuigi;
 }
 
 bool inMem1(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }

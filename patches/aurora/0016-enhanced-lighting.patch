@@ -150,7 +150,7 @@ index 0000000..84fb2a5
 +void set_extra_lights(const ExtraLight* lights, uint32_t count);
 +} // namespace aurora::gfx
 diff --git a/include/dolphin/gx/GXAurora.h b/include/dolphin/gx/GXAurora.h
-index 38dc31d..404062b 100644
+index 3d370ff..d1728d4 100644
 --- a/include/dolphin/gx/GXAurora.h
 +++ b/include/dolphin/gx/GXAurora.h
 @@ -109,6 +109,26 @@ extern "C" {
@@ -181,7 +181,7 @@ index 38dc31d..404062b 100644
  
  
 diff --git a/lib/dolphin/gx/GXAurora.cpp b/lib/dolphin/gx/GXAurora.cpp
-index b2b1312..a38e742 100644
+index dff3642..7df4ab1 100644
 --- a/lib/dolphin/gx/GXAurora.cpp
 +++ b/lib/dolphin/gx/GXAurora.cpp
 @@ -1,5 +1,9 @@
@@ -194,7 +194,7 @@ index b2b1312..a38e742 100644
  #include <limits>
  
  #include "__gx.h"
-@@ -124,3 +128,31 @@ void GXRestoreFrameBuffer() {
+@@ -126,3 +130,31 @@ void GXRestoreFrameBuffer() {
    GX_WRITE_AURORA(GX_AURORA_END_OFFSCREEN);
    aurora::gx::fifo::publish();
  }
@@ -1921,7 +1921,7 @@ index 0000000..72a3ad8
 +
 +} // namespace aurora::gfx::enhanced
 diff --git a/lib/gfx/recording.cpp b/lib/gfx/recording.cpp
-index 78b1ca1..e12c8d9 100644
+index 40d4ce9..43d7488 100644
 --- a/lib/gfx/recording.cpp
 +++ b/lib/gfx/recording.cpp
 @@ -2,6 +2,7 @@
@@ -1976,7 +1976,7 @@ index 78b1ca1..e12c8d9 100644
    // Resolve current render pass
    auto& prevPass = current_render_passes()[g_recorder.currentRenderPass];
    prevPass.resolveTarget = std::move(texture);
-@@ -858,6 +882,11 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
+@@ -859,6 +883,11 @@ void resolve_pass_into(TextureHandle texture, ClipRect rect, bool clearColor, bo
    const auto bottom = std::clamp<int32_t>(rect.y + rect.height, top, static_cast<int32_t>(targetSize.height));
    const ClipRect clearRect{.x = left, .y = top, .width = right - left, .height = bottom - top};
    const bool fullTarget = left == 0 && top == 0 && right == targetSize.width && bottom == targetSize.height;
@@ -1988,7 +1988,7 @@ index 78b1ca1..e12c8d9 100644
    RenderPass newPass{
        .label = pass_label(g_recorder.inOffscreen ? "Offscreen" : "EFB"),
        .colorAttachments = prevPass.colorAttachments,
-@@ -935,6 +964,39 @@ bool queue_pre_pass_ops(std::vector<efb_ram::PassOp> ops) {
+@@ -936,6 +965,39 @@ bool queue_pre_pass_ops(std::vector<efb_ram::PassOp> ops) {
  
  void set_next_resolve_op(efb_ram::PassOp op) { g_nextResolveOp = std::move(op); }
  
@@ -2148,7 +2148,7 @@ index 7171691..a67fc6d 100644
      const f32 frontOffset = reader.read<f32>();
      const f32 frontScale = reader.read<f32>();
 diff --git a/lib/gx/gx.cpp b/lib/gx/gx.cpp
-index f261f05..e38366c 100644
+index 3d82b50..986782c 100644
 --- a/lib/gx/gx.cpp
 +++ b/lib/gx/gx.cpp
 @@ -10,6 +10,7 @@
@@ -2159,7 +2159,7 @@ index f261f05..e38366c 100644
  #include "gx_fmt.hpp"
  #include "dolphin/gx/GXAurora.h"
  
-@@ -531,6 +532,9 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
+@@ -576,6 +577,9 @@ void populate_pipeline_config(PipelineConfig& config, GXPrimitive primitive, GXV
        .alphaUpdate = alphaUpdate,
        .colorUpdate = g_gxState.colorUpdate,
    };
@@ -2170,7 +2170,7 @@ index f261f05..e38366c 100644
  
  GXBindGroups build_bind_groups(const ShaderInfo& info) noexcept {
 diff --git a/lib/gx/gx.hpp b/lib/gx/gx.hpp
-index 0c4477e..735bffa 100644
+index 35a7afe..a327bbe 100644
 --- a/lib/gx/gx.hpp
 +++ b/lib/gx/gx.hpp
 @@ -345,6 +345,7 @@ struct GXState {
@@ -2181,7 +2181,7 @@ index 0c4477e..735bffa 100644
    GXBlendMode blendMode = GX_BM_NONE;
    GXBlendFactor blendFacSrc = GX_BL_SRCALPHA;
    GXBlendFactor blendFacDst = GX_BL_INVSRCALPHA;
-@@ -512,7 +513,7 @@ struct ShaderConfig {
+@@ -513,7 +514,7 @@ struct ShaderConfig {
    u8 zTexOp : 2 = 0;  // GXZTexOp; non-zero only when the last TEV stage samples a texture
    u8 zTexFmt : 2 = 0; // 0 = Z8, 1 = Z16, 2 = Z24X8
    u8 efbFmt : 2 = 0;  // EFB format to quantize to (GX_AURORA_ACCURACY_EFB_DEPTH): 0 none (RGB8), 1 RGBA6, 2 RGB565
@@ -2190,7 +2190,7 @@ index 0c4477e..735bffa 100644
    std::array<AttrConfig, MaxVtxAttr> attrs;
    std::array<TevSwap, MaxTevSwap> tevSwapTable;
    std::array<TevStage, MaxTevStages> tevStages;
-@@ -552,6 +553,7 @@ struct ShaderInfo {
+@@ -553,6 +554,7 @@ struct ShaderInfo {
    bool usesZTex : 1 = false;
    u8 lineMode : 2 = 0;
    bool wireframe : 1 = false;
@@ -2199,7 +2199,7 @@ index 0c4477e..735bffa 100644
  struct BindGroupRanges {
    std::array<gfx::Range, MaxIndexAttr> vaRanges{};
 diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
-index a041c4b..e04be49 100644
+index 295af0a..f2b04c0 100644
 --- a/lib/gx/shader.cpp
 +++ b/lib/gx/shader.cpp
 @@ -872,6 +872,285 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8
@@ -2608,7 +2608,7 @@ index a041c4b..e04be49 100644
      }
    }
    for (int i = 0; i < info.sampledKColors.size(); ++i) {
-@@ -1916,6 +2269,26 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1944,6 +2297,26 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
    if (info.usesZTex) {
      uniBufAttrs += "\n    ztex_bias: vec4u,";
    }
@@ -2635,7 +2635,7 @@ index a041c4b..e04be49 100644
    if (config.intTev) {
      // Already wrapped to 8 bits after the last stage.
    } else if (!prevColorNormalized && !prevAlphaNormalized) {
-@@ -2444,6 +2817,15 @@ fn fs_main(in: VertexOutput) -> {10} {{{6}{5}{11}
+@@ -2472,6 +2845,15 @@ fn fs_main(in: VertexOutput) -> {10} {{{6}{5}{11}
    if (EnableDebugPrints) {
      Log.info("Generated shader (hash {:x}): {}", hash, shaderSource);
    }

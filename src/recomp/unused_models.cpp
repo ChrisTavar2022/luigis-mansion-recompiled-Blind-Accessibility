@@ -48,7 +48,7 @@ bool envFlag(const char* name) {
 // slot gets the shadow key for the same action: appear -> syutugen (appear), dappear -> kieru
 // (vanish), wait/dwait -> wait, nigeru/nigeru2 (pulling against the vacuum) -> kinko (the
 // 12-frame tug of war, same length), biribiri and suikomi by name.
-constexpr u32 kModelRegistry = 0x8034E46C;
+#define kModelRegistry VA(0x8034E46C)
 
 struct KeyMap {
     const char* retail;
@@ -153,12 +153,13 @@ bool prepare(Ctx& c, ModelSwap& s) {
 
 void earlyLuigiModelLoaded(Ctx& c, u32 entry);  // early_luigi.cpp
 
-// Model archive setup (archive, registry entry), USA code only.
+// Model archive setup (archive, registry entry), both releases (the European fn_80061C94 is
+// identical; its resident archive is the per-language game_<l>.szp, whose vbody.arc is the same).
 HLE(fn_80061C94) {
     const u32 entry = c.r[4];
     callOriginal(c, "fn_80061C94");
     earlyLuigiModelLoaded(c, entry);
-    if (port::usCodeFeature() != port::Avail::Yes || entry < kModelRegistry) return;
+    if (entry < kModelRegistry) return;
     if ((entry - kModelRegistry) % 0x34 || !rd32(entry + 8)) return;  // not a finished load
     const u32 model = (entry - kModelRegistry) / 0x34;
     for (ModelSwap& s : sSwaps) {

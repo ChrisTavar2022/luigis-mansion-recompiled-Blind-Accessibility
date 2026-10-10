@@ -8,7 +8,11 @@
 namespace port {
 
 enum class AspectMode { Original4x3, Auto, Wide16x9, Wide16x10, Ultra21x9, Ultra32x9 };
-enum class AudioOutput { Stereo, Mono, Surround };
+// Sound output. Stereo / Mono / Surround set the game's own sound mode (its options menu
+// shows and changes the same thing); Surround plays the console's matrix-encoded stereo.
+// Surround51 / Surround71 run the game in surround mode and play its centre and surround
+// buses on their own speakers (when the device has them; else like Surround).
+enum class AudioOutput { Stereo, Mono, Surround, Surround51, Surround71 };
 
 constexpr int kMinFps = 30, kMaxFps = 320;
 
@@ -25,7 +29,7 @@ struct VideoSettings {
     bool vsync = true;          // applied at next launch
     int msaa = 1;               // 1, 2, 4, 8; applied at next launch
     bool hudKeep4x3 = true;     // keep 2D/HUD at 4:3 (centered) in widescreen
-    bool pal60 = false;         // PAL game only: 59.94 Hz retrace (PAL60, 20% faster) instead of 50 Hz
+    bool pal60 = false;         // PAL game only: 59.94 Hz retrace (PAL60) instead of 50 Hz (game speed unchanged)
 };
 
 // CRT post-process filter (src/recomp/crt.cpp). Beam sigmas are fractions of the
@@ -59,6 +63,7 @@ struct AudioSettings {
     bool swapChannels = false;
     bool reverb = true;        // DSP effect lines (echo/reverb) and the chorus bus
     bool voiceFilters = true;  // per-voice FIR / IIR / distortion stages of the DSP microcode
+    bool sincResampler = true; // windowed-sinc 32 kHz -> device rate (off: SDL's resampler)
 };
 
 struct EnhancementSettings {

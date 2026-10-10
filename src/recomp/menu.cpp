@@ -7,6 +7,7 @@
 #include "port/install.h"
 #include "port/options.h"
 #include "port/settings.h"
+#include "recomp/audio.h"
 #include "recomp/controls.h"
 #include "recomp/crt.h"
 #include "recomp/dev_tools.h"
@@ -160,7 +161,9 @@ void renderingTab() {
     sDirty |= ImGui::Checkbox("EFB color depth (6-bit + dither)", &r.efbColorDepth);
     ImGui::SetItemTooltip(
         "The game renders into a 6-bit-per-channel framebuffer with an ordered dither, like the\n"
-        "console. Off: smooth 8-bit color (less banding/dither grain in dark rooms). No real cost.");
+        "console, and its screen/texture copies keep their format's precision (RGB565: 5-bit red\n"
+        "and blue in the full-screen copy the game redraws every frame; RGB5A3 for the Mario\n"
+        "painting). Off: smooth 8-bit color (less banding/dither grain in dark rooms). No real cost.");
     sDirty |= ImGui::Checkbox("Display copy filter", &r.displayCopyFilter);
     ImGui::SetItemTooltip(
         "The vertical filter (and gamma) the console applies when copying the frame to the TV\n"
@@ -450,13 +453,30 @@ void soundTab() {
     sDirty |= ImGui::SliderFloat("Master volume", &a.masterVolume, 0.0f, 1.0f);
     sDirty |= ImGui::SliderFloat("Music volume", &a.musicVolume, 0.0f, 1.0f);
     sDirty |= ImGui::SliderFloat("Sound effects volume", &a.sfxVolume, 0.0f, 1.0f);
-    static const char* kOutputs[] = {"Stereo", "Mono", "Surround (Pro Logic II matrix)"};
-    sDirty |= combo("Output", a.output, kOutputs, 3);
+    static const char* kOutputs[] = {"Stereo", "Mono", "Surround (matrix-encoded stereo)", "Surround 5.1 (discrete)",
+                                     "Surround 7.1 (discrete)"};
+    sDirty |= combo("Output", a.output, kOutputs, 5);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Surround here plays like Stereo: the console's Dolby Surround matrix is always\n"
-                          "reproduced in the stereo output (choose Surround in the game's own options),\n"
-                          "so a Pro Logic (II) decoder can unfold it.");
+        ImGui::SetTooltip(
+            "The game's own sound option (its options menu changes the same setting).\n"
+            "Stereo / Mono: the game's stereo or mono mix.\n"
+            "Surround: the game's surround mode as a console outputs it: stereo with the\n"
+            "surround channel matrix-encoded (in phase left, inverted right) for a Dolby\n"
+            "Pro Logic / Pro Logic II decoder.\n"
+            "5.1 / 7.1: the game's surround mode with its centre and surround channels\n"
+            "played on their own speakers instead of matrix-encoded. Needs a device with\n"
+            "6 / 8 channels (else falls back to 5.1 or matrix-encoded stereo).");
+    {
+        const int dev = recomp::audio::outDeviceChannels();
+        if (dev > 0) ImGui::TextDisabled("Device: %d channels. Playing: %s", dev, recomp::audio::outStatus());
+        else ImGui::TextDisabled("Playing: %s", recomp::audio::outStatus());
+    }
     sDirty |= ImGui::Checkbox("Swap left/right", &a.swapChannels);
+    sDirty |= ImGui::Checkbox("High-quality resampler", &a.sincResampler);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Converts the console's 32028 Hz output to the device rate with a 64-tap\n"
+                          "windowed-sinc filter (flat to 13.8 kHz, images above 16 kHz removed).\n"
+                          "Off: SDL's resampler, slightly cheaper.");
     ImGui::SeparatorText("DSP accuracy");
     sDirty |= ImGui::Checkbox("Reverb / echo", &a.reverb);
     if (ImGui::IsItemHovered())
@@ -590,10 +610,9 @@ void unusedContentTab() {
         ImGui::SetTooltip("Toads wear the unused green texture set of the never-placed kinopio2 character\n"
                           "(TCRF's Action Replay code), with the unused green-capped dialogue icon.");
     {
-        Gate g(port::usCodeFeature());
         auto item = [&](const char* label, bool& v, const char* note) {
             sDirty |= ImGui::Checkbox(label, &v);
-            if (note && g.a == port::Avail::Yes) pending(note);
+            if (note) pending(note);
         };
         item("Beta skybox", e.betaSkybox, "next map load");
         item("Heart door (Chauncey's room)", e.heartDoor, "next map load");
@@ -615,28 +634,22 @@ void unusedContentTab() {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("The E3 2001 Poltergust model still on the disc (/model/vbody.szp): a red canister\n"
                               "on a wheeled base instead of the retail tank.");
-        if (g.a == port::Avail::Yes) pending("next map load");
+        pending("next map load");
         sDirty |= ImGui::Checkbox("Early Bogmire model", &e.earlyBogmire);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Bogmire uses his unused early model (/model/shadow.szp): longer wings, thinner\n"
                               "hanging flaps, a defined chin and a wavy ghost tail, with its own animations.");
-        if (g.a == port::Avail::Yes) pending("next map load");
+        pending("next map load");
     }
     ImGui::Separator();
-    {
-        Gate g(port::usCodeFeature());
-        recomp::dev::unusedSection();
-    }
+    recomp::dev::unusedSection();
 }
 
 // Gameplay toggles, difficulty and cheats.
 void gameplayTab() { gameplaySection(); }
 
 // Debug features left in the game, warps and viewers.
-void debugTab() {
-    Gate g(port::usCodeFeature());
-    recomp::dev::debugSection();
-}
+void debugTab() { recomp::dev::debugSection(); }
 
 void enhancementsTab() {
     if (ImGui::BeginTabBar("enhancements")) {
