@@ -28,6 +28,9 @@
 //         buffers (fn_801C043C), as the sky box (fn_8002FA34) and the effects draw them.
 // Nothing is culled: no portal culling, no frustum or distance tests (the game has none in
 // these paths), and the projection's near/far planes are fitted around the whole model.
+// Animations (docs/UNUSED_CONTENT.md, "Animations"): .key/.txp/.clk on S3D models,
+// .bck/.btk/.bpk/.brk on J3D models, .anm node animations on room models, all through the
+// game's own animation code on one timeline. Framing is refined from the drawn picture.
 #include "recomp/model_viewer.h"
 
 #include "recomp/dev_tools.h"
