@@ -255,7 +255,7 @@ index 1920bc8..c22fbec 100644
  void encode_op(wgpu::CommandEncoder& encoder, FramePacket& frame, const FrameOp& op);
 diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 new file mode 100644
-index 0000000..e8a19a9
+index 0000000..b4625f4
 --- /dev/null
 +++ b/lib/gfx/enhanced.cpp
 @@ -0,0 +1,1622 @@
