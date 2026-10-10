@@ -748,6 +748,16 @@ alpha, `fn_8005F498` copies the layer at half resolution, `fn_8005F5B0` restores
 see-through. The layer buffers (`lbl_804D86B8`/`BC`) are swapped for viewer-heap ones during
 the draw (the game only has them in the game scene). Defaults are the values measured in play
 (colour 404040FF, alpha FF for a fully visible ghost); both are adjustable.
+The S3D lights (`fn_80057CFC`/`fn_80057E40`, including the ghost glow lights) are placed
+relative to the game camera's view matrix (`lbl_803A3820`+0x18C); the viewer swaps its own
+camera in while it draws, otherwise ghosts were lit from wherever the game's camera was.
+Because the layer is added to what is behind the ghost, the look depends on the background:
+on the default grey backdrop the ghost turns lighter and see-through (the mouth shows the
+backdrop through it), on a dark backdrop ("Backdrop" colour, test aid
+`LM_DEV_VIEWER_BG=RRGGBB`) it glows as in the dark mansion. Compared with an in-game frame of
+Boolossus on the balcony (`LM_START_MAP=11`), the in-game ghost is flatter and more uniformly
+bright: its glow lights sit relative to a camera much further away, and there is a lit scene
+behind it.
 
 ### Wireframe (Aurora patch 0012)
 
