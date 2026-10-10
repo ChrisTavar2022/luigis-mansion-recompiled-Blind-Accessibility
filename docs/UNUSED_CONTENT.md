@@ -726,6 +726,62 @@ the viewer heap as `JKRHeap::sCurrentHeap`.
   changes it per pass, which made models blink in and out. Joints whose rest scale in `JNT1`
   is 0 (effects grown only by their `.bck`: `doki_b`, `lg_icestate`, `ftc`) get unit scale.
 
+### Animations
+
+Every animation kind on the disc is played with the game's own code, on one timeline (Play /
+Pause, frame step, Loop or play once, speed, scrub); each animation wraps at its own length.
+The picker lists what goes with the selected model:
+
+| Model | Files | Set up as | Per frame |
+|-------|-------|-----------|-----------|
+| mdl | `.key` joints: every key of the archive with the model's joint count (its own folder first) | `fn_80061A24`, `fn_8005AA3C` | `fn_8005AA34` frame, `fn_800589B0` |
+| mdl | `.txp` texture patterns (sampler index per material stage and frame: Luigi's blinks and faces, ghost colour variants, flickering lights) | relocated by `fn_8005C8E4`, S3DModel pattern slot 0 (+0x2C pointer, +0x30 frame; 16 slots), as the cutscene loader `fn_8000F3F4` | `fn_8005CBBC` (the actor draw `fn_80060E70` applies them the same way) |
+| mdl | `.clk` material colours | relocated by `fn_8005C920`, S3DModel +0x110 (frame +0x10C) | `fn_8005C7AC` (as the file-select draw `fn_800494E4`) |
+| bmd | `.bck` joints, `.btk` texture SRT (scrolling), `.bpk` material colours, `.brk` TEV colours, from the model's directory | as the map effects (`fn_801730C4`) and sky box (`fn_8002F4DC`), before the J3DModel is built: `J3DAnmLoaderDataBase::load`; a `.bck` becomes the root joint's matrix calculator (`fn_801CC844` with the model data's calc type, joint 0 +0x58); material animations are matched by name (`searchUpdateMaterialID`), every material gets a `J3DMaterialAnm` (0xC0, `fn_801CA7A4`, `fn_801BC7D4`, material +0x30, flag +0x14 bit 0), then `fn_801C6E54` / `entryMatColorAnimator` / `entryTevRegAnimator` | the frame float at J3DAnmBase +4 (length: s16 at +2) |
+| bin | `.anm` node animations: furniture `anm/<name>_0` (rest pose) / `_1` (action: drawers, oven doors, swinging lamps), doors `pull`/`push`(`_h1`/`_h2`) | as furniture (`fn_80030368`, `fn_8003026C`): node animator (0x318, ctor `fn_8001E7EC`), graph `fn_8001E8EC`, node matrices `fn_8001E938`, the file through its 36-byte descriptor (`fn_8001DE1C`, `fn_8001DE90`) registered by `fn_8001E908` | `fn_8001EC34` poses the nodes under the placement matrix; drawn by `fn_80015CF4` with the animator's matrices (+0x128), as `fn_8001F098` / `fn_8001F138` |
+
+There are no `.btp` / `.bva` files on the disc. J3D models get every animation of their
+directory whose name starts with the model's (`kek_a.btk` for `kek_a.bmd`, the three
+`bosekief0n.btk` for `bosekief.bmd`), or all of them when none does; one `.bck` at a time.
+This is what makes the effects that were invisible at rest visible (`doki_a`, `oryap`,
+`snet_b`, `babyp`, `kek_a`, `mopat`...): their colour, alpha or size only comes from the
+animation. Texture patterns and colour animations are only offered when every channel names a
+material/stage of the model and every frame a sampler it has (count at mdl +0x24): the game
+indexes its tables with them unchecked. `int02fir.txp` (cutscene fire) fails this: its table
+offset is 0, so its "frames" are its own header, including the channel pointer the relocation
+rewrites in place; applied, it selected garbage samplers depending on the heap address. In
+cutscene archives (several models in one folder) only patterns named after the model are
+offered. Maps tab: "Furniture animations" loops every furniture's `_1` action.
+
+**Luigi.** Luigi is textured in the viewer (all 21 of his textures are in `luige.mdl` and bound
+by the S3D material code); what changes in play is his face: `usual_bk.txp` (blink) is picked by
+default (a pattern with the key's name otherwise, e.g. `doku_end`), and his eyes are eyeballs
+turned by the animation's eye joints, so the irises look around as in the animation (wait1
+frame 0 looks up, frame 120 to the side).
+
+### Framing and camera
+
+S3D models with an animation are framed by their joints through the whole animation (24
+sampled frames) padded by how far the vertices reach beyond the joints in the bind pose; the
+bounds are a bounding sphere, without the old fixed +1 padding (tiny gems and sparks fill the
+view). After every model load (and on "Fit") the viewer then measures what is actually drawn:
+it holds the camera, shows up to 8 frames spread over the animation, reads each picture back
+(`efbcopy::requestNamedDump`), takes the rectangle of the pixels that differ from the backdrop
+(the outer 0.5% ignored) and maps it back onto the plane through the orbit centre for a new
+centre and radius. A rectangle at the picture's border is measured again from twice as far
+(up to three times; light beams such as `mopat` never fit), one much smaller than the view
+again from the new distance; if the refined view loses the model it goes back. This also frames
+J3D effects grown or moved by their `.bck` and furniture opened by its `.anm`.
+
+Cutscene models that travel through the scene (the joints' path more than 1.5x the model's
+size) are shown in **Follow** mode: the orbit centre follows the joints' centroid each frame and
+the fit measures the model rather than its whole path. Follow can be toggled.
+
+Camera: Orbit / Fly toggle for models and maps (the fly camera starts at the orbit eye looking
+the same way and back), Fit, and **Screenshot**: the next guest frame (640x480, without the
+ImGui window) as a PNG in `%APPDATA%\Luigi's Mansion PC\screenshots\viewer_<model>_<time>.png`
+(SDL_SavePNG).
+
 ### No culling
 
 Nothing in these paths culls by distance, frustum or level of detail, and the viewer skips
@@ -792,35 +848,40 @@ nothing), then with back faces. `LM_DEV_VIEWER_SHOTS=<dir>` writes a 160x120 thu
 model (`efbcopy::requestNamedDump`), `LM_DEV_VIEWER_SWEEP_START=<n>` resumes,
 `LM_DEV_VIEWER_SWEEP_EXIT=1` quits at the end.
 
-Last full run (US): 1432 drawn, 26 with an empty picture, 0 failures; all 1458 load without
-errors. What does not draw is empty by design:
+Last full run (US, with animations and the picture fit): 1443 drawn, 15 with an empty
+picture, 0 failures; all 1458 load without errors. What does not draw is empty by design:
 
 - placeholders with no visible geometry: `dummy.mdl`/`dummy2.mdl` (all vertices at the origin;
   `/model` and both `game*.szp`), `Nakamura` `oba23ge0`/`oba23gp0` (portrait 23's effect
   mesh, all 170 vertices within 0.3 units), and six 416/544-byte room-renderer stubs
   (`room_00` `ot.bin`/`ozou.bin`, `room_21` `o_e1.bin`, `room_33` `bednul.bin`,
-  `room_41` `room.bin`, `room_47` `onuno.bin`: one node and a single batch that draws nothing visible);
-- J3D effects whose colour or alpha only comes from their animation (`ef_ash_bomb`,
-  `sentaku`, `oryap`, `snet_b`, `doki_a`, `babyp`, `kek_a`, `warp`): drawn, but invisible
-  at rest. With "Wireframe: Only" every one of them shows its geometry (a wireframe sweep of
-  all 76 `j3d_effect` models and `warp.bmd` finds nothing empty).
+  `room_41` `room.bin`, `room_47` `onuno.bin`: one node and a single batch that draws nothing visible).
 
-108 animated models were empty in their first animation frames (parts grown by the
-animation) and are drawn in their bind pose instead.
+The 11 J3D effects that used to be invisible at rest (`ef_ash_bomb`, `sentaku`, `oryap`,
+`snet_b`, `doki_a`, `babyp`, `kek_a`, `warp`...) now draw with their animations (every
+`j3d_effect` model of every map and `kt_static`). 27 animated models are empty in their first
+animation frames (parts grown by the animation) and are drawn in their bind pose instead (108
+before the picture fit, which frames the whole animation). Test aids for the new parts:
+`LM_DEV_VIEWER_SCREENSHOT=1` presses Screenshot once the first model is framed,
+`LM_DEV_VIEWER_FURNANIM=1` turns on furniture animations for `LM_DEV_VIEWER_MAP`.
 
 Test aids: `LM_DEV_VIEWER=<archive>[#<model name part>][|<key name part>]` (`|-` = bind pose),
 e.g. `/model/baby.szp|akubi`, `/Game/game_usa.szp#luige|wait`, `/Map/map2.szp#gold`;
 `LM_DEV_VIEWER_MAP=<map>[:<room>]` (e.g. `2` = whole mansion, `2:61` = cold storage);
 `LM_DEV_VIEWER_WIRE=1|2` (over model / only); `LM_DEV_VIEWER_GHOSTFX=0`;
 `LM_DEV_VIEWER_NOTEX=1`; `LM_DEV_VIEWER_CAM=<yaw>,<pitch>,<distance>` fixes the orbit camera
-(no spin), e.g. `0,0.1,0.8` front, `1.5708,0.1,0.8` side. From Git Bash, set
+(no spin), e.g. `0,0.1,0.8` front, `1.5708,0.1,0.8` side; `LM_DEV_VIEWER_FRAME=<n>` holds an
+animation frame; `LM_DEV_VIEWER_TXP=<name part>` / `LM_DEV_VIEWER_CLK=<name part>` pick a
+texture pattern / colour animation (`-` = none); `LM_DEV_VIEWER_NOFIT=1` skips the picture fit
+(the sweep waits for it otherwise, and logs `[viewer] fit` lines). From Git Bash, set
 `MSYS2_ENV_CONV_EXCL=LM_DEV_VIEWER` (or `MSYS_NO_PATHCONV=1`, or launch from PowerShell),
 otherwise the leading `/` is rewritten into a Windows path.
 
-Known limits: J3D models are static (their `.bck`/`.btk`/`.brk` animations are not played),
-so effects whose colour or alpha only comes from an animation stay invisible or faint;
-furniture animations (`anm/`) are not played either. Framing uses the file's vertex positions
-and the joints at frame 0, so a few cutscene models are framed loosely. Some characters get
-their materials from game code at run time (Luigi's textures are bound by the player code),
-so they are drawn untextured. Not checked on the European game (the addresses are mapped
-with `VA()`, the functions by name).
+Known limits: the picture fit needs the model to differ from the backdrop (an effect drawn
+only in the backdrop's colour is not measured) and its rectangle is taken at the current yaw,
+so spinning a long model can take it slightly past the frame edge. Follow mode tracks the
+joints' centroid, not the camera the cutscene used. Screenshots are the native 640x480 guest
+frame. Luigi's in-play eye direction (look-at) and the cutscene lip-sync files (`.sls`/`.slk`)
+are driven by game code the viewer does not run. Not checked on the European game (the
+addresses are mapped with `VA()`, the functions by name; the PAL map includes the animation
+functions).
