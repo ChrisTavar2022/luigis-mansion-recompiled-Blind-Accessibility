@@ -26,6 +26,8 @@ namespace enh {
 bool active();
 // Master switch only (active() is also false on the plain frames of LM_ENHANCED_AB).
 bool masterOn();
+// LM_ENH_PERF_AB phase: -1 off, 0 part on, 1 part off.
+int perfPhase();
 // F1 settings -> Aurora (host thread, every frame).
 void applySettings();
 // Ghost actor pass (fn_80060E70 pass 0x30): draws in it are class GHOST.

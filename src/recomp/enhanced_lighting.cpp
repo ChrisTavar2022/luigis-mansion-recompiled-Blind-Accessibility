@@ -12,6 +12,9 @@
 #include <dolphin/gx.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <string_view>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -28,6 +31,8 @@ void recheckDrawState();  // hle_gx.cpp: re-evaluate the draw class before the n
 namespace {
 
 std::atomic<bool> sActive{false};
+int sPerfPhase = -1;       // LM_ENH_PERF_AB phase (host thread)
+bool sPerfNoMap = false;
 bool sGhostPass = false;
 
 // Extra lights submitted for the coming main view (guest thread only).
@@ -107,6 +112,7 @@ bool frameOn() {
 
 bool active() { return sActive.load(std::memory_order_relaxed) && frameOn(); }
 bool masterOn() { return sActive.load(std::memory_order_relaxed); }
+int perfPhase() { return sPerfPhase; }
 
 void applySettings() {
     auto& l = port::settings().enhancedLighting;
@@ -158,6 +164,36 @@ void applySettings() {
     c.ssao = l.ssao;
     c.ssaoIntensity = l.ssaoIntensity;
     c.ssaoRadius = l.ssaoRadius;
+    // LM_ENH_PERF_AB=<seconds>,<part>: performance A/B within one run. Every <seconds> the part
+    // (all, ppl, flq, soft, xl, xls, vol, bloom, ssao, map) is switched off/on; LM_FPS_LOG lines
+    // carry the phase (perfPhase()).
+    static const struct PerfAb {
+        float seconds = 0.0f;
+        char part[16] = {};
+    } sPerf = [] {
+        PerfAb p;
+        if (const char* v = std::getenv("LM_ENH_PERF_AB")) std::sscanf(v, "%f,%15s", &p.seconds, p.part);
+        return p;
+    }();
+    if (sPerf.seconds > 0.0f) {
+        const auto t = std::chrono::duration<float>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        sPerfPhase = int(t / sPerf.seconds) % 2;
+        if (sPerfPhase == 1) {
+            const std::string_view part = sPerf.part;
+            if (part == "all") c.enabled = false;
+            if (part == "ppl") c.perPixelLighting = false;
+            if (part == "flq") c.flashlightQuality = false;
+            if (part == "soft") c.softShadows = false;
+            if (part == "xl") c.extraLights = false;
+            if (part == "xls") c.extraShadows = false;
+            if (part == "vol") c.volumetric = false;
+            if (part == "bloom") c.bloom = false;
+            if (part == "ssao") c.ssao = false;
+            if (part == "map") sPerfNoMap = true;
+        } else {
+            sPerfNoMap = false;
+        }
+    }
     aurora_enhanced_set_config(&c);
     sActive.store(c.enabled, std::memory_order_relaxed);
 }
@@ -189,6 +225,7 @@ uint32_t shadowMapWidth() {
         const char* v = std::getenv("LM_SHADOW_MAP");  // test override: 0 render res, 1 2048, 2 4096
         return v ? std::atoi(v) : -1;
     }();
+    if (sPerfNoMap) return 0;
     const int size = sForce >= 0 ? sForce : port::settings().enhancedLighting.shadowMapSize;
     return size == 1 ? 2048 : size == 2 ? 4096 : 0;
 }

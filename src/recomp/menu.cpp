@@ -721,7 +721,7 @@ void draw() {
         frames++;
         const float dt = std::chrono::duration<float>(clock::now() - last).count();
         if (dt >= 2.0f) {
-            std::printf("[fps] %.1f\n", frames / dt);
+            std::printf("[fps] %.1f phase %d\n", frames / dt, recomp::enh::perfPhase());
             std::fflush(stdout);
             frames = 0;
             last = clock::now();
