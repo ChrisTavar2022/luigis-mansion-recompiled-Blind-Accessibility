@@ -58,12 +58,11 @@ namespace {
 
 using aurora::gfx::ExtraLight;
 
-// The renderer classes every blended draw like a ghost draw (extra lights reach them only with
-// ExtraLightTranslucent), and much of a room is drawn blended (in the ballroom the floor and walls
-// stayed dark without it). So the flag is set: the ghost's own body also catches its light,
-// which reads as the glow it gives off.
+// Only draws of the ghost pass (fn_80060E70 pass 0x30) count as ghosts for the renderer; blended
+// room geometry is ordinary world geometry. Ghost lights leave ExtraLightTranslucent off, so a
+// ghost's body does not light itself (its glow comes from the bloom light glow instead).
 constexpr u32 kFlagShadow = aurora::gfx::ExtraLightCastShadows;
-constexpr u32 kFlagBase = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent;
+constexpr u32 kFlagBase = aurora::gfx::ExtraLightSpecular;
 
 // USA addresses (VA() maps them on the European game).
 #define kActorSlots VA(0x803D48A0)  // lbl_803D48A0: live characters (slot 0 = Luigi)

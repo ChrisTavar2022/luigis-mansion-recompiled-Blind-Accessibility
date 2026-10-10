@@ -652,9 +652,10 @@ when "Shadows from ghost lights" is on (the renderer does not implement extra-li
 yet). Radius by class 380/560/720/1100 × "Ghost light radius"; ids = actor pointer, so
 interpolation pairs them. Actors are pooled and reused, so capture marks expire.
 
-The lights carry `ExtraLightTranslucent`: the renderer classes every blended draw as a ghost
-draw, and much of a room is drawn blended (without the flag the ballroom floor and walls got no
-light). Side effect: the ghost's own body also catches its light.
+The lights do not carry `ExtraLightTranslucent`: only draws of the ghost pass (`fn_80060E70`
+pass 0x30) are ghost draws for the renderer, blended room geometry (much of the ballroom floor
+and walls) is ordinary world geometry and gets the light, and a ghost's body does not light
+itself; its halo comes from the bloom's light glow.
 
 Built at the start of the main view `fn_8000BB98(0)` (enhanced_lighting.cpp's hook calls
 `ghostlights::onMainView` before `enh::beginScene`) and submitted with
