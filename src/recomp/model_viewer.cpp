@@ -243,6 +243,32 @@ AnimKind animKindOf(const std::string& path, const std::vector<u8>& d) {
     }
     return AnimKind::None;
 }
+// Whether a .txp / .clk can drive this .mdl: every channel names one of its materials (count at
+// +0x28, 0x120 bytes each from +0x68, stage count at +7) and, for patterns, one of its stages.
+// The game indexes the material table with these unchecked; a pattern of another model in the
+// same archive would write outside it.
+bool animFitsMdl(AnimKind k, const std::vector<u8>& a, const std::vector<u8>& m) {
+    if (m.size() < 0x80 || a.size() < 0x0C) return false;
+    const u32 numMat = be16(&m[0x28]), mats = be32(&m[0x68]);
+    const u32 channels = be16(&a[4]), stride = k == AnimKind::Txp ? 0x0C : 0x20;
+    if (be16(&a[6]) == 0 || 0x0C + channels * stride > a.size()) return false;
+    for (u32 i = 0; i < channels; i++) {
+        const u8* ch = &a[0x0C + i * stride];
+        const u32 mat = be16(ch + 2);
+        if (mat >= numMat || mats + (mat + 1) * 0x120 > m.size()) return false;
+        if (k != AnimKind::Txp) continue;
+        if (be16(ch + 4) >= m[mats + mat * 0x120 + 7]) return false;
+        // Sampler index per frame (u16 at +8 offset). The table must lie behind the channels
+        // (the relocation rewrites the channel pointers in place: int02fir.txp's table at 0 would
+        // read them as indices) and index the model's samplers (count at +0x24).
+        const u32 data = be32(ch + 8), frames = be16(&a[6]), samplers = be16(&m[0x24]);
+        if (data < 0x0C + channels * stride || data + frames * 2 > a.size()) return false;
+        for (u32 f = 0; f < frames; f++)
+            if (be16(&a[data + 2 * f]) >= samplers) return false;
+    }
+    return true;
+}
+
 std::string dirName(const std::string& p) {
     const size_t i = p.rfind('/');
     return i == std::string::npos ? std::string() : p.substr(0, i + 1);
@@ -632,6 +658,7 @@ struct Drawable {
     u32 obj = 0;                // S3DModel / graph object / J3DModel
     u32 key = 0;                // S3DModel: .key animation
     u32 keyFrames = 1;
+    u32 numJoints = 0;
     u32 bufOpa = 0, bufXlu = 0; // J3D draw buffers
     u32 mtx = 0;                // guest copy of the placement matrix (graph root / J3D base)
     u32 animator = 0;           // room renderer: node animator (0x318, fn_8001E7EC) when it has an .anm
@@ -644,6 +671,16 @@ u32 sNumFrames = 0;
 float sFrame = 0.0f;
 std::string sAnimInfo;  // loaded animations and their lengths (UI)
 std::string sShotLabel = "viewer";  // screenshot file name part: the loaded model or map
+
+// Follow mode (cutscene models moving through the scene): orbit centre = joint centroid + offset.
+bool sFollow = false;
+float sFollowOffset[3] = {};
+void jointCentroid(u32 obj, u32 numJoints, float* out) {
+    const u32 joints = rd32(obj + 0x14);
+    out[0] = out[1] = out[2] = 0;
+    for (u32 j = 0; j < numJoints; j++)
+        for (int a = 0; a < 3; a++) out[a] += gu::rdf(joints + j * 0x30 + 0x0C + 0x10 * a) / float(std::max<u32>(1, numJoints));
+}
 
 // The frame an animation of `frames` frames shows at timeline position `t`.
 float animFrame(float t, u32 frames) {
@@ -748,13 +785,16 @@ bool loadMdl(Ctx& c, const LoadItem& it, Drawable& d, Box& bounds) {
     // (sampled frames) and pad by how far the vertices reach beyond the joints in the bind
     // pose. Without an animation (or inverse bind matrices): the vertices and the joints.
     Box animBox;
+    sFollow = false;
     if (anim && invBind) {
-        Box bindJoints;
+        Box bindJoints, path;
+        float bindCentroid[3] = {};
         const u32 tmp = kScratch + 0x300;
         for (u32 j = 0; j < numJoints; j++) {
             gu::call(c, GU_SYM("PSMTXInverse"), {invBind + j * 0x30, tmp});
             const float p[3] = {gu::rdf(tmp + 0x0C), gu::rdf(tmp + 0x1C), gu::rdf(tmp + 0x2C)};
             bindJoints.add(p);
+            for (int a = 0; a < 3; a++) bindCentroid[a] += p[a] / float(numJoints);
         }
         float pad = 0.0f;
         if (bindJoints.valid() && bounds.valid())
@@ -769,13 +809,30 @@ bool loadMdl(Ctx& c, const LoadItem& it, Drawable& d, Box& bounds) {
                                     gu::rdf(joints + j * 0x30 + 0x2C)};
                 animBox.add(p);
             }
+            float ctr[3];
+            jointCentroid(obj, numJoints, ctr);
+            path.add(ctr);
+        }
+        // Cutscene models travel through the scene: when the animation moves the model much
+        // further than its own size, the orbit centre follows it (its joints' centroid) and
+        // the view is fitted to the model instead of its whole path.
+        if (path.valid() && bounds.valid() && bindJoints.valid()) {
+            float travel = 0, size = 0;
+            for (int a = 0; a < 3; a++) {
+                travel = std::max(travel, path.hi[a] - path.lo[a]);
+                size = std::max(size, bounds.hi[a] - bounds.lo[a]);
+            }
+            if (travel > 1.5f * size) {
+                sFollow = true;
+                for (int a = 0; a < 3; a++) sFollowOffset[a] = 0.5f * (bounds.lo[a] + bounds.hi[a]) - bindCentroid[a];
+            }
         }
         if (animBox.valid())
             for (int a = 0; a < 3; a++) animBox.lo[a] -= pad, animBox.hi[a] += pad;
         gu::call(c, GU_SYM("fn_8005AA34"), {obj}, {0.0});
         gu::call(c, GU_SYM("fn_800589B0"), {obj, 0});
     }
-    if (animBox.valid()) {
+    if (animBox.valid() && !sFollow) {
         bounds = animBox;
     } else {
         for (u32 j = 0; j < numJoints; j++) {
@@ -786,6 +843,7 @@ bool loadMdl(Ctx& c, const LoadItem& it, Drawable& d, Box& bounds) {
     d.obj = obj;
     d.key = k;
     d.keyFrames = frames;
+    d.numJoints = numJoints;
     sNumFrames = std::max<u32>(sNumFrames, frames);
     // Texture pattern (.txp) and material colour (.clk) animations, set up as the cutscene model
     // loader fn_8000F3F4 does: relocated by fn_8005C8E4 / fn_8005C920, the pattern in the
@@ -797,6 +855,10 @@ bool loadMdl(Ctx& c, const LoadItem& it, Drawable& d, Box& bounds) {
     gu::wrf(obj + 0x10C, 0.0f);
     for (const AnimFile& a : it.anims) {
         if (a.kind != AnimKind::Txp && a.kind != AnimKind::Clk) continue;
+        if (!animFitsMdl(a.kind, a.data, it.data)) {
+            log("[viewer] %s does not fit this model's materials: skipped", a.name.c_str());
+            continue;
+        }
         const u32 p = copyIn(c, a.data);
         if (!p) return false;
         GuestAnim g{a.kind, p, std::max<u32>(1, be16(&a.data[6])), a.name};
@@ -996,6 +1058,7 @@ void poseJ3D(const Drawable& d, float t) {
 void loadPending(Ctx& c) {
     sPending.load = false;
     sDraw.clear();
+    sFollow = false;
     sNumFrames = 0;
     sFrame = 0.0f;
     sLoadResult.clear();
@@ -1060,8 +1123,8 @@ void loadPending(Ctx& c) {
     if (sDraw.size() != 1 && animated) sAnimInfo = std::to_string(animated) + " animated models";
     sShotLabel = sPending.items.size() == 1 ? stem(sPending.label) : sPending.label;
     sStatus = sLoadResult;
-    log("[viewer] loaded %s%s: %zu/%zu models, heap %u KiB used, centre %.0f %.0f %.0f radius %.0f%s%s", sPending.label.c_str(),
-        sIsGhost ? (sGhostFx ? " [ghost layer]" : " [ghost, plain]") : "",
+    log("[viewer] loaded %s%s%s: %zu/%zu models, heap %u KiB used, centre %.0f %.0f %.0f radius %.0f%s%s", sPending.label.c_str(),
+        sIsGhost ? (sGhostFx ? " [ghost layer]" : " [ghost, plain]") : "", sFollow ? " [follow]" : "",
         sDraw.size(), sPending.items.size(), sHeapUsed / 1024, sCenter[0], sCenter[1], sCenter[2], sRadius,
         sLoadResult.empty() ? "" : " - ", sLoadResult.c_str());
 }
@@ -1177,6 +1240,12 @@ void poseMdl(Ctx& c, const Drawable& d, float t) {
 }
 
 void drawMdl(Ctx& c, const Drawable& d, bool ghost) {
+    // Texture coordinate generators back to their GX defaults (TEXn through the identity
+    // matrix). The S3D material setup only programs the generators its stages use; a bump-mapped
+    // material drawn before (binormal source, e.g. the cutscene vacuum db_sojiki) otherwise
+    // stays in a generator the next model's TEV reads, which Aurora rejects for a model without
+    // binormals. In play other draws in between reset them.
+    for (u32 i = 0; i < 8; i++) gu::call(c, GU_SYM("GXSetTexCoordGen2"), {i, 1, 4 + i, 60, 0, 125});
     gu::call(c, GU_SYM("fn_80059710"), {d.obj, kScratch + 0x140});
     if (ghost) {
         // fn_80060E70 pass 0x30 (opaque) and 0x130 (translucent) for a ghost type: ghost
@@ -1465,6 +1534,13 @@ void collectAnims() {
     switch (sMdlKinds[sMdlSel]) {
     case Kind::Mdl: {
         const u32 joints = be16(&md[8]);
+        // Archives with several models in one folder (cutscenes): patterns named after the model.
+        int modelsInScope = 0;
+        for (int x : sMdls) modelsInScope += scopeOf(sMembers[x].path) == scope;
+        auto ownPattern = [&](int m, AnimKind k) {
+            return scopeOf(sMembers[m].path) == scope && (modelsInScope <= 1 || stem(sMembers[m].path).rfind(ms, 0) == 0) &&
+                   animFitsMdl(k, sMembers[m].data, md);
+        };
         std::vector<int> other;
         for (size_t i = 0; i < sAnims.size(); i++) {
             const int m = sAnims[i];
@@ -1474,10 +1550,10 @@ void collectAnims() {
                 if (sMembers[m].data.size() >= 0x20 && be32(&sMembers[m].data[0]) == joints) (same ? sChoice.keys : other).push_back(m);
                 break;
             case AnimKind::Txp:
-                if (same) sChoice.txps.push_back(m);
+                if (ownPattern(m, AnimKind::Txp)) sChoice.txps.push_back(m);
                 break;
             case AnimKind::Clk:
-                if (same) sChoice.clks.push_back(m);
+                if (ownPattern(m, AnimKind::Clk)) sChoice.clks.push_back(m);
                 break;
             default: break;
             }
@@ -1594,18 +1670,20 @@ void openArchive(int idx, const char* keyName, const char* mdlName = nullptr, in
     const bool none = keyName && std::strcmp(keyName, "-") == 0;
     if (sMdlKinds[sMdlSel] == Kind::Mdl) {
         const std::string scope = scopeOf(sMembers[sMdls[sMdlSel]].path);
-        int first = -1, wait = -1, named = -1;
+        int first = -1, wait = -1, named = -1, own = -1;
+        const std::string ms = stem(sMembers[sMdls[sMdlSel]].path);
         for (int k = 0; k < int(sChoice.keys.size()); k++) {
             const std::string& p = sMembers[sChoice.keys[k]].path;
             if (keyName && named < 0 && p.find(keyName) != std::string::npos) named = k;
             if (scopeOf(p) != scope) continue;
             if (first < 0) first = k;
+            if (own < 0 && !ms.empty() && stem(p).rfind(ms, 0) == 0) own = k;  // cutscenes: <model>.key
             // A plain wait pose ("wait1", not "cow1wait"): the shortest matching name.
             if (stem(p).find("wait") != std::string::npos &&
                 (wait < 0 || stem(p).size() < stem(sMembers[sChoice.keys[wait]].path).size()))
                 wait = k;
         }
-        sChoice.key = named >= 0 ? named : wait >= 0 ? wait : first;
+        sChoice.key = named >= 0 ? named : own >= 0 ? own : wait >= 0 ? wait : first;
         if (none) sChoice.key = -1;
         pickPatterns();
     } else if (none) {
@@ -1805,6 +1883,9 @@ struct Fit {
     int samples = 0, next = 0, iter = 0, retries = 0;
     u32 startFrame = 0;
     std::atomic<int> outstanding{0};
+    std::atomic<u32> gen{0};  // a new measurement ignores readbacks of the previous one
+    u32 collectFrame = 0;     // readbacks can be lost (one pending request at a time): give up after a while
+    float prevCenter[3] = {}, prevRadius = 0;  // before the last refinement
     std::mutex m;
     int lo[2] = {}, hi[2] = {};
     bool any = false, edge = false;
@@ -1824,6 +1905,8 @@ void fitBegin(bool restart) {
         }
         sFit.iter = sFit.retries = 0;
     }
+    sFit.gen++;
+    sFit.outstanding = 0;
     sCam.spin = false;
     sAnim.play = false;
     sFit.phase = Fit::Wait;
@@ -1856,7 +1939,9 @@ void fitBeforeDraw() {
 void fitAfterDraw() {
     if (sFit.phase == Fit::Sample) {
         sFit.outstanding++;
-        efbcopy::requestNamedDump("", 1, [](const u8* rgb, u32 w, u32 h) {
+        const u32 gen = sFit.gen;
+        efbcopy::requestNamedDump("", 1, [gen](const u8* rgb, u32 w, u32 h) {
+            if (gen != sFit.gen) return;
             // Pixels clearly different from the backdrop; the outer 0.5% of them on each side
             // are ignored (stray sparks, faint glow fringes far from the model).
             std::vector<u32> cols(w), rows(h);
@@ -1891,11 +1976,25 @@ void fitAfterDraw() {
             }
             sFit.outstanding--;
         });
-        if (++sFit.next >= sFit.samples) sFit.phase = Fit::Collect;
+        if (++sFit.next >= sFit.samples) {
+            sFit.phase = Fit::Collect;
+            sFit.collectFrame = sGuestFrames;
+        }
         return;
     }
-    if (sFit.phase != Fit::Collect || sFit.outstanding > 0) return;
+    if (sFit.phase != Fit::Collect) return;
+    if (sFit.outstanding > 0 && sGuestFrames - sFit.collectFrame < 30) return;
+    sFit.gen++;  // late readbacks of this measurement no longer count
+    sFit.outstanding = 0;
     std::lock_guard<std::mutex> lock(sFit.m);
+    if (!sFit.any && sFit.iter > 0) {
+        // The refined view lost the model (it moves, or the first picture was mostly noise):
+        // back to the previous view.
+        for (int k = 0; k < 3; k++) (sFollow ? sFollowOffset : sCenter)[k] = sFit.prevCenter[k];
+        sRadius = sFit.prevRadius;
+        fitEnd();
+        return;
+    }
     if (!sFit.any) {
         // Nothing yet (Aurora compiles new pipelines in the background): look again later.
         if (++sFit.retries <= 3) {
@@ -1919,12 +2018,17 @@ void fitAfterDraw() {
     const float s[3] = {-f[2] / sl, 0.0f, f[0] / sl};
     const float u[3] = {s[1] * f[2] - s[2] * f[1], s[2] * f[0] - s[0] * f[2], s[0] * f[1] - s[1] * f[0]};
     const float mx = 0.5f * (x0 + x1), my = 0.5f * (y0 + y1), hx = 0.5f * (x1 - x0), hy = 0.5f * (y1 - y0);
-    for (int k = 0; k < 3; k++) sCenter[k] += s[k] * mx + u[k] * my;
+    for (int k = 0; k < 3; k++) sFit.prevCenter[k] = (sFollow ? sFollowOffset : sCenter)[k];
+    sFit.prevRadius = sRadius;
+    for (int k = 0; k < 3; k++) (sFollow ? sFollowOffset : sCenter)[k] += s[k] * mx + u[k] * my;
     const float radius = std::max(std::sqrt(hx * hx + hy * hy) * 1.05f, 1e-3f);
     // Larger than the view: twice as far, up to three times (beams and sky-high effects never
     // fit; then the widest view so far).
-    const bool again = sFit.edge && sFit.iter < 3;
-    const float next = again ? std::max(radius, sRadius) * 2.0f : sFit.edge ? std::max(radius, sRadius) : radius;
+    // Much smaller than the view (bounds inflated by far-off joints, the measurement only a few
+    // pixels): measure again from the new distance for precision.
+    const bool grow = sFit.edge && sFit.iter < 3, shrink = !sFit.edge && radius < 0.4f * sRadius && sFit.iter < 3;
+    const bool again = grow || shrink;
+    const float next = grow ? std::max(radius, sRadius) * 2.0f : sFit.edge ? std::max(radius, sRadius) : radius;
     log("[viewer] fit %d: picture %d,%d-%d,%d%s, radius %.3g -> %.3g", sFit.iter, sFit.lo[0], sFit.lo[1], sFit.hi[0], sFit.hi[1],
         sFit.edge ? " (at the border)" : "", sRadius, next);
     sRadius = next;
@@ -2100,6 +2204,11 @@ void guestFrame(Ctx& c) {
         else if (d.kind == Kind::J3D) poseJ3D(d, sFrame);
         else poseGraph(c, d, sFrame);
     }
+    if (sFollow && sDraw.size() == 1 && sDraw[0].kind == Kind::Mdl && !sDraw[0].bindPose) {
+        float ctr[3];
+        jointCentroid(sDraw[0].obj, sDraw[0].numJoints, ctr);
+        for (int a = 0; a < 3; a++) sCenter[a] = ctr[a] + sFollowOffset[a];
+    }
     if (sCam.spin && !sCam.fly) sCam.yaw = std::remainder(sCam.yaw + 0.01f, 6.2831853f);
     setupCamera(c);
     drawScene(c);
@@ -2149,7 +2258,21 @@ void window() {
         const std::string mdl = hash == std::string::npos ? "" : spec.substr(hash + 1, bar == std::string::npos ? std::string::npos : bar - hash - 1);
         for (int i = 0; i < int(sCatalogue.size()); i++)
             if (sCatalogue[i].path == spec.substr(0, std::min(bar, hash)))
+            {
                 openArchive(i, key.empty() ? nullptr : key.c_str(), mdl.empty() ? nullptr : mdl.c_str());
+                // Test aid: LM_DEV_VIEWER_TXP / LM_DEV_VIEWER_CLK=<name part> picks a texture
+                // pattern / colour animation ("-": none).
+                auto pick = [](const char* env, const std::vector<int>& list, int& sel) {
+                    const char* v = std::getenv(env);
+                    if (!v) return;
+                    sel = -1;
+                    for (int j = 0; j < int(list.size()); j++)
+                        if (std::strcmp(v, "-") != 0 && sMembers[list[j]].path.find(v) != std::string::npos) sel = j;
+                    requestLoad();
+                };
+                pick("LM_DEV_VIEWER_TXP", sChoice.txps, sChoice.txp);
+                pick("LM_DEV_VIEWER_CLK", sChoice.clks, sChoice.clk);
+            }
     }
     if (sEnvMap && sScanListed) {
         int map = 2, room = -1;
@@ -2368,6 +2491,13 @@ void window() {
     if (!sShotStatus.empty()) ImGui::TextDisabled("%s", sShotStatus.c_str());
     if (!sCam.fly) {
         ImGui::Checkbox("Spin", &sCam.spin);
+        if (sDraw.size() == 1 && sDraw[0].kind == Kind::Mdl && !sDraw[0].bindPose) {
+            ImGui::SameLine();
+            ImGui::Checkbox("Follow", &sFollow);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Keep the orbit centre on the model while its animation moves it\n"
+                                  "(on by default for cutscene models that travel through the scene).");
+        }
         ImGui::SliderFloat("Yaw", &sCam.yaw, -6.2832f, 6.2832f);
         ImGui::SliderFloat("Pitch", &sCam.pitch, -1.5f, 1.5f);
         ImGui::SliderFloat("Distance", &sCam.zoom, 0.05f, 8.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
