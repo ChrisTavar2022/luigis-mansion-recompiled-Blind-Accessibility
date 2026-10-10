@@ -37,7 +37,9 @@
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
+#include "port/install.h"
 
+#include <SDL3/SDL.h>
 #include <dolphin/dvd.h>
 #include <dolphin/gx/GXAurora.h>
 #include <imgui.h>
@@ -49,6 +51,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -214,6 +219,38 @@ bool classify(const std::string& name, const std::vector<u8>& d, Kind& k) {
     else if (isGraph(name, d)) k = Kind::Graph;
     else return false;
     return true;
+}
+
+// Animation files. S3D models: .key joints, .txp texture patterns (texture index per material
+// stage and frame: eyes, faces, flicker), .clk material colours. J3D: .bck joints, .btk texture
+// SRT (scrolling), .bpk material colours, .brk TEV colours (no .btp/.bva on the disc). Room
+// renderer: .anm node animations (furniture <name>_0 rest pose / <name>_1 action, doors).
+enum class AnimKind : u8 { Key, Txp, Clk, Bck, Btk, Bpk, Brk, Anm, None };
+const char* animKindName(AnimKind k) {
+    static const char* const n[] = {"key", "txp", "clk", "bck", "btk", "bpk", "brk", "anm", "?"};
+    return n[int(k)];
+}
+AnimKind animKindOf(const std::string& path, const std::vector<u8>& d) {
+    if (endsWith(path, ".key")) return AnimKind::Key;
+    if (endsWith(path, ".txp")) return d.size() >= 0x0C ? AnimKind::Txp : AnimKind::None;
+    if (endsWith(path, ".clk")) return d.size() >= 0x0C ? AnimKind::Clk : AnimKind::None;
+    if (endsWith(path, ".anm")) return d.size() >= 0x18 ? AnimKind::Anm : AnimKind::None;
+    if (d.size() >= 0x20 && std::memcmp(d.data(), "J3D1", 4) == 0) {
+        if (std::memcmp(d.data() + 4, "bck", 3) == 0) return AnimKind::Bck;
+        if (std::memcmp(d.data() + 4, "btk", 3) == 0) return AnimKind::Btk;
+        if (std::memcmp(d.data() + 4, "bpk", 3) == 0) return AnimKind::Bpk;
+        if (std::memcmp(d.data() + 4, "brk", 3) == 0) return AnimKind::Brk;
+    }
+    return AnimKind::None;
+}
+std::string dirName(const std::string& p) {
+    const size_t i = p.rfind('/');
+    return i == std::string::npos ? std::string() : p.substr(0, i + 1);
+}
+std::string stem(const std::string& p) {
+    std::string b = p.substr(p.rfind('/') == std::string::npos ? 0 : p.rfind('/') + 1);
+    const size_t dot = b.rfind('.');
+    return dot == std::string::npos ? b : b.substr(0, dot);
 }
 
 // ---- bounds (host, from the file data) -------------------------------------------------
@@ -481,9 +518,16 @@ bool sOpen = sEnvArchive != nullptr || sEnvMap != nullptr || std::getenv("LM_DEV
 
 int sArchiveSel = -1;
 std::vector<Member> sMembers;    // the selected archive's files
-std::vector<int> sMdls, sKeys;   // indices into sMembers (models of any kind, .key animations)
+std::vector<int> sMdls, sAnims;  // indices into sMembers (models of any kind, animation files of any kind)
 std::vector<Kind> sMdlKinds;
-int sMdlSel = -1, sKeySel = -1;
+std::vector<AnimKind> sAnimKinds;  // parallel to sAnims
+int sMdlSel = -1;
+// Animations that go with the selected model (indices into sMembers) and the chosen ones.
+struct AnimChoice {
+    std::vector<int> keys, txps, clks, j3d, anms;
+    int key = -1, txp = -1, clk = -1, anm = -1;  // index into the list above, -1 = none
+    std::vector<char> j3dOn;                     // per j3d entry
+} sChoice;
 char sFilter[64] = "";
 std::string sStatus;
 std::string sLoadedInfo;
@@ -507,6 +551,7 @@ struct Camera {
 }();
 struct Anim {
     bool play = true;
+    bool loop = true;    // off: play once and stop on the last frame
     float speed = 1.0f;
 } sAnim;
 
@@ -534,6 +579,7 @@ bool sIsGhost = false;                                           // loaded model
 // Maps.
 int sMapSel = 2, sRoomSel = -1;  // -1 = all rooms
 bool sFurniture = true;
+bool sFurnitureAnims = false;    // play every furniture's <name>_1.anm action in a loop
 struct RoomName {
     int index;
     std::string path;
@@ -542,12 +588,18 @@ std::vector<RoomName> sRooms;  // rooms of sMapSel (from the game's map descript
 int sRoomsOfMap = -1;
 
 // Host -> guest load request (the guest is parked while the host runs: plain fields suffice).
+struct AnimFile {
+    AnimKind kind;
+    std::string name;
+    std::vector<u8> data;
+};
 struct LoadItem {
     Kind kind;
     std::vector<u8> data, key;
     float mtx[12];
     bool placed = false;
     std::string name;
+    std::vector<AnimFile> anims;  // txp/clk (mdl), bck/btk/bpk/brk (J3D), anm (room renderer)
 };
 struct Pending {
     bool load = false;
@@ -568,18 +620,37 @@ constexpr u32 kHeapEnd = 0x83FF0000;  // host window: ctx.h kHostMemSize
 static_assert(kHeapEnd <= 0x80000000u + kHostMemSize);
 u32 sHeap = 0;
 
+// A loaded animation (guest object) and its length in frames.
+struct GuestAnim {
+    AnimKind kind;
+    u32 obj = 0;     // relocated .txp/.clk, J3DAnm* object, room .anm descriptor
+    u32 frames = 1;
+    std::string name;
+};
 struct Drawable {
     Kind kind;
     u32 obj = 0;                // S3DModel / graph object / J3DModel
     u32 key = 0;                // S3DModel: .key animation
+    u32 keyFrames = 1;
     u32 bufOpa = 0, bufXlu = 0; // J3D draw buffers
     u32 mtx = 0;                // guest copy of the placement matrix (graph root / J3D base)
+    u32 animator = 0;           // room renderer: node animator (0x318, fn_8001E7EC) when it has an .anm
     bool bindPose = false;      // S3DModel without animation: joints fixed at load
+    std::vector<GuestAnim> anims;
     std::string name;
 };
 std::vector<Drawable> sDraw;
 u32 sNumFrames = 0;
 float sFrame = 0.0f;
+std::string sAnimInfo;  // loaded animations and their lengths (UI)
+std::string sShotLabel = "viewer";  // screenshot file name part: the loaded model or map
+
+// The frame an animation of `frames` frames shows at timeline position `t`.
+float animFrame(float t, u32 frames) {
+    if (frames <= 1) return 0.0f;
+    if (sAnim.loop) return std::fmod(t, float(frames));
+    return std::min(t, float(frames - 1));
+}
 float sCenter[3] = {}, sRadius = 100.0f;
 std::atomic<u32> sGuestFrames{0};
 std::string sLoadResult;  // last load: "" = ok, else the failure
@@ -671,16 +742,74 @@ bool loadMdl(Ctx& c, const LoadItem& it, Drawable& d, Box& bounds) {
         gu::call(c, GU_SYM("fn_80058850"), {obj});
         d.bindPose = true;
     }
-    // Frame from the vertices and the joints at frame 0 (animated models are often posed far
-    // from their rest positions, cutscene models in world space).
-    for (u32 j = 0; j < numJoints; j++) {
-        const float p[3] = {gu::rdf(joints + j * 0x30 + 0x0C), gu::rdf(joints + j * 0x30 + 0x1C), gu::rdf(joints + j * 0x30 + 0x2C)};
-        bounds.add(p);
+    const u32 frames = anim ? std::max<u32>(1, be16(&key[6])) : 1;
+    // Framing. Animated models are often posed far from their rest positions (cutscene models
+    // move through the scene in world space): follow the joints through the whole animation
+    // (sampled frames) and pad by how far the vertices reach beyond the joints in the bind
+    // pose. Without an animation (or inverse bind matrices): the vertices and the joints.
+    Box animBox;
+    if (anim && invBind) {
+        Box bindJoints;
+        const u32 tmp = kScratch + 0x300;
+        for (u32 j = 0; j < numJoints; j++) {
+            gu::call(c, GU_SYM("PSMTXInverse"), {invBind + j * 0x30, tmp});
+            const float p[3] = {gu::rdf(tmp + 0x0C), gu::rdf(tmp + 0x1C), gu::rdf(tmp + 0x2C)};
+            bindJoints.add(p);
+        }
+        float pad = 0.0f;
+        if (bindJoints.valid() && bounds.valid())
+            for (int a = 0; a < 3; a++)
+                pad = std::max({pad, bounds.hi[a] - bindJoints.hi[a], bindJoints.lo[a] - bounds.lo[a]});
+        const u32 samples = std::min<u32>(frames, 24);
+        for (u32 s = 0; s < samples; s++) {
+            gu::call(c, GU_SYM("fn_8005AA34"), {obj}, {double(frames - 1) * s / std::max<u32>(1, samples - 1)});
+            gu::call(c, GU_SYM("fn_800589B0"), {obj, 0});
+            for (u32 j = 0; j < numJoints; j++) {
+                const float p[3] = {gu::rdf(joints + j * 0x30 + 0x0C), gu::rdf(joints + j * 0x30 + 0x1C),
+                                    gu::rdf(joints + j * 0x30 + 0x2C)};
+                animBox.add(p);
+            }
+        }
+        if (animBox.valid())
+            for (int a = 0; a < 3; a++) animBox.lo[a] -= pad, animBox.hi[a] += pad;
+        gu::call(c, GU_SYM("fn_8005AA34"), {obj}, {0.0});
+        gu::call(c, GU_SYM("fn_800589B0"), {obj, 0});
+    }
+    if (animBox.valid()) {
+        bounds = animBox;
+    } else {
+        for (u32 j = 0; j < numJoints; j++) {
+            const float p[3] = {gu::rdf(joints + j * 0x30 + 0x0C), gu::rdf(joints + j * 0x30 + 0x1C), gu::rdf(joints + j * 0x30 + 0x2C)};
+            bounds.add(p);
+        }
     }
     d.obj = obj;
     d.key = k;
-    const u32 frames = anim ? std::max<u32>(1, be16(&key[6])) : 1;
+    d.keyFrames = frames;
     sNumFrames = std::max<u32>(sNumFrames, frames);
+    // Texture pattern (.txp) and material colour (.clk) animations, set up as the cutscene model
+    // loader fn_8000F3F4 does: relocated by fn_8005C8E4 / fn_8005C920, the pattern in the
+    // S3DModel's first pattern slot (+0x2C pointer, +0x30 frame; 16 slots of 8 bytes, applied by
+    // fn_8005CBBC as the actor draw fn_80060E70 does), the colour animation at +0x110 (frame
+    // +0x10C, applied by fn_8005C7AC as the file-select draw fn_800494E4 does).
+    std::memset(hostp(obj + 0x2C), 0, 16 * 8);
+    wr32(obj + 0x110, 0);
+    gu::wrf(obj + 0x10C, 0.0f);
+    for (const AnimFile& a : it.anims) {
+        if (a.kind != AnimKind::Txp && a.kind != AnimKind::Clk) continue;
+        const u32 p = copyIn(c, a.data);
+        if (!p) return false;
+        GuestAnim g{a.kind, p, std::max<u32>(1, be16(&a.data[6])), a.name};
+        if (a.kind == AnimKind::Txp) {
+            gu::call(c, GU_SYM("fn_8005C8E4"), {p});
+            wr32(obj + 0x2C, p);
+        } else {
+            gu::call(c, GU_SYM("fn_8005C920"), {p});
+            wr32(obj + 0x110, p);
+        }
+        sNumFrames = std::max<u32>(sNumFrames, g.frames);
+        d.anims.push_back(g);
+    }
     sLoadedInfo = std::to_string(numJoints) + " joints, " + (anim ? std::to_string(frames) + " frames" : "bind pose");
     return true;
 }
@@ -701,14 +830,49 @@ bool loadGraph(Ctx& c, const LoadItem& it, Drawable& d) {
     gu::call(c, GU_SYM("fn_8001CF64"), {obj});
     gu::call(c, GU_SYM("fn_8001D3F4"), {obj, data, u32(it.data.size())});
     if (rd8(obj) != 2) return false;  // fn_8001D3F4 marks a set-up model with state 2
-    if (it.placed) {
+    const AnimFile* anm = nullptr;
+    for (const AnimFile& a : it.anims)
+        if (a.kind == AnimKind::Anm && !anm) anm = &a;
+    if (it.placed || anm) {
         d.mtx = heapAlloc(c, 0x30);
         if (!d.mtx) return false;
-        putMtx(d.mtx, it.mtx, 12);
-        placeGraph(c, obj, d.mtx);
+        float ident[12];
+        mtxIdentity(ident);
+        putMtx(d.mtx, it.placed ? it.mtx : ident, 12);
+        if (it.placed) placeGraph(c, obj, d.mtx);
     }
     d.obj = obj;
+    if (anm) {
+        // Node animation as furniture and doors play theirs (fn_80030368 / fn_8003026C): a node
+        // animator (ctor fn_8001E7EC) for the graph object (fn_8001E8EC) with its own node
+        // matrices (fn_8001E938), the .anm through its 36-byte descriptor (fn_8001DE1C ctor,
+        // fn_8001DE90 setup) registered by fn_8001E908. Per frame fn_8001EC34 poses the nodes
+        // under the placement matrix, and the graph is drawn with the animator's matrices
+        // (+0x128), as fn_8001F098 / fn_8001F138 draw animated furniture.
+        const u32 animator = heapAlloc(c, 0x318), desc = heapAlloc(c, 0x24), data = copyIn(c, anm->data);
+        if (!animator || !desc || !data) return false;
+        std::memset(hostp(animator), 0, 0x318);
+        withViewerHeap([&] {
+            gu::call(c, GU_SYM("fn_8001E7EC"), {animator});
+            gu::call(c, GU_SYM("fn_8001E8EC"), {animator, obj});
+            gu::call(c, GU_SYM("fn_8001E938"), {animator});
+        });
+        gu::call(c, GU_SYM("fn_8001DE1C"), {desc});
+        gu::call(c, GU_SYM("fn_8001DE90"), {desc, data, u32(anm->data.size())});
+        gu::call(c, GU_SYM("fn_8001E908"), {animator, desc, data});
+        if (!(rd32(animator) & 1) || !rd32(animator + 0x128)) return false;
+        GuestAnim g{AnimKind::Anm, desc, std::max<u32>(1, rd32(desc + 0x10)), anm->name};
+        sNumFrames = std::max<u32>(sNumFrames, g.frames);
+        d.anims.push_back(g);
+        d.animator = animator;
+    }
     return true;
+}
+
+// Room renderer node animation at timeline position t (fn_8001EC34: animation 0 at a frame).
+void poseGraph(Ctx& c, const Drawable& d, float t) {
+    if (!d.animator || d.anims.empty()) return;
+    gu::call(c, GU_SYM("fn_8001EC34"), {d.animator, d.mtx, 0}, {animFrame(t, d.anims[0].frames)});
 }
 
 // Joints at rest scale 0 (effects grown only by their .bck: doki, lg_icestate, ftc): unit scale,
@@ -735,10 +899,73 @@ bool loadJ3D(Ctx& c, const LoadItem& it, Drawable& d) {
     const u32 data = copyIn(c, unitJointScales(it.data));
     if (!data) return false;
     u32 modelData = 0, model = 0, opa = 0, xlu = 0;
+    bool animOk = true;
     withViewerHeap([&] {
         // Same flags as the map effect models (fn_801730C4).
         modelData = gu::call(c, GU_SYM("load__22J3DModelLoaderDataBaseFPCvUl"), {data, 0x54020000});
         if (!modelData) return;
+        // Animations, set up exactly as the map effects (fn_801730C4) and the sky box
+        // (fn_8002F4DC) set up theirs, before the J3DModel is built: every file through
+        // J3DAnmLoaderDataBase::load; a .bck becomes the root joint's matrix calculator
+        // (fn_801CC844 with the model's calc type, joint 0 +0x58); material animations are
+        // matched to the materials by name (searchUpdateMaterialID), every material gets a
+        // J3DMaterialAnm (0xC0, ctor fn_801CA7A4; fn_801BC7D4; material +0x30, flag +0x14 bit 0),
+        // then the .btk / .bpk / .brk are entered (fn_801C6E54, entryMatColorAnimator,
+        // entryTevRegAnimator). The frame is the float at J3DAnmBase +4, length s16 at +2.
+        std::vector<GuestAnim> mat;
+        bool haveBck = false;
+        for (const AnimFile& a : it.anims) {
+            if (a.kind < AnimKind::Bck || a.kind > AnimKind::Brk) continue;
+            if (a.kind == AnimKind::Bck && haveBck) continue;
+            const u32 file = copyIn(c, a.data);
+            const u32 anm = file ? gu::call(c, GU_SYM("load__20J3DAnmLoaderDataBaseFPCv"), {file}) : 0;
+            if (!anm) {
+                animOk = false;
+                continue;
+            }
+            GuestAnim g{a.kind, anm, u32(std::max<s32>(1, s16(rd16(anm + 2)))), a.name};
+            gu::wrf(anm + 4, 0.0f);
+            switch (a.kind) {
+            case AnimKind::Bck: {
+                const u32 calc = gu::call(c, GU_SYM("fn_801CC844"), {rd32(modelData + 8) & 0xF, anm});
+                if (!calc) {
+                    animOk = false;
+                    continue;
+                }
+                wr32(rd32(rd32(modelData + 0x18)) + 0x58, calc);
+                haveBck = true;
+                break;
+            }
+            case AnimKind::Btk: gu::call(c, GU_SYM("searchUpdateMaterialID__19J3DAnmTextureSRTKeyFP12J3DModelData"), {anm, modelData}); break;
+            case AnimKind::Bpk: gu::call(c, GU_SYM("searchUpdateMaterialID__11J3DAnmColorFP12J3DModelData"), {anm, modelData}); break;
+            case AnimKind::Brk: gu::call(c, GU_SYM("searchUpdateMaterialID__15J3DAnmTevRegKeyFP12J3DModelData"), {anm, modelData}); break;
+            default: break;
+            }
+            d.anims.push_back(g);
+            if (a.kind != AnimKind::Bck) mat.push_back(g);
+        }
+        if (!mat.empty()) {
+            const u32 numMat = rd16(modelData + 0x1C), mats = rd32(modelData + 0x20);
+            for (u32 i = 0; i < numMat; i++) {
+                const u32 m = rd32(mats + 4 * i), matAnm = heapAlloc(c, 0xC0);
+                if (!m || !matAnm) {
+                    animOk = false;
+                    break;
+                }
+                gu::call(c, GU_SYM("fn_801CA7A4"), {matAnm});
+                gu::call(c, GU_SYM("fn_801BC7D4"), {m});
+                wr32(m + 0x30, matAnm);
+                wr32(m + 0x14, rd32(m + 0x14) | 1);
+            }
+            for (const GuestAnim& g : mat) {
+                switch (g.kind) {
+                case AnimKind::Btk: gu::call(c, GU_SYM("fn_801C6E54"), {modelData, g.obj}); break;
+                case AnimKind::Bpk: gu::call(c, GU_SYM("entryMatColorAnimator__12J3DModelDataFP11J3DAnmColor"), {modelData, g.obj}); break;
+                case AnimKind::Brk: gu::call(c, GU_SYM("entryTevRegAnimator__12J3DModelDataFP15J3DAnmTevRegKey"), {modelData, g.obj}); break;
+                default: break;
+                }
+            }
+        }
         model = heapAlloc(c, 0xA0);
         opa = heapAlloc(c, 0x24);
         xlu = heapAlloc(c, 0x24);
@@ -756,7 +983,14 @@ bool loadJ3D(Ctx& c, const LoadItem& it, Drawable& d) {
     float ident[12];
     mtxIdentity(ident);
     putMtx(d.mtx, it.placed ? it.mtx : ident, 12);
+    for (const GuestAnim& g : d.anims) sNumFrames = std::max<u32>(sNumFrames, g.frames);
+    if (!animOk) log("[viewer] %s: an animation failed to load", it.name.c_str());
     return true;
+}
+
+// J3D animations at timeline position t: the frame of each J3DAnmBase (+4).
+void poseJ3D(const Drawable& d, float t) {
+    for (const GuestAnim& g : d.anims) gu::wrf(g.obj + 4, animFrame(t, g.frames));
 }
 
 void loadPending(Ctx& c) {
@@ -789,10 +1023,20 @@ void loadPending(Ctx& c) {
         }
     }
     sNumFrames = std::max<u32>(1, sNumFrames);
+    if (const char* f = std::getenv("LM_DEV_VIEWER_FRAME")) {  // test aid: hold this animation frame
+        sFrame = std::clamp(float(std::atof(f)), 0.0f, float(sNumFrames - 1));
+        sAnim.play = false;
+    }
     const Box& b = sPending.bounds;
     if (b.valid()) {
-        for (int k = 0; k < 3; k++) sCenter[k] = (b.lo[k] + b.hi[k]) * 0.5f;
-        sRadius = std::max({b.hi[0] - b.lo[0], b.hi[1] - b.lo[1], b.hi[2] - b.lo[2]}) * 0.5f + 1.0f;
+        // Bounding sphere of the box (the orbit camera fits it from any direction). No fixed
+        // padding: tiny models (gems, sparks, 1-unit effect meshes) fill the view as well.
+        float d2 = 0;
+        for (int k = 0; k < 3; k++) {
+            sCenter[k] = (b.lo[k] + b.hi[k]) * 0.5f;
+            d2 += (b.hi[k] - b.lo[k]) * (b.hi[k] - b.lo[k]);
+        }
+        sRadius = std::max(0.5f * std::sqrt(d2), 1e-3f);
     } else {
         sCenter[0] = sCenter[1] = sCenter[2] = 0;
         sRadius = 100.0f;
@@ -803,6 +1047,18 @@ void loadPending(Ctx& c) {
         sLoadResult = buf;
     }
     if (sPending.items.size() != 1) sLoadedInfo = std::to_string(sDraw.size()) + " models";
+    sAnimInfo.clear();
+    int animated = 0;
+    for (const Drawable& d : sDraw) {
+        animated += !d.anims.empty() || (d.kind == Kind::Mdl && !d.bindPose);
+        if (sDraw.size() != 1) continue;
+        if (d.kind == Kind::Mdl && !d.bindPose) sAnimInfo += "key " + std::to_string(d.keyFrames) + "f";
+        for (const GuestAnim& g : d.anims)
+            sAnimInfo += (sAnimInfo.empty() ? "" : ", ") + std::string(animKindName(g.kind)) + " " + stem(g.name) + " " +
+                         std::to_string(g.frames) + "f";
+    }
+    if (sDraw.size() != 1 && animated) sAnimInfo = std::to_string(animated) + " animated models";
+    sShotLabel = sPending.items.size() == 1 ? stem(sPending.label) : sPending.label;
     sStatus = sLoadResult;
     log("[viewer] loaded %s%s: %zu/%zu models, heap %u KiB used, centre %.0f %.0f %.0f radius %.0f%s%s", sPending.label.c_str(),
         sIsGhost ? (sGhostFx ? " [ghost layer]" : " [ghost, plain]") : "",
@@ -863,10 +1119,11 @@ void setupCamera(Ctx& c) {
         // Everything loaded stays inside the frustum's depth range from anywhere near it.
         float far2 = 0;
         for (int k = 0; k < 3; k++) far2 += (eye[k] - sCenter[k]) * (eye[k] - sCenter[k]);
-        nearZ = 2.0f;
+        nearZ = std::clamp(sRadius * 0.01f, 1e-3f, 2.0f);
         farZ = std::max(20000.0f, (std::sqrt(far2) + sRadius) * 1.5f);
     } else {
-        const float r = sRadius * 3.2f * sCam.zoom;
+        // A sphere of radius R fills a 50 degree view at R / sin(25 deg) = 2.37 R.
+        const float r = sRadius * 2.5f * sCam.zoom;
         const float cy = std::cos(sCam.yaw), sy = std::sin(sCam.yaw), cp = std::cos(sCam.pitch), sp = std::sin(sCam.pitch);
         eye[0] = sCenter[0] + r * cp * sy;
         eye[1] = sCenter[1] + r * sp;
@@ -876,7 +1133,7 @@ void setupCamera(Ctx& c) {
         for (float& v : f) v /= fl;
         // The model's bounds are only an estimate (joint transforms, node placement): keep
         // generous margins so that nothing is clipped at any distance.
-        nearZ = std::max(0.5f, std::min(r - sRadius * 2.0f, sRadius * 0.05f));
+        nearZ = std::max(r * 1e-3f, std::min(r - sRadius * 2.0f, sRadius * 0.05f));
         farZ = (r + sRadius) * 4.0f;
     }
     // side = normalize(forward x up), up = (0, 1, 0)
@@ -903,11 +1160,23 @@ void loadProjection(Ctx& c) {
 }
 
 // S3DModel: joints, view matrices, then the opaque and translucent passes.
-void drawMdl(Ctx& c, const Drawable& d, bool ghost) {
+void poseMdl(Ctx& c, const Drawable& d, float t) {
     if (!d.bindPose) {
-        gu::call(c, GU_SYM("fn_8005AA34"), {d.obj}, {sFrame});
+        gu::call(c, GU_SYM("fn_8005AA34"), {d.obj}, {animFrame(t, d.keyFrames)});
         gu::call(c, GU_SYM("fn_800589B0"), {d.obj, 0});
     }
+    for (const GuestAnim& g : d.anims) {
+        if (g.kind == AnimKind::Txp) {
+            gu::wrf(d.obj + 0x30, std::floor(animFrame(t, g.frames)));
+            gu::call(c, GU_SYM("fn_8005CBBC"), {d.obj});  // texture indices of the pattern frame
+        } else if (g.kind == AnimKind::Clk) {
+            gu::wrf(d.obj + 0x10C, animFrame(t, g.frames));
+            gu::call(c, GU_SYM("fn_8005C7AC"), {d.obj});  // material colours (advances +0x10C; reset above)
+        }
+    }
+}
+
+void drawMdl(Ctx& c, const Drawable& d, bool ghost) {
     gu::call(c, GU_SYM("fn_80059710"), {d.obj, kScratch + 0x140});
     if (ghost) {
         // fn_80060E70 pass 0x30 (opaque) and 0x130 (translucent) for a ghost type: ghost
@@ -977,12 +1246,13 @@ void drawGraphs(Ctx& c, int pass) {
     wr8(g.portalFlag, 0);
     for (const Drawable& d : sDraw) {
         if (d.kind != Kind::Graph) continue;
+        const u32 mtxs = d.animator ? rd32(d.animator + 0x128) : 0;  // animated: the animator's node matrices
         if (pass == 0) {
-            gu::call(c, GU_SYM("fn_80015CF4"), {d.obj, 0, 0, 0xFF});
-            gu::call(c, GU_SYM("fn_80015CF4"), {d.obj, 0, 1, 0xFF});
+            gu::call(c, GU_SYM("fn_80015CF4"), {d.obj, mtxs, 0, 0xFF});
+            gu::call(c, GU_SYM("fn_80015CF4"), {d.obj, mtxs, 1, 0xFF});
         } else {
             gu::call(c, GU_SYM("GXSetZMode"), {1, 3, 0});
-            gu::call(c, GU_SYM("fn_80015CF4"), {d.obj, 0, 2, 0xFF});
+            gu::call(c, GU_SYM("fn_80015CF4"), {d.obj, mtxs, 2, 0xFF});
             gu::call(c, GU_SYM("GXSetZMode"), {1, 3, 1});
         }
     }
@@ -1145,36 +1415,126 @@ void selectArchive(int idx) {
     sMembers.clear();
     sMdls.clear();
     sMdlKinds.clear();
-    sKeys.clear();
-    sMdlSel = sKeySel = -1;
+    sAnims.clear();
+    sAnimKinds.clear();
+    sChoice = {};
+    sMdlSel = -1;
     if (idx < 0 || idx >= int(sCatalogue.size())) return;
     const Archive& a = sCatalogue[idx];
     sMembers = expandFile(readDisc(a.path));
     for (int i = 0; i < int(sMembers.size()); i++) {
+        const std::string& p = sMembers[i].path.empty() ? a.path : sMembers[i].path;
         Kind k;
-        if (classify(sMembers[i].path.empty() ? a.path : sMembers[i].path, sMembers[i].data, k)) {
+        if (classify(p, sMembers[i].data, k)) {
             sMdls.push_back(i);
             sMdlKinds.push_back(k);
-        } else if (endsWith(sMembers[i].path, ".key")) {
-            sKeys.push_back(i);
+        } else if (const AnimKind ak = animKindOf(p, sMembers[i].data); ak != AnimKind::None) {
+            sAnims.push_back(i);
+            sAnimKinds.push_back(ak);
         }
     }
     sStatus = sMdls.empty() ? "no models in this archive" : "";
     sGhostFx = sGhostFxDefault;
 }
 
-// Keys that belong with a model: same nested archive (prefix up to the last ".arc/").
-bool keyMatches(int key, int mdl) {
-    auto scope = [](const std::string& p) {
-        const size_t i = p.rfind(".arc/");
-        return i == std::string::npos ? std::string() : p.substr(0, i + 5);
-    };
-    return scope(sMembers[key].path) == scope(sMembers[mdl].path);
+// Files that belong with a model: same nested archive (prefix up to the last ".arc/").
+std::string scopeOf(const std::string& p) {
+    const size_t i = p.rfind(".arc/");
+    return i == std::string::npos ? std::string() : p.substr(0, i + 5);
 }
 
 std::string memberLabel(int i) {
     const std::string& p = sMembers[i].path;
     return p.empty() ? baseName(sCatalogue[sArchiveSel].path) : p;
+}
+
+// The animations available for the selected model, and default choices:
+//   mdl   .key with the model's joint count (its own folder first, then any other folder of
+//         the archive), .txp / .clk of its own folder (they index its materials);
+//   bmd   .bck/.btk/.bpk/.brk in the model's directory; on by default when their name starts
+//         with the model's (kek_a.btk for kek_a.bmd, bosekief01-03.btk for bosekief.bmd), or
+//         all of them when none does;
+//   bin   .anm named <model>_<n> anywhere in the archive (room furniture), else the .anm in
+//         its directory (doors); default the action <model>_1, else the first.
+void collectAnims() {
+    sChoice = {};
+    if (sMdlSel < 0) return;
+    const int mi = sMdls[sMdlSel];
+    const std::string mp = sMembers[mi].path, scope = scopeOf(mp), dir = dirName(mp), ms = stem(mp);
+    const std::vector<u8>& md = sMembers[mi].data;
+    switch (sMdlKinds[sMdlSel]) {
+    case Kind::Mdl: {
+        const u32 joints = be16(&md[8]);
+        std::vector<int> other;
+        for (size_t i = 0; i < sAnims.size(); i++) {
+            const int m = sAnims[i];
+            const bool same = scopeOf(sMembers[m].path) == scope;
+            switch (sAnimKinds[i]) {
+            case AnimKind::Key:
+                if (sMembers[m].data.size() >= 0x20 && be32(&sMembers[m].data[0]) == joints) (same ? sChoice.keys : other).push_back(m);
+                break;
+            case AnimKind::Txp:
+                if (same) sChoice.txps.push_back(m);
+                break;
+            case AnimKind::Clk:
+                if (same) sChoice.clks.push_back(m);
+                break;
+            default: break;
+            }
+        }
+        sChoice.keys.insert(sChoice.keys.end(), other.begin(), other.end());
+        break;
+    }
+    case Kind::J3D: {
+        bool anyNamed = false;
+        for (size_t i = 0; i < sAnims.size(); i++) {
+            const int m = sAnims[i];
+            if (sAnimKinds[i] < AnimKind::Bck || sAnimKinds[i] > AnimKind::Brk || dirName(sMembers[m].path) != dir) continue;
+            const bool named = stem(sMembers[m].path).rfind(ms, 0) == 0;
+            anyNamed |= named;
+            sChoice.j3d.push_back(m);
+            sChoice.j3dOn.push_back(named);
+        }
+        bool bck = false;
+        for (size_t j = 0; j < sChoice.j3d.size(); j++) {
+            if (!anyNamed) sChoice.j3dOn[j] = 1;
+            // One joint animation at a time (it is the root joint's matrix calculator).
+            if (sChoice.j3dOn[j] && endsWith(sMembers[sChoice.j3d[j]].path, ".bck")) {
+                if (bck) sChoice.j3dOn[j] = 0;
+                bck = true;
+            }
+        }
+        break;
+    }
+    case Kind::Graph: {
+        for (size_t i = 0; i < sAnims.size(); i++)
+            if (sAnimKinds[i] == AnimKind::Anm && stem(sMembers[sAnims[i]].path).rfind(ms + "_", 0) == 0) sChoice.anms.push_back(sAnims[i]);
+        if (sChoice.anms.empty())
+            for (size_t i = 0; i < sAnims.size(); i++)
+                if (sAnimKinds[i] == AnimKind::Anm && dirName(sMembers[sAnims[i]].path) == dir) sChoice.anms.push_back(sAnims[i]);
+        for (size_t j = 0; j < sChoice.anms.size(); j++)
+            if (stem(sMembers[sChoice.anms[j]].path) == ms + "_1") sChoice.anm = int(j);
+        if (sChoice.anm < 0 && !sChoice.anms.empty()) sChoice.anm = 0;
+        break;
+    }
+    }
+}
+
+// Texture pattern / colour animation for the chosen key: the one with the key's name, else
+// Luigi's "usual" blink pattern, else the first.
+void pickPatterns() {
+    const std::string ks = sChoice.key >= 0 ? stem(sMembers[sChoice.keys[sChoice.key]].path) : "";
+    auto pick = [&](const std::vector<int>& list) {
+        int usual = -1;
+        for (int j = 0; j < int(list.size()); j++) {
+            const std::string s = stem(sMembers[list[j]].path);
+            if (!ks.empty() && s == ks) return j;
+            if (usual < 0 && s.find("usual") != std::string::npos) usual = j;
+        }
+        return usual >= 0 ? usual : list.empty() ? -1 : 0;
+    };
+    sChoice.txp = pick(sChoice.txps);
+    sChoice.clk = pick(sChoice.clks);
 }
 
 void requestLoad() {
@@ -1185,13 +1545,32 @@ void requestLoad() {
     it.kind = sMdlKinds[sMdlSel];
     it.data = sMembers[sMdls[sMdlSel]].data;
     it.name = sCatalogue[sArchiveSel].path + (sMembers[sMdls[sMdlSel]].path.empty() ? "" : ":" + sMembers[sMdls[sMdlSel]].path);
-    if (it.kind == Kind::Mdl && sKeySel >= 0) it.key = sMembers[sKeys[sKeySel]].data;
+    auto add = [&](int member) {
+        if (member < 0) return;
+        const Member& m = sMembers[member];
+        it.anims.push_back({animKindOf(m.path, m.data), m.path, m.data});
+    };
+    switch (it.kind) {
+    case Kind::Mdl:
+        if (sChoice.key >= 0) it.key = sMembers[sChoice.keys[sChoice.key]].data;
+        if (sChoice.txp >= 0) add(sChoice.txps[sChoice.txp]);
+        if (sChoice.clk >= 0) add(sChoice.clks[sChoice.clk]);
+        break;
+    case Kind::J3D:
+        for (size_t j = 0; j < sChoice.j3d.size(); j++)
+            if (sChoice.j3dOn[j]) add(sChoice.j3d[j]);
+        break;
+    case Kind::Graph:
+        if (sChoice.anm >= 0) add(sChoice.anms[sChoice.anm]);
+        break;
+    }
     mtxIdentity(it.mtx);
     sPending.bounds = boundsOf(it.kind, it.data);
     sPending.label = it.name;
     sPending.items.push_back(std::move(it));
     sIsGhost = sCatalogue[sArchiveSel].ghost;
     sLoadedInfo.clear();
+    sAnim.play = true;
     if (sCam.fly) {
         sCam.fly = false;
         sCam.zoom = 1.0f;
@@ -1199,7 +1578,8 @@ void requestLoad() {
 }
 
 // Selects an archive, a model and an animation: the one containing `keyName` if given,
-// else a "wait" pose, else the first key of the model's archive.
+// else a "wait" pose, else the first key of the model's folder ("-": none, the bind pose; for
+// J3D and room models "-" turns their animations off).
 void openArchive(int idx, const char* keyName, const char* mdlName = nullptr, int mdlIndex = -1) {
     selectArchive(idx);
     if (sMdls.empty()) return;
@@ -1210,17 +1590,31 @@ void openArchive(int idx, const char* keyName, const char* mdlName = nullptr, in
                 sMdlSel = m;
                 break;
             }
-    int first = -1, wait = -1, named = -1;
-    if (sMdlKinds[sMdlSel] == Kind::Mdl)
-        for (int k = 0; k < int(sKeys.size()); k++) {
-            if (!keyMatches(sKeys[k], sMdls[sMdlSel])) continue;
-            const std::string& p = sMembers[sKeys[k]].path;
+    collectAnims();
+    const bool none = keyName && std::strcmp(keyName, "-") == 0;
+    if (sMdlKinds[sMdlSel] == Kind::Mdl) {
+        const std::string scope = scopeOf(sMembers[sMdls[sMdlSel]].path);
+        int first = -1, wait = -1, named = -1;
+        for (int k = 0; k < int(sChoice.keys.size()); k++) {
+            const std::string& p = sMembers[sChoice.keys[k]].path;
+            if (keyName && named < 0 && p.find(keyName) != std::string::npos) named = k;
+            if (scopeOf(p) != scope) continue;
             if (first < 0) first = k;
-            if (wait < 0 && p.find("wait") != std::string::npos) wait = k;
-            if (named < 0 && keyName && p.find(keyName) != std::string::npos) named = k;
+            // A plain wait pose ("wait1", not "cow1wait"): the shortest matching name.
+            if (stem(p).find("wait") != std::string::npos &&
+                (wait < 0 || stem(p).size() < stem(sMembers[sChoice.keys[wait]].path).size()))
+                wait = k;
         }
-    sKeySel = named >= 0 ? named : wait >= 0 ? wait : first;
-    if (keyName && std::strcmp(keyName, "-") == 0) sKeySel = -1;  // "|-": no animation
+        sChoice.key = named >= 0 ? named : wait >= 0 ? wait : first;
+        if (none) sChoice.key = -1;
+        pickPatterns();
+    } else if (none) {
+        std::fill(sChoice.j3dOn.begin(), sChoice.j3dOn.end(), 0);
+        sChoice.anm = -1;
+    } else if (keyName && sMdlKinds[sMdlSel] == Kind::Graph) {
+        for (int j = 0; j < int(sChoice.anms.size()); j++)
+            if (sMembers[sChoice.anms[j]].path.find(keyName) != std::string::npos) sChoice.anm = j;
+    }
     requestLoad();
 }
 
@@ -1337,6 +1731,9 @@ void requestMap(int map, int room) {
             }
             LoadItem it{Kind::Graph, m->data, {}, {}, true, r.path + ":" + m->path};
             mtxTRS(it.mtx, f.pos, f.dir, f.scale);
+            if (sFurnitureAnims)  // its action animation (anm/<name>_1.anm), looped
+                for (const Member& x : files)
+                    if (x.path == "anm/" + f.model + "_1.anm" && x.data.size() >= 0x18) it.anims.push_back({AnimKind::Anm, x.path, x.data});
             // Framed by the room shells only: some furniture is parked far away from its room.
             sPending.items.push_back(std::move(it));
         }
@@ -1367,6 +1764,288 @@ void requestMap(int map, int room) {
     }
 }
 
+// ---- camera modes, screenshot, animation choice UI ----------------------------------------
+
+// Switches between the orbit camera (around the loaded bounds) and the fly camera, keeping
+// the current view: the fly camera starts at the orbit eye looking the same way and back.
+// Orbit forward = -(cos p sin y, sin p, cos p cos y); fly forward = (cos p sin y, sin p,
+// -cos p cos y): the same direction with yaw and pitch negated.
+void setFly(bool fly) {
+    if (fly == sCam.fly) return;
+    if (fly) {
+        const float r = sRadius * 2.5f * sCam.zoom;
+        const float cy = std::cos(sCam.yaw), sy = std::sin(sCam.yaw), cp = std::cos(sCam.pitch), sp = std::sin(sCam.pitch);
+        sCam.pos[0] = sCenter[0] + r * cp * sy;
+        sCam.pos[1] = sCenter[1] + r * sp;
+        sCam.pos[2] = sCenter[2] + r * cp * cy;
+        sCam.speed = std::clamp(sRadius / 40.0f, 0.01f, 300.0f);
+        sCam.spin = false;
+    } else {
+        float d2 = 0;
+        for (int k = 0; k < 3; k++) d2 += (sCam.pos[k] - sCenter[k]) * (sCam.pos[k] - sCenter[k]);
+        sCam.zoom = std::clamp(std::sqrt(d2) / (sRadius * 2.5f), 0.05f, 8.0f);
+    }
+    sCam.yaw = -sCam.yaw;
+    sCam.pitch = std::clamp(-sCam.pitch, -1.5f, 1.5f);
+    sCam.fly = fly;
+}
+
+// ---- framing from the picture ------------------------------------------------------------
+//
+// The file bounds are only an estimate: J3D effects are moved and grown by their .bck, room
+// models by their .anm, and S3D models are padded by a bind-pose margin. After every model
+// load (and on "Fit"), the viewer measures what is actually drawn: it shows up to 8 frames
+// spread over the animation with the camera held still, reads each picture back
+// (efbcopy::requestNamedDump) and takes the rectangle of every pixel that differs from the
+// backdrop. That rectangle, mapped back onto the plane through the orbit centre, gives the
+// new centre and radius (half its diagonal). A rectangle touching the picture's border means
+// the model is larger than the view: measure again from further away.
+struct Fit {
+    enum Phase { Off, Wait, Sample, Collect } phase = Off;
+    int samples = 0, next = 0, iter = 0, retries = 0;
+    u32 startFrame = 0;
+    std::atomic<int> outstanding{0};
+    std::mutex m;
+    int lo[2] = {}, hi[2] = {};
+    bool any = false, edge = false;
+    float savedFrame = 0;
+    bool savedPlay = false, savedSpin = false;
+} sFit;
+bool sFitRequest = false;  // host: "Fit" pressed
+const bool sFitEnabled = std::getenv("LM_DEV_VIEWER_NOFIT") == nullptr;
+
+void fitBegin(bool restart) {
+    if (sCam.fly || sDraw.empty()) return;
+    if (sFit.phase == Fit::Off || restart) {
+        if (sFit.phase == Fit::Off) {
+            sFit.savedFrame = sFrame;
+            sFit.savedPlay = sAnim.play;
+            sFit.savedSpin = sCam.spin;
+        }
+        sFit.iter = sFit.retries = 0;
+    }
+    sCam.spin = false;
+    sAnim.play = false;
+    sFit.phase = Fit::Wait;
+    sFit.startFrame = sGuestFrames;
+}
+
+void fitEnd() {
+    sFit.phase = Fit::Off;
+    sFrame = sFit.savedFrame;
+    sAnim.play = sFit.savedPlay;
+    sCam.spin = sFit.savedSpin;
+}
+
+// Before posing: pick the sample frame.
+void fitBeforeDraw() {
+    if (sFit.phase == Fit::Wait && sGuestFrames - sFit.startFrame >= 4) {
+        sFit.phase = Fit::Sample;
+        sFit.next = 0;
+        sFit.samples = sNumFrames > 1 ? int(std::min<u32>(8, sNumFrames)) : 1;
+        std::lock_guard<std::mutex> lock(sFit.m);
+        sFit.lo[0] = sFit.lo[1] = 1 << 30;
+        sFit.hi[0] = sFit.hi[1] = -1;
+        sFit.any = sFit.edge = false;
+    }
+    if (sFit.phase == Fit::Sample)
+        sFrame = sFit.samples > 1 ? float(sNumFrames - 1) * float(sFit.next) / float(sFit.samples - 1) : sFit.savedFrame;
+}
+
+// After drawing: read the picture back; once every sample is in, refit the camera.
+void fitAfterDraw() {
+    if (sFit.phase == Fit::Sample) {
+        sFit.outstanding++;
+        efbcopy::requestNamedDump("", 1, [](const u8* rgb, u32 w, u32 h) {
+            // Pixels clearly different from the backdrop; the outer 0.5% of them on each side
+            // are ignored (stray sparks, faint glow fringes far from the model).
+            std::vector<u32> cols(w), rows(h);
+            u32 total = 0;
+            for (u32 y = 0; y < h; y++)
+                for (u32 x = 0; x < w; x++) {
+                    const u8* p = rgb + (size_t(y) * w + x) * 3;
+                    int diff = 0;
+                    for (int k = 0; k < 3; k++) diff = std::max(diff, std::abs(int(p[k]) - int(sBackdrop[k] * 255)));
+                    if (diff <= 8) continue;
+                    cols[x]++, rows[y]++, total++;
+                }
+            int lo[2] = {1 << 30, 1 << 30}, hi[2] = {-1, -1};
+            if (total >= 4) {
+                const u32 cut = total / 200;
+                auto range = [&](const std::vector<u32>& v, int& a, int& b) {
+                    u32 sum = 0;
+                    for (a = 0; a < int(v.size()) && (sum += v[a]) <= cut; a++) {}
+                    sum = 0;
+                    for (b = int(v.size()) - 1; b > 0 && (sum += v[b]) <= cut; b--) {}
+                };
+                range(cols, lo[0], hi[0]);
+                range(rows, lo[1], hi[1]);
+            }
+            {
+                std::lock_guard<std::mutex> lock(sFit.m);
+                if (hi[0] >= 0) {
+                    sFit.any = true;
+                    for (int a = 0; a < 2; a++) sFit.lo[a] = std::min(sFit.lo[a], lo[a]), sFit.hi[a] = std::max(sFit.hi[a], hi[a]);
+                    sFit.edge |= lo[0] <= 1 || lo[1] <= 1 || hi[0] >= int(w) - 2 || hi[1] >= int(h) - 2;
+                }
+            }
+            sFit.outstanding--;
+        });
+        if (++sFit.next >= sFit.samples) sFit.phase = Fit::Collect;
+        return;
+    }
+    if (sFit.phase != Fit::Collect || sFit.outstanding > 0) return;
+    std::lock_guard<std::mutex> lock(sFit.m);
+    if (!sFit.any) {
+        // Nothing yet (Aurora compiles new pipelines in the background): look again later.
+        if (++sFit.retries <= 3) {
+            sFit.phase = Fit::Wait;
+            sFit.startFrame = sGuestFrames + 8;
+        } else {
+            fitEnd();
+        }
+        return;
+    }
+    // Picture -> the plane through the orbit centre (setupCamera's projection: 50 degree
+    // vertical field of view, 4:3, eye at 2.5 R * zoom from the centre).
+    const float r = sRadius * 2.5f * sCam.zoom, t = 1.0f / std::tan(0.5f * 50.0f * 3.14159265f / 180.0f), aspect = 4.0f / 3.0f;
+    auto viewX = [&](float px) { return (px / 320.0f - 1.0f) * r * aspect / t; };
+    auto viewY = [&](float py) { return (1.0f - py / 240.0f) * r / t; };
+    const float x0 = viewX(float(sFit.lo[0])), x1 = viewX(float(sFit.hi[0] + 1));
+    const float y0 = viewY(float(sFit.hi[1] + 1)), y1 = viewY(float(sFit.lo[1]));
+    const float cy = std::cos(sCam.yaw), sy = std::sin(sCam.yaw), cp = std::cos(sCam.pitch), sp = std::sin(sCam.pitch);
+    const float f[3] = {-cp * sy, -sp, -cp * cy};  // towards the centre
+    const float sl = std::max(1e-6f, std::sqrt(f[0] * f[0] + f[2] * f[2]));
+    const float s[3] = {-f[2] / sl, 0.0f, f[0] / sl};
+    const float u[3] = {s[1] * f[2] - s[2] * f[1], s[2] * f[0] - s[0] * f[2], s[0] * f[1] - s[1] * f[0]};
+    const float mx = 0.5f * (x0 + x1), my = 0.5f * (y0 + y1), hx = 0.5f * (x1 - x0), hy = 0.5f * (y1 - y0);
+    for (int k = 0; k < 3; k++) sCenter[k] += s[k] * mx + u[k] * my;
+    const float radius = std::max(std::sqrt(hx * hx + hy * hy) * 1.05f, 1e-3f);
+    // Larger than the view: twice as far, up to three times (beams and sky-high effects never
+    // fit; then the widest view so far).
+    const bool again = sFit.edge && sFit.iter < 3;
+    const float next = again ? std::max(radius, sRadius) * 2.0f : sFit.edge ? std::max(radius, sRadius) : radius;
+    log("[viewer] fit %d: picture %d,%d-%d,%d%s, radius %.3g -> %.3g", sFit.iter, sFit.lo[0], sFit.lo[1], sFit.hi[0], sFit.hi[1],
+        sFit.edge ? " (at the border)" : "", sRadius, next);
+    sRadius = next;
+    sCam.zoom = 1.0f;
+    if (again) {
+        sFit.iter++;
+        sFit.phase = Fit::Wait;
+        sFit.startFrame = sGuestFrames;
+        return;
+    }
+    fitEnd();
+}
+
+// "Fit": orbit the model at the default distance and measure its picture again.
+void fitView() {
+    if (sCam.fly) setFly(false);
+    sCam.zoom = 1.0f;
+    sFitRequest = true;
+}
+
+// "Screenshot": the next finished guest frame (640x480, the viewer picture without ImGui) as a
+// PNG in <data dir>/screenshots.
+std::mutex sShotMutex;
+std::string sShotStatus;
+void requestScreenshot() {
+    std::string name = sShotLabel;
+    for (char& ch : name)
+        if (!std::isalnum(u8(ch)) && ch != '-' && ch != '_' && ch != '.') ch = '_';
+    if (name.size() > 80) name = name.substr(name.size() - 80);
+    const std::time_t now = std::time(nullptr);
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", std::localtime(&now));
+    std::filesystem::path dir = port::dataDir() / "screenshots";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    const std::filesystem::path file = dir / ("viewer_" + name + "_" + stamp + ".png");
+    {
+        std::lock_guard<std::mutex> lock(sShotMutex);
+        sShotStatus = "Saving...";
+    }
+    efbcopy::requestNamedDump("", 1, [file](const u8* rgb, u32 w, u32 h) {
+        bool ok = false;
+        if (SDL_Surface* s = SDL_CreateSurfaceFrom(int(w), int(h), SDL_PIXELFORMAT_RGB24, const_cast<u8*>(rgb), int(w * 3))) {
+            ok = SDL_SavePNG(s, file.string().c_str());
+            SDL_DestroySurface(s);
+        }
+        std::lock_guard<std::mutex> lock(sShotMutex);
+        sShotStatus = ok ? "Saved " + file.filename().string() : "Screenshot failed: " + std::string(SDL_GetError());
+        log("[viewer] screenshot %s: %s", ok ? "saved" : "FAILED", file.string().c_str());
+    });
+}
+
+// Animation pickers for the selected model (collectAnims lists what is available).
+void animationChoiceUi() {
+    if (sMdlSel < 0) return;
+    auto combo = [](const char* label, const std::vector<int>& list, int& sel, const char* none) {
+        bool changed = false;
+        const std::string cur = sel >= 0 ? sMembers[list[sel]].path : none;
+        if (ImGui::BeginCombo(label, cur.c_str(), ImGuiComboFlags_HeightLarge)) {
+            if (ImGui::Selectable(none, sel < 0)) {
+                sel = -1;
+                changed = true;
+            }
+            for (int i = 0; i < int(list.size()); i++) {
+                ImGui::PushID(i);
+                if (ImGui::Selectable(sMembers[list[i]].path.c_str(), sel == i)) {
+                    sel = i;
+                    changed = true;
+                }
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+        return changed;
+    };
+    switch (sMdlKinds[sMdlSel]) {
+    case Kind::Mdl: {
+        if (combo("Animation", sChoice.keys, sChoice.key, "(none: bind pose)")) {
+            // A pattern / colour animation with the new key's name goes with it (Luigi's faces).
+            const std::string ks = sChoice.key >= 0 ? stem(sMembers[sChoice.keys[sChoice.key]].path) : "";
+            for (int j = 0; j < int(sChoice.txps.size()); j++)
+                if (stem(sMembers[sChoice.txps[j]].path) == ks) sChoice.txp = j;
+            for (int j = 0; j < int(sChoice.clks.size()); j++)
+                if (stem(sMembers[sChoice.clks[j]].path) == ks) sChoice.clk = j;
+            requestLoad();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%zu joint animations (.key) with this model's joint count;\nits own folder first.",
+                              sChoice.keys.size());
+        if (!sChoice.txps.empty() && combo("Texture anim", sChoice.txps, sChoice.txp, "(none)")) requestLoad();
+        if (!sChoice.txps.empty() && ImGui::IsItemHovered())
+            ImGui::SetTooltip("Texture pattern (.txp): swaps material textures per frame (eyes, faces, flicker).");
+        if (!sChoice.clks.empty() && combo("Colour anim", sChoice.clks, sChoice.clk, "(none)")) requestLoad();
+        break;
+    }
+    case Kind::J3D:
+        if (sChoice.j3d.empty()) {
+            ImGui::TextDisabled("No animations next to this model.");
+            break;
+        }
+        ImGui::TextUnformatted("Animations:");
+        for (size_t j = 0; j < sChoice.j3d.size(); j++) {
+            bool on = sChoice.j3dOn[j] != 0;
+            const std::string& p = sMembers[sChoice.j3d[j]].path;
+            if (ImGui::Checkbox(baseName(p).c_str(), &on)) {
+                sChoice.j3dOn[j] = on;
+                if (on && endsWith(p, ".bck"))  // one joint animation at a time
+                    for (size_t k = 0; k < sChoice.j3d.size(); k++)
+                        if (k != j && endsWith(sMembers[sChoice.j3d[k]].path, ".bck")) sChoice.j3dOn[k] = 0;
+                requestLoad();
+            }
+            if ((j + 1) % 3 != 0 && j + 1 < sChoice.j3d.size()) ImGui::SameLine();
+        }
+        break;
+    case Kind::Graph:
+        if (!sChoice.anms.empty() && combo("Animation", sChoice.anms, sChoice.anm, "(none)")) requestLoad();
+        break;
+    }
+}
+
+
 }  // namespace
 
 bool isOpen() { return sOpen; }
@@ -1387,6 +2066,11 @@ void guestFrame(Ctx& c) {
             sSweep.phase = Sweep::Drawing;
             sSweep.loadFrame = sGuestFrames;
         }
+        if (sFitEnabled && !sPending.fly && sPending.items.size() == 1) fitBegin(true);
+    }
+    if (sFitRequest) {
+        sFitRequest = false;
+        fitBegin(true);
     }
     drawBackdrop(c);
     if (sDraw.empty()) {
@@ -1400,13 +2084,29 @@ void guestFrame(Ctx& c) {
     }
     if (sAnim.play && sNumFrames > 1) {
         sFrame += sAnim.speed;
-        if (sFrame >= float(sNumFrames)) sFrame = std::fmod(sFrame, float(sNumFrames));
+        if (sFrame >= float(sNumFrames)) {
+            if (sAnim.loop) {
+                sFrame = std::fmod(sFrame, float(sNumFrames));
+            } else {
+                sFrame = float(sNumFrames - 1);
+                sAnim.play = false;
+            }
+        }
+    }
+    fitBeforeDraw();
+    // Every animation at the current timeline position (each wraps at its own length).
+    for (const Drawable& d : sDraw) {
+        if (d.kind == Kind::Mdl) poseMdl(c, d, sFrame);
+        else if (d.kind == Kind::J3D) poseJ3D(d, sFrame);
+        else poseGraph(c, d, sFrame);
     }
     if (sCam.spin && !sCam.fly) sCam.yaw = std::remainder(sCam.yaw + 0.01f, 6.2831853f);
     setupCamera(c);
     drawScene(c);
-    // Sweep: grab the picture once the model has been drawn for a few frames.
-    if (sSweep.on && sSweep.phase == Sweep::Drawing && s32(sGuestFrames - sSweep.loadFrame) + 1 >= sSweep.frames) {
+    fitAfterDraw();
+    // Sweep: grab the picture once the model has been drawn for a few frames (and framed).
+    if (sSweep.on && sSweep.phase == Sweep::Drawing && s32(sGuestFrames - sSweep.loadFrame) + 1 >= sSweep.frames &&
+        sFit.phase == Fit::Off) {
         sSweep.phase = Sweep::Waiting;
         sSweepShotDone = false;
         char name[64];
@@ -1419,7 +2119,7 @@ void guestFrame(Ctx& c) {
             path = sSweep.shotDir + "/" + name + tag + ".ppm";
         }
         sSweep.result = sLoadResult;
-        sSweep.info = sLoadedInfo;
+        sSweep.info = sLoadedInfo + (sLoadedInfo.empty() || sAnimInfo.empty() ? "" : "; ") + sAnimInfo;
         efbcopy::requestNamedDump(path, 4, [](const u8* rgb, u32 w, u32 h) {
             size_t diff = 0;
             for (size_t i = 0; i < size_t(w) * h; i++) {
@@ -1487,7 +2187,7 @@ void window() {
                 sSweep.phase = Sweep::Drawing;
                 sSweep.loadFrame = sGuestFrames + u32(15 - sSweep.frames);
             } else if (!drawn && sSweep.result.empty() && !sSweep.bindPose && sMdlSel >= 0 && sMdlKinds[sMdlSel] == Kind::Mdl &&
-                sKeySel >= 0) {
+                sChoice.key >= 0) {
                 // Some animations start with parts scaled to nothing: check the bind pose too.
                 sSweep.bindPose = true;
                 sSweep.shots = 0;
@@ -1575,23 +2275,7 @@ void window() {
                     }
                     ImGui::EndCombo();
                 }
-                if (sMdlSel >= 0 && sMdlKinds[sMdlSel] == Kind::Mdl) {
-                    const char* curKey = sKeySel >= 0 ? sMembers[sKeys[sKeySel]].path.c_str() : "(no animation)";
-                    if (ImGui::BeginCombo("Animation", curKey)) {
-                        if (ImGui::Selectable("(no animation)", sKeySel < 0)) {
-                            sKeySel = -1;
-                            requestLoad();
-                        }
-                        for (int i = 0; i < int(sKeys.size()); i++) {
-                            if (!keyMatches(sKeys[i], sMdls[sMdlSel])) continue;
-                            if (ImGui::Selectable(sMembers[sKeys[i]].path.c_str(), sKeySel == i)) {
-                                sKeySel = i;
-                                requestLoad();
-                            }
-                        }
-                        ImGui::EndCombo();
-                    }
-                }
+                animationChoiceUi();
             }
             ImGui::EndTabItem();
         }
@@ -1619,6 +2303,11 @@ void window() {
             }
             ImGui::EndChild();
             ImGui::Checkbox("Furniture", &sFurniture);
+            ImGui::SameLine();
+            ImGui::Checkbox("Furniture animations", &sFurnitureAnims);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Play every piece of furniture's action animation (anm/<name>_1.anm:\n"
+                                  "drawers, doors, swinging lamps...) in a loop. Applies on Load.");
             ImGui::SliderFloat("Ambient", &sRoomAmbient, 0.0f, 1.0f, "%.2f");
             ImGui::SliderFloat("Headlight", &sRoomLight, 0.0f, 1.0f, "%.2f");
             ImGui::SameLine();
@@ -1663,6 +2352,20 @@ void window() {
     }
 
     ImGui::SeparatorText("Camera");
+    int mode = sCam.fly ? 1 : 0;
+    bool modeChanged = ImGui::RadioButton("Orbit", &mode, 0);
+    ImGui::SameLine();
+    modeChanged |= ImGui::RadioButton("Fly", &mode, 1);
+    if (modeChanged) setFly(mode == 1);
+    ImGui::SameLine();
+    if (ImGui::Button("Fit")) fitView();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Orbit around the model's bounds (incl. its animation) at the default distance.");
+    ImGui::SameLine();
+    if (ImGui::Button("Screenshot")) requestScreenshot();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Save the picture (the game's 640x480 frame, without this window) as a PNG\n"
+                          "in %%APPDATA%%\\Luigi's Mansion PC\\screenshots.");
+    if (!sShotStatus.empty()) ImGui::TextDisabled("%s", sShotStatus.c_str());
     if (!sCam.fly) {
         ImGui::Checkbox("Spin", &sCam.spin);
         ImGui::SliderFloat("Yaw", &sCam.yaw, -6.2832f, 6.2832f);
@@ -1670,16 +2373,33 @@ void window() {
         ImGui::SliderFloat("Distance", &sCam.zoom, 0.05f, 8.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
         ImGui::TextDisabled("Drag on the picture to orbit, wheel to zoom.");
     } else {
-        ImGui::Text("pos %.0f %.0f %.0f", sCam.pos[0], sCam.pos[1], sCam.pos[2]);
-        ImGui::SliderFloat("Speed", &sCam.speed, 1.0f, 500.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+        ImGui::Text("pos %.1f %.1f %.1f", sCam.pos[0], sCam.pos[1], sCam.pos[2]);
+        ImGui::SliderFloat("Speed", &sCam.speed, 0.01f, 500.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+        ImGui::TextDisabled("Drag to look, WASD/QE to move, Shift faster,\nwheel changes speed.");
     }
-    if (!sCam.fly && sNumFrames > 1) {
+    if (sNumFrames > 1) {
         ImGui::SeparatorText("Animation");
-        ImGui::Checkbox("Play", &sAnim.play);
+        if (ImGui::Button(sAnim.play ? "Pause" : "Play")) {
+            if (!sAnim.play && !sAnim.loop && sFrame >= float(sNumFrames - 1)) sFrame = 0.0f;
+            sAnim.play = !sAnim.play;
+        }
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(120);
-        ImGui::SliderFloat("Speed##anim", &sAnim.speed, 0.1f, 3.0f, "%.1fx");
-        ImGui::SliderFloat("Frame", &sFrame, 0.0f, float(sNumFrames - 1), "%.0f");
+        if (ImGui::ArrowButton("##prev", ImGuiDir_Left)) {
+            sAnim.play = false;
+            sFrame = std::max(0.0f, std::floor(sFrame) - 1.0f);
+        }
+        ImGui::SameLine();
+        if (ImGui::ArrowButton("##next", ImGuiDir_Right)) {
+            sAnim.play = false;
+            sFrame = std::min(float(sNumFrames - 1), std::floor(sFrame) + 1.0f);
+        }
+        ImGui::SameLine();
+        ImGui::Checkbox("Loop", &sAnim.loop);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(110);
+        ImGui::SliderFloat("Speed##anim", &sAnim.speed, 0.1f, 3.0f, "%.2fx");
+        if (ImGui::SliderFloat("Frame", &sFrame, 0.0f, float(sNumFrames - 1), "%.0f")) sAnim.play = false;
+        if (!sAnimInfo.empty()) ImGui::TextDisabled("%s", sAnimInfo.c_str());
     }
     ImGui::End();
 
@@ -1691,7 +2411,7 @@ void window() {
                 sCam.yaw += io.MouseDelta.x * 0.005f;
                 sCam.pitch = std::clamp(sCam.pitch - io.MouseDelta.y * 0.005f, -1.55f, 1.55f);
             }
-            if (io.MouseWheel != 0.0f) sCam.speed = std::clamp(sCam.speed * std::pow(1.2f, io.MouseWheel), 1.0f, 500.0f);
+            if (io.MouseWheel != 0.0f) sCam.speed = std::clamp(sCam.speed * std::pow(1.2f, io.MouseWheel), 0.01f, 500.0f);
         }
         if (!io.WantCaptureKeyboard) {
             const float sp = sCam.speed * (ImGui::IsKeyDown(ImGuiKey_LeftShift) ? 4.0f : 1.0f);
