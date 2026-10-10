@@ -56,7 +56,7 @@ index 54fa60c..eb1a4cf 100644
 -constexpr int PipelineCacheSchema = 1;
 +// 2: every row is validated on load (stored hash = xxh3 of the config bytes seeded by type,
 +// i.e. a per-entry checksum, plus field ranges) and pipeline_bad records configs whose creation
-+// failed or crashed (patch 0014). Older caches are dropped.
++// failed or crashed (patch 0017). Older caches are dropped.
 +constexpr int PipelineCacheSchema = 2;
  constexpr const char* InitialPipelineCacheName = "initial_pipeline_cache.db";
  constexpr const char* SdlVfsName = "aurora_pipeline_cache_sdl_vfs";
@@ -82,7 +82,7 @@ index 54fa60c..eb1a4cf 100644
 +  uint32_t badCrashes = 0;
  };
  
-+// ---- Robustness (patch 0014): bad configs, crash journal ------------------------------------
++// ---- Robustness (patch 0017): bad configs, crash journal ------------------------------------
 +// A cached config that fails validation is skipped and deleted; one whose pipeline creation
 +// fails (WGSL compile / Dawn validation error) is recorded as Invalid and never built again; one
 +// that was being created when the process died (crash journal below) is a CrashSuspect: it is not
@@ -117,7 +117,7 @@ index 54fa60c..eb1a4cf 100644
    return runtimeKey;
  }
  
-+// ---- Config validation (patch 0014) --------------------------------------------------------
++// ---- Config validation (patch 0017) --------------------------------------------------------
 +// Configs read back from pipeline_cache.db or a precache list are checked before they reach the
 +// shader generator, whose switches abort (FATAL) on values it does not know and which indexes
 +// fixed-size arrays with stage/texcoord/texmap ids. A corrupt or stale entry is skipped instead.
@@ -812,7 +812,7 @@ index 54fa60c..eb1a4cf 100644
    return true;
  }
  
-+// ---- Bad configs and the crash journal (patch 0014) ------------------------------------------
++// ---- Bad configs and the crash journal (patch 0017) ------------------------------------------
 +
 +static void mark_pipeline_bad(ShaderType type, HashType cacheKey, BadReason reason, const char* why) {
 +  uint32_t crashes = 0;
@@ -1061,7 +1061,7 @@ index 54fa60c..eb1a4cf 100644
  namespace {
  constexpr uint32_t PrecacheMagic = 0x43505541; // "AUPC"
 -constexpr uint32_t PrecacheFormat = 1;
-+// Format 2 (patch 0014) adds a CRC-32 of the raw payload to the header and one per row; format 1
++// Format 2 (patch 0017) adds a CRC-32 of the raw payload to the header and one per row; format 1
 +// lists are still read (rows validated by field ranges only).
 +constexpr uint32_t PrecacheFormat = 2;
  constexpr uint32_t PrecacheFlagZstd = 1;
@@ -1250,7 +1250,7 @@ index 0801a22..bfcf9e7 100644
  bool get_pipeline(PipelineRef ref, CompiledPipeline& pipeline);
  
 +// Around shader module creation: false when the module failed to compile (logged). A pipeline
-+// must not be created from such a module (patch 0014).
++// must not be created from such a module (patch 0017).
 +void push_shader_error_scope();
 +bool pop_shader_error_scope(const char* what);
 +
@@ -1296,7 +1296,7 @@ index 6ef44ea..3c93ec5 100644
  #endif
  
 -constexpr int CACHE_SCHEMA = 2;
-+// 3: per-entry checksum (XXH3 of the uncompressed value), verified on every load (patch 0014).
++// 3: per-entry checksum (XXH3 of the uncompressed value), verified on every load (patch 0017).
 +constexpr int CACHE_SCHEMA = 3;
  // % of rows pruned to trigger a full VACUUM
  constexpr uint64_t VacuumPrunePercentThreshold = 25;

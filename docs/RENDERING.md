@@ -760,7 +760,7 @@ and the model viewer. Merging pipeline_cache.db files from longer play sessions
   the GPU driver's own shader cache is system-wide and stays warm, so first-ever runs on a new
   machine are somewhat slower than measured here.
 
-### Cache robustness (Aurora patch 0016)
+### Cache robustness (Aurora patch 0017)
 
 **Problem:** a crash once left a bad pipeline config in `pipeline_cache.db`; every later launch
 rebuilt it at startup and crashed again. Aurora trusted whatever the caches held: the shader

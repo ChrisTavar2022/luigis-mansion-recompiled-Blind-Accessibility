@@ -11,7 +11,7 @@ metadata, no game data) in the format aurora_pipeline_cache_seed reads
                       u32 CRC-32 of the config, config}
 
 Format 1 (no CRCs: 24-byte header, 13-byte row headers) is still read. Aurora validates every
-row (CRC, then field ranges) and skips damaged ones (patch 0014).
+row (CRC, then field ranges) and skips damaged ones (patch 0017).
 
     python tools/pipelines/pipelines.py build -o data/pipelines.bin <pipeline_cache.db | .bin>...
     python tools/pipelines/pipelines.py info data/pipelines.bin
