@@ -536,6 +536,8 @@ void onCharacterEvent(u32 actor, u32 msg) {
 void onVacuumTick(u32 actor) {
     if (!enabled() || !isGhostActor(actor)) return;
     sTracks[actor].lastHeld = sFrame;
+    if (sLog && sFrame % 15 == 0)
+        log("[ghostlight] f%u vacuum holds %08X %s hp %d", sFrame, actor, typeName(rd32(actor + kActType)), s16(rd16(actor + kActHp)));
 }
 
 // Game scene draw (fn_8000BCE8 calls it once per view after setting that view's camera; view 0
