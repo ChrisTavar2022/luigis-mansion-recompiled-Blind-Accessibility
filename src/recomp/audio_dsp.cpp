@@ -18,7 +18,9 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
+#include <vector>
 
 namespace recomp::audio {
 bool g_log = [] {
@@ -94,10 +96,17 @@ bool validBus(u16 id) {
 }
 
 inline s16 sat16(s64 v) { return s16(std::clamp<s64>(v, -32768, 32767)); }
-// Reading an accumulator's middle word: bits 31..16, saturated (40-bit mode).
+// Reading an accumulator's middle word: bits 31..16. The microcode runs in 16-bit mode
+// (SET16, uc 0x0015) except for the passes it brackets with SET40: the resampler, the
+// IIR, the voice mixers, the output level, AFC/PCM8 decoding and the distortion. In
+// 40-bit mode the read saturates; in 16-bit mode it is the raw word, so an overflow
+// wraps (effect-line FIR and mixing, the voice FIR, the bus-to-bus mixes).
 inline s16 accMid(s64 acc) { return sat16(acc >> 16); }
+inline s16 accMidWrap(s64 acc) { return s16(u16(u64(acc) >> 16)); }
 // MOVPZ / MULMVZ: product rounded into the middle word (round half to even).
-inline s16 accMidRound(s64 acc) { return sat16((acc + 0x7FFF + ((acc >> 16) & 1)) >> 16); }
+inline s64 roundMid(s64 acc) { return acc + 0x7FFF + ((acc >> 16) & 1); }
+inline s16 accMidRound(s64 acc) { return accMid(roundMid(acc)); }
+inline s16 accMidRoundWrap(s64 acc) { return accMidWrap(roundMid(acc)); }
 
 // AFC coefficient pairs, used until JAudio's setup command hands us its own table.
 constexpr s16 kAfcCoefDefault[16][2] = {
@@ -353,6 +362,7 @@ void distort(Voice& v, s16 coef, s16* buf) {
 
 // Variable FIR (microcode 0x01E1): y[n] = sum c[k] * x[n - taps + k], 1.15 coefficients
 // (so the newest input tap is x[n-1]: the identity, c[taps-1] = 0x7FFF, delays by one).
+// Runs in 16-bit mode: the rounded result wraps on overflow.
 void firFilter(Voice& v, u32 blk, u32 taps, s16* buf) {
     s16 c[24];
     for (u32 k = 0; k < taps; k++) c[k] = bs16(blk + kFirCoef + k * 2);
@@ -362,7 +372,7 @@ void firFilter(Voice& v, u32 blk, u32 taps, s16* buf) {
     for (u32 n = 0; n < kSubframe; n++) {
         s64 acc = 0;
         for (u32 k = 0; k < taps; k++) acc += s64(c[k]) * w[n + k];
-        buf[n] = accMidRound(acc * 2);
+        buf[n] = accMidRoundWrap(acc * 2);
     }
     // History: the last `taps` input samples, oldest first.
     std::copy(w + kSubframe, w + kSubframe + taps, v.fir);
@@ -499,36 +509,43 @@ void mixVoice(u32 i) {
     const u32 keep = std::min<u32>(bu16(blk + kMaxDelay), 255);
     std::copy(v.delay + 256 - keep, v.delay + 256, buf - keep);
 
-    // Stop request (microcode 0x05E0): every subframe the current volumes halve; the voice
-    // is done once they are all zero. (The microcode then still ramps back toward the
-    // target volume within the subframe; JAudio no longer updates targets once a stop is
-    // requested, so we keep the halved volume instead, giving the intended fade.)
-    const bool stopping = bu16(blk + kStopReq) != 0;
-    if (stopping) {
-        s32 sum = 0;
+    // Stop request (microcode 0x05E0, 16-bit mode): each mixer's *target* volume becomes
+    // its current volume shifted right by one (LRRD reads the current word, SN stores the
+    // halved value one word lower, into the target), so the mixers below ramp every
+    // subframe from the current volume to half of it: a smooth exponential fade. The
+    // shift is logical (the accumulator's high word is 0). The voice is flagged done once
+    // all six current volumes are 0 (the test sums the full 40-bit shifted values, so a
+    // volume of 1 still counts). The halved targets are written back like the rest of
+    // the first 0x100 bytes.
+    if (bu16(blk + kStopReq)) {
+        bool allZero = true;
         for (int m = 0; m < kMixers; m++) {
             const u32 mx = blk + kMixer + m * 8;
-            const s16 h = s16(bs16(mx + 4) >> 1);
-            wr16(mx + 4, u16(h));
-            sum += h;
+            const u16 cur = bu16(mx + 4);
+            allZero &= cur == 0;
+            wr16(mx + 2, u16(cur >> 1));
         }
-        if (!sum) done = true;
+        if (allZero) done = true;
     }
 
     for (int m = 0; m < kMixers; m++) {
         const u32 mx = blk + kMixer + m * 8;
         const u16 bus = bu16(mx);
         const s32 cur = bs16(mx + 4);
-        const s32 target = stopping ? cur : bs16(mx + 2);
-        // Delay: low byte current, high byte target; one sample per subframe toward it.
+        const s32 target = bs16(mx + 2);
+        // Delay: low byte current, high byte target; one sample per subframe toward it. The
+        // mixer reads (max delay - current delay) into the history; when the current delay
+        // exceeds the history kept (uc 0x061C JLZ), the mixer is skipped for this subframe
+        // and its volume stays where it was.
         const u16 lv = bu16(mx + 6);
-        const u32 d = std::min<u32>(lv & 0xFF, keep);
+        const u32 d = lv & 0xFF;
         if ((lv >> 8) != (lv & 0xFF)) wr16(mx + 6, (lv >> 8) > (lv & 0xFF) ? lv + 1 : lv - 1);
-        if (!bus) continue;
+        if (d > keep) continue;
         // Volume ramp (microcode 0x011E): 16.16 step (target - current) / 32, applied every
         // second sample over the first 64; the product is 1.15 x 1.15 >> 16 (no doubling),
-        // added to the bus with saturation.
-        if (validBus(bus) && (cur || target)) {
+        // added to the bus with saturation (40-bit mode). A mixer without a bus still ramps
+        // (on hardware it mixes into scratch memory at DSP address 0).
+        if (bus && validBus(bus) && (cur || target)) {
             const s64 delta = (s64(target - cur) << 16) >> 5;
             s16* out = D + bus;
             const s16* src = buf - d;
@@ -555,9 +572,14 @@ void mixVoice(u32 i) {
     if (done) wr16(blk + kDone, 1);
 }
 
-// Mixes `src` into `dst` at a 1.15 volume (microcode 0x03BD, multiplier x2, rounded).
+// Mixes `src` into `dst` at a 1.15 volume (microcode 0x03BD, multiplier x2): MULMVZ
+// rounds the product into the accumulator, ADDR adds the destination sample, and the
+// middle word is stored in 16-bit mode, so the sum wraps on overflow.
 void mixBus(u16 src, u16 dst, s16 vol) {
-    for (u32 n = 0; n < kSubframe; n++) D[dst + n] = accMid((s64(D[dst + n]) << 16) + (s64(accMidRound(s64(vol) * D[src + n] * 2)) << 16));
+    for (u32 n = 0; n < kSubframe; n++) {
+        const s64 p = roundMid(s64(vol) * D[src + n] * 2) & ~s64(0xFFFF);
+        D[dst + n] = accMidWrap(p + (s64(D[dst + n]) << 16));
+    }
 }
 
 // 8-tap FIR over an effect line's 88-sample buffer, in place (microcode 0x01C2).
@@ -565,7 +587,7 @@ void fxFir(u16 bus, const s16* c) {
     for (u32 n = 0; n < kSubframe; n++) {
         s64 acc = 0;
         for (int k = 0; k < 8; k++) acc += s64(c[k]) * D[bus + n + k];
-        D[bus + n] = accMidRound(acc * 2);
+        D[bus + n] = accMidRoundWrap(acc * 2);  // 16-bit mode
     }
 }
 
@@ -640,12 +662,45 @@ void applyLevel(u16 bus) {
     for (u32 n = 0; n < kSubframe; n++) D[bus + n] = accMid((s64(D[bus + n]) * s16(S.level)) << 4);
 }
 
+// Side outputs for discrete multichannel playback (audio.h, SideSample): per output
+// sample, the parts of the stereo mix that came from the centre, surround and rear-right
+// buses, each at the output level. One store per DSP output buffer (JAudio rotates three).
+struct SideStore {
+    u32 bufL = 0;
+    std::vector<SideSample> v;
+};
+std::array<SideStore, 4> sSide;
+u32 sSideNext = 0;
+SideStore* sCurSide = nullptr;
+
+// Bus energy for LM_AUDIO_LOG (sum of squares per bus since the last report).
+struct BusEnergy {
+    double l = 0, r = 0, s = 0, c = 0, rr = 0, ch = 0;
+} sEnergy;
+
+void beginSide(u32 bufL, u32 subframes) {
+    SideStore* st = nullptr;
+    for (auto& x : sSide)
+        if (x.bufL == bufL) st = &x;
+    if (!st) {
+        st = &sSide[sSideNext];
+        sSideNext = (sSideNext + 1) % sSide.size();
+        st->bufL = bufL;
+    }
+    st->v.assign(subframes * kSubframe, SideSample{});
+    sCurSide = st;
+}
+
+inline s16 level(s64 v) { return sat16((v * s16(S.level)) >> 12); }
+
 void runSubframe() {
     // 0x03D9: the surround bus of the previous subframe starts the outputs (+L, -R), and the
     // utility buses are cleared.
+    s16 sur[kSubframe];
     for (u32 n = 0; n < kSubframe; n++) {
-        D[kBusL + n] = D[kBusSurround + n];
-        D[kBusR + n] = s16(~D[kBusSurround + n]);
+        sur[n] = D[kBusSurround + n];
+        D[kBusL + n] = sur[n];
+        D[kBusR + n] = s16(~sur[n]);
     }
     for (u16 b : {kBusOsc, kBusSurround, kBusRearR, kBusChorus, kBusCenter}) std::fill(D + b, D + b + kSubframe, s16(0));
     const bool fx = fxOn();
@@ -653,16 +708,47 @@ void runSubframe() {
     if (S.chanBase && S.haveInterp)
         for (u32 i = 0; i < S.numVoices; i++) mixVoice(i);
     if (fx) chorus();
+    if (g_log)
+        for (u32 n = 0; n < kSubframe; n++) sEnergy.ch += double(D[kBusChorus + n]) * D[kBusChorus + n];
     mixBus(kBusCenter, kBusL, 0x5A82);
     mixBus(kBusCenter, kBusR, 0x5A82);
+    s16 preL[kSubframe];
+    std::copy(D + kBusL, D + kBusL + kSubframe, preL);
     applyLevel(kBusL);
     mixBus(kBusRearR, kBusR, s16(0x8000));
+    s16 preR[kSubframe];
+    std::copy(D + kBusR, D + kBusR + kSubframe, preR);
     applyLevel(kBusR);
     const u32 off = S.sub * kSubframe * 2;
     for (u32 n = 0; n < kSubframe; n++) {
         wr16(S.bufL + off + n * 2, u16(D[kBusL + n]));
         wr16(S.bufR + off + n * 2, u16(D[kBusR + n]));
     }
+    // Side outputs: what the centre (0.707 into both sides), surround (+L, NOT R) and
+    // rear-right (-R) buses added, so the output can take them back out of the fronts.
+    if (sCurSide && (S.sub + 1) * kSubframe <= sCurSide->v.size()) {
+        SideSample* o = sCurSide->v.data() + S.sub * kSubframe;
+        for (u32 n = 0; n < kSubframe; n++) {
+            const s16 c = D[kBusCenter + n], rr = D[kBusRearR + n];
+            const s64 cMid = roundMid(s64(0x5A82) * c * 2) >> 16;
+            const s64 fl = s64(preL[n]) - sur[n] - cMid;
+            const s64 fr = s64(preR[n]) - s16(~sur[n]) - cMid + rr;
+            o[n].lExtra = s16(s32(D[kBusL + n]) - level(fl));
+            o[n].rExtra = s16(s32(D[kBusR + n]) - level(fr));
+            o[n].c = level(c);
+            o[n].s = level(sur[n]);
+            o[n].rr = level(rr);
+        }
+    }
+    if (g_log)
+        for (u32 n = 0; n < kSubframe; n++) {
+            auto sq = [](double v) { return v * v; };
+            sEnergy.l += sq(D[kBusL + n]);
+            sEnergy.r += sq(D[kBusR + n]);
+            sEnergy.s += sq(sur[n]);
+            sEnergy.c += sq(D[kBusCenter + n]);
+            sEnergy.rr += sq(D[kBusRearR + n]);
+        }
     if (fx) fxPost();
 }
 
@@ -682,6 +768,7 @@ void dspCommand(const u32* w, u32 count) {
             S.bufR = w[2];
             S.sub = 0;
             S.frameActive = S.subframes != 0;
+            beginSide(S.bufL, S.subframes);
             loadFx();
         }
         break;
@@ -691,6 +778,18 @@ void dspCommand(const u32* w, u32 count) {
         if (g_log) log("[audio] unknown DSP command %08X (%u words)", w[0], count);
         break;
     }
+}
+
+bool dspSideData(u32 bufL, SideSample* out, u32 n) {
+    for (const auto& st : sSide) {
+        if (st.bufL != bufL || st.v.empty()) continue;
+        const u32 m = std::min<u32>(n, u32(st.v.size()));
+        std::copy(st.v.begin(), st.v.begin() + m, out);
+        std::fill(out + m, out + n, SideSample{});
+        return true;
+    }
+    std::fill(out, out + n, SideSample{});
+    return false;
 }
 
 bool dspRunSubframe() {
@@ -706,6 +805,13 @@ bool dspRunSubframe() {
             log("[audio] frame %u (%.1f s), level %04X, mixing took %.2f%% of real time", frames, frames * 560 / 32000.0, S.level,
                 busy / (114 * 560 / 32000.0) * 100);
             busy = 0;
+            {
+                const double k = 114.0 * 560;
+                auto rms = [&](double e) { return std::sqrt(e / k); };
+                log("[audio]   bus rms: out L %.0f R %.0f, pre-level surround %.0f center %.0f rear-R %.0f chorus %.0f",
+                    rms(sEnergy.l), rms(sEnergy.r), rms(sEnergy.s), rms(sEnergy.c), rms(sEnergy.rr), rms(sEnergy.ch));
+                sEnergy = {};
+            }
             for (u32 i = 0; i < S.numVoices; i++) {
                 const u32 blk = S.chanBase + i * kBlockSize;
                 if (!bu16(blk + kEnabled) || bu16(blk + kDone)) continue;
