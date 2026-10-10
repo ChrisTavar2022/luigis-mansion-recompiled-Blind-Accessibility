@@ -1,7 +1,6 @@
 #include "recomp/frame.h"
 
 #include "port/settings.h"
-#include "recomp/ghost_lights.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
@@ -178,7 +177,6 @@ bool gamePaused() { return sPauseGuest.load(std::memory_order_relaxed); }
 
 void present(Ctx& c, u32, bool) {
     gx::endFrame();
-    ghostlights::onPresent();  // the next frame starts without ghost lights until the scene draw sets them
     hm::onFrame();
     if (skip::onGuestFrame(c)) return;  // fast-forward: this frame is not shown
     const u32 presents = ++sPresents;

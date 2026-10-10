@@ -1,15 +1,14 @@
 #pragma once
 // Ghost lights (F1 > Visuals > Enhanced lighting > Ghost lights; docs/RENDERING.md,
 // "Enhanced lighting > Ghost lights"): every visible ghost becomes a coloured point light in
-// the renderer's extra-light list (aurora/lights.h), coloured from the ghost's own glow colour.
+// the renderer's extra-light list (aurora/lights.h, via recomp::submitExtraLights), coloured from the ghost's own glow colour.
 #include "recomp/ctx.h"
 
 namespace recomp::ghostlights {
 
-// Guest side, from frame::present (end of a game frame): clears the light list for the next
-// frame when the frame that just ended had lights (a frame without the game scene, e.g. a
-// cutscene or a menu, must not keep the last gameplay frame's lights).
-void onPresent();
+// The main view fn_8000BB98(0) is about to be drawn (enhanced_lighting.cpp): build this frame's
+// ghost lights and submit them (recomp::submitExtraLights).
+void onMainView(Ctx& c);
 
 // From gameplay_hooks.cpp: a CharacterEvent message delivered to a ghost's AI (EnThought,
 // fn_800C0F08; Koga::CharacterEvent::Message: 2 in the flashlight beam, 3 capture begin,

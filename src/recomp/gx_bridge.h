@@ -14,6 +14,9 @@ const DisplayCopy& displayCopy();
 // Pushes the F1 > Visuals > Rendering accuracy options to Aurora (host thread, every frame).
 void applyAccuracySettings();
 
+// Re-evaluate the per-draw state (projection, enhanced-lighting draw class) before the next
+// draw written straight into the FIFO by game code.
+void recheckDrawState();
 // Closes a draw opened by GXBegin whose vertices were written through the FIFO.
 void endPendingDraw();
 // Model viewer: draw with textures replaced by white (TEV colour inputs / modes).

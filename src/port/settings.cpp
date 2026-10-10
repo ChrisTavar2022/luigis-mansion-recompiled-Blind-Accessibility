@@ -52,6 +52,7 @@ std::vector<Field> fields() {
     auto& c = sSettings.crt;
     auto& g = sSettings.gameplay;
     auto& r = sSettings.rendering;
+    auto& l = sSettings.enhancedLighting;
     return {
         num("video", "target_fps", v.targetFps),
         flag("video", "match_display_refresh", v.matchDisplay),
@@ -78,6 +79,28 @@ std::vector<Field> fields() {
         num("ghost_lights", "max_lights", sSettings.ghostLights.maxLights),
         flag("ghost_lights", "shadows", sSettings.ghostLights.shadows),
         num("ghost_lights", "invisible_hint", sSettings.ghostLights.invisibleHint),
+        flag("enhanced_lighting", "enabled", l.enabled),
+        enm("enhanced_lighting", "preset", l.preset),
+        flag("enhanced_lighting", "per_pixel_lighting", l.perPixelLighting),
+        flag("enhanced_lighting", "flashlight_quality", l.flashlightQuality),
+        num("enhanced_lighting", "flashlight_softness", l.flashlightSoftness),
+        flag("enhanced_lighting", "soft_shadows", l.softShadows),
+        num("enhanced_lighting", "soft_shadow_quality", l.softShadowQuality),
+        num("enhanced_lighting", "soft_shadow_radius", l.softShadowRadius),
+        num("enhanced_lighting", "soft_shadow_penumbra", l.softShadowPenumbra),
+        flag("enhanced_lighting", "extra_lights", l.extraLights),
+        num("enhanced_lighting", "extra_light_intensity", l.extraLightIntensity),
+        flag("enhanced_lighting", "volumetric_beam", l.volumetricBeam),
+        num("enhanced_lighting", "volumetric_intensity", l.volumetricIntensity),
+        num("enhanced_lighting", "volumetric_quality", l.volumetricQuality),
+        flag("enhanced_lighting", "bloom", l.bloom),
+        num("enhanced_lighting", "bloom_intensity", l.bloomIntensity),
+        num("enhanced_lighting", "bloom_threshold", l.bloomThreshold),
+        num("enhanced_lighting", "bloom_radius", l.bloomRadius),
+        num("enhanced_lighting", "bloom_flashlight_suppress", l.bloomFlashlightSuppress),
+        flag("enhanced_lighting", "ssao", l.ssao),
+        num("enhanced_lighting", "ssao_intensity", l.ssaoIntensity),
+        num("enhanced_lighting", "ssao_radius", l.ssaoRadius),
         flag("crt", "enabled", c.enabled),
         enm("crt", "preset", c.preset),
         enm("crt", "scanlines", c.scanlines),

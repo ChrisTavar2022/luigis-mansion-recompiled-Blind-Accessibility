@@ -27,8 +27,9 @@
 //    every frame a ghost is held; HP actor +0xFC (s16) against the type's EnemyParam life.
 //  - Camera: the GX view matrix lbl_803A3820+0x18C, the one fn_80057CFC/fn_80057E40 use to put
 //    the S3D lights into eye space before GXLoadLightObjImm, so positions are in the same space.
-// Lights are sent from the scene draw fn_8000BB98 (view 0, after the camera update, before the
-// room and actors are drawn) and cleared at the end of every frame (frame::present).
+// Lights are built at the start of the main view fn_8000BB98(0) (after the camera update, before
+// the room and actors are drawn) and handed to recomp::submitExtraLights (enhanced_lighting.cpp),
+// which sends them to Aurora for that frame; a frame without the game scene has none.
 #include "recomp/ghost_lights.h"
 
 #include "port/settings.h"
@@ -44,36 +45,9 @@
 #include <unordered_map>
 #include <vector>
 
-#if __has_include(<aurora/lights.h>)
-#include <aurora/lights.h>
-#define LM_HAVE_AURORA_LIGHTS 1
-#else
-// Local copy of the renderer interface (enhanced-lighting branch, Aurora include/aurora/lights.h)
-// until that header exists; the stub below only logs.
-namespace aurora::gfx {
-struct ExtraLight {
-    float pos[3];       // VIEW space (GX eye space, same space as GXLoadLightObjImm positions)
-    float color[3];     // linear RGB, may exceed 1
-    float radius;       // world units; smooth falloff to 0 at radius
-    float intensity;    // multiplier
-    uint32_t flags;     // bit0: cast shadows, bit1: affects ghosts/translucent, bit2: specular
-    uint32_t id;        // stable per-source id for interpolation pairing (0 = none)
-};
-void set_extra_lights(const ExtraLight* lights, uint32_t count);
-}  // namespace aurora::gfx
-#define LM_HAVE_AURORA_LIGHTS 0
-#endif
+#include "recomp/enhanced_lighting.h"
 
-namespace aurora::gfx {
-#if !LM_HAVE_AURORA_LIGHTS
-void set_extra_lights(const ExtraLight*, uint32_t count) {
-    static uint32_t sCalls = 0, sLast = ~0u;
-    if (count != sLast || ++sCalls % 300 == 0)
-        recomp::log("[ghostlight] (renderer stub) set_extra_lights: %u light(s)", count);
-    sLast = count;
-}
-#endif
-}  // namespace aurora::gfx
+#include <aurora/lights.h>
 
 namespace recomp {
 u32 viRetraceCount();  // hle_vi.cpp
@@ -84,7 +58,8 @@ namespace {
 
 using aurora::gfx::ExtraLight;
 
-constexpr u32 kFlagShadow = 1, kFlagSpecular = 4;  // bit1 (light ghosts) stays off: a ghost would light itself
+// Translucent (light the ghost layer) stays off: a ghost would light itself.
+constexpr u32 kFlagShadow = aurora::gfx::ExtraLightCastShadows, kFlagSpecular = aurora::gfx::ExtraLightSpecular;
 
 // USA addresses (VA() maps them on the European game).
 #define kActorSlots VA(0x803D48A0)  // lbl_803D48A0: live characters (slot 0 = Luigi)
@@ -176,7 +151,6 @@ std::unordered_map<u32, Track> sTracks;
 std::vector<Burst> sBursts;
 std::unordered_map<u32, std::vector<u8>> sDiffPrev;
 u32 sFrame = 1;      // game frames seen by update() (events are stamped with it)
-u32 sSentCount = 0;  // lights sent for the current frame
 
 float srgbToLinear(u32 v) {
     const float c = float(v) / 255.0f;
@@ -275,7 +249,11 @@ void diffDump(u32 actor) {
     prev = std::move(cur);
 }
 
-bool enabled() { return sForce || port::settings().ghostLights.enabled; }
+// Ghost lights need the Enhanced lighting master switch and its "Dynamic colored lights" part.
+bool enabled() {
+    const auto& st = port::settings();
+    return sForce || (st.ghostLights.enabled && st.enhancedLighting.enabled && st.enhancedLighting.extraLights);
+}
 
 // LM_GHOST_LIGHT_LOG: once the enemy parameters are loaded, every ghost type's glow colour.
 void dumpTypes() {
@@ -303,7 +281,7 @@ void update(Ctx& c) {
     const float intensity = std::clamp(s.intensity, 0.0f, 4.0f);
     const float radiusScale = std::clamp(s.radiusScale, 0.25f, 3.0f);
     const bool dramatic = s.dramatic;
-    const u32 maxLights = u32(std::clamp(s.maxLights, 1, 16));
+    const u32 maxLights = u32(std::clamp(s.maxLights, 1, int(aurora::gfx::MaxExtraLights)));
     const float hint = std::clamp(s.invisibleHint, 0.0f, 0.3f);
     const float t = float(sFrame) / 30.0f;
     constexpr float kBase = 1.6f;  // ghost light strength at intensity 1
@@ -492,7 +470,7 @@ void update(Ctx& c) {
 
     std::sort(cands.begin(), cands.end(), [](const Candidate& x, const Candidate& y) { return x.score > y.score; });
     if (cands.size() > maxLights) cands.resize(maxLights);
-    ExtraLight lights[16];
+    ExtraLight lights[aurora::gfx::MaxExtraLights];
     u32 n = 0;
     for (auto& cd : cands) {
         if (s.shadows && n < 2 && cd.light.intensity > 0.3f) cd.light.flags |= kFlagShadow;
@@ -503,17 +481,10 @@ void update(Ctx& c) {
             log("[ghostlight] f%u light %u id %08X view %.0f,%.0f,%.0f rgb %.2f,%.2f,%.2f r %.0f I %.2f flags %u", sFrame, i,
                 lights[i].id, lights[i].pos[0], lights[i].pos[1], lights[i].pos[2], lights[i].color[0], lights[i].color[1],
                 lights[i].color[2], lights[i].radius, lights[i].intensity, lights[i].flags);
-    aurora::gfx::set_extra_lights(lights, n);
-    sSentCount = n;
+    submitExtraLights(lights, n);  // enhanced_lighting.cpp sends them with the main view
 }
 
 }  // namespace
-
-void onPresent() {
-    if (sSentCount == 0) return;
-    aurora::gfx::set_extra_lights(nullptr, 0);
-    sSentCount = 0;
-}
 
 void onCharacterEvent(u32 actor, u32 msg) {
     if (!enabled() || !isGhostActor(actor)) return;
@@ -540,11 +511,9 @@ void onVacuumTick(u32 actor) {
         log("[ghostlight] f%u vacuum holds %08X %s hp %d", sFrame, actor, typeName(rd32(actor + kActType)), s16(rd16(actor + kActHp)));
 }
 
-// Game scene draw (fn_8000BCE8 calls it once per view after setting that view's camera; view 0
-// is the player's view): the lights are built from the current camera before anything is drawn.
-HLE(fn_8000BB98) {
-    if (c.r[3] == 0) update(c);  // update() restores the registers
-    callOriginal(c, "fn_8000BB98");
-}
+// Main view of the game scene (enhanced_lighting.cpp's fn_8000BB98 hook, view 0: fn_8000BCE8
+// calls it after setting that view's camera): the lights are built from the current camera
+// before anything is drawn and submitted for this frame.
+void onMainView(Ctx& c) { update(c); }  // update() restores the registers
 
 }  // namespace recomp::ghostlights

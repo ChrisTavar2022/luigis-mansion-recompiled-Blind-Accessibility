@@ -30,6 +30,10 @@ void endTape(u32 retraceCount);   // closes it and hands it to the host (LM_INTE
 u32 mark();
 void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first = 0);
 
+// Enhanced lighting extra lights (GX_AURORA_SET_EXTRA_LIGHTS written at `at`, `count`
+// lights): blended between tapes by light id.
+void noteExtraLights(u32 at, u32 count);
+
 // LM_FRAME_DUMP's EFB copy (hle_gx GXCopyDisp), marked at `at`: LM_INTERP_TEST
 // redirects it per replay.
 void noteDump(u32 at, const void* target, u32 frameNo);
