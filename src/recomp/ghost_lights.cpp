@@ -432,7 +432,9 @@ void update(Ctx& c) {
             // Flashlight: a nervous flicker that brightens with exposure.
             if (tr.stun > 0.01f) k *= 1.0f + tr.stun * (0.35f + 0.45f * noise(sFrame, a));
             // Vacuum struggle: ramps as the HP drains, with a fast tremor.
-            if (tr.struggle > 0.01f) {
+            // (not during the capture: the burst on top of the struggle peaked at ~17x and
+            // washed the whole room out in the first in-game capture)
+            if (tr.struggle > 0.01f && !capturing) {
                 k *= 1.0f + 1.6f * tr.struggle + 0.5f * tr.struggle * noise(sFrame, a ^ 0x55u);
                 radiusK += 0.25f * tr.struggle;
             }
@@ -609,7 +611,8 @@ void testPad(u16& buttons, s8& stickX, s8& stickY, s8& cY, u8& triggerR) {
         static u32 sInTrigger = 0;
         sInTrigger = ai == sTrigger ? sInTrigger + (sFrame != sLastSeen ? 1 : 0) : 0;
         sLastSeen = sFrame;
-        if (ai == sTrigger && sInTrigger >= sDelay && bestD < 600.0f && sFrame - sModeFrame > 20) {
+        if (ai == sTrigger && sInTrigger >= sDelay && bestD < 600.0f && sFrame - sModeFrame > 20 &&
+            rd32(l + 0x1180) != 0) {  // not while Luigi is startled (Poltergust mode 0: R does nothing)
             sMode = Aim, sModeFrame = sFrame;
             log("[ghosthunt] f%u target %08X a %.2f d %.0f ai %X: aim", sFrame, best, tr.alpha, bestD, ai);
         }
@@ -629,17 +632,20 @@ void testPad(u16& buttons, s8& stickX, s8& stickY, s8& cY, u8& triggerR) {
             // stunned): then hold R and close in so the nozzle hooks it.
             const u32 st = guestPtr(tr.thought) ? rd32(tr.thought + 0x800) : 0, sub = guestPtr(st) ? rd32(st + 0x590) : 0;
             const bool bound = guestPtr(sub) && rd16(sub + 0xE) == 3;
-            if (bound || (recent(tr.lastBeam, 3) && sFrame - sModeFrame > sRDelay)) buttons |= kPadR, triggerR = 0xFF;
+            static u32 sBoundFrame = 0;
+            if (bound) sBoundFrame = sFrame;
+            const bool afterBound = sBoundFrame && sFrame - sBoundFrame < 60;  // keep vacuuming while it fades
+            if (bound || afterBound || (recent(tr.lastBeam, 3) && sFrame - sModeFrame > sRDelay)) buttons |= kPadR, triggerR = 0xFF;
             static const int sCY = std::getenv("LM_GHOST_HUNT_CY") ? std::atoi(std::getenv("LM_GHOST_HUNT_CY")) : 100;
             static const int sDiv = std::getenv("LM_GHOST_HUNT_DIV") ? std::atoi(std::getenv("LM_GHOST_HUNT_DIV")) : 1;
-            if (bound) cY = s8(sCY);  // tilt the nozzle up at the floating ghost (C stick)
+            if (bound || afterBound) cY = s8(sCY);  // tilt the nozzle up at the floating ghost (C stick)
             if (bound && bestD > 120.0f) stickX = s8(towardX / sDiv), stickY = s8(towardY / sDiv);
             if (bound && sFrame % 5 == 1) log("[ghosthunt] f%u bound (stunned), closing in d %.0f", sFrame, bestD);
         }
         if (held) {
             sMode = Pull, sModeFrame = sFrame;
             log("[ghosthunt] f%u hooked %08X hp %d ai %X: pulling", sFrame, best, tr.hp, ai);
-        } else if (sFrame - sModeFrame > 120) {
+        } else if (sFrame - sModeFrame > 180) {
             sMode = Wait, sModeFrame = sFrame;
             log("[ghosthunt] f%u not hooked (ai %X): wait", sFrame, ai);
         }
@@ -690,6 +696,7 @@ void onMainView(Ctx& c) {
         const float d = std::sqrt(dx * dx + dz * dz);
         static const float sDMax = std::getenv("LM_GHOST_HUNT_DMAX") ? float(std::atof(std::getenv("LM_GHOST_HUNT_DMAX"))) : 400.0f;
         if (!want || d < 100.0f || d > sDMax) continue;
+        if (rd32(l + 0x1180) == 0) continue;  // Luigi startled (Poltergust mode 0): stun only once he can vacuum
         sForcedActor = a, sForcedFrame = sFrame;
         wr32(ev, kMsgInBeam);
         const Ctx saved = c;
