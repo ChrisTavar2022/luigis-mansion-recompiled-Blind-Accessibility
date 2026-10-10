@@ -551,6 +551,23 @@ static void indNoteDraw(const Ctx& c, const char* kind) {
                       (w >> 19) & 1, (w >> 20) & 1, sTevMap[s],
                       sTevMap[s] < 8 ? imageDesc(sMapImage[sTevMap[s]]).c_str() : "-");
         k += b;
+        // RGB5A3 image (e.g. an EFB copy, read back with LM_EFB_READBACK_ALL=1): opaque/translucent texels
+        if (const u32 img = sTevMap[s] < 8 ? sMapImage[sTevMap[s]] : 0; img) {
+            const auto it = sImageDesc.find(img);
+            if (it != sImageDesc.end() && (it->second & 0xFF) == GX_TF_RGB5A3) {
+                const u32 n = (it->second >> 20) * ((it->second >> 8) & 0xFFF);
+                const u8* p = hostp(0x80000000u | img);
+                u32 opaque = 0, clear = 0;
+                for (u32 t = 0; t < n; t++) {
+                    const u16 v = u16(p[2 * t] << 8 | p[2 * t + 1]);
+                    if (v & 0x8000) opaque++;
+                    else if ((v >> 12) == 0) clear++;
+                }
+                std::snprintf(b, sizeof(b), " [5A3 opaque %u, alpha0 %u, translucent %u]", opaque, clear,
+                              n - opaque - clear);
+                k += b;
+            }
+        }
         const u32 m = (w >> 9) & 15;
         if (m) mtxUsed |= 1u << ((m - 1) & 3);
     }
