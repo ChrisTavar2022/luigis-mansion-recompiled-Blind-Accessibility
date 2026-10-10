@@ -34,6 +34,11 @@ if (NOT _stamped STREQUAL _patch_ids)
     execute_process(COMMAND git config core.autocrlf false WORKING_DIRECTORY ${_aurora_dir})
     execute_process(COMMAND git checkout -q -- . WORKING_DIRECTORY ${_aurora_dir})
     execute_process(COMMAND git clean -fdq WORKING_DIRECTORY ${_aurora_dir})
+    # checkout-index -f does not rewrite files git considers unchanged (stat-clean CRLF copies
+    # from an earlier autocrlf checkout stay CRLF and the patches then fail): drop the index so
+    # every file is written again.
+    execute_process(COMMAND git rm -r -q --cached . WORKING_DIRECTORY ${_aurora_dir} OUTPUT_QUIET ERROR_QUIET)
+    execute_process(COMMAND git reset -q --hard WORKING_DIRECTORY ${_aurora_dir})
     execute_process(COMMAND git checkout-index -f -a WORKING_DIRECTORY ${_aurora_dir})
     foreach (_patch ${AURORA_PATCHES})
         execute_process(COMMAND git apply ${_patch} WORKING_DIRECTORY ${_aurora_dir} RESULT_VARIABLE _applied)

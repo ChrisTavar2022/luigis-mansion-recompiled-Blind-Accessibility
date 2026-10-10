@@ -308,6 +308,15 @@ void enhancedLightingTab() {
     sDirty |= ImGui::SliderFloat("Contact hardening", &l.softShadowPenumbra, 0.0f, 20.0f, "%.1f");
     ImGui::SetItemTooltip("High/Ultra only: how quickly shadows soften with distance from the object casting them.");
     ImGui::EndDisabled();
+    sDirty |= ImGui::SliderFloat("Shadow darkness", &l.shadowDarkness, 0.0f, 1.5f, "%.2f");
+    ImGui::SetItemTooltip(
+        "How dark the game's shadows get (1 = as the game draws them, near black).\n"
+        "Colored lights (ghost lights, test lights) always keep lighting the shadowed area, so a\n"
+        "shadow only removes the light it stands for.");
+    sDirty |= ImGui::SliderFloat("Colored shadow tint", &l.shadowAmbientKeep, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip(
+        "How much of the room's ambient light stays in shadows: higher = shadows take on the\n"
+        "surrounding color instead of going black (0 = the game's look).");
     static const char* kMapSize[] = {"Render resolution", "2048 x 1536", "4096 x 3072"};
     ImGui::BeginDisabled(!port::settings().rendering.shadowRenderResolution);
     sDirty |= ImGui::Combo("Shadow map size", &l.shadowMapSize, kMapSize, 3);

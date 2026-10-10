@@ -672,6 +672,42 @@ the back gain their shadows, the long shadows near Luigi are unchanged except ed
 (`rooms_onoff2.png`: off / on / difference, red = darker with the option on);
 `ballroom_walk_off_on.png` is a walk through the room (left off, right on).
 
+### Shadow polish (shadows-3)
+
+Checked in the nursery (flashlight, `LM_LIGHTNING`), the ballroom (dancing ghosts, ghost lights,
+lightning), lit rooms (`LM_ROOMS_LIT`: ballroom, dining room, foyer, 1F hallway), with enhanced
+lighting off and Ultra, 30/60/120 fps, render scale 1x/3x, 16:9/21:9, MSAA 4x and the 2-player
+mode (`LM_COOP=1`); images in `build/shadows3/`.
+
+- **Interpolation**: `LM_INTERP_TEST=4` at 60 and 120 fps through flashlight sweeps and the
+  flashlight -> lightning switch: every late replay is identical to its 30 Hz frame (0 stale
+  pixels), the in-between steps show the shadow map and its receivers consistently (the caster
+  pass is part of the same tape as the receivers), no popping spikes in the frame-to-frame change
+  (`interp60_lightning_switch.png`). The light switch itself snaps from one light to the other, as
+  in the original.
+- **MSAA 4x, 21:9, 2-player split screen** with Ultra: shadows drawn, no errors
+  (`matrix_base_msaa_21x9_coop.png`).
+- **Shadow look** (user report: ghost-light shadows overpower the colored lighting, near-black
+  blocks): see "Shadow look" in the parts table. Ballroom and nursery before/after:
+  `ballroom_shadowlook_old_new.png`, `ballroom_ghostlights_old_new.png`,
+  `nursery_shadowlook_old_new.png` (left 1.0/0 = previous look, right defaults 0.9/0.25): the
+  ghosts' orange/white light now shows inside shadows, shadows are a little lighter, the rest of
+  the picture is unchanged. The exact close-up in the user's screenshot (camera next to the
+  dancers) was not reproduced with the test aids; it most likely comes from the ballroom's
+  cutscene camera, where the shadow light is the scripted light of the cutscene.
+- **Any-distance fit stability**: the refitted room-light frustum is snapped to 6% steps in
+  field of view and 10% in depth (rounded outward), so the shadow map's texel size and depth
+  scale do not change every frame with the camera (edge shimmer); the light itself still follows
+  Luigi as in the original.
+- **Build**: CMake's Aurora patch re-apply now drops the submodule index before checking files
+  out again: `checkout-index -f` left stat-clean CRLF files from an older autocrlf checkout
+  untouched and every patch then failed to apply.
+
+Not changed / remaining: shadows on translucent ghost bodies are the original behaviour (the
+actor pass gives ghosts the shadow stages too); the jagged edge of a grazing light's shadow is
+the shadow map's own resolution along the receiver (raise "Shadow map size"); the 2-player mode's
+second view uses the shadow map fitted to player 1's view.
+
 ## Debug draw overrides (Aurora patch 0012)
 
 `patches/aurora/0012-wireframe-override.patch`, used only by the model viewer
@@ -912,6 +948,7 @@ draw classes, scene bracket, test lights), `shadows.cpp` (caster-pass class, sha
 | Per-pixel lighting (`per_pixel_lighting`) | The game's own GX lights evaluated per fragment with the same channel math (ambient/material sources, diffuse fn, spot/distance attenuation, clamps) | View-space position/normal interpolated to the fragment (`enh_pos`/`enh_nrm`; face normal from derivatives when the draw has no normals); WORLD draws only (ghost-pass draws keep vertex lighting: the ghost layer is composited from its own copy); channels that feed a color texgen keep their vertex result |
 | Flashlight quality (`flashlight_quality`, softness, beam highlights) | Round beam pool with a smooth penumbra; glossy highlights where the beam hits | Spot color channels evaluated per pixel; below the cone's full strength the GX angular term is remapped through smoothstep (0 = GX curve, 1 = smooth). Alpha channels stay exact (the shadow light's ALPHA1 scales the shadow strength: smoothing it weakened shadows). "Beam highlights" (`flashlight_specular`, 0.6) adds a Blinn-Phong term (exponent 28) per spot light, tinted by the material color |
 | Soft shadows (`soft_shadows`, quality, softness, contact hardening) | Soft edges for the game's shadow map (flashlight, lightning, room light) | The TEV `GR16_GT` compare stage (receiver key vs packed Z16 map) becomes a filtered compare: PCF 8/16 taps on a rotated Vogel disk, or PCSS (blocker search + penumbra from receiver-blocker distance) 16/32; receiver key computed analytically from the depth-ramp texcoord where it agrees with the TEV's key (no LINEAR byte-wrap stripes); capped slope-scaled bias on the off-centre taps only and a penumbra capped at 1.5x the radius (with a grazing shadow light, e.g. a ballroom ghost's own light near the floor, a full receiver-plane bias and wide penumbras erased thin casters' shadows); early out when the centre and 4 outer taps agree. Integer-TEV path included |
+| Shadow look (`shadow_darkness` 0.9, `shadow_ambient_keep` 0.25: "Shadow darkness", "Colored shadow tint") | Shadows only remove the light they stand for: colored extra lights (ghost lights, test lights) keep lighting a shadowed pixel, a part of the ambient is kept, so shadows take on the surrounding color instead of going black | Aurora patch `0019-shadow-look.patch`: the game lerps a shadowed pixel toward the near-black K3 color by the shadow strength, whatever lights it. In the shader variants the shadow fraction from the compare stage is scaled by `enh_shadow_scale`: darkness × (lit − keep × ambient) / (lit + extra), with lit/ambient the luminance of color channel 0's GX lighting result and its ambient part, extra the extra lights reaching the pixel. 1.0 / 0 with no extra light = the game's darkening exactly; master switch off = untouched |
 | Shadow map size (`shadow_map_size`) | 2048x1536 / 4096x3072 shadow map independent of the render resolution | `shadows.cpp`: the caster pass (`fn_8005D984` … `fn_8005D8CC`, new US+PAL hook) renders into an Aurora offscreen target (`GXCreateFrameBuffer`) of that size; the Z16 copy comes from it. Needs "Shadow map at render resolution" |
 | Dynamic colored lights (`extra_lights`, intensity) | Up to 16 point lights per pixel on world geometry | `aurora/lights.h` interface below; added to the lit color channel (× material color) so the game's TEV decides the response; smooth (1-x²)² falloff to the radius, half-Lambert on ghost draws, optional specular |
 | Colored light shadows (`extra_light_shadows`, quality) | Lights flagged `ExtraLightCastShadows` (up to 4; ghost lights flag the two strongest) are blocked by furniture/characters | Screen space, current frame: the opaque world draws are re-rendered depth-only (same pipelines, depth layout) into a half-resolution pre-pass **before** the EFB pass that draws them (pass pre-op), a ray-march pass (8/16/32 steps, thickness 160 units) writes an RGBA8 mask (one channel per light), which is copied into a reserved storage-buffer range; the world shaders read it (`enh_mask`, bilinear) |

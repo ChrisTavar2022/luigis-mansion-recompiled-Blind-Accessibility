@@ -183,6 +183,11 @@ struct EnhancedLightingSettings {
     int softShadowQuality = 2;        // 0 PCF 8, 1 PCF 16, 2 PCSS 16, 3 PCSS 32
     float softShadowRadius = 1.0f;    // filter radius (640x480 shadow-map texels)
     float softShadowPenumbra = 6.0f;  // PCSS penumbra growth
+    // Shadow look: the game darkens shadowed pixels toward black whatever lights them. With these
+    // (enhanced shaders only) colored lights keep lighting the shadow, part of the ambient light is
+    // kept (shadows pick up the room's color), and the darkness is scaled. 1 / 0 = the game's look.
+    float shadowDarkness = 0.9f;      // 0..1.5
+    float shadowAmbientKeep = 0.25f;  // 0..1 ("Colored shadow tint")
     int shadowMapSize = 0;            // 0 render resolution, 1 2048x1536, 2 4096x3072 (offscreen)
     // Dynamic colored lights from game objects (ghosts) and test lights.
     bool extraLights = true;

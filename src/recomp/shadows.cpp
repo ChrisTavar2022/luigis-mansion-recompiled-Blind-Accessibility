@@ -156,13 +156,19 @@ bool fitFrustum(u32 cam, float lightAspect, float viewAspect, Fit& fit) {
         ty = std::max(ty, std::fabs(dot(v, u)) / z);
     }
     const float maxTan = std::tan(kMaxHalfAngle * kDegToRad);
-    tx = std::min(tx * 1.02f, maxTan);
-    ty = std::min(ty * 1.02f, maxTan);
-    if (ty < 1e-3f) return false;
+    if (ty < 1e-3f || tx < 1e-3f) return false;
+    // Snapped to steps (6% in tan, 10% in depth) and rounded up: a fit that follows the camera
+    // continuously changes the map's texel size and depth scale every frame, which makes shadow
+    // edges and the depth compare shimmer. With steps the map only changes when the fit crosses
+    // a step (the light itself still moves with Luigi, as in the original).
+    const auto snapUp = [](float v, float step) { return std::pow(step, std::ceil(std::log(v) / std::log(step))); };
+    tx = std::min(snapUp(tx * 1.02f, 1.06f), maxTan);
+    ty = std::min(snapUp(ty * 1.02f, 1.06f), maxTan);
     fit.fov = 2.0f * std::atan(ty) / kDegToRad;
     fit.aspect = std::clamp(tx / ty, 0.1f, 10.0f);
-    fit.zNear = std::min(n, std::max({zMin * 0.9f, kMinNear, n * 0.25f}));  // keep Z16 precision
-    fit.zFar = std::max(f, zMax * 1.05f);
+    const float nearFit = zMin * 0.9f > 1.0f ? 1.0f / snapUp(1.0f / (zMin * 0.9f), 1.1f) : zMin * 0.9f;
+    fit.zNear = std::min(n, std::max({nearFit, kMinNear, n * 0.25f}));  // keep Z16 precision
+    fit.zFar = std::max(f, snapUp(zMax * 1.05f, 1.1f));
     return true;
 }
 
