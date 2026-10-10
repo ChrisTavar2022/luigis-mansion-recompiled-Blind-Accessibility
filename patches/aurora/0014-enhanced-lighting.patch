@@ -2158,7 +2158,7 @@ index 0c4477e..735bffa 100644
  struct BindGroupRanges {
    std::array<gfx::Range, MaxIndexAttr> vaRanges{};
 diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
-index a041c4b..3e2a4a1 100644
+index a041c4b..c08aafe 100644
 --- a/lib/gx/shader.cpp
 +++ b/lib/gx/shader.cpp
 @@ -872,6 +872,243 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8
@@ -2496,11 +2496,14 @@ index a041c4b..3e2a4a1 100644
      if (cc.lightingEnabled && cc.ambSrc == GX_SRC_REG) {
        uniBufAttrs += fmt::format("\n    cc{0}_amb: vec4f,", i);
      }
-@@ -1490,6 +1779,25 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1490,6 +1779,28 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
          vtxXfrAttrs += fmt::format("\n    out.cc{0} = round(clamp(out.cc{0}, vec4f(0.0), vec4f(1.0)) * 255.0) / 255.0;", i);
        }
        fragmentFnPre += fmt::format("\n    var rast{0} = in.cc{0};", i);
-+      if (enh && info.lightingEnabled && (cc.lightingEnabled || cca.lightingEnabled) && !srtgChannels.test(i)) {
++      // Ghost-pass draws (enhClass 2) keep the GX vertex lighting: the ghost layer is composited
++      // from its own copy, and invisible ghosts must stay black there.
++      if (enh && config.enhClass == 1 && info.lightingEnabled && (cc.lightingEnabled || cca.lightingEnabled) &&
++          !srtgChannels.test(i)) {
 +        const bool spot = (cc.lightingEnabled && cc.attnFn == GX_AF_SPOT) || (cca.lightingEnabled && cca.attnFn == GX_AF_SPOT);
 +        fragmentFnPre += fmt::format("\n    if ((ubuf.enh_flags & {}u) != 0u) {{", spot ? 9 : 1);
 +        fragmentFnPre += enh_lighting_func(config, cc, i, false);
@@ -2522,7 +2525,7 @@ index a041c4b..3e2a4a1 100644
      }
    }
    for (int i = 0; i < info.sampledKColors.size(); ++i) {
-@@ -1916,6 +2224,22 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1916,6 +2227,22 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
    if (info.usesZTex) {
      uniBufAttrs += "\n    ztex_bias: vec4u,";
    }
@@ -2545,7 +2548,7 @@ index a041c4b..3e2a4a1 100644
    if (config.intTev) {
      // Already wrapped to 8 bits after the last stage.
    } else if (!prevColorNormalized && !prevAlphaNormalized) {
-@@ -2444,6 +2768,15 @@ fn fs_main(in: VertexOutput) -> {10} {{{6}{5}{11}
+@@ -2444,6 +2771,15 @@ fn fs_main(in: VertexOutput) -> {10} {{{6}{5}{11}
    if (EnableDebugPrints) {
      Log.info("Generated shader (hash {:x}): {}", hash, shaderSource);
    }
