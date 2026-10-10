@@ -17,6 +17,12 @@ DSPSendCommands__FPUlUl us pal
 DSPReleaseHalt__Fv us pal
 DSPWaitFinish__Fv us pal
 DiplSec__FUl us pal
+# Output side data per AI block (discrete surround) and the game's sound mode, kept in step
+# with F1 > Sound > Output (src/recomp/hle_audio.cpp, docs/AUDIO.md "Surround").
+Jac_imixcopy__FPsPsPsl us pal
+fn_8018A70C us pal
+fn_8005582C us pal
+fn_800558C8 us pal
 
 # Camera culling planes: widened for the Hor+ widescreen projection (src/recomp/widescreen.cpp).
 fn_80008D58 us pal

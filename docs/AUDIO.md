@@ -19,9 +19,9 @@ Files:
 
 | file | role |
 |---|---|
-| `src/recomp/hle_audio.cpp` | AI SDK HLE (DMA, callback pacing), DSP SDK stubs, JAudio DSP-driver hooks |
+| `src/recomp/hle_audio.cpp` | AI SDK HLE (DMA, callback pacing), DSP SDK stubs, JAudio DSP-driver hooks, the game's sound mode |
 | `src/recomp/audio_dsp.cpp` | microcode stand-in: commands, voices, decoding, resampling, filters, mixing, effects |
-| `src/recomp/audio_out.cpp` | SDL3 output stream, channel order, WAV capture |
+| `src/recomp/audio_out.cpp` | output layouts (stereo / mono / discrete 5.1 / 7.1), windowed-sinc resampler, SDL3 stream, WAV capture |
 | `src/recomp/audio.h` | the interface between the three files above (and ARAM read access from `hle_ar.cpp`) |
 | `tools/dsp_disasm.py` | DSP disassembler for reading the microcode |
 
@@ -72,19 +72,54 @@ frames are R, L). So bus 0x0D00 is left, which everything else agrees with:
   0x0D60 inverted (the usual Lt/Rt convention).
 
 `audio_out.cpp` therefore swaps the slots (`kRightFirst`). Before this was
-worked out the port played every sound mirrored. "Swap left/right" (F1 > Sound)
-and the PAL Hidden Mansion's mirror mode still swap on top.
+worked out the port played every sound mirrored.
+
+**In-game check (2026-10, third pass).** In the foyer the camera stops at the
+room's side walls, so Luigi can stand at the far left or far right of the
+screen (`--input "...,1950:STICKLEFT*200,2200:A,2300:A,2400:A,2500:A,
+2600:STICKRIGHT*400,3050:A,..."`, frame dumps to confirm the screen position).
+Pressing A makes him call out, a positional sound. With Luigi at the left edge
+the call's voices (ARAM 0x0B8F60, 0x0E37A0) start with bus 0x0D00 / 0x0D60
+target volumes 11753 / 5311 and 8184 / 3638; at the right edge the same samples
+start with 5166 / 11818 and 3638 / 8184: the game pans screen-left to bus
+0x0D00 by about 7 dB, mirror-symmetrically. In the recorded output
+(`LM_AUDIO_WAV_RAW`, 50 ms bins above RMS 1000) the left section has 50 bins with L > R + 3 dB and none the
+other way (loudest bins +5.6 dB), the right section 10 bins with R > L + 3 dB
+and none the other way. So the slot order above puts screen-left sounds on the
+left speaker.
 
 ## AI output and pacing
 
 `AIInitDMA` records the block (560 stereo frames). A host thread waits until
 fewer than about three blocks (at least 40 ms) are queued on the SDL3 audio
-stream. It then pushes the current block, converting from big-endian, and
-raises the AI DMA interrupt. The sound card's clock therefore paces JAudio, and
-nothing drifts. If there is no audio device (or `LM_AUDIO=0`), the interrupt
-runs off a timer at the real rate. The DSP rate comes from `AISetDSPSampleRate`
-(LM: 32 kHz). SDL3 resamples it to the device rate with its band-limited
-resampler.
+stream. It then pushes the current block and raises the AI DMA interrupt. The
+sound card's clock therefore paces JAudio, and nothing drifts. If there is no
+audio device (or `LM_AUDIO=0`), the interrupt runs off a timer at the console
+rate.
+
+**Output rate.** The AI's rates are derived from a 54 MHz clock: "48 kHz" is
+54 MHz / 1124 = 48042.7 Hz and "32 kHz" (what `AISetDSPSampleRate` selects in
+LM) two thirds of it, 32028.5 Hz. The port treats the blocks as 32028.5 Hz
+audio (`kConsoleRate32` in `audio.h`). Since the AI interrupt paces JAudio, this
+sets the game's audio clock: sequenced music runs at the console's tempo and
+everything plays at the console's pitch (0.09%, 1.5 cents above the nominal
+32000 Hz the port used before). The timer path without a device uses the same
+rate.
+
+**Resampling.** F1 > Sound > "High-quality resampler" (on by default) converts
+the 32028.5 Hz stream to the device's rate with a polyphase windowed-sinc filter
+in `audio_out.cpp`: 64 taps (32 zero crossings each side), Kaiser window
+(beta 8), cutoff 0.92 of the lower Nyquist frequency, 512 phases with linear
+interpolation, each phase normalised to unity DC gain. For 32028 -> 48000 Hz it
+is flat (-0.1 dB) to 13.8 kHz and -80 dB from 16.0 kHz on, so the spectral
+images of the 32 kHz signal between 16 and 24 kHz are removed. Off, the stream
+goes to SDL at 32028 Hz and SDL resamples.
+
+**Layouts.** The block is turned into the output layout first (see Surround):
+stereo, mono (L = R = average), or discrete 5.1 / 7.1. "Swap left/right"
+(F1 > Sound) and the PAL Hidden Mansion's mirror mode swap the left and right
+channels of every pair (fronts, surrounds) on top. The volume sliders apply
+after that.
 
 ## Voice parameter block (0x180 bytes, big-endian)
 
@@ -150,6 +185,18 @@ Each holds one subframe (80 samples). Per subframe (uc 0x04FA..0x0697):
 
 Bus 0x0CA0 feeds oscillator modulation and is never output.
 
+**Saturation vs wrap.** The microcode runs in 16-bit mode (`SET16` at uc
+0x0015) and switches to 40-bit mode (`SET40`) only around the resampler, the
+IIR, the voice mixers, the output level (0x0130), AFC/PCM8 decoding and the
+distortion. In 40-bit mode a read of an accumulator's middle word saturates; in
+16-bit mode it is the raw word, so a result that overflows wraps around. The
+passes that run in 16-bit mode are the bus-to-bus mixes of steps 4-8 (uc 0x03BD:
+centre, chorus, rear-right, effect-line outputs), the effect-line FIR (0x01C2)
+and the voice FIR (0x01E1). The port wraps there and saturates everywhere else,
+like the microcode. LM's levels never overflow in the scenes tested
+(`LM_AUDIO_LOG` reports any wrap; none in the foyer, the title or the Nursery),
+so this only matters for a sound mixed louder than LM ever does.
+
 ## Voice pipeline
 
 Per voice per subframe, if enabled and not done (uc 0x0509..0x064C):
@@ -181,15 +228,22 @@ Per voice per subframe, if enabled and not done (uc 0x0509..0x064C):
 - **IIR (uc 0x01FC)** if mode bit 0x20 is set and the coefficients are not
   `{0x7FFF, 0, 0, 0}`: `y[n] = c0*x[n-1] + c1*x[n-2] + c2*y[n-1] + c3*y[n-2]`,
   multiplier x2, truncated, saturated.
-- **Stop request (uc 0x05E0).** Every subframe the current volumes halve; the
-  voice is done once they are all 0. (The microcode then ramps back toward the
-  target within the subframe, which would keep a stopped voice audible; JAudio
-  stops updating targets once a stop is requested, so the port keeps the halved
-  volume to give the intended fade.)
+- **Stop request (uc 0x05E0).** Every subframe each mixer's *target* volume
+  becomes its current volume shifted right by one (`LRRD` reads the current
+  word, `SN` stores the halved value one word lower, into the target; the shift
+  is logical). The mixers then ramp from the current volume to that target as
+  usual, so a stopped voice fades out smoothly, halving every subframe (a full
+  volume 0x3C78 voice takes 15 subframes, 37 ms). The voice is done once all six
+  current volumes are 0 at the start of a subframe (the test sums the shifted
+  40-bit values, so a volume of 1 still counts). The halved targets are written
+  back to main memory with the rest of the first 0x100 bytes.
 - **Mixers (uc 0x05F6, 0x011E).** For each of the 6 mixers with a bus:
   - The delay's low byte moves one sample per subframe toward its high byte, and
     the mixer reads that many samples back (JAudio's pan delay; history is the
-    last +0x0E samples of the previous subframes).
+    last +0x0E samples of the previous subframes). If the current delay is
+    larger than the history kept (uc 0x061C), the mixer is skipped for the
+    subframe and its volume stays where it was. A mixer without a bus still
+    ramps its volume (the microcode mixes it into scratch memory).
   - Volume ramp: a 16.16 step of `(target - current) / 32`, applied every second
     sample, so the ramp ends after 64 samples; the current volume becomes the
     target.
@@ -241,15 +295,73 @@ ask for them.
 
 ## Surround
 
-The game keeps its own sound mode (a byte in its options: 0 mono, 1 stereo, 3
-surround; forced to mono when `OSGetSoundMode` says mono) and hands it to its
-sound code in `fn_8005582C` → `fn_8018A70C(0/1/2)`; what mode 2 changes in the
-routing has not been traced. Even in stereo, some voices (JAudio's "dolby"
-parameter) and effect lines 2/3 feed the surround bus 0x0F40, which the DSP
-folds into the stereo output in Dolby Surround form (+L, -R; center at 0.707).
-The port reproduces that matrix exactly, so a Pro Logic (II) decoder can unfold
-it. The port's own "Output" setting does no decoding: "Surround" there plays like
-"Stereo" (its tooltip says so).
+**The game's sound mode.** The options byte (`lbl_803CFAA0` + 0: 0 mono,
+1 stereo, 2 surround; byte 1 is rumble) is applied by `fn_8005582C` /
+`fn_800558C8` (at boot and when a save's options are loaded; they force mono
+when the console's SRAM says mono) and by the options menu, all through
+`fn_8018A70C(mode)` -> `fn_80190DB8(JAIBasic, mode)`, which
+
+- stores the mode in JAIBasic + 0x41. `setParameterSeqSync` reads it when a
+  sequence starts: in mode 2 the sequence's "dolby" external parameter
+  (`Jam_SetExtParam(..., 0x10)`) comes from its entry in the sequence table
+  (+0x14); in modes 0 and 1 it is 0. Sound effects do not depend on the mode.
+- calls `Jac_SetOutputMode(0)` for mono, else 1. In JAudio's
+  `UpdateEffecterParam` mode 0 centres the pan and zeroes the dolby send.
+- sets the AFC streamer's mono flag (`fn_80194804`, 1 for mono).
+
+The dolby parameter drives the voices' sends to the surround bus 0x0F40 (bus
+routing in the bank/channel setup, `sin(dolby)` like the pan). So the only
+difference between the stereo and surround modes is how much the *sequenced
+music* sends to the surround bus; the stereo mode still has some surround
+content from effect lines 2 and 3 (reverb returns, centre x 0.5 and surround x
+0.5). Measured (`LM_AUDIO_LOG` bus report, foyer, 2 s windows): surround bus RMS
+5-27 in stereo, 69-400 in surround (up to 1336 when the music swells), centre
+unchanged. The rear-right bus 0x0FA0 and the chorus bus 0x0B00 were never used
+in the scenes tested.
+
+The DSP folds the surround bus into the stereo output in Dolby Surround form
+(+S on the left, NOT S on the right; the centre at 0.707 in both). That stereo
+pair is what a console outputs; a Pro Logic / Pro Logic II receiver unfolds it.
+
+**F1 > Sound > Output** is the same setting as the game's own option:
+
+| Output | game mode | what plays |
+|---|---|---|
+| Stereo | 1 | the game's stereo |
+| Mono | 0 | the game's mono mode (centred pan, mono streams), both channels averaged |
+| Surround (matrix-encoded stereo) | 2 | the console's Lt/Rt stereo, for a Pro Logic (II) decoder |
+| Surround 5.1 (discrete) | 2 | FL, FR, C, LFE (silent), surround L/R |
+| Surround 7.1 (discrete) | 2 | as 5.1, surround split over side and back pairs |
+
+Hooks (`hle_audio.cpp`): `fn_8005582C` / `fn_800558C8` write the F1 choice into
+the options byte before and after the original runs, so saved options never
+override it and the options screen shows it; `fn_8018A70C` called from the
+options menu changes F1 to the game's choice (keeping 5.1 / 7.1 when the game
+picks surround) and saves the settings; a change in F1 is applied from JAudio's
+audio thread (`DSPReleaseHalt`) by calling `fn_8018A70C` with the new mode and
+updating the options byte. As on a console, a new mode applies to sequences
+started afterwards. Test aid: `LM_AUDIO_SWITCH=<subframe>:<output>` changes the
+F1 setting after that many DSP subframes (400 per second); with `LM_AUDIO_LOG`
+the switch shows as `sound mode 2 (game asked 2, F1)` and the surround bus RMS
+rises once the next sequence starts.
+
+**Discrete 5.1 / 7.1.** The DSP stand-in records, per output sample, what the
+centre, surround and rear-right buses added to each side at the output level
+(`SideSample` in `audio.h`; one store per DSP output buffer). `Jac_imixcopy` is
+hooked to tag the AI block it fills with the DSP buffer it came from
+(`outTagBlock`). When the block plays, the fronts are the AI samples minus those
+parts (so the CPU-side mix callback, e.g. the boot jingle, stays in the fronts),
+the centre speaker plays the centre bus at full level (it was a phantom centre
+at 0.707 in each side), and each surround speaker plays the surround bus at 1
+(5.1) or 0.707 (7.1, side and back pairs), which keeps the power the matrix gave
+it; the rear-right bus (unused by LM) goes to the right surround(s). LFE is
+silent: the game has no LFE bus. Rebuilding Lt/Rt from a 5.1 capture without
+resampling (`FL + 0.707 C + S`, `FR + 0.707 C - S`) matches the console stereo
+to 1 LSB on the left and 3 LSB on the right (the NOT's -1, doubled by the
+output level). The layout needs a device with 6 / 8 channels (F1 shows the
+device's channel count); 7.1 falls back to 5.1 on a 6-channel device and both
+fall back to the matrix-encoded stereo on a stereo device. Without a device
+(`LM_AUDIO=0`, WAV captures) the chosen layout is used as is.
 
 ## DVD audio streaming
 
@@ -260,7 +372,9 @@ via JAudio) plus AFC streams through DSP ring voices, as described above.
 
 ## Verification
 
-Use `LM_AUDIO_WAV=build/x.wav` to record the output and `LM_AUDIO_LOG=1` to log
+Use `LM_AUDIO_WAV=build/x.wav` to record the output (what goes to the device),
+`LM_AUDIO_WAV_RAW=build/y.wav` to record the AI stream (the console's stereo at
+32028 Hz) and `LM_AUDIO_LOG=1` to log the sound mode, per-bus RMS, wraps,
 setup, effect-line configuration, each voice start (with its filter, delay and
 mixer settings), voices that start using filters or delays later, a dump of
 playing voices every ~2 s, and the mixer's CPU cost.
@@ -286,16 +400,35 @@ LM_SKIP_CUTSCENES=1 LM_SKIP_AUTO=30`, A every 300 retraces, then R holds,
   a low-pass configuration on every voice (a temporary test hack) gave sane,
   stable output (spectral centroid 2400 → 900 Hz).
 
+Third pass (2026-10): sound mode, surround, resampler, rate, microcode details.
+Captures with scratch APPDATA/card and `LM_BACKGROUND=1`; `LM_AUDIO_WAV` now
+records what goes to the device (all channels, device rate) and
+`LM_AUDIO_WAV_RAW` the AI stream itself (stereo, left first, 32028 Hz).
+
+- **Channel order**: confirmed in game (see Channel order).
+- **Sound mode / surround**: see Surround for the bus measurements. Foyer, 30 s
+  of music (70-100 s): stereo mode L/R correlation 0.977 (side/mid 0.11),
+  surround mode 0.773 (side/mid 0.39): the matrix-encoded surround music. In
+  5.1 the same passage has FL = FR (correlation 1.000, RMS 640 each), centre RMS
+  16 and each surround RMS 193: the music's stereo width in that room comes
+  entirely from its surround send.
+- **Resampler**: energy between 16.5 and 24 kHz (images of the 32 kHz source)
+  relative to the total, foyer, 104 s at 44.1 kHz: -82.8 dB with the windowed
+  sinc, -52.4 dB through SDL3's resampler (the same input fed to an
+  `SDL_AudioStream` offline). Levels are identical (RMS 1873 / 1886 both).
+- **Before/after** (same scripted foyer walk, 113-117 s): old build RMS 1716 /
+  1680, 1 clipped sample; new build 1857 / 1826, 1 clipped sample (different
+  stretch of music: the runs are not sample-aligned).
+- **Stop fades**: `LM_AUDIO_LOG` logs `voice N stopped: faded from L/R in K
+  subframes`; e.g. 0x3C78 -> 0 in 15 subframes.
+- **CPU**: the mixer stays at 0.22-0.27% of a core with the side outputs.
+
 ## Known gaps
 
 - Oscillator sources (types 0-4, 6, 7, 0xB-0xD) are silent; LM does not use
   them.
-- Saturation vs wrap-around: the microcode runs some passes (effect-line
-  mixing, FIR) in 16-bit accumulator mode, where an overflow would wrap; the port
-  saturates everywhere.
-- A force-stopped voice fades by halving (see the voice pipeline) instead of the
-  microcode's halve-then-ramp-back.
 - Non-looping AFC samples whose length is not a multiple of 16 lose their last
   partial frame on hardware; the port plays it.
-- The AI's "32 kHz" is nominal; the exact console rate (slightly above 32 kHz)
-  is not modelled. Pacing follows the host device anyway.
+- The options-menu -> F1 direction of the sound-mode sync was traced but not
+  driven by a scripted test (the F1 -> game direction and the saved-options
+  override were).
