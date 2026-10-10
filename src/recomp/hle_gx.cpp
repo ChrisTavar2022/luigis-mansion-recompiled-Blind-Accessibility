@@ -412,11 +412,12 @@ gx::DisplayCopy sDisplayCopy;
 const gx::DisplayCopy& gx::displayCopy() { return sDisplayCopy; }
 
 // F1 > Visuals > Rendering accuracy options -> Aurora. Test overrides: LM_ACCURACY=<mask>
-// (bit 0 integer TEV, bit 1 EFB color depth) and LM_ACCURACY_AB=<seconds> (alternate between
+// (bit 0 integer TEV, bit 1 EFB color depth, bit 2 texture copy filter) and LM_ACCURACY_AB=<seconds> (alternate between
 // the configured options and all off every <seconds>, for A/B screenshots of one run).
 void gx::applyAccuracySettings() {
     const auto& r = port::settings().rendering;
-    u32 flags = (r.integerTev ? GX_AURORA_ACCURACY_INT_TEV : 0) | (r.efbColorDepth ? GX_AURORA_ACCURACY_EFB_DEPTH : 0);
+    u32 flags = (r.integerTev ? GX_AURORA_ACCURACY_INT_TEV : 0) | (r.efbColorDepth ? GX_AURORA_ACCURACY_EFB_DEPTH : 0) |
+                (r.textureCopyFilter ? GX_AURORA_ACCURACY_COPY_FILTER : 0);
     static const char* sMask = std::getenv("LM_ACCURACY");
     if (sMask) flags = u32(std::strtoul(sMask, nullptr, 0));
     static const double sAb = [] {
@@ -1281,12 +1282,18 @@ GXHLE(GXCopyDisp) {
     sDiagFrame++;
     if (void* dump = dropDraw() ? nullptr : efbcopy::dumpTarget(sDiagFrame)) {
         // LM_FRAME_DUMP: copy the finished EFB through the copy-to-RAM path, then restore
-        // the game's texture-copy setup.
+        // the game's texture-copy setup. The dump is the raw EFB: no copy filter (texture
+        // copies apply it, GX_AURORA_ACCURACY_COPY_FILTER), then the game's taps again.
+        u8 pattern[12][2] = {};
+        u8 taps[7];
+        std::memcpy(taps, sDisplayCopy.vfilter, sizeof(taps));
+        GXSetCopyFilter(GX_FALSE, pattern, GX_FALSE, nullptr);
         GXSetTexCopySrc(0, 0, 640, 480);
         GXSetTexCopyDst(640, 480, GX_TF_RGBA8, GX_FALSE);
         const u32 at = interp::mark();
         GXCopyTex(dump, GX_FALSE);
         interp::noteDump(at, dump, sDiagFrame);
+        GXSetCopyFilter(GX_FALSE, pattern, GX_TRUE, taps);
         GXSetTexCopySrc(u16(sCopyDiag.x), u16(sCopyDiag.y), u16(sCopyDiag.w), u16(sCopyDiag.h));
         GXSetTexCopyDst(u16(sCopyDiag.dw), u16(sCopyDiag.dh), GXTexFmt(sCopyDiag.fmt), GXBool(sCopyDiag.mip));
     }

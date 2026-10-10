@@ -127,6 +127,10 @@ struct RenderingSettings {
     bool efbColorDepth = true;
     // Display copy filter: the vertical filter (and gamma) GXCopyDisp applies on the way to the TV.
     bool displayCopyFilter = true;
+    // Texture copy filter: the same vertical filter applied to the game's GXCopyTex copies (the
+    // full-screen RGB565 copy it redraws every frame, the box-filtered half-size copies...), as on
+    // the console (GX_AURORA_ACCURACY_COPY_FILTER).
+    bool textureCopyFilter = true;
     // GXCopyTex results also exist as GX-format bytes in main memory, so textures that read a
     // copy with another format/size (the shadow depth map) and CPU reads see what the
     // console sees (docs/RENDERING.md). Off: copies stay GPU-only textures.

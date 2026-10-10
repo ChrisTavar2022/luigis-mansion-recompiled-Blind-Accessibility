@@ -66,6 +66,7 @@ std::vector<Field> fields() {
         flag("rendering", "integer_tev", r.integerTev),
         flag("rendering", "efb_color_depth", r.efbColorDepth),
         flag("rendering", "display_copy_filter", r.displayCopyFilter),
+        flag("rendering", "texture_copy_filter", r.textureCopyFilter),
         flag("rendering", "efb_copy_to_ram", sSettings.rendering.efbCopyToRam),
         flag("rendering", "shadow_render_resolution", r.shadowRenderResolution),
         flag("rendering", "shadow_widescreen", r.shadowWidescreen),

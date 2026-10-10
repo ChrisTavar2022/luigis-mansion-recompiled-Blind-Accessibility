@@ -272,14 +272,15 @@ Aurora patch `0010-gx-hardware-accuracy.patch` (incremental on 0001..0009); host
 toggles in F1 > Visuals > Rendering. What the game uses was traced with `AURORA_GX_AUDIT=1`
 (each distinct pipeline feature, logged once) and `LM_GX_AUDIT=1` (state calls with arguments)
 from boot through the title, the foyer (dark, flashlight) and the lab/training room. Test aids:
-`LM_ACCURACY=<mask>` (1 integer TEV, 2 EFB color depth) and `LM_ACCURACY_AB=<s>` (alternate
+`LM_ACCURACY=<mask>` (1 integer TEV, 2 EFB color depth, 4 texture copy filter) and `LM_ACCURACY_AB=<s>` (alternate
 configured/all-off every s seconds and log fps per phase, for A/B screenshots of one run).
 
 | Area | What LM uses | Aurora before | Status |
 |------|--------------|---------------|--------|
 | EFB pixel format | `GXSetPixelFmt(RGBA6_Z24)`, dither toggled per draw | 8-bit target, no dither | **Fixed** (toggle "EFB color depth", on): output quantized to 6 bits/channel with a 2x2 ordered dither when the draw has dither on, expanded back to 8 bits; blended draws quantize color only (alpha stays the blend factor; the blend itself is still 8-bit). Verified A/B in the lab: mean -0.9 levels; a dark area goes from ~98 to ~25 distinct levels (dither grain/banding as on hardware) |
 | TEV arithmetic | ADD/SUB, unclamped regs, scale x2, GR16 compare, K0-K3 selects, swap tables, up to 8 stages, `GXSetTevColorS10` | float lerp, [-4,4] clamp, k/8 konsts | **Fixed** (toggle "Integer-accurate TEV", on): 8-bit A/B/C (low byte of a register), s11 D/registers, C widened by C>>7, per-stage rounding, clamp 0..255 / -1024..1023, konst k/8 = k*32, HALF = 128, 8-bit vertex colors, rounded indirect texels, 8-bit fog blend. Verified: lab scene changes ~50% of pixels by exactly 1 level, unbiased, no breakage. SUB/DIVIDE_2 rounding is a model (+-1 LSB) |
-| Display copy | `GXSetCopyFilter(aa=0, vf=1, {6,0,20,12,20,0,6})`, gamma 1.0, clamp top+bottom, Y scale 1.0, 640x480 | GXSetCopyFilter/Gamma no-ops; YScale returned 0 | **Fixed** (toggle "Display copy filter", on): present-time pass with the game's taps (0-1 line above, 2-4 this line, 5-6 line below = 6/52/6 of 64) in EFB lines (scales with resolution), edge clamp, gamma 1.0/1.7/2.2, before the CRT filter. `GXSetDispCopyYScale` returns the XFB line count. Not applied to texture copies (EFB copy code) |
+| Display copy | `GXSetCopyFilter(aa=0, vf=1, {6,0,20,12,20,0,6})`, gamma 1.0, clamp top+bottom, Y scale 1.0, 640x480 | GXSetCopyFilter/Gamma no-ops; YScale returned 0 | **Fixed** (toggle "Display copy filter", on): present-time pass with the game's taps (0-1 line above, 2-4 this line, 5-6 line below = 6/52/6 of 64) in EFB lines (scales with resolution), edge clamp, gamma 1.0/1.7/2.2, before the CRT filter. `GXSetDispCopyYScale` returns the XFB line count. Texture copies: see the next row |
+| Texture copies (GXCopyTex) | the same taps are set while the game copies the scene (RGB565 640x480, RGBA8 320x240 box-filtered, region and transition copies) | copied without the filter | **Fixed** (patch 0018, toggle "Texture copy filter", on; see "Copy filter on texture copies") |
 | Early Z + alpha test | `GXSetZCompLoc(1)` with alpha compare GREATER 0 and Z update | Z written only for passing pixels | **Verified, unchanged**: emulating "Z written before the alpha test" (depth prepass) broke Luigi's face decals and pillars, so the hardware evidently does not write Z for alpha-rejected pixels here. Experiment removed |
 | Fog | only `GX_FOG_NONE` seen; range adjust enabled (center 0), `GXInitFogAdjTable` once | range factor from a guessed NDC formula (much weaker than the table) | **Fixed model**: LUT built from the table (entry i = 256x factor at 32(i+1) EFB px from center, interpolated, 1.0 at center, last entry beyond), in EFB pixels at any resolution. Not visible in tested scenes (fog off) |
 | Texture filtering | min LINEAR/NEAR, edge LOD, no mips | hw min-filter decode had NEAR_MIP_LIN/LIN_MIP_NEAR swapped | **Fixed** decode table (raw-BP texture setups). LOD bias/edge LOD fine |
@@ -295,6 +296,7 @@ configured/all-off every s seconds and log fps per phase, for A/B screenshots of
 | Integer-accurate TEV (`integer_tev`) | TEV stages evaluated in integer WGSL (8-bit A/B/C, s11 D/registers, per-stage rounding/clamp) | +-1 level on ~40-45% of pixels, unbiased (mean +0.06); nothing structural | see table |
 | EFB color depth (`efb_color_depth`) | fragment output quantized to the EFB format (RGBA6 / RGB565) with the PE's 2x2 dither when the draw enables it; texture copies to RGB565/RGB5A3 keep their format's precision (patch 0014) | ~1.4 levels darker on average (LM draws much of the scene with dither off, where the PE truncates), 6-bit banding rings in smooth gradients (flashlight pool on the floor), dither grain where dither is on | see table |
 | Display copy filter (`display_copy_filter`) | present-time pass (`dcopy_filter` in crt.cpp, ahead of the CRT chain) with the game's GXSetCopyFilter taps + GXSetDispCopyGamma | ~5% less vertical high-frequency detail (6/52/6 of 64), no color shift (mean 0.2 levels); only runs when the taps/gamma change the picture | see table |
+| Texture copy filter (`texture_copy_filter`) | GXSetCopyFilter taps applied to color GXCopyTex copies (patch 0018, `GX_AURORA_ACCURACY_COPY_FILTER`) | the scene the game redraws from its RGB565 copy is softer vertically (nursery: vertical gradient energy -30%, horizontal -6%; differences only along horizontal edges, no shift) | a copy that was a plain texture copy becomes a shader blit with three taps |
 
 The fog range LUT and the texture min-filter decode are plain correctness fixes with no
 toggle (no runtime cost: the LUT is rebuilt only when the fog range state changes; LM never
@@ -339,9 +341,39 @@ costs from the implementation: integer TEV and EFB depth are a few extra ALU ops
 (no extra passes; changing either rebuilds pipelines once), the copy filter is one extra
 full-screen pass with three texture taps.
 
-Remaining: blended draws are not quantized after blending; copy filter not applied to texture
-copies (GXCopyTex); whether hardware normalizes transformed normals; fog range LUT with
-widescreen is untested (LM never enables fog).
+Remaining: blended draws are not quantized after blending; whether hardware normalizes
+transformed normals; fog range LUT with widescreen is untested (LM never enables fog).
+
+### Copy filter on texture copies (Aurora patch 0018)
+
+The console applies the vertical copy filter (BP 0x53/0x54, set by `GXSetCopyFilter`) to every
+EFB copy, texture copies included. LM sets one filter for the whole game, `{6,0,20,12,20,0,6}`
+(`LM_GX_AUDIT=1`: the only GXSetCopyFilter combination from boot to the nursery), so its scene
+copy (`fn_8005F8B8`, RGB565, redrawn as the frame), the 320x240 RGBA8 copy, the half-size region
+copies and the transition captures are all filtered on hardware. Ported from the SMS port (its
+patch 0102), with LM specifics:
+
+- `GXSetCopyFilter` writes BP 0x53/0x54 (pass-through taps `{0,0,21,22,21,0,0}` when vf is off),
+  so the state also survives capture/replay (frame interpolation); `bp_copy_filter` keeps the
+  taps in `GXState::copyVFilter`.
+- `resolve_pass_into` packs the weights of the line above (taps 0+1), the line (2+3+4) and the
+  line below (5+6) into `tex_copy_conv::Uniforms::filterTaps` (0 = off: pass-through taps, depth
+  copies, or the toggle off) plus one EFB line in uv (`1 / logical EFB height`, so it scales with
+  the render resolution). `sample_efb` applies it to RGB before the format conversion and the
+  5/6/5 quantization; alpha comes from the line itself. Filtered copies that would have been a
+  plain `CopyTextureToTexture` take the blit shader instead (`RenderPass::resolveFiltered`).
+- Depth copies (the Z16 shadow map) are never filtered.
+- Box-filtered (mip) copies sample with LINEAR at 2:1, so the centre and neighbour taps each
+  average two rows: the result equals the console's order (filter each line, then average 2x2).
+- `LM_FRAME_DUMP` sets pass-through taps around its dump copy (the dump stays the raw EFB) and
+  restores the game's taps.
+- Toggle F1 > Visuals > Rendering > "Texture copy filter" (`texture_copy_filter`, on),
+  `GX_AURORA_ACCURACY_COPY_FILTER` (`LM_ACCURACY` bit 2).
+
+Verification (US, `LM_FRAME_DUMP` with `LM_ACCURACY=3` vs `7`): title frame mean |d| 0.5
+(max 4); in the nursery the static background differs only along horizontal edges (vertical
+gradient energy -30%, horizontal -6%: the 6/52/6 vertical blur and less vertical dither), no
+shift, no seams at copy edges. Not compared with a console capture.
 
 ## Indirect effects
 

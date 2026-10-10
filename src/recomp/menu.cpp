@@ -167,6 +167,11 @@ void renderingTab() {
     ImGui::SetItemTooltip(
         "The vertical filter (and gamma) the console applies when copying the frame to the TV\n"
         "image: slightly softer vertical detail, smooths the dither. One extra full-screen pass.");
+    sDirty |= ImGui::Checkbox("Texture copy filter", &r.textureCopyFilter);
+    ImGui::SetItemTooltip(
+        "The console applies the same vertical filter to the game's screen copies (the full-screen\n"
+        "copy it redraws every frame, the half-size and transition copies): the picture is a little\n"
+        "softer vertically, as on the GameCube. Off: sharper. Tiny GPU cost.");
     sDirty |= ImGui::Checkbox("EFB copies to RAM (accurate)", &r.efbCopyToRam);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Screen copies also exist in console memory format, like on the GameCube.\n"
