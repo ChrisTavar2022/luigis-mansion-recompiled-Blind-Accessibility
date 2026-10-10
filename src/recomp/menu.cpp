@@ -194,6 +194,35 @@ void renderingTab() {
         "Off: the original behaviour. No cost.");
 }
 
+// ---- Enhanced lighting > Ghost lights (src/recomp/ghost_lights.cpp) ----
+void ghostLightsSection() {
+    auto& g = port::settings().ghostLights;
+    sDirty |= ImGui::Checkbox("Ghost lights", &g.enabled);
+    ImGui::SetItemTooltip(
+        "Every visible ghost lights the room around it in its own glow colour (the colour the game\n"
+        "uses for that ghost's light effects; fire, water and ice ghosts glow orange, blue, cyan).\n"
+        "Invisible ghosts give no light. Off: the original lighting. Small GPU cost per light.");
+    ImGui::BeginDisabled(!g.enabled);
+    sDirty |= ImGui::SliderFloat("Ghost light intensity", &g.intensity, 0.0f, 4.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Brightness of every ghost light (1 = default).");
+    sDirty |= ImGui::SliderFloat("Ghost light radius", &g.radiusScale, 0.25f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("How far each ghost's light reaches (scaled by the ghost's size; bosses reach farthest).");
+    sDirty |= ImGui::Checkbox("Dramatic ghost light effects", &g.dramatic);
+    ImGui::SetItemTooltip(
+        "The light pulses gently, flares when a ghost appears, ramps up and flickers while the\n"
+        "Poltergust drains the ghost, and bursts then fades when it is captured.\n"
+        "Off: a steady light that only follows the ghost's visibility.");
+    sDirty |= ImGui::SliderInt("Max ghost lights", &g.maxLights, 1, 16, "%d", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("Most ghost lights at once (the strongest/nearest first). Lower is faster.");
+    sDirty |= ImGui::Checkbox("Shadows from ghost lights", &g.shadows);
+    ImGui::SetItemTooltip("The one or two strongest ghost lights cast shadows. Costs a shadow pass per light.");
+    sDirty |= ImGui::SliderFloat("Invisible ghost glow", &g.invisibleHint, 0.0f, 0.3f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("A faint glow from ghosts that are currently invisible (0 = none, the default).");
+    ImGui::EndDisabled();
+}
+
+// ---- end Ghost lights ----
+
 // Enhanced lighting (src/recomp/enhanced_lighting.cpp, docs/RENDERING.md "Enhanced lighting"):
 // a master switch (off by default) and every part with its own switch and controls.
 void enhancedLightingTab() {
@@ -233,6 +262,12 @@ void enhancedLightingTab() {
     ImGui::BeginDisabled(!l.extraLights);
     sDirty |= ImGui::SliderFloat("Light intensity", &l.extraLightIntensity, 0.0f, 3.0f, "%.2f");
     ImGui::EndDisabled();
+    // ---- Ghost lights (src/recomp/ghost_lights.cpp): the game-side source of colored lights ----
+    ImGui::SeparatorText("Ghost lights");
+    ImGui::BeginDisabled(!l.extraLights);
+    ghostLightsSection();
+    ImGui::EndDisabled();
+    // ---- end Ghost lights ----
 
     ImGui::SeparatorText("Shadows");
     sDirty |= ImGui::Checkbox("Soft shadows", &l.softShadows);
