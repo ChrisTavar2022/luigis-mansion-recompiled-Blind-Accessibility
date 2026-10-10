@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <thread>
 
 namespace recomp {
@@ -164,6 +166,14 @@ void applySavedOptions(Ctx& c, const char* name) {
 // F1 changed the output: apply it to the game (from JAudio's audio thread, where the
 // mode is read). Only once the game has set a mode itself (JAudio is up).
 void syncSoundMode(Ctx& c) {
+    // Test aid: LM_AUDIO_SWITCH=<subframe>:<output> changes F1 > Sound > Output (0 stereo,
+    // 1 mono, 2 surround, 3 5.1, 4 7.1) after that many DSP subframes (400 per second).
+    static const char* sSwitch = std::getenv("LM_AUDIO_SWITCH");
+    if (sSwitch && *sSwitch) {
+        static u32 sCount = 0, sAt = 0, sTo = 0;
+        if (!sCount) std::sscanf(sSwitch, "%u:%u", &sAt, &sTo);
+        if (++sCount == sAt) port::settings().audio.output = port::AudioOutput(sTo);
+    }
     if (sGameMode < 0) return;
     const int want = modeFor(port::settings().audio.output);
     if (want == sGameMode) return;

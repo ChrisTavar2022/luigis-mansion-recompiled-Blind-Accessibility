@@ -22,6 +22,10 @@
 #include <cstring>
 #include <vector>
 
+namespace recomp {
+u32 copyDispCount();  // hle_gx.cpp: guest frame number (LM_AUDIO_LOG time stamps)
+}
+
 namespace recomp::audio {
 bool g_log = [] {
     const char* e = std::getenv("LM_AUDIO_LOG");
@@ -84,6 +88,7 @@ enum : u16 {
     kChorusRing = 0x0B60,   // 160-sample ring for the modulated delay
 };
 s16 D[0x1000];
+u64 sSamplesMixed = 0;  // output samples mixed so far (LM_AUDIO_LOG time stamps)
 
 bool validBus(u16 id) {
     switch (id) {
@@ -102,7 +107,11 @@ inline s16 sat16(s64 v) { return s16(std::clamp<s64>(v, -32768, 32767)); }
 // 40-bit mode the read saturates; in 16-bit mode it is the raw word, so an overflow
 // wraps (effect-line FIR and mixing, the voice FIR, the bus-to-bus mixes).
 inline s16 accMid(s64 acc) { return sat16(acc >> 16); }
-inline s16 accMidWrap(s64 acc) { return s16(u16(u64(acc) >> 16)); }
+u32 sWraps = 0;  // LM_AUDIO_LOG: 16-bit-mode results that overflowed (wrapped)
+inline s16 accMidWrap(s64 acc) {
+    if (const s64 hi = acc >> 16; hi != s16(hi)) ++sWraps;
+    return s16(u16(u64(acc) >> 16));
+}
 // MOVPZ / MULMVZ: product rounded into the middle word (round half to even).
 inline s64 roundMid(s64 acc) { return acc + 0x7FFF + ((acc >> 16) & 1); }
 inline s16 accMidRound(s64 acc) { return accMid(roundMid(acc)); }
@@ -130,6 +139,7 @@ struct Voice {
     // Per-mixer delay history (VPB +0xD0..+0xEE). DSP_PlayStart does not clear it.
     s16 delay[256]{};
     bool loggedFx = false;  // LM_AUDIO_LOG: filters/delays reported once per start
+    u32 stopSubframes = 0, stopVolume = 0;  // LM_AUDIO_LOG: force-stop fade length
 };
 
 struct FxLine {
@@ -401,8 +411,8 @@ void iirFilter(Voice& v, u32 blk, s16* buf) {
 }
 
 void logStart(u32 i, u32 blk) {
-    log("[audio] voice %u start: type %02X aram %06X loop %u [%u,%u) count %u pitch %04X maxdelay %u filter %04X dist %d "
-        "iir %d %d %d %d", i, bu16(blk + kSourceType), rd32(blk + kAramAddr), bu16(blk + kLoopFlag), rd32(blk + kLoopStart),
+    log("[audio] voice %u start (frame %u, t %.3f): type %02X aram %06X loop %u [%u,%u) count %u pitch %04X maxdelay %u filter %04X dist %d "
+        "iir %d %d %d %d", i, copyDispCount(), double(sSamplesMixed) / kConsoleRate32, bu16(blk + kSourceType), rd32(blk + kAramAddr), bu16(blk + kLoopFlag), rd32(blk + kLoopStart),
         rd32(blk + kEnd), rd32(blk + kSampleCount), bu16(blk + kPitch), bu16(blk + kMaxDelay), bu16(blk + kFilterMode),
         bs16(blk + kDistCoef), bs16(blk + kIirCoef), bs16(blk + kIirCoef + 2), bs16(blk + kIirCoef + 4), bs16(blk + kIirCoef + 6));
     if (bu16(blk + kFilterMode) & 0x1F) {
@@ -525,7 +535,13 @@ void mixVoice(u32 i) {
             allZero &= cur == 0;
             wr16(mx + 2, u16(cur >> 1));
         }
-        if (allZero) done = true;
+        if (!v.stopSubframes++ && g_log) v.stopVolume = bu16(blk + kMixer + 4) | u32(bu16(blk + kMixer + 12)) << 16;
+        if (allZero) {
+            done = true;
+            if (g_log)
+                log("[audio] voice %u stopped: faded from %04X/%04X in %u subframes", i, v.stopVolume & 0xFFFF,
+                    v.stopVolume >> 16, v.stopSubframes);
+        }
     }
 
     for (int m = 0; m < kMixers; m++) {
@@ -750,6 +766,7 @@ void runSubframe() {
             sEnergy.rr += sq(D[kBusRearR + n]);
         }
     if (fx) fxPost();
+    sSamplesMixed += kSubframe;
 }
 
 }  // namespace
@@ -810,6 +827,8 @@ bool dspRunSubframe() {
                 auto rms = [&](double e) { return std::sqrt(e / k); };
                 log("[audio]   bus rms: out L %.0f R %.0f, pre-level surround %.0f center %.0f rear-R %.0f chorus %.0f",
                     rms(sEnergy.l), rms(sEnergy.r), rms(sEnergy.s), rms(sEnergy.c), rms(sEnergy.rr), rms(sEnergy.ch));
+                if (sWraps) log("[audio]   %u 16-bit overflows (wrapped as on hardware)", sWraps);
+                sWraps = 0;
                 sEnergy = {};
             }
             for (u32 i = 0; i < S.numVoices; i++) {

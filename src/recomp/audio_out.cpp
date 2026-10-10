@@ -354,14 +354,17 @@ void outPushGuestBlock(u32 addr, u32 bytes) {
     const float* outData = buf.data();
     size_t outFrames = frames;
     int outRate = int(std::lround(sRate));
+    static bool sWasSinc = false;
     if (as.sincResampler) {
         sResampler.configure(sRate, devRate, ch);
+        if (!sWasSinc) sResampler.reset();  // drop history from before it was switched off
         res.clear();
         sResampler.process(buf.data(), frames, res);
         outData = res.data();
         outFrames = res.size() / ch;
         outRate = devRate;
     }
+    sWasSinc = as.sincResampler;
     if (sStream) {
         if (ch != sInChannels || outRate != sInRate) {
             sInChannels = ch;
@@ -372,7 +375,8 @@ void outPushGuestBlock(u32 addr, u32 bytes) {
         SDL_PutAudioStreamData(sStream, outData, int(outFrames * ch * sizeof(float)));
     }
     std::snprintf(sStatus, sizeof sStatus, "%s, %d Hz (%s)%s",
-                  ch == 8 ? "7.1" : ch == 6 ? "5.1" : mono ? "Mono" : "Stereo", outRate,
+                  ch == 8 ? "7.1" : ch == 6 ? "5.1" : mono ? "Mono"
+                  : as.output == port::AudioOutput::Stereo ? "Stereo" : "Matrix-encoded surround (stereo)", outRate,
                   as.sincResampler ? "windowed-sinc from 32028 Hz" : "SDL resampler",
                   sStream ? "" : ", no device");
     if (sWav.f) {
