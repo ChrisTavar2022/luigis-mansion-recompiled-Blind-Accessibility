@@ -33,6 +33,8 @@ void applySettings();
 // Ghost actor pass (fn_80060E70 pass 0x30): draws in it are class GHOST.
 void setGhostPass(bool on);
 bool ghostPass();
+// Shadow-map caster pass (shadows.cpp: fn_8005D984 .. fn_8005D8CC): draws in it are class OTHER.
+void setCasterPass(bool on);
 // Main view bracket (fn_8000BB98 hook): sends the frame's extra lights / the scene-end marker.
 void beginScene();
 void endScene();

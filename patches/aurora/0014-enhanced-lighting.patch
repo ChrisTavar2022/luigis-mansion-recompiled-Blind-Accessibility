@@ -12,10 +12,10 @@ index 574e7e1..7b0a3e7 100644
          lib/gfx/texture_convert.cpp
 diff --git a/include/aurora/enhanced.h b/include/aurora/enhanced.h
 new file mode 100644
-index 0000000..c722d22
+index 0000000..9d6212f
 --- /dev/null
 +++ b/include/aurora/enhanced.h
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,94 @@
 +#ifndef AURORA_ENHANCED_H
 +#define AURORA_ENHANCED_H
 +
@@ -54,6 +54,7 @@ index 0000000..c722d22
 +  // smoothed penumbra; softness 0 = the GX falloff curve as is, 1 = fully smoothed edge.
 +  bool flashlightQuality;
 +  float flashlightSoftness;
++  float flashlightSpecular; // 0..2: glossy highlight of the flashlight on surfaces (per pixel)
 +
 +  // Soft shadows for the game's shadow-map compare (TEV GR16 compare against the depth map):
 +  // quality 0 = PCF 8 taps, 1 = PCF 16, 2 = PCSS (contact hardening) 16+16, 3 = PCSS 32+32.
@@ -253,10 +254,10 @@ index 1920bc8..c22fbec 100644
  void encode_op(wgpu::CommandEncoder& encoder, FramePacket& frame, const FrameOp& op);
 diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 new file mode 100644
-index 0000000..4632e14
+index 0000000..aff85ab
 --- /dev/null
 +++ b/lib/gfx/enhanced.cpp
-@@ -0,0 +1,1571 @@
+@@ -0,0 +1,1594 @@
 +// Enhanced lighting: configuration, extra lights, per-draw uniforms and the scene-end
 +// screen-space effects (bloom, volumetric flashlight beam, ambient occlusion).
 +// See include/aurora/enhanced.h and include/aurora/lights.h.
@@ -274,6 +275,7 @@ index 0000000..4632e14
 +#include <algorithm>
 +#include <array>
 +#include <atomic>
++#include <chrono>
 +#include <cmath>
 +#include <cstdlib>
 +#include <cstring>
@@ -297,7 +299,7 @@ index 0000000..4632e14
 +
 +bool same(const AuroraEnhancedConfig& a, const AuroraEnhancedConfig& b) {
 +#define EQ(f) (a.f == b.f)
-+  return EQ(enabled) && EQ(perPixelLighting) && EQ(flashlightQuality) && EQ(flashlightSoftness) && EQ(softShadows) &&
++  return EQ(enabled) && EQ(perPixelLighting) && EQ(flashlightQuality) && EQ(flashlightSoftness) && EQ(flashlightSpecular) && EQ(softShadows) &&
 +         EQ(softShadowQuality) && EQ(softShadowRadius) && EQ(softShadowPenumbra) && EQ(extraLights) &&
 +         EQ(extraLightIntensity) && EQ(volumetric) && EQ(volumetricIntensity) && EQ(volumetricQuality) && EQ(bloom) &&
 +         EQ(bloomIntensity) && EQ(bloomThreshold) && EQ(bloomRadius) && EQ(bloomFlashlightSuppress) && EQ(bloomScene) && EQ(bloomEmissive) && EQ(bloomLightGlow) && EQ(ssao) &&
@@ -619,6 +621,16 @@ index 0000000..4632e14
 +  return vec4f(col * (fx.pp.w / 16.0), 1.0);
 +}
 +
++fn hash3(p: vec3f) -> f32 { return fract(sin(dot(p, vec3f(127.1, 311.7, 74.7))) * 43758.5453); }
++fn vnoise(p: vec3f) -> f32 {
++  let i = floor(p);
++  let f = fract(p);
++  let u = f * f * (3.0 - 2.0 * f);
++  let a = mix(mix(hash3(i), hash3(i + vec3f(1.0, 0.0, 0.0)), u.x), mix(hash3(i + vec3f(0.0, 1.0, 0.0)), hash3(i + vec3f(1.0, 1.0, 0.0)), u.x), u.y);
++  let b = mix(mix(hash3(i + vec3f(0.0, 0.0, 1.0)), hash3(i + vec3f(1.0, 0.0, 1.0)), u.x), mix(hash3(i + vec3f(0.0, 1.0, 1.0)), hash3(i + vec3f(1.0, 1.0, 1.0)), u.x), u.y);
++  return mix(a, b, u.z);
++}
++
 +// Volumetric flashlight beam: in-scattering along the view ray up to the surface, through the
 +// flashlight's GX spot attenuation.
 +@fragment
@@ -639,7 +651,10 @@ index 0000000..4632e14
 +    let dl2 = dot(lv, lv);
 +    // Forward-scattering phase (looking toward the lens is brighter).
 +    let phase = 0.6 + 0.4 * max(dot(-dir, lv * inverseSqrt(max(dl2, 1e-4))), 0.0);
-+    acc = acc + min(flash_attn(p), 1.0) * phase / (1.0 + dl2 / (r0 * r0));
++    // Dust: slowly drifting value noise modulates the density (motes in the beam).
++    let dq = p * 0.045 + vec3f(0.0, fx.vol.w * 0.35, fx.vol.w * 0.2);
++    let dust = 0.55 + 0.9 * vnoise(dq) * vnoise(dq * 2.7 + vec3f(17.0));
++    acc = acc + min(flash_attn(p), 1.0) * phase * dust / (1.0 + dl2 / (r0 * r0));
 +    t = t + ds;
 +  }
 +  // Normalized so a ray along the whole beam gathers about 1 (the falloff integrates to pi * r0).
@@ -1204,7 +1219,8 @@ index 0000000..4632e14
 +
 +uint8_t shader_class(const gx::ShaderConfig& sc, uint8_t drawClass, bool blended, bool additive) noexcept {
 +  static const bool sNoVariant = std::getenv("AURORA_ENH_NOVARIANT") != nullptr; // debug aid
-+  if (sNoVariant || !g_cfg.enabled || drawClass == AURORA_DRAW_CLASS_OTHER || additive || sc.lineMode != 0 || sc.wireframe) {
++  if (sNoVariant || !g_cfg.enabled || drawClass == AURORA_DRAW_CLASS_OTHER || additive || sc.lineMode != 0 || sc.wireframe ||
++      gx::g_gxState.projType != GX_PERSPECTIVE) {
 +    return 0;
 +  }
 +  bool want = false;
@@ -1278,6 +1294,7 @@ index 0000000..4632e14
 +  if (c.flashlightQuality) {
 +    u.flags |= 8u;
 +    u.flashSoft = std::clamp(c.flashlightSoftness, 0.f, 1.f);
++    u.flashSpec = std::clamp(c.flashlightSpecular, 0.f, 2.f);
 +  }
 +  if (c.extraLights && c.extraShadows && g_shadowCount > 0) {
 +    if (!g_maskReserved) {
@@ -1409,6 +1426,9 @@ index 0000000..4632e14
 +  }
 +  const auto& st = gx::g_gxState;
 +  ++g_segDraws[std::min<uint8_t>(drawClass, 2)];
++  if (st.projType != GX_PERSPECTIVE) {
++    drawClass = AURORA_DRAW_CLASS_OTHER; // 2D quads inside the 3D view (ghost-layer composite, screen copies)
++  }
 +  if (drawClass != AURORA_DRAW_CLASS_OTHER && g_cfg.bloom && g_cfg.bloomEmissive > 0.f && is_emissive(config) &&
 +      !is_offscreen()) {
 +    note_glow_draw(config, data);
@@ -1755,6 +1775,10 @@ index 0000000..4632e14
 +  u.vol[0] = c.volumetricIntensity;
 +  u.vol[1] = q == 0 ? 16.f : q == 1 ? 24.f : 48.f;
 +  u.vol[2] = 3000.f;
++  {
++    static const auto sStart = std::chrono::steady_clock::now();
++    u.vol[3] = std::fmod(std::chrono::duration<float>(std::chrono::steady_clock::now() - sStart).count(), 1000.f);
++  }
 +  job.volDiv = q == 0 ? 4 : 2;
 +  u.ao[0] = c.ssaoIntensity;
 +  u.ao[1] = std::max(c.ssaoRadius, 1.f);
@@ -1784,7 +1808,7 @@ index 0000000..4632e14
 +      pu.pass[1] = 1.f / float(dims[i].second);
 +      pu.pass[2] = radius;
 +      // Wider levels weigh less with a small radius, more with a large one.
-+      pu.pass[3] = std::pow(0.85f, float(i)) * (0.6f + 0.4f * radius);
++      pu.pass[3] = std::pow(0.7f, float(i)) * (0.6f + 0.4f * radius);
 +      job.passes[MaxBloomLevels + i] = push_uniform(reinterpret_cast<const uint8_t*>(&pu), sizeof(pu));
 +    }
 +  }
@@ -1830,10 +1854,10 @@ index 0000000..4632e14
 +}
 diff --git a/lib/gfx/enhanced.hpp b/lib/gfx/enhanced.hpp
 new file mode 100644
-index 0000000..df08da9
+index 0000000..72a3ad8
 --- /dev/null
 +++ b/lib/gfx/enhanced.hpp
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,62 @@
 +#pragma once
 +// Enhanced lighting (include/aurora/enhanced.h, include/aurora/lights.h): configuration, the
 +// frame's extra lights, per-draw uniforms and the scene-end screen-space effects.
@@ -1863,8 +1887,10 @@ index 0000000..df08da9
 +  uint32_t maskPitch = 0; // words per row
 +  uint32_t maskDims = 0;  // width | height << 16 (0: no mask this frame)
 +  float maskScale = 0.f;  // mask pixels per target pixel
++  float flashSpec = 0.f;  // flashlight specular strength
++  float pad[3] = {};
 +};
-+static_assert(sizeof(DrawUniform) == 48);
++static_assert(sizeof(DrawUniform) == 64);
 +
 +// --- FIFO thread ---
 +// Takes a newly set configuration; true when it changed (pipelines must be re-derived).
@@ -2048,7 +2074,7 @@ index 8a9f256..bfe3e7b 100644
  bool queue_pre_pass_ops(std::vector<efb_ram::PassOp> ops);
  void set_next_resolve_op(efb_ram::PassOp op);
 diff --git a/lib/gx/command_processor.cpp b/lib/gx/command_processor.cpp
-index 7171691..de395dd 100644
+index 7171691..a67fc6d 100644
 --- a/lib/gx/command_processor.cpp
 +++ b/lib/gx/command_processor.cpp
 @@ -1,3 +1,4 @@
@@ -2090,7 +2116,7 @@ index 7171691..de395dd 100644
  }
  
  static void handle_draw_unmerged(GXPrimitive prim, GXVtxFmt fmt, u16 vtxCount, gfx::Range vertRange) noexcept {
-@@ -906,6 +916,29 @@ void handle_aurora(ByteReader& reader) noexcept {
+@@ -906,6 +916,30 @@ void handle_aurora(ByteReader& reader) noexcept {
        g_gxState.twoSided = twoSided;
        g_gxState.dirty |= DirtyPipeline;
      }
@@ -2098,7 +2124,8 @@ index 7171691..de395dd 100644
 +    const u8 drawClass = reader.read<u8>();
 +    if (g_gxState.drawClass != drawClass) {
 +      g_gxState.drawClass = drawClass;
-+      if (gfx::enhanced::config().enabled) {
++      static const bool sNoDirty = std::getenv("AURORA_ENH_NODIRTY") != nullptr; // debug aid
++      if (gfx::enhanced::config().enabled && !sNoDirty) {
 +        g_gxState.dirty |= DirtyPipeline;
 +      }
 +    }
@@ -2172,10 +2199,10 @@ index 0c4477e..735bffa 100644
  struct BindGroupRanges {
    std::array<gfx::Range, MaxIndexAttr> vaRanges{};
 diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
-index a041c4b..c08aafe 100644
+index a041c4b..e04be49 100644
 --- a/lib/gx/shader.cpp
 +++ b/lib/gx/shader.cpp
-@@ -872,6 +872,243 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8
+@@ -872,6 +872,285 @@ auto lighting_func(const ShaderConfig& config, const ColorChannelConfig& cc, u8
                       alpha ? "a"sv : ""sv);
  }
  
@@ -2208,11 +2235,20 @@ index a041c4b..c08aafe 100644
 +  } else if (cc.attnFn == GX_AF_SPOT) {
 +    // Spot cone with an optional smoothed penumbra (flashlight quality): the GX angular term is
 +    // remapped by smoothstep so the cone edge has no kink at the cutoff.
-+    lightAttnFn = R"""(
++    // Only the color channel's cone edge (cos_attn below 1) is reshaped: alpha channels are
++    // masks (the shadow light's ALPHA1 scales the shadow strength) and stay exact.
++    lightAttnFn = alpha ? R"""(
++            let cosine = max(0.0, dot(ldir, light.dir));
++            let cos_attn = dot(light.cos_att, vec3f(1.0, cosine, cosine * cosine));
++            let dist_attn = dot(light.dist_att, vec3f(1.0, dist, dist2));
++            attn = max(0.0, cos_attn / dist_attn);)"""s
++                        : R"""(
 +            let cosine = max(0.0, dot(ldir, light.dir));
 +            var cos_attn = dot(light.cos_att, vec3f(1.0, cosine, cosine * cosine));
-+            let ca = clamp(cos_attn, 0.0, 1.0);
-+            cos_attn = mix(cos_attn, ca * ca * (3.0 - 2.0 * ca), ubuf.enh_flash_soft);
++            if (cos_attn < 1.0) {
++              let ca = clamp(cos_attn, 0.0, 1.0);
++              cos_attn = mix(cos_attn, ca * ca * (3.0 - 2.0 * ca), ubuf.enh_flash_soft);
++            }
 +            let dist_attn = dot(light.dist_att, vec3f(1.0, dist, dist2));
 +            attn = max(0.0, cos_attn / dist_attn);)"""s;
 +  } else {
@@ -2232,9 +2268,20 @@ index a041c4b..c08aafe 100644
 +  } else if (cc.diffFn == GX_DF_CLAMP) {
 +    lightDiffFn = "max(0.0, dot(ldir, enh_n))"sv;
 +  }
++  // Flashlight specular (color channels with spot lights): a glossy highlight where the beam hits,
++  // scaled by ubuf.enh_flash_spec (0 = the GX result only).
++  const bool spec = !alpha && cc.attnFn == GX_AF_SPOT && cc.diffFn != GX_DF_NONE;
++  const std::string_view specDecl =
++      spec ? "\n        var spec = vec3f(0.0);\n        let enh_v = normalize(-in.enh_pos);"sv : ""sv;
++  const std::string_view specAcc =
++      spec ? "\n            if (dot(ldir, enh_n) > 0.0) { spec = spec + attn * pow(max(dot(enh_n, normalize(ldir + enh_v)), 0.0), 28.0) * light.color.rgb; }"sv
++           : ""sv;
++  const std::string specApply =
++      spec ? fmt::format("\n        rast{0}.rgb = min(rast{0}.rgb + {1}.rgb * spec * ubuf.enh_flash_spec, vec3f(1.0));", i, matSrc)
++           : std::string{};
 +  return fmt::format(R"""(
 +      {{
-+        var lighting = {4}{6};
++        var lighting = {4}{6};{9}
 +        for (var i = 0u; i < {1}u; i++) {{
 +            if ((ubuf.lightState{0}{5} & (1u << i)) == 0u) {{ continue; }}
 +            let light = ubuf.lights[i];
@@ -2244,12 +2291,12 @@ index a041c4b..c08aafe 100644
 +            ldir = ldir / dist;
 +            var attn: f32;{2}
 +            let diff = {3};
-+            lighting = lighting + (attn * diff * light.color){6};
++            lighting = lighting + (attn * diff * light.color){6};{10}
 +        }}
-+        rast{0}{6} = ({7}{6} * clamp(lighting, {8}(0.0), {8}(1.0)));
++        rast{0}{6} = ({7}{6} * clamp(lighting, {8}(0.0), {8}(1.0)));{11}
 +      }})""",
 +                     i, GX::MaxLights, lightAttnFn, lightDiffFn, ambSrc, alpha ? "a"sv : ""sv, swizzle, matSrc,
-+                     alpha ? "f32"sv : "vec3f"sv);
++                     alpha ? "f32"sv : "vec3f"sv, specDecl, specAcc, specApply);
 +}
 +
 +// Material color expression of color channel i (for extra lights added to its lighting sum).
@@ -2323,6 +2370,7 @@ index a041c4b..c08aafe 100644
 +  let c = clamp(vec2i(floor(uv * dims + off)), vec2i(0), vec2i(dims) - vec2i(1));
 +  return enh_key(textureLoad(tex, c, 0), sr, sg);
 +}
++fn enh_pick_key(tev: f32, analytic: f32) -> f32 { return select(tev, analytic, abs(analytic - tev) < 768.0); }
 +fn enh_vogel(k: u32, n: u32, rot: f32) -> vec2f {
 +  let r = sqrt((f32(k) + 0.5) / f32(n));
 +  let a = f32(k) * 2.39996323 + rot;
@@ -2338,29 +2386,46 @@ index a041c4b..c08aafe 100644
 +  let q = ubuf.enh_shadow_taps;
 +  let taps = max(q & 0xFFFFu, 1u);
 +  var radius = ubuf.enh_shadow_radius * dims.x / 640.0;
-+  let sl = clamp(slope, 0.0, 4096.0);
++  // Slope-scaled bias for the off-centre taps only, capped: with a grazing light (e.g. a ghost's
++  // own light near the floor) a full receiver-plane bias would remove thin casters' shadows.
++  let sl = clamp(slope * 0.75, 0.0, 96.0);
++  // Early out: centre and an outer ring of 4 taps (at the widest search radius) agree -> the
++  // pixel is fully lit or fully shadowed, no penumbra to filter (most pixels).
++  {
++    let ro = radius * select(1.0, 1.5, (q & 0x10000u) != 0u);
++    var n = 0.0;
++    for (var k = 0u; k < 5u; k++) {
++      let a = rot + f32(k) * 1.5707963;
++      let o = select(vec2f(cos(a), sin(a)) * ro, vec2f(0.0), k == 4u);
++      let key = enh_fetch_key(tex, uv, o, dims, sr, sg);
++      n = n + select(0.0, 1.0, recv - (3.0 + sl * length(o)) > key);
++    }
++    if (n == 0.0 || n == 5.0) { return n / 5.0; }
++  }
 +  if ((q & 0x10000u) != 0u) {
 +    var bsum = 0.0;
 +    var bcnt = 0.0;
-+    let sr2 = radius * 2.5;
++    let sr2 = radius * 1.5;
 +    for (var k = 0u; k < taps; k++) {
 +      let o = enh_vogel(k, taps, rot) * sr2;
 +      let key = enh_fetch_key(tex, uv, o, dims, sr, sg);
-+      if (recv - (3.0 + sl * (length(o) + 1.0)) > key) {
++      if (recv - (3.0 + sl * length(o)) > key) {
 +        bsum = bsum + key;
 +        bcnt = bcnt + 1.0;
 +      }
 +    }
 +    if (bcnt == 0.0) { return 0.0; }
 +    let blk = bsum / bcnt;
-+    let pen = clamp((recv - blk) / max(65535.0 - blk, 256.0) * ubuf.enh_pcss, 0.0, 1.0);
-+    radius = mix(max(radius * 0.15, 0.75), radius * 2.5, pen);
++    // Penumbra from the receiver-blocker key distance; capped at 1.5x the filter radius so thin
++    // casters (spears, chair legs) keep a visible shadow.
++    let pen = clamp((recv - blk) / max(65535.0 - blk, 256.0) * ubuf.enh_pcss * 0.35, 0.0, 1.0);
++    radius = mix(max(radius * 0.3, 0.75), radius * 1.5, pen);
 +  }
 +  var s = 0.0;
 +  for (var k = 0u; k < taps; k++) {
 +    let o = enh_vogel(k, taps, rot) * radius;
 +    let key = enh_fetch_key(tex, uv, o, dims, sr, sg);
-+    s = s + select(0.0, 1.0, recv - (3.0 + sl * (length(o) + 1.0)) > key);
++    s = s + select(0.0, 1.0, recv - (3.0 + sl * length(o)) > key);
 +  }
 +  return s / f32(taps);
 +}
@@ -2393,11 +2458,15 @@ index a041c4b..c08aafe 100644
 +  // floor(65536 s)), which avoids the LINEAR-filtered LUT's byte-wrap stripes; otherwise the
 +  // TEV's own key.
 +  std::string recv = fmt::format("f32({})", recvKeyExpr);
-+  if (idx > 0) {
++  static const bool sTevKey = std::getenv("AURORA_ENH_TEVKEY") != nullptr; // debug aid
++  if (idx > 0 && !sTevKey) {
 +    const auto& prev = config.tevStages[idx - 1];
 +    if (prev.texMapId != GX_TEXMAP_NULL && prev.texCoordId != GX_TEXCOORD_NULL && prev.colorOp.outReg == GX_TEVPREV &&
 +        config.tcgs[prev.texCoordId].type == GX_TG_MTX3x4) {
-+      recv = fmt::format("min(floor(clamp(tex{}_uv.x, 0.0, 1.0) * 65536.0), 65535.0)", underlying(prev.texCoordId));
++      // Only where it agrees with the TEV's key (other materials map the ramp differently, e.g.
++      // the room geometry in lit rooms; a wrong key loses every shadow).
++      recv = fmt::format("enh_pick_key({}, min(floor(clamp(tex{}_uv.x, 0.0, 1.0) * 65536.0), 65535.0))", recv,
++                         underlying(prev.texCoordId));
 +    }
 +  }
 +  return fmt::format(
@@ -2419,7 +2488,7 @@ index a041c4b..c08aafe 100644
  // ---- Integer TEV (GX_AURORA_ACCURACY_INT_TEV) -------------------------------------------------
  // The hardware combiner works on integers: A/B/C inputs are 8 bits (the low byte of a register),
  // D and the registers are signed 11-bit, C is widened to 0..256 (C + C>>7) for the lerp, and every
-@@ -1066,8 +1303,14 @@ std::string build_int_tev_stage(size_t idx, const ShaderConfig& config, const Te
+@@ -1066,8 +1345,14 @@ std::string build_int_tev_stage(size_t idx, const ShaderConfig& config, const Te
          const auto a = int_color_arg(stage.colorPass.a, idx, config, stage, false);
          const auto b = int_color_arg(stage.colorPass.b, idx, config, stage, false);
          cond = fmt::format("({} {} {})", int_cmp_key(op.op, a), rel, int_cmp_key(op.op, b));
@@ -2435,7 +2504,7 @@ index a041c4b..c08aafe 100644
      }
      out += fmt::format("\n    let teva{} = {};", idx, expr);
    }
-@@ -1362,10 +1605,20 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1362,10 +1647,20 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
          auto value = color_arg_reg(carg, idx, config, stage);
          return fmt::format("vec3f({})", value);
        };
@@ -2460,7 +2529,7 @@ index a041c4b..c08aafe 100644
        fragmentFn += fmt::format("\n    let teva{0} = {1};", idx, op);
        fragmentFn += fmt::format("\n    {0} = vec4f(tevc{1}, {0}.a);", regName[stage.colorOp.outReg], idx);
        fragmentFn += fmt::format("\n    {0}.a = teva{1};", outReg, idx);
-@@ -1448,6 +1701,37 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1448,6 +1743,37 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
      }
    }
  
@@ -2498,7 +2567,7 @@ index a041c4b..c08aafe 100644
    for (int i = 0; i < info.sampledColorChannels.size(); ++i) {
      if (!info.sampledColorChannels.test(i)) {
        continue;
-@@ -1455,6 +1739,11 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1455,6 +1781,11 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
  
      const auto& cc = config.colorChannels[i];
      const auto& cca = config.colorChannels[i + GX_ALPHA0];
@@ -2510,7 +2579,7 @@ index a041c4b..c08aafe 100644
      if (cc.lightingEnabled && cc.ambSrc == GX_SRC_REG) {
        uniBufAttrs += fmt::format("\n    cc{0}_amb: vec4f,", i);
      }
-@@ -1490,6 +1779,28 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1490,6 +1821,28 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
          vtxXfrAttrs += fmt::format("\n    out.cc{0} = round(clamp(out.cc{0}, vec4f(0.0), vec4f(1.0)) * 255.0) / 255.0;", i);
        }
        fragmentFnPre += fmt::format("\n    var rast{0} = in.cc{0};", i);
@@ -2539,7 +2608,7 @@ index a041c4b..c08aafe 100644
      }
    }
    for (int i = 0; i < info.sampledKColors.size(); ++i) {
-@@ -1916,6 +2227,22 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1916,6 +2269,26 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
    if (info.usesZTex) {
      uniBufAttrs += "\n    ztex_bias: vec4u,";
    }
@@ -2557,12 +2626,16 @@ index a041c4b..c08aafe 100644
 +        "\n    enh_mask_base: u32,"
 +        "\n    enh_mask_pitch: u32,"
 +        "\n    enh_mask_dims: u32,"
-+        "\n    enh_mask_scale: f32,";
++        "\n    enh_mask_scale: f32,"
++        "\n    enh_flash_spec: f32,"
++        "\n    enh_pad0: f32,"
++        "\n    enh_pad1: f32,"
++        "\n    enh_pad2: f32,";
 +  }
    if (config.intTev) {
      // Already wrapped to 8 bits after the last stage.
    } else if (!prevColorNormalized && !prevAlphaNormalized) {
-@@ -2444,6 +2771,15 @@ fn fs_main(in: VertexOutput) -> {10} {{{6}{5}{11}
+@@ -2444,6 +2817,15 @@ fn fs_main(in: VertexOutput) -> {10} {{{6}{5}{11}
    if (EnableDebugPrints) {
      Log.info("Generated shader (hash {:x}): {}", hash, shaderSource);
    }

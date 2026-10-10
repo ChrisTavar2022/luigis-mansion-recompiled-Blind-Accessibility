@@ -166,10 +166,11 @@ struct EnhancedLightingSettings {
     // Flashlight cone per pixel with a smooth penumbra.
     bool flashlightQuality = true;
     float flashlightSoftness = 0.6f;  // 0..1
+    float flashlightSpecular = 0.6f;  // 0..2: glossy highlight where the beam hits (per pixel)
     // Soft shadows for the game's shadow map (PCF / PCSS contact hardening).
     bool softShadows = true;
     int softShadowQuality = 2;        // 0 PCF 8, 1 PCF 16, 2 PCSS 16, 3 PCSS 32
-    float softShadowRadius = 1.5f;    // filter radius (640x480 shadow-map texels)
+    float softShadowRadius = 1.0f;    // filter radius (640x480 shadow-map texels)
     float softShadowPenumbra = 6.0f;  // PCSS penumbra growth
     int shadowMapSize = 0;            // 0 render resolution, 1 2048x1536, 2 4096x3072 (offscreen)
     // Dynamic colored lights from game objects (ghosts) and test lights.
@@ -179,16 +180,16 @@ struct EnhancedLightingSettings {
     int extraShadowQuality = 1;        // 0 low, 1 medium, 2 high (ray-march steps)
     // Volumetric haze in the flashlight beam.
     bool volumetricBeam = true;
-    float volumetricIntensity = 1.0f;  // 0..3
+    float volumetricIntensity = 2.0f;  // 0..3
     int volumetricQuality = 1;         // 0 low, 1 medium, 2 high
     // Glow around bright light sources (HUD excluded).
     bool bloom = true;
     float bloomIntensity = 0.5f;       // 0..2
-    float bloomThreshold = 0.72f;      // 0..1
+    float bloomThreshold = 0.8f;       // 0..1
     float bloomRadius = 1.0f;          // 0.25..2
     float bloomFlashlightSuppress = 0.6f;  // 0..1: less glow from walls lit by the flashlight
-    float bloomScene = 0.25f;           // 0..1: glow of ordinary bright surfaces (above the threshold)
-    float bloomEmissive = 0.8f;        // 0..2: glow of light-emitting effects (glows, fire, beams, sparks)
+    float bloomScene = 0.12f;          // 0..1: glow of ordinary bright surfaces (above the threshold)
+    float bloomEmissive = 0.6f;        // 0..2: glow of light-emitting effects (glows, fire, beams, sparks)
     float bloomLightGlow = 0.6f;       // 0..2: glow around colored light sources (ghosts)
     // Screen-space ambient occlusion (contact darkening in corners and under furniture).
     bool ssao = false;

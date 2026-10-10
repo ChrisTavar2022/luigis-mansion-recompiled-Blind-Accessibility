@@ -10,6 +10,7 @@
 
 #include <aurora/enhanced.h>
 #include <dolphin/gx.h>
+#include <dolphin/gx/GXAurora.h>
 
 #include <algorithm>
 #include <chrono>
@@ -31,6 +32,8 @@ void recheckDrawState();  // hle_gx.cpp: re-evaluate the draw class before the n
 namespace {
 
 std::atomic<bool> sActive{false};
+bool sInScene = false, sInCaster = false;  // guest thread
+u8 sClass = 0xFF;                          // last draw class sent
 int sPerfPhase = -1;       // LM_ENH_PERF_AB phase (host thread)
 bool sPerfNoMap = false;
 bool sGhostPass = false;
@@ -142,6 +145,7 @@ void applySettings() {
     c.perPixelLighting = l.perPixelLighting;
     c.flashlightQuality = l.flashlightQuality;
     c.flashlightSoftness = l.flashlightSoftness;
+    c.flashlightSpecular = l.flashlightSpecular;
     c.softShadows = l.softShadows;
     c.softShadowQuality = u32(std::clamp(l.softShadowQuality, 0, 3));
     c.softShadowRadius = l.softShadowRadius;
@@ -198,17 +202,39 @@ void applySettings() {
     sActive.store(c.enabled, std::memory_order_relaxed);
 }
 
+// Draw class (docs/RENDERING.md "Enhanced lighting"): set at hook boundaries, never between the
+// game's own GX commands: WORLD inside the main 3D view (fn_8000BB98), GHOST inside its ghost
+// pass, OTHER in the shadow-map caster pass and everywhere else (HUD/2D, GBH, copies). Aurora
+// additionally ignores non-perspective draws for its re-rendered passes.
+void emitClass() {
+    if (!masterOn()) return;
+    u8 cls = AURORA_DRAW_CLASS_OTHER;
+    if (sInScene && !sInCaster && active()) cls = sGhostPass ? AURORA_DRAW_CLASS_GHOST : AURORA_DRAW_CLASS_WORLD;
+    if (cls == sClass) return;
+    GXSetDrawClassAurora(cls);
+    sClass = cls;
+}
+
 void setGhostPass(bool on) {
     if (sGhostPass == on) return;
     sGhostPass = on;
-    gx::recheckDrawState();
+    emitClass();
 }
 bool ghostPass() { return sGhostPass; }
+
+void setCasterPass(bool on) {
+    if (sInCaster == on) return;
+    sInCaster = on;
+    emitClass();
+}
 
 void beginScene() {
     addTestLights();
     const uint32_t count = sPendingCount;
     sPendingCount = 0;  // a frame in which nobody submits has no extra lights
+    sClass = 0xFF;      // every frame (and interpolation tape) sets its class again
+    sInScene = true;
+    emitClass();
     if (!active()) return;
     const u32 at = interp::mark();
     aurora::gfx::set_extra_lights(sPending.data(), count);
@@ -216,6 +242,8 @@ void beginScene() {
 }
 
 void endScene() {
+    sInScene = false;
+    emitClass();
     if (active()) GXSceneEndAurora();
 }
 

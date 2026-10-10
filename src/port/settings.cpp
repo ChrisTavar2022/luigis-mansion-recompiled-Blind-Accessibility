@@ -84,6 +84,7 @@ std::vector<Field> fields() {
         flag("enhanced_lighting", "per_pixel_lighting", l.perPixelLighting),
         flag("enhanced_lighting", "flashlight_quality", l.flashlightQuality),
         num("enhanced_lighting", "flashlight_softness", l.flashlightSoftness),
+        num("enhanced_lighting", "flashlight_specular", l.flashlightSpecular),
         flag("enhanced_lighting", "soft_shadows", l.softShadows),
         num("enhanced_lighting", "soft_shadow_quality", l.softShadowQuality),
         num("enhanced_lighting", "soft_shadow_radius", l.softShadowRadius),

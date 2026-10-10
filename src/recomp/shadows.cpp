@@ -228,6 +228,7 @@ HLE(fn_8005D984) {
             log("[shadow]   refit fov %.1f asp %.2f near %.0f far %.0f", fit.fov, fit.aspect, fit.zNear, fit.zFar);
     }
 
+    if (active) enh::setCasterPass(true);
     // Enhanced lighting "Shadow map size": the caster pass renders into an offscreen target of
     // that size instead of the EFB; the Z16 copy (fn_8005D8CC) then comes from it at that size.
     // Needs "Shadow map at render resolution" (receivers sample Aurora's copy texture).
@@ -263,6 +264,7 @@ HLE(fn_8005D8CC) {
         GXRestoreFrameBuffer();
         sShadowOffscreen = false;
     }
+    enh::setCasterPass(false);
 }
 
 }  // namespace recomp

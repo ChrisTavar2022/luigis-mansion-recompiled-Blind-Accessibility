@@ -224,25 +224,6 @@ void traceNote(const char* fmt, ...) {
     else sTraceFrame.emplace_back(buf, 1);
 }
 
-// Enhanced lighting draw class (docs/RENDERING.md "Enhanced lighting"): world geometry is a
-// perspective draw into the full viewport outside the shadow-map pass; the GBH's partial 3D
-// view, 2D/HUD and the light's-view pass are "other". Sent only while the mode is on (off, the
-// FIFO stays exactly as before) and only when it changes; reset every frame so each frame
-// (and each interpolation tape) starts by setting it.
-u8 sDrawClass = 0xFF;
-void emitDrawClass() {
-    if (!enh::masterOn()) {
-        sDrawClass = 0xFF;
-        return;
-    }
-    u8 cls = AURORA_DRAW_CLASS_OTHER;
-    if (enh::active() && sProj.type == GX_PERSPECTIVE && viewportFull() && !sVpFollow && rd32(VA(0x804D8080)) == 0)
-        cls = enh::ghostPass() ? AURORA_DRAW_CLASS_GHOST : AURORA_DRAW_CLASS_WORLD;
-    if (cls == sDrawClass) return;
-    GXSetDrawClassAurora(cls);
-    sDrawClass = cls;
-}
-
 void prepareDraw(ProjMode mode, const char* what = "draw") {
     traceNote("%s %s vp(%.0f,+%.0f) -> %s", what, sProj.type == GX_PERSPECTIVE ? "persp" : "ortho", sVp.left,
               sVp.wd, mode == ProjMode::Scaled ? "scaled" : mode == ProjMode::Zoom ? "zoom" : "plain");
@@ -252,7 +233,6 @@ void prepareDraw(ProjMode mode, const char* what = "draw") {
     const bool pillar = sVpFollow || (hud && (sScissor.x > 0 || sScissor.x + sScissor.w < 640));
     const int anchor = sVpFollow ? sVpAnchor : hudAnchor();
     if (pillar != sScissorPillar || (pillar && anchor != sScissorAnchor)) emitScissor(pillar);
-    emitDrawClass();
 }
 
 // Mirror of the vertex layout state that immediate-mode 2D draws use, so a
@@ -1114,7 +1094,6 @@ GXHLE(GXSetCopyFilter) {
 }
 GXHLE(GXCopyDisp) {
     sDiagFrame++;
-    sDrawClass = 0xFF;  // the next frame sets its draw class again
     if (void* dump = dropDraw() ? nullptr : efbcopy::dumpTarget(sDiagFrame)) {
         // LM_FRAME_DUMP: copy the finished EFB through the copy-to-RAM path, then restore
         // the game's texture-copy setup.

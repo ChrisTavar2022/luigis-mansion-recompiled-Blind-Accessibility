@@ -254,6 +254,9 @@ void enhancedLightingTab() {
         "edge without a hard rim. Softness blends from the original falloff (0) to fully smoothed (1).");
     ImGui::BeginDisabled(!l.flashlightQuality);
     sDirty |= ImGui::SliderFloat("Penumbra softness", &l.flashlightSoftness, 0.0f, 1.0f, "%.2f");
+    sDirty |= ImGui::SliderFloat("Beam highlights", &l.flashlightSpecular, 0.0f, 2.0f, "%.2f");
+    ImGui::SetItemTooltip("Glossy highlights where the flashlight hits floors, furniture and characters\n"
+                          "(per pixel, tinted by the surface). 0: the original matte response.");
     ImGui::EndDisabled();
     sDirty |= ImGui::Checkbox("Dynamic colored lights", &l.extraLights);
     ImGui::SetItemTooltip(
