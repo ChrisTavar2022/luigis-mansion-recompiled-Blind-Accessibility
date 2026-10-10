@@ -728,3 +728,76 @@ and the model viewer. Merging pipeline_cache.db files from longer play sessions
 - A fresh scratch `APPDATA` (or `LM_CACHE_DIR`) gives empty `dawn_cache.db`/`pipeline_cache.db`;
   the GPU driver's own shader cache is system-wide and stays warm, so first-ever runs on a new
   machine are somewhat slower than measured here.
+
+### Cache robustness (Aurora patch 0016)
+
+**Problem:** a crash once left a bad pipeline config in `pipeline_cache.db`; every later launch
+rebuilt it at startup and crashed again. Aurora trusted whatever the caches held: the shader
+generator aborts (FATAL) on enum values it does not know and indexes fixed arrays with
+stage/texcoord/texmap ids, a Dawn error is an uncaptured error (FATAL), and Dawn even throws
+(terminating the process) when a pipeline is created from a shader module that failed to
+compile.
+
+**What happens now** (`lib/gfx/pipeline_cache.cpp`, `lib/webgpu/gpu_cache.cpp`, a few lines in
+`lib/gx/pipeline.cpp`):
+
+- **Every cached config is validated before use.** `pipeline_cache.db` schema 2 (older caches
+  are dropped): the stored `hash` (xxh3 of the config bytes seeded by the shader type, the cache
+  key) is recomputed as a per-entry checksum, then every field the generator switches on or
+  indexes with is range-checked (`validate_config`: blend/depth/cull, TEV args/ops/konst/order/
+  swap/indirect state, texgens of the texcoords the shader reads, vertex attributes, colour
+  channels, alpha compare, fog, padding bytes). Invalid rows are skipped and deleted with a
+  `pipeline cache: skipping invalid entry ...: <reason>` line.
+- **Pipeline creation is guarded** (`guarded_create`): Validation/Internal/OOM error scopes
+  around each creation (Dawn error scopes are per thread, so the compile threads do not see each
+  other's errors), and the GX shader module is checked before a pipeline is made from it. A
+  failure gives an empty pipeline (its draws are skipped, `droppedDraws`), and a validation/
+  compile failure records the config in the `pipeline_bad` table: it is never built again and is
+  removed from the cache.
+- **Crash journal** (`pipeline_cache.journal` next to the caches, 4 KB, memory-mapped): every
+  thread writes the key of the config it is building into its slot while it builds it, and the
+  file holds the session phase (startup until the first precache pass finished and 300 frames
+  were shown, then running, clean after `aurora_shutdown`). Stores to a shared mapping survive a
+  crash of the process, so the next launch knows:
+  - configs that were being built when the process died become **crash suspects**: not precached
+    any more, still built when a draw needs one (the quarantine is lifted when that works),
+    refused after a second crash;
+  - a death **during startup** with nothing in flight (e.g. a damaged Dawn blob) deletes
+    `pipeline_cache.db` and `dawn_cache.db`; a second consecutive startup death deletes them
+    too; from the third, the shipped list is also ignored for that run ("safe mode"). Reaching
+    the running phase or a clean exit resets the count.
+  Caveat: killing the process during startup (test scripts) counts as a startup crash; it
+  costs a cache rebuild or the precache of the few configs that were in flight, never
+  correctness.
+- **Damaged database files** (not a database, truncated, damaged pages: `PRAGMA quick_check`
+  at open, `SQLITE_CORRUPT`/`NOTADB` later) are deleted and recreated, for both
+  `pipeline_cache.db` and `dawn_cache.db`, instead of running without a cache.
+- **`dawn_cache.db`** schema 3 stores an XXH3 checksum of each uncompressed blob. Dawn asks for
+  an entry's size before reading it; the entry is decompressed and verified on that size query,
+  so a damaged blob is deleted and reported as a miss (Dawn rebuilds it) instead of being handed
+  to the driver.
+- **Shipped list** `data/pipelines.bin` format 2: CRC-32 of the payload and of every row
+  (`tools/pipelines/pipelines.py` writes it; Aurora still reads format 1). Rows with a bad CRC
+  or failing `validate_config` are skipped with a log line; the header's raw size is capped at
+  64 MB.
+
+**Tested** (scratch `APPDATA`/`LM_CACHE_DIR`, `LM_PIPELINE_LOG=1`, boot -> opening, each run
+closed cleanly unless noted; the corruption scripts are not in the repo): random bytes in a
+`pipeline_cache.db` entry (checksum mismatch, deleted); entries with an invalid blend mode, fog
+type and depth function and a recomputed hash (validation, deleted); an entry with a 7-component
+position attribute and a recomputed hash (valid ranges, WGSL fails to compile: recorded as bad,
+not rebuilt next launch; before the fix this terminated the process inside Dawn); wrong schema
+version (dropped); a row of another config version (ignored); the db truncated to 40 %, overwritten
+with random bytes, or 200 random bytes flipped in its pages (recreated); 40 Dawn blobs damaged
+(checksum mismatch or decompression failure: deleted, rebuilt), `dawn_cache.db` truncated /
+random / page damage (recreated); shipped lists with 20 rows flipped (CRC), an invalid enum, a
+non-compiling row, a truncated file, and a format 1 list; startup kills: one with configs in
+flight (suspects recorded, no reset), then repeated kills at 3 s (reset after the first with
+nothing in flight and after the second, safe mode from the third, back to normal after a run
+that reached the running phase). The real list (2148 configs) has 0 rows rejected by the
+validator.
+
+Test aids: `LM_PIPELINE_LIST=<file>` (a damaged list), `LM_CACHE_DIR=<dir>`; the journal is
+`<cache dir>/pipeline_cache.journal` (u32 magic "AUJN", version, phase 0 clean / 1 startup /
+2 running, consecutive startup crashes, then 64 slots); the `pipeline_bad` table lists recorded
+configs (`reason` 1 = failed creation, 2 = crash suspect, `crashes`).

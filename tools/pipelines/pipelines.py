@@ -5,8 +5,13 @@ The list holds Aurora pipeline configs (GX TEV/vertex/blend state structs, gener
 metadata, no game data) in the format aurora_pipeline_cache_seed reads
 (extern/aurora/include/aurora/pipeline_cache.h):
 
-    "AUPC", u32 format 1, u32 flags (1 = zstd payload), u32 rows, u64 raw payload size,
-    payload: rows of {u8 type, u32 config version, u32 config size, u32 first frame used, config}
+    "AUPC", u32 format 2, u32 flags (1 = zstd payload), u32 rows, u64 raw payload size,
+    u32 CRC-32 of the raw payload, u32 reserved (0),
+    payload: rows of {u8 type, u32 config version, u32 config size, u32 first frame used,
+                      u32 CRC-32 of the config, config}
+
+Format 1 (no CRCs: 24-byte header, 13-byte row headers) is still read. Aurora validates every
+row (CRC, then field ranges) and skips damaged ones (patch 0014).
 
     python tools/pipelines/pipelines.py build -o data/pipelines.bin <pipeline_cache.db | .bin>...
     python tools/pipelines/pipelines.py info data/pipelines.bin
@@ -19,10 +24,11 @@ import argparse
 import sqlite3
 import struct
 import sys
+import zlib
 from pathlib import Path
 
 MAGIC = b"AUPC"
-FORMAT = 1
+FORMAT = 2
 FLAG_ZSTD = 1
 TYPES = {0: "clear", 1: "gx", 2: "rml"}
 
@@ -49,20 +55,32 @@ def read_db(path: Path):
 def read_bin(path: Path):
     data = path.read_bytes()
     magic, fmt, flags, count, raw = struct.unpack_from("<4sIIIQ", data, 0)
-    if magic != MAGIC or fmt != FORMAT:
+    if magic != MAGIC or fmt not in (1, 2):
         raise SystemExit(f"{path}: not a pipeline list")
-    payload = data[24:]
+    header = 24 if fmt == 1 else 32
+    payload = data[header:]
     if flags & FLAG_ZSTD:
         z = zstd()
         if z is None:
             raise SystemExit("zstd needs Python 3.14+")
         payload = z.decompress(payload)
+    if fmt >= 2:
+        (crc,) = struct.unpack_from("<I", data, 24)
+        if zlib.crc32(payload) != crc:
+            print(f"{path}: payload checksum mismatch", file=sys.stderr)
     off = 0
     for _ in range(count):
         typ, version, size, first = struct.unpack_from("<BIII", payload, off)
         off += 13
-        yield typ, version, payload[off:off + size], first
+        if fmt >= 2:
+            (row_crc,) = struct.unpack_from("<I", payload, off)
+            off += 4
+        config = payload[off:off + size]
         off += size
+        if fmt >= 2 and zlib.crc32(config) != row_crc:
+            print(f"{path}: row with a bad checksum skipped", file=sys.stderr)
+            continue
+        yield typ, version, config, first
 
 
 def read_any(path: Path):
@@ -85,7 +103,7 @@ def build(inputs, out: Path, compress=True):
     kept = sorted(((k, f) for k, f in rows.items() if k[1] == newest[k[0]]), key=lambda kf: (kf[1], kf[0][0]))
     payload = bytearray()
     for (typ, version, config), first in kept:
-        payload += struct.pack("<BIII", typ, version, len(config), first) + config
+        payload += struct.pack("<BIIII", typ, version, len(config), first, zlib.crc32(config)) + config
     flags = 0
     body = bytes(payload)
     z = zstd() if compress else None
@@ -93,7 +111,8 @@ def build(inputs, out: Path, compress=True):
         body = z.compress(body, level=19)
         flags |= FLAG_ZSTD
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(struct.pack("<4sIIIQ", MAGIC, FORMAT, flags, len(kept), len(payload)) + body)
+    out.write_bytes(struct.pack("<4sIIIQII", MAGIC, FORMAT, flags, len(kept), len(payload), zlib.crc32(payload), 0)
+                    + body)
     counts = {TYPES[t]: sum(1 for (k, _) in kept if k[0] == t) for t in sorted(newest)}
     print(f"{out}: {len(kept)} configs {counts}, versions {newest}, {len(payload)} bytes raw, "
           f"{out.stat().st_size} bytes on disk")
