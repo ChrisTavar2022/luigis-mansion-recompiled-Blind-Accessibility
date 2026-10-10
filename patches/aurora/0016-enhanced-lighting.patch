@@ -12,10 +12,10 @@ index 574e7e1..7b0a3e7 100644
          lib/gfx/texture_convert.cpp
 diff --git a/include/aurora/enhanced.h b/include/aurora/enhanced.h
 new file mode 100644
-index 0000000..9d6212f
+index 0000000..e1a017c
 --- /dev/null
 +++ b/include/aurora/enhanced.h
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,95 @@
 +#ifndef AURORA_ENHANCED_H
 +#define AURORA_ENHANCED_H
 +
@@ -66,6 +66,7 @@ index 0000000..9d6212f
 +  // Extra point lights (aurora/lights.h), per pixel on world geometry.
 +  bool extraLights;
 +  float extraLightIntensity;
++  float extraLightSaturation; // 0..2.5: color vibrance of every extra light (1 = as submitted)
 +  // Shadows of the extra lights flagged ExtraLightCastShadows (up to 4 per frame): a depth
 +  // pre-pass of the opaque world draws and a screen-space ray march toward each light.
 +  bool extraShadows;
@@ -254,10 +255,10 @@ index 1920bc8..c22fbec 100644
  void encode_op(wgpu::CommandEncoder& encoder, FramePacket& frame, const FrameOp& op);
 diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 new file mode 100644
-index 0000000..aff85ab
+index 0000000..e8a19a9
 --- /dev/null
 +++ b/lib/gfx/enhanced.cpp
-@@ -0,0 +1,1594 @@
+@@ -0,0 +1,1622 @@
 +// Enhanced lighting: configuration, extra lights, per-draw uniforms and the scene-end
 +// screen-space effects (bloom, volumetric flashlight beam, ambient occlusion).
 +// See include/aurora/enhanced.h and include/aurora/lights.h.
@@ -300,7 +301,7 @@ index 0000000..aff85ab
 +bool same(const AuroraEnhancedConfig& a, const AuroraEnhancedConfig& b) {
 +#define EQ(f) (a.f == b.f)
 +  return EQ(enabled) && EQ(perPixelLighting) && EQ(flashlightQuality) && EQ(flashlightSoftness) && EQ(flashlightSpecular) && EQ(softShadows) &&
-+         EQ(softShadowQuality) && EQ(softShadowRadius) && EQ(softShadowPenumbra) && EQ(extraLights) &&
++         EQ(softShadowQuality) && EQ(softShadowRadius) && EQ(softShadowPenumbra) && EQ(extraLights) && EQ(extraLightSaturation) &&
 +         EQ(extraLightIntensity) && EQ(volumetric) && EQ(volumetricIntensity) && EQ(volumetricQuality) && EQ(bloom) &&
 +         EQ(bloomIntensity) && EQ(bloomThreshold) && EQ(bloomRadius) && EQ(bloomFlashlightSuppress) && EQ(bloomScene) && EQ(bloomEmissive) && EQ(bloomLightGlow) && EQ(ssao) &&
 +         EQ(ssaoIntensity) && EQ(ssaoRadius);
@@ -325,6 +326,25 @@ index 0000000..aff85ab
 +};
 +Flashlight g_flash;
 +float g_flashDist2 = 0.f;
++
++// Vibrance: push a light color away from its gray (luma) by `sat`, keeping its brightest channel,
++// so every provider (ghost lights, test lights) gets one consistent saturated look.
++std::array<float, 3> vivid(const float c[3], float sat) noexcept {
++  const float l = 0.2126f * c[0] + 0.7152f * c[1] + 0.0722f * c[2];
++  const float mx = std::max({c[0], c[1], c[2]});
++  std::array<float, 3> o{};
++  float omx = 0.f;
++  for (int i = 0; i < 3; ++i) {
++    o[i] = std::max(l + (c[i] - l) * sat, 0.f);
++    omx = std::max(omx, o[i]);
++  }
++  if (omx > 1e-5f) {
++    for (float& v : o) {
++      v *= mx / omx;
++    }
++  }
++  return o;
++}
 +
 +// Bloom glow buffer: emissive draws (additive blending: what the game adds as light) recorded
 +// with a copy of their pipeline that renders into the glow buffer, depth-tested against the
@@ -653,7 +673,7 @@ index 0000000..aff85ab
 +    let phase = 0.6 + 0.4 * max(dot(-dir, lv * inverseSqrt(max(dl2, 1e-4))), 0.0);
 +    // Dust: slowly drifting value noise modulates the density (motes in the beam).
 +    let dq = p * 0.045 + vec3f(0.0, fx.vol.w * 0.35, fx.vol.w * 0.2);
-+    let dust = 0.55 + 0.9 * vnoise(dq) * vnoise(dq * 2.7 + vec3f(17.0));
++    let dust = 0.4 + 1.2 * vnoise(dq) * vnoise(dq * 2.7 + vec3f(17.0)) * 2.0;
 +    acc = acc + min(flash_attn(p), 1.0) * phase * dust / (1.0 + dl2 / (r0 * r0));
 +    t = t + ds;
 +  }
@@ -1156,7 +1176,14 @@ index 0000000..aff85ab
 +  }
 +  wgpu::TextureView volView;
 +  if ((job.mask & 2u) != 0) {
-+    ensure_tex(g_gpu.volTex, t.width / job.volDiv, t.height / job.volDiv, HdrFormat, rt, "Enhanced volumetric");
++    // The haze is smooth: at most 540 (low) / 720 lines whatever the render resolution.
++    uint32_t vw = std::max(t.width / job.volDiv, 1u), vh = std::max(t.height / job.volDiv, 1u);
++    const uint32_t cap = job.volDiv >= 4 ? 540u : 720u;
++    if (vh > cap) {
++      vw = std::max(vw * cap / vh, 1u);
++      vh = cap;
++    }
++    ensure_tex(g_gpu.volTex, vw, vh, HdrFormat, rt, "Enhanced volumetric");
 +    run_pass(cmd, "Volumetric beam", g_gpu.volTex.view, g_gpu.vol, bind(job.base, {}, {}, {}, g_gpu.depth.view), false);
 +    volView = g_gpu.volTex.view;
 +  }
@@ -1261,7 +1288,8 @@ index 0000000..aff85ab
 +        uint32_t* w = &words[i * 12];
 +        std::memcpy(w + 0, l.pos, 12);
 +        std::memcpy(w + 3, &l.radius, 4);
-+        std::memcpy(w + 4, l.color, 12);
++        const auto vc = vivid(l.color, std::clamp(c.extraLightSaturation, 0.f, 2.5f));
++        std::memcpy(w + 4, vc.data(), 12);
 +        std::memcpy(w + 7, &l.intensity, 4);
 +        w[8] = l.flags;
 +        w[9] = l.id;
@@ -1757,9 +1785,10 @@ index 0000000..aff85ab
 +      // Core of the glow: a small fraction of the light's reach.
 +      u.xl[n * 2][0] = l.pos[0], u.xl[n * 2][1] = l.pos[1], u.xl[n * 2][2] = l.pos[2];
 +      u.xl[n * 2][3] = std::clamp(l.radius * 0.03f, 4.f, 20.f);
-+      u.xl[n * 2 + 1][0] = l.color[0] * l.intensity * 0.35f;
-+      u.xl[n * 2 + 1][1] = l.color[1] * l.intensity * 0.35f;
-+      u.xl[n * 2 + 1][2] = l.color[2] * l.intensity * 0.35f;
++      const auto vc = vivid(l.color, std::clamp(c.extraLightSaturation, 0.f, 2.5f));
++      u.xl[n * 2 + 1][0] = vc[0] * l.intensity * 0.35f;
++      u.xl[n * 2 + 1][1] = vc[1] * l.intensity * 0.35f;
++      u.xl[n * 2 + 1][2] = vc[2] * l.intensity * 0.35f;
 +      ++n;
 +    }
 +    u.bloom2[3] = float(n);

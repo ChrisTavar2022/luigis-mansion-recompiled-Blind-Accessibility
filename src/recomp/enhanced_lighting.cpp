@@ -152,6 +152,7 @@ void applySettings() {
     c.softShadowPenumbra = l.softShadowPenumbra;
     c.extraLights = l.extraLights;
     c.extraLightIntensity = l.extraLightIntensity;
+    c.extraLightSaturation = l.extraLightSaturation;
     c.extraShadows = l.extraLightShadows;
     c.extraShadowQuality = u32(std::clamp(l.extraShadowQuality, 0, 2));
     c.volumetric = l.volumetricBeam;

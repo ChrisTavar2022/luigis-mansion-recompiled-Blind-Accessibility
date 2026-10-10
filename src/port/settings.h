@@ -181,6 +181,7 @@ struct EnhancedLightingSettings {
     // Dynamic colored lights from game objects (ghosts) and test lights.
     bool extraLights = true;
     float extraLightIntensity = 1.0f;  // 0..3
+    float extraLightSaturation = 1.6f; // 0..2.5: color vibrance of all colored lights (1 = as the source gives it)
     bool extraLightShadows = true;     // shadows of lights flagged to cast them (ghost lights: the strongest two)
     int extraShadowQuality = 1;        // 0 low, 1 medium, 2 high (ray-march steps)
     // Volumetric haze in the flashlight beam.

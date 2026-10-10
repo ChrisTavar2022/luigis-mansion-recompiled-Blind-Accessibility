@@ -267,6 +267,9 @@ void enhancedLightingTab() {
         "around them (through the game's own materials). Cost grows with the number of lights.");
     ImGui::BeginDisabled(!l.extraLights);
     sDirty |= ImGui::SliderFloat("Light intensity", &l.extraLightIntensity, 0.0f, 3.0f, "%.2f");
+    sDirty |= ImGui::SliderFloat("Light color vibrance", &l.extraLightSaturation, 0.0f, 2.5f, "%.2f");
+    ImGui::SetItemTooltip("Saturation of every colored light (ghosts and other sources) and its glow.\n"
+                          "1: the colors as the game defines them; higher: deeper, more contrasty colors.");
     sDirty |= ImGui::Checkbox("Colored light shadows", &l.extraLightShadows);
     ImGui::SetItemTooltip(
         "The strongest colored lights (ghost lights: the two brightest) cast shadows: furniture and\n"
