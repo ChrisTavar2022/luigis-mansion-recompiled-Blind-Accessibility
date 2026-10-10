@@ -443,6 +443,14 @@ void gx::applyAccuracySettings() {
         port::settings().rendering.displayCopyFilter = off ? false : sFilter;
     }
     if (flags != GXGetAuroraAccuracy()) GXSetAuroraAccuracy(flags);
+    // LM_TEXGEN_BEYOND=0|1|2 (test aid): what a stage reads from a texcoord beyond GXSetNumTexGens
+    // ((0,0) / generated from its texgen (default, the console's behaviour) / texcoord 0).
+    static const int sBeyond = [] {
+        const char* e = std::getenv("LM_TEXGEN_BEYOND");
+        if (e) GXSetAuroraTexGenBeyondCount(u32(std::atoi(e)));
+        return 0;
+    }();
+    (void)sBeyond;
 }
 
 // LM_HUD_TRACE=<first>,<last>[,<step>]: for those frames (GXCopyDisp count), every 2D draw, viewport,
@@ -514,7 +522,28 @@ std::string imageDesc(u32 image) {
 }
 }  // namespace
 
+// LM_TEXGEN_LOG=1: every distinct draw (guest call chain) whose TEV or indirect stages read a
+// texture coordinate at or beyond GXSetNumTexGens, logged once with the stage setup.
+u8 sTevCoord[16] = {};
+static void texgenNoteDraw(const Ctx& c, const char* kind) {
+    static const bool on = [] { const char* e = std::getenv("LM_TEXGEN_LOG"); return e && e[0] == '1'; }();
+    if (!on) return;
+    std::string what;
+    char b[96];
+    for (u32 s = 0; s < sNumTevStages && s < 16; s++)
+        if (sTevMap[s] < 8 && sTevCoord[s] < 8 && sTevCoord[s] >= sInd.numTexGens)
+            std::snprintf(b, sizeof(b), " tev%u{tc%u map%u}", s, sTevCoord[s], sTevMap[s]), what += b;
+    for (u32 i = 0; i < sInd.numInd && i < 4; i++)
+        if (sInd.order[i][0] >= sInd.numTexGens)
+            std::snprintf(b, sizeof(b), " ind%u{tc%u map%u}", i, sInd.order[i][0], sInd.order[i][1]), what += b;
+    if (what.empty()) return;
+    static std::map<std::string, u32> sSeen;
+    std::snprintf(b, sizeof(b), " | nTexGen=%u nTev=%u nInd=%u", sInd.numTexGens, sNumTevStages, sInd.numInd);
+    const std::string k = std::string(kind) + " " + guestChain(c) + b + what;
+    if (sSeen[k]++ == 0) log("[texgen] f%u %s", sDiagFrame, k.c_str());
+}
 static void indNoteDraw(const Ctx& c, const char* kind) {
+    texgenNoteDraw(c, kind);
     if (!indLogOn()) return;
     bool any = sInd.numInd > 0;
     for (u32 s = 0; s < sNumTevStages && s < 16; s++) any |= sInd.tev[s] != 0;
@@ -1039,7 +1068,7 @@ GXHLE(GXSetTevOp) {
     GXSetTevOp(GXTevStageID(c.r[3]), GXTevMode(mode));
 }
 GXHLE(GXSetTevOrder) {
-    if (c.r[3] < 16) sTevMap[c.r[3]] = c.r[5] & 0x100 ? 0xFF : u8(c.r[5]);
+    if (c.r[3] < 16) sTevMap[c.r[3]] = c.r[5] & 0x100 ? 0xFF : u8(c.r[5]), sTevCoord[c.r[3]] = u8(c.r[4]);
     GXSetTevOrder(GXTevStageID(c.r[3]), GXTexCoordID(c.r[4]), GXTexMapID(c.r[5]), GXChannelID(c.r[6]));
 }
 GXHLE(GXSetTevColorIn) {
@@ -1111,12 +1140,6 @@ GXHLE(GXSetTevIndWarp) {
     // a known pattern: intensity 15 (offset 0) in the left half, 0 (offset -5 texels in s and t)
     // in the right half.
     static const bool sPattern = [] { const char* e = std::getenv("LM_IND_PATTERN"); return e && e[0] == '1'; }();
-    // LM_IND_TEXGENS=<n> (test aid): the painting warp (fn_8005FDD4) never calls GXSetNumTexGens and
-    // inherits 1 from the previous draw, so its indirect texcoord 1 is not generated (Aurora, like
-    // the usual emulator convention, reads it as (0,0): a uniform offset instead of the per-texel
-    // noise the game's 64x64 random texture was made for). n = 2 shows the noise for comparison.
-    static const int sTexGens = [] { const char* e = std::getenv("LM_IND_TEXGENS"); return e ? std::atoi(e) : 0; }();
-    if (sTexGens > 0) GXSetNumTexGens(u8(sTexGens));
     if (const u32 img = sMapImage[sInd.order[c.r[4] & 3][1] & 7]; sPattern && img) {
         u8* tex = hostp(0x80000000u | img);
         for (u32 i = 0; i < 64 * 64; i++) {

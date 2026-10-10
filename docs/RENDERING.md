@@ -392,14 +392,39 @@ and `GXCopyTex`es it to the object (+0x28, format from +0x00); `fn_80060A9C` (sc
   in the bathroom; its IA4 copy is also an extra TEV stage of the draw in `fn_80027D28`
   (`fn_80027B30`, reached from `fn_80011824`).
 
-**Texcoord 1 is never generated.** `fn_8005FDD4` sets a texgen for texcoord 1 but never calls
-`GXSetNumTexGens`; the count it inherits is 1 (from `fn_80025E9C`'s draw just before, in both
-versions). Aurora reads a texcoord the rasterizer does not produce as (0,0), as other GameCube
-renderers do, so every pixel reads noise texel (0,0) (intensity 3 x 17 = 51 at the boot seed): the
-painting is shifted by a uniform -4 texels (about 3 px at 640x480) and its top 4 texel rows repeat
-the copy's edge, instead of the per-texel scatter the noise texture was made for. What the console
-does for a texcoord beyond `numTexGens` is not documented; `LM_IND_TEXGENS=2` shows the alternative
-(Mario heavily scattered, image 3) for comparison with console footage. The uniform shift is kept.
+**Texcoord 1 is beyond the texgen count** (Aurora patch 0015). `fn_8005FDD4` sets a texgen for
+texcoord 1 (vertex TEX1, identity) but never calls `GXSetNumTexGens`; the count it inherits is 1 (from
+`fn_80025E9C`'s draw just before, in both versions). Aurora, like the usual emulator convention, read
+such a coordinate as (0,0): every pixel read noise texel (0,0) (intensity 51 at the boot seed), so the
+painting was only shifted by a uniform -4 texels and Mario looked clean.
+
+A real-console capture of the scene (King Boo's talk, "Get me outta heeeeere!") shows Mario
+scattered over the whole painting, with the grain of the 64x64 noise texture across the painting
+(about 1/64 of its width per cell, white speckles in the cap emblem, a broken-up moustache) and
+the displacement of a few texels. So the console produces a varying coordinate 1, not a constant.
+Candidates and what they predict:
+
+| Rule for a coordinate >= numTexGens | Painting |
+|---|---|
+| (0,0) / any constant (stale per-pixel value) | uniform shift, clean Mario: contradicted by the capture |
+| stale rasterizer setup from an earlier primitive | depends on whatever was drawn before; would change with the camera and Mario's animation and show a seam between the quad's two triangles: not what the capture shows |
+| generated from its texgen registers as if counted (TEX1 here, 0..1 over the quad) | 64 x 64 noise cells over the painting: matches |
+| a copy of texcoord 0 (s 0.1..0.9) | 51 x 64 cells: also close; the capture is too soft to separate it from the previous rule |
+
+Patch 0015 implements the third rule (`GX_AURORA_TEXGEN_BEYOND_GENERATE`, the default): a
+coordinate a TEV stage samples, or an indirect stage reads, at or beyond `numTexGens` is generated
+from its texgen registers when they are a matrix texgen whose source the vertex provides (TEX0-7,
+POS, NRM); anything else keeps (0,0). It changes only draws that read such a coordinate:
+`LM_TEXGEN_LOG=1` (host side) and Aurora's one-time "texcoord N read beyond numTexGens" log found
+exactly the painting's two draws (texcoord 1, numTexGens 1, source TEX1) through boot, title, file
+select, foyer, nursery with the vacuum and GBH screens, and the Secret Altar; two identical nursery
+runs with the old and new rule differ no more than two runs with the same rule. The magnitude
+then follows from the game's own data with no tuning: the 0.01 matrix x 2 gives 0..-5 texels of the
+128x128 copy (both axes, so the smear is diagonal), and the noise texture and copy are sampled the
+way the game set them up (noise point-sampled, 64x64 repeat; copy bilinear, clamp). At 4x the copy
+is rendered at 512x512 and the offsets stay in its 128-texel units, so the picture is the same,
+only sharper (image 7). `LM_TEXGEN_BEYOND=0|1|2` switches between (0,0), the default and
+texcoord 0 for comparison (image 8).
 
 ### Hardware semantics vs Aurora (patch 0014)
 
@@ -412,14 +437,14 @@ does for a texcoord beyond `numTexGens` is not documented; `LM_IND_TEXGENS=2` sh
 | Wrap 16..256 | masks the fixed-point coordinate (positive modulo) | WGSL `%` (negative stays negative) | `x - m floor(x/m)` |
 | Units | texels of the sampled texture | texels of the game's texture object (`GXTexObj` size, not the upscaled copy) | unchanged: offsets keep their size at any internal resolution and aspect |
 | Indirect texel | 8-bit components (.abg = s,t,u) | rounded in integer mode (0010) | unchanged |
-| Missing texcoord | undocumented | (0,0) (patch 0001) | unchanged (see above) |
+| Texcoord beyond numTexGens | not documented; the console capture shows it varying (see above) | (0,0) (patch 0001) | generated from its texgen registers (patch 0015) |
 
 Not changed (LM never uses them): `indLOD` (LOD from the unmodified coordinates), add-previous after
 a direct stage (Aurora does not carry a direct stage's coordinate into `t_TexCoord`), wrap/add-prev on
 stages whose indirect stage index is >= `numIndStages`.
 
-For the painting the integer path moves the offset by about 0.01 texel (-4.016 instead of -4.004);
-no visible change. The 1x/4x and 16:9 checks below are the real verification of the scaling.
+For the painting the integer path changes each offset by at most a few 1/128 texel (e.g. -4.016
+instead of -4.004 texels); no visible change. The 1x/4x and 16:9 checks below are the real verification of the scaling.
 
 ### EFB copies met along the way
 
@@ -445,10 +470,15 @@ Images in `build/indirect_fx/` (not in git):
    two deterministic runs; only the painting differs (Mario 4 texels right/down, top edge rows).
 2. `2_exaggerated_warp_1x_vs_4x.png`: `LM_IND_EXP=3` (32 texels) at internal resolution 1x and 4x,
    same frame: identical displacement; `2b_..._16x9.png` the same at 4x 16:9.
-3. `3_default_vs_LM_IND_TEXGENS2_noise.png`: what generated texcoord 1 would look like.
+3. (replaced by 7 and 8)
 4. `4_painting_before_after_diffx16.png`, 6. `6_copy_precision_before_after_diffx16.png`: main build
    (before) vs patch 0014, same frame: RGB5A3/RGB565 precision only (difference x16).
 5. `5_event5_bathroom_mirror.png`: event 5 running in the bathroom (no visible warp).
+7. `7_console_vs_port_1x_vs_4x.png`: the console capture (left; a low-resolution video capture,
+   so softer) next to the port at internal resolution 1x and 4x, same frame (window captures
+   `cap_1x.png`, `cap_4x.png`). Images 1, 2 and 4 predate patch 0015 (painting without scatter).
+8. `8_console_vs_rules_zero_generate_tc0_generate4x.png`: console, then `LM_TEXGEN_BEYOND` 0, 1,
+   2 and 1 at 4x (native frame dumps, same frame).
 
 ### Test aids
 
@@ -458,7 +488,8 @@ Images in `build/indirect_fx/` (not in git):
   changes. Combine with `AURORA_GX_AUDIT=1` for state from display lists.
 - `LM_IND_OFF=1` (indirect never enabled), `LM_IND_EXP=<n>` (matrix exponent + n),
   `LM_IND_PATTERN=1` (left half of the indirect texture intensity 15, right half 0),
-  `LM_IND_TEXGENS=<n>` (`GXSetNumTexGens(n)` for the painting warp).
+  `LM_TEXGEN_BEYOND=0|1|2` (texcoords beyond numTexGens: (0,0) / generated (default) /
+  texcoord 0), `LM_TEXGEN_LOG=1` (each draw that reads a texcoord beyond numTexGens, once).
 - Reaching the effects: event 6 `LM_DEV_WARPS=2:9@2800` with `[debug] warp_skip_events=0` in
   settings.ini; event 5 `LM_TELEPORT=-1648.7,550,-4889,200` from the foyer of a new game.
 
