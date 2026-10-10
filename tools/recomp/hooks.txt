@@ -150,3 +150,8 @@ fn_8002D7C8
 fn_8005D984 us pal
 fn_800293A8 us pal
 fn_80029050
+
+# Enhanced lighting (src/recomp/enhanced_lighting.cpp, docs/RENDERING.md): the main 3D view of the
+# game scene is bracketed to send the frame's extra lights and the scene-end marker (bloom,
+# volumetric beam, ambient occlusion are applied there, before the HUD).
+fn_8000BB98 us pal

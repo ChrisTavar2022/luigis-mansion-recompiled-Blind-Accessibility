@@ -7,6 +7,7 @@
 // FIFO unchanged. The console needs no GXEnd; Aurora does, so an open draw is
 // closed before the next GX call.
 #include "recomp/efb_copy.h"
+#include "recomp/enhanced_lighting.h"
 #include "recomp/frame.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
@@ -18,6 +19,7 @@
 
 #include <dolphin/gx.h>
 #include <dolphin/gx/GXAurora.h>
+#include <aurora/enhanced.h>
 
 #include <algorithm>
 #include <bit>
@@ -222,6 +224,25 @@ void traceNote(const char* fmt, ...) {
     else sTraceFrame.emplace_back(buf, 1);
 }
 
+// Enhanced lighting draw class (docs/RENDERING.md "Enhanced lighting"): world geometry is a
+// perspective draw into the full viewport outside the shadow-map pass; the GBH's partial 3D
+// view, 2D/HUD and the light's-view pass are "other". Sent only while the mode is on (off, the
+// FIFO stays exactly as before) and only when it changes; reset every frame so each frame
+// (and each interpolation tape) starts by setting it.
+u8 sDrawClass = 0xFF;
+void emitDrawClass() {
+    if (!enh::active()) {
+        sDrawClass = 0xFF;
+        return;
+    }
+    u8 cls = AURORA_DRAW_CLASS_OTHER;
+    if (sProj.type == GX_PERSPECTIVE && viewportFull() && !sVpFollow && rd32(VA(0x804D8080)) == 0)
+        cls = enh::ghostPass() ? AURORA_DRAW_CLASS_GHOST : AURORA_DRAW_CLASS_WORLD;
+    if (cls == sDrawClass) return;
+    GXSetDrawClassAurora(cls);
+    sDrawClass = cls;
+}
+
 void prepareDraw(ProjMode mode, const char* what = "draw") {
     traceNote("%s %s vp(%.0f,+%.0f) -> %s", what, sProj.type == GX_PERSPECTIVE ? "persp" : "ortho", sVp.left,
               sVp.wd, mode == ProjMode::Scaled ? "scaled" : mode == ProjMode::Zoom ? "zoom" : "plain");
@@ -231,6 +252,7 @@ void prepareDraw(ProjMode mode, const char* what = "draw") {
     const bool pillar = sVpFollow || (hud && (sScissor.x > 0 || sScissor.x + sScissor.w < 640));
     const int anchor = sVpFollow ? sVpAnchor : hudAnchor();
     if (pillar != sScissorPillar || (pillar && anchor != sScissorAnchor)) emitScissor(pillar);
+    emitDrawClass();
 }
 
 // Mirror of the vertex layout state that immediate-mode 2D draws use, so a
@@ -408,6 +430,8 @@ gx::DisplayCopy sDisplayCopy;
 }  // namespace
 
 const gx::DisplayCopy& gx::displayCopy() { return sDisplayCopy; }
+
+void gx::recheckDrawState() { sRawCheck = true; }
 
 // F1 > Visuals > Rendering accuracy options -> Aurora. Test overrides: LM_ACCURACY=<mask>
 // (bit 0 integer TEV, bit 1 EFB color depth) and LM_ACCURACY_AB=<seconds> (alternate between
@@ -834,6 +858,16 @@ GXHLE(GXLoadLightObjImm) {
     // Position and direction (view space) are blended by frame interpolation.
     const u32 at = interp::mark();
     GXLoadLightObjImm(light(c.r[3]), GXLightID(c.r[4]));
+    if (std::getenv("LM_LIGHT_TRACE")) {
+        const auto* lo = reinterpret_cast<const float*>(hostp(c.r[3]) + 4);  // a0 a1 a2 k0 k1 k2 px..nz
+        static std::vector<u64> seen;
+        const u64 key = u64(c.lr) << 32 | c.r[4] | u64(lo[1] != 0.0f) << 31;
+        if (std::find(seen.begin(), seen.end(), key) == seen.end()) {
+            seen.push_back(key);
+            log("[light] obj %08X id %X a %.3f %.3f %.3f k %.6f %.6f %.6f col %08X chain %s", c.r[3], c.r[4], lo[0], lo[1],
+                lo[2], lo[3], lo[4], lo[5], rd32(c.r[3]), guestChain(c).c_str());
+        }
+    }
     interp::note(at, interp::Kind::Light, c.r[3], std::countr_zero(c.r[4] | 0x100u), 6, 10);
 }
 
@@ -1080,6 +1114,7 @@ GXHLE(GXSetCopyFilter) {
 }
 GXHLE(GXCopyDisp) {
     sDiagFrame++;
+    sDrawClass = 0xFF;  // the next frame sets its draw class again
     if (void* dump = dropDraw() ? nullptr : efbcopy::dumpTarget(sDiagFrame)) {
         // LM_FRAME_DUMP: copy the finished EFB through the copy-to-RAM path, then restore
         // the game's texture-copy setup.

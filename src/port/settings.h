@@ -138,9 +138,49 @@ struct RenderingSettings {
     bool shadowAnyDistance = true;
 };
 
+// Enhanced lighting (F1 > Visuals > Enhanced lighting; docs/RENDERING.md "Enhanced lighting"):
+// effects layered on top of the accurate GX rendering of world geometry. Everything is gated by
+// `enabled` (OFF by default: the original look stays one click away; off renders exactly what
+// the plain renderer does). Each part has its own switch and strength/quality controls; the
+// preset fills in the quality fields (Custom keeps them).
+enum class EnhancedPreset { Low, Medium, High, Ultra, Custom };
+
+struct EnhancedLightingSettings {
+    bool enabled = false;
+    EnhancedPreset preset = EnhancedPreset::High;
+    // The game's own GX lights (room lights, flashlight, specular) evaluated per pixel.
+    bool perPixelLighting = true;
+    // Flashlight cone per pixel with a smooth penumbra.
+    bool flashlightQuality = true;
+    float flashlightSoftness = 0.6f;  // 0..1
+    // Soft shadows for the game's shadow map (PCF / PCSS contact hardening).
+    bool softShadows = true;
+    int softShadowQuality = 2;        // 0 PCF 8, 1 PCF 16, 2 PCSS 16, 3 PCSS 32
+    float softShadowRadius = 1.5f;    // filter radius (640x480 shadow-map texels)
+    float softShadowPenumbra = 6.0f;  // PCSS penumbra growth
+    // Dynamic colored lights from game objects (ghosts) and test lights.
+    bool extraLights = true;
+    float extraLightIntensity = 1.0f;  // 0..3
+    // Volumetric haze in the flashlight beam.
+    bool volumetricBeam = true;
+    float volumetricIntensity = 1.0f;  // 0..3
+    int volumetricQuality = 1;         // 0 low, 1 medium, 2 high
+    // Glow around bright light sources (HUD excluded).
+    bool bloom = true;
+    float bloomIntensity = 0.6f;       // 0..2
+    float bloomThreshold = 0.72f;      // 0..1
+    float bloomRadius = 1.0f;          // 0.25..2
+    float bloomFlashlightSuppress = 0.6f;  // 0..1: less glow from walls lit by the flashlight
+    // Screen-space ambient occlusion (contact darkening in corners and under furniture).
+    bool ssao = false;
+    float ssaoIntensity = 0.6f;        // 0..2
+    float ssaoRadius = 60.0f;          // world units
+};
+
 struct Settings {
     VideoSettings video;
     RenderingSettings rendering;
+    EnhancedLightingSettings enhancedLighting;
     CrtSettings crt;
     AudioSettings audio;
     EnhancementSettings enhancements;
