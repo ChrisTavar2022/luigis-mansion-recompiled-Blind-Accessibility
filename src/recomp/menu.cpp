@@ -191,6 +191,13 @@ void renderingTab() {
         "rooms, shadows of things farther away (or close to the camera) drop out as he walks.\n"
         "On: the shadow light's range covers everything in view, so all shadows always render.\n"
         "Off: the original behaviour. No cost.");
+    ImGui::Separator();
+    sDirty |= ImGui::Checkbox("Wait for shader compilation", &r.waitForShaders);
+    ImGui::SetItemTooltip(
+        "The first time a material or effect appears, its GPU shader has to be compiled.\n"
+        "On: the frame waits for it (a short hitch once; shaders are cached for later sessions),\n"
+        "so nothing is ever missing. Off: the object is skipped until its shader is ready, so it\n"
+        "can be invisible for a few frames the first time it is seen (e.g. Luigi's body).");
 }
 
 // Frame rate: 30 (the game's own rate, drawn directly) up to 320, or the display's refresh rate.

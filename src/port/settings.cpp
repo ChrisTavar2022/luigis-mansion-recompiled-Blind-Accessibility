@@ -70,6 +70,7 @@ std::vector<Field> fields() {
         flag("rendering", "shadow_render_resolution", r.shadowRenderResolution),
         flag("rendering", "shadow_widescreen", r.shadowWidescreen),
         flag("rendering", "shadow_any_distance", r.shadowAnyDistance),
+        flag("rendering", "wait_for_shaders", r.waitForShaders),
         flag("crt", "enabled", c.enabled),
         enm("crt", "preset", c.preset),
         enm("crt", "scanlines", c.scanlines),
