@@ -27,9 +27,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
+#include <map>
 #include <mutex>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 namespace recomp {
@@ -471,6 +473,128 @@ static std::string guestChain(const Ctx& c) {
 #define HUD_TRACE(fmt, ...) \
     do { if (hudTraceOn()) log("[hud] f%u " fmt, sDiagFrame, __VA_ARGS__); } while (0)
 
+// LM_IND_LOG=1: every draw made while indirect texturing is active (GXSetNumIndStages > 0 or an
+// active TEV stage with an indirect setup), grouped per frame by guest call chain + indirect
+// state, printed whenever a frame's set differs from the previous frame's. Mirrors the state
+// from the HLE'd GX calls (all of LM's indirect setup goes through them: fn_8005FDD4 and J3D);
+// AURORA_GX_AUDIT=1 cross-checks state that would arrive as raw BP writes in display lists.
+namespace {
+struct IndShadow {
+    u32 numInd = 0;
+    u32 tev[16] = {};        // GXSetTevIndirect word: st | fmt<<2 | bias<<4 | alpha<<7 | mtx<<9 | ws<<13 | wt<<16 | lod<<19 | prev<<20
+    u8 order[4][2] = {};     // texcoord, texmap
+    u8 scale[4][2] = {};
+    f32 mtx[3][6] = {};
+    s8 exp[3] = {};
+    u8 texGenMtx[8] = {};
+    u8 numTexGens = 0;      // GXSetTexCoordGen2 matrix per texcoord
+    f32 texMtx[10][8] = {};    // GX_TEXMTX0..9 (2x4 rows), as loaded
+} sInd;
+std::unordered_map<u32, u32> sImageDesc;  // image -> w<<20 | h<<8 | fmt (LM_IND_LOG only)
+std::map<std::string, u32> sIndFrame, sIndLast;
+u32 sIndLastFrame = 0;
+// LM_IND_OFF=1 (A/B test aid): indirect stages are never enabled, i.e. the warp is drawn unwarped.
+bool indOff() {
+    static const bool on = [] { const char* e = std::getenv("LM_IND_OFF"); return e && e[0] == '1'; }();
+    return on;
+}
+bool indLogOn() {
+    static const bool on = [] { const char* e = std::getenv("LM_IND_LOG"); return e && e[0] == '1'; }();
+    return on;
+}
+u32 indWord(u32 st, u32 fmt, u32 bias, u32 mtx, u32 ws, u32 wt, u32 prev, u32 lod, u32 alpha) {
+    return st | fmt << 2 | bias << 4 | alpha << 7 | mtx << 9 | ws << 13 | wt << 16 | lod << 19 | prev << 20;
+}
+std::string imageDesc(u32 image) {
+    char b[64];
+    const auto it = sImageDesc.find(image);
+    if (it == sImageDesc.end()) std::snprintf(b, sizeof(b), "%08X", image);
+    else std::snprintf(b, sizeof(b), "%08X(%ux%u f%u)", image, it->second >> 20, (it->second >> 8) & 0xFFF, it->second & 0xFF);
+    return b;
+}
+}  // namespace
+
+static void indNoteDraw(const Ctx& c, const char* kind) {
+    if (!indLogOn()) return;
+    bool any = sInd.numInd > 0;
+    for (u32 s = 0; s < sNumTevStages && s < 16; s++) any |= sInd.tev[s] != 0;
+    if (!any) return;
+    std::string k = std::string(kind) + " " + guestChain(c);
+    char b[160];
+    std::snprintf(b, sizeof(b), " | nInd=%u nTev=%u nTexGen=%u", sInd.numInd, sNumTevStages, sInd.numTexGens);
+    k += b;
+    for (u32 i = 0; i < sInd.numInd && i < 4; i++) {
+        std::snprintf(b, sizeof(b), " ind%u{tc%u map%u %s scale%u,%u}", i, sInd.order[i][0], sInd.order[i][1],
+                      sInd.order[i][1] < 8 ? imageDesc(sMapImage[sInd.order[i][1]]).c_str() : "-", sInd.scale[i][0],
+                      sInd.scale[i][1]);
+        k += b;
+        if (const u32 img = sInd.order[i][1] < 8 ? sMapImage[sInd.order[i][1]] : 0) {
+            const u8* p = hostp(0x80000000u | img);
+            std::snprintf(b, sizeof(b), " bytes[%02X %02X %02X %02X %02X %02X %02X %02X]", p[0], p[1], p[2], p[3], p[4],
+                          p[5], p[6], p[7]);
+            k += b;
+        }
+        const u32 tm = sInd.texGenMtx[sInd.order[i][0] & 7];
+        if (tm >= GX_TEXMTX0 && tm <= GX_TEXMTX9) {
+            const f32* x = sInd.texMtx[(tm - GX_TEXMTX0) / 3];
+            std::snprintf(b, sizeof(b), " texmtx%u[%.4f %.4f %.4f %.4f; %.4f %.4f %.4f %.4f]", (tm - GX_TEXMTX0) / 3,
+                          x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]);
+            k += b;
+        }
+    }
+    u32 mtxUsed = 0;
+    for (u32 s = 0; s < sNumTevStages && s < 16; s++) {
+        const u32 w = sInd.tev[s];
+        if (!w) continue;
+        std::snprintf(b, sizeof(b), " tev%u{ind%u fmt%u bias%u alpha%u mtx%u wrap%u,%u lod%u prev%u map%u %s}", s,
+                      w & 3, (w >> 2) & 3, (w >> 4) & 7, (w >> 7) & 3, (w >> 9) & 15, (w >> 13) & 7, (w >> 16) & 7,
+                      (w >> 19) & 1, (w >> 20) & 1, sTevMap[s],
+                      sTevMap[s] < 8 ? imageDesc(sMapImage[sTevMap[s]]).c_str() : "-");
+        k += b;
+        // RGB5A3 image (e.g. an EFB copy, read back with LM_EFB_READBACK_ALL=1): opaque/translucent texels
+        if (const u32 img = sTevMap[s] < 8 ? sMapImage[sTevMap[s]] : 0; img) {
+            const auto it = sImageDesc.find(img);
+            if (it != sImageDesc.end() && (it->second & 0xFF) == GX_TF_RGB5A3) {
+                const u32 n = (it->second >> 20) * ((it->second >> 8) & 0xFFF);
+                const u8* p = hostp(0x80000000u | img);
+                u32 opaque = 0, clear = 0;
+                for (u32 t = 0; t < n; t++) {
+                    const u16 v = u16(p[2 * t] << 8 | p[2 * t + 1]);
+                    if (v & 0x8000) opaque++;
+                    else if ((v >> 12) == 0) clear++;
+                }
+                std::snprintf(b, sizeof(b), " [5A3 opaque %u, alpha0 %u, translucent %u]", opaque, clear,
+                              n - opaque - clear);
+                k += b;
+            }
+        }
+        const u32 m = (w >> 9) & 15;
+        if (m) mtxUsed |= 1u << ((m - 1) & 3);
+    }
+    for (u32 m = 0; m < 3; m++) {
+        if (!(mtxUsed & 1u << m)) continue;
+        const f32* x = sInd.mtx[m];
+        std::snprintf(b, sizeof(b), " mtx%u[%.4f %.4f %.4f; %.4f %.4f %.4f]e%d", m, x[0], x[1], x[2], x[3], x[4], x[5],
+                      sInd.exp[m]);
+        k += b;
+    }
+    sIndFrame[k]++;
+}
+static void indEndFrame() {
+    if (!indLogOn()) return;
+    if (sIndFrame != sIndLast) {
+        std::string text;
+        for (const auto& [k, n] : sIndFrame) text += "\n  " + k + (n > 1 ? " x" + std::to_string(n) : "");
+        log("[ind] frame %u (same as previous for %u frames):%s", sDiagFrame, sIndLastFrame,
+            sIndFrame.empty() ? " none" : text.c_str());
+        std::fflush(stdout);
+        sIndLastFrame = 0;
+    }
+    sIndLastFrame++;
+    sIndLast = std::move(sIndFrame);
+    sIndFrame.clear();
+}
+
 static FILE* dlTraceFile() {
     static FILE* f = [] { const char* p = std::getenv("LM_DL_TRACE"); return p ? std::fopen(p, "w") : nullptr; }();
     return f;
@@ -481,6 +605,7 @@ u32 copyDispCount();
 void gx::endFrame() {
     endPendingDraw();
     efbcopy::onFrame(copyDispCount());
+    indEndFrame();
     if (FILE* f = dlTraceFile()) std::fprintf(f, "\nF%u", sDlFrame++), std::fflush(f);
     if (!sTrace) return;
     static u32 frameNo = 0;
@@ -568,6 +693,7 @@ GXHLE(GXInit) {
     static u32 fifoObj = 0;
     if (!fifoObj) fifoObj = hleAlloc(128);
     GXInit(hostp(c.r[3]), c.r[4]);
+    sInd = {};
     c.r[3] = fifoObj;
 }
 GXHLE(GXFlush) { GXFlush(); }
@@ -639,6 +765,7 @@ GXHLE(GXSetArray) {
 
 GXHLE(GXBegin) {
     if (dropDraw()) return;
+    indNoteDraw(c, "begin");
     sInBegin = true;
     if (interp::drawLogActive()) interp::drawLogCaller(guestChain(c));
     if (interp::capturing()) interp::vtxBegin(c.r[3], c.r[4], c.r[5], sProj.type == GX_PERSPECTIVE);
@@ -672,6 +799,7 @@ GXHLE(GXCallDisplayList) {
         HUD_TRACE("dlist %s vp(%.0f,+%.0f) %s", sProj.type == GX_ORTHOGRAPHIC ? "ortho" : "persp", sVp.left, sVp.wd,
                   guestChain(c).c_str());
     prepareDraw(drawMode(ProjMode::Scaled), "dlist");
+    indNoteDraw(c, "dlist");
     GXCallDisplayList(hostp(c.r[3]), c.r[4]);
     if (interp::drawLogActive()) interp::drawLogCaller(guestChain(c));
     if (interp::capturing()) interp::vtxDisplayList(c.r[3], hostp(c.r[3]), c.r[4]);
@@ -705,8 +833,12 @@ GXHLE(GXDrawCylinder) {
 
 // --- texgen / transform ---------------------------------------------------------------
 
-GXHLE(GXSetNumTexGens) { GXSetNumTexGens(u8(c.r[3])); }
+GXHLE(GXSetNumTexGens) {
+    sInd.numTexGens = u8(c.r[3]);
+    GXSetNumTexGens(u8(c.r[3]));
+}
 GXHLE(GXSetTexCoordGen2) {
+    if (c.r[3] < 8) sInd.texGenMtx[c.r[3]] = u8(c.r[6]);
     GXSetTexCoordGen2(GXTexCoordID(c.r[3]), GXTexGenType(c.r[4]), GXTexGenSrc(c.r[5]), c.r[6], GXBool(c.r[7]),
                       c.r[8]);
 }
@@ -749,6 +881,8 @@ GXHLE(GXLoadTexMtxImm) {
     const GXTexMtxType type = GXTexMtxType(c.r[5]);
     if (type == GX_MTX2x4) {
         const Mtx<2, 4> m(c.r[3]);
+        if (const u32 id = c.r[4]; id >= GX_TEXMTX0 && id <= GX_TEXMTX9 && (id - GX_TEXMTX0) % 3 == 0)
+            std::memcpy(sInd.texMtx[(id - GX_TEXMTX0) / 3], m.m, sizeof(sInd.texMtx[0]));
         const u32 at = mark3D();
         GXLoadTexMtxImm(m.m, c.r[4], type);
         interp::note(at, interp::Kind::TexMtx, c.r[3], c.r[4], sizeof(m.m) / 4);
@@ -849,6 +983,7 @@ GXHLE(GXInitTexObj) {
     GXInitTexObj(sTex.forInit(c.r[3], kTexTag), ptr(c.r[4]), u16(c.r[5]), u16(c.r[6]), GXTexFmt(c.r[7]),
                  GXTexWrapMode(c.r[8]), GXTexWrapMode(c.r[9]), GXBool(c.r[10]));
     noteTexImage(c.r[3], c.r[4]);
+    if (indLogOn()) sImageDesc[phys(c.r[4])] = (c.r[5] & 0xFFF) << 20 | (c.r[6] & 0xFFF) << 8 | (c.r[7] & 0xFF);
     diagTexInit("INIT", c.r[3], c.r[4], c.r[5], c.r[6], c.r[7], c.lr);
 }
 GXHLE(GXInitTexObjCI) {
@@ -944,23 +1079,64 @@ GXHLE(GXSetZTexture) { GXSetZTexture(GXZTexOp(c.r[3]), GXTexFmt(c.r[4]), c.r[5])
 
 // --- indirect -----------------------------------------------------------------------------------
 
-GXHLE(GXSetNumIndStages) { GXSetNumIndStages(u8(c.r[3])); }
+GXHLE(GXSetNumIndStages) {
+    sInd.numInd = c.r[3] & 7;
+    GXSetNumIndStages(indOff() ? 0 : u8(c.r[3]));
+}
 GXHLE(GXSetIndTexOrder) {
+    if (c.r[3] < 4) sInd.order[c.r[3]][0] = u8(c.r[4]), sInd.order[c.r[3]][1] = u8(c.r[5]);
     GXSetIndTexOrder(GXIndTexStageID(c.r[3]), GXTexCoordID(c.r[4]), GXTexMapID(c.r[5]));
 }
 GXHLE(GXSetIndTexCoordScale) {
+    if (c.r[3] < 4) sInd.scale[c.r[3]][0] = u8(c.r[4]), sInd.scale[c.r[3]][1] = u8(c.r[5]);
     GXSetIndTexCoordScale(GXIndTexStageID(c.r[3]), GXIndTexScale(c.r[4]), GXIndTexScale(c.r[5]));
 }
 GXHLE(GXSetIndTexMtx) {
     const Mtx<2, 3> m(c.r[4]);
-    GXSetIndTexMtx(GXIndTexMtxID(c.r[3]), m.m, s8(c.r[5]));
+    if (const u32 id = c.r[3] - GX_ITM_0; id < 3) {
+        std::memcpy(sInd.mtx[id], m.m, sizeof(sInd.mtx[id]));
+        sInd.exp[id] = s8(c.r[5]);
+    }
+    // LM_IND_EXP=<n> (test aid): adds n to the matrix scale exponent (2^n times the offsets).
+    static const int sExpAdd = [] { const char* e = std::getenv("LM_IND_EXP"); return e ? std::atoi(e) : 0; }();
+    GXSetIndTexMtx(GXIndTexMtxID(c.r[3]), m.m, s8(s8(c.r[5]) + sExpAdd));
 }
-GXHLE(GXSetTevDirect) { GXSetTevDirect(GXTevStageID(c.r[3])); }
+GXHLE(GXSetTevDirect) {
+    if (c.r[3] < 16) sInd.tev[c.r[3]] = 0;
+    GXSetTevDirect(GXTevStageID(c.r[3]));
+}
 GXHLE(GXSetTevIndWarp) {
+    // LM_IND_PATTERN=1 (test aid): replaces the noise in the Mario painting warp's 64x64 IA4
+    // indirect texture (US 0x803CFD40, filled with random intensities by fn_8005FD80 at boot) with
+    // a known pattern: intensity 15 (offset 0) in the left half, 0 (offset -5 texels in s and t)
+    // in the right half.
+    static const bool sPattern = [] { const char* e = std::getenv("LM_IND_PATTERN"); return e && e[0] == '1'; }();
+    // LM_IND_TEXGENS=<n> (test aid): the painting warp (fn_8005FDD4) never calls GXSetNumTexGens and
+    // inherits 1 from the previous draw, so its indirect texcoord 1 is not generated (Aurora, like
+    // the usual emulator convention, reads it as (0,0): a uniform offset instead of the per-texel
+    // noise the game's 64x64 random texture was made for). n = 2 shows the noise for comparison.
+    static const int sTexGens = [] { const char* e = std::getenv("LM_IND_TEXGENS"); return e ? std::atoi(e) : 0; }();
+    if (sTexGens > 0) GXSetNumTexGens(u8(sTexGens));
+    if (const u32 img = sMapImage[sInd.order[c.r[4] & 3][1] & 7]; sPattern && img) {
+        u8* tex = hostp(0x80000000u | img);
+        for (u32 i = 0; i < 64 * 64; i++) {
+            const u32 tile = i / 32, bx = tile % 8, x = bx * 8 + i % 8;
+            tex[i] = x < 32 ? 0x0F : 0x00;
+        }
+    }
+    // SDK: GXSetTevIndirect(stage, ind, ITF_8, signed ? ITB_STU : NONE, mtx, replace ? ITW_0 : OFF (s,t), 0, 0, 0)
+    if (c.r[3] < 16)
+        sInd.tev[c.r[3]] = indWord(c.r[4] & 3, 0, (c.r[5] & 0xFF) ? GX_ITB_STU : 0, c.r[7], (c.r[6] & 0xFF) ? GX_ITW_0 : 0,
+                                   (c.r[6] & 0xFF) ? GX_ITW_0 : 0, 0, 0, 0);
+    if (indOff()) return GXSetTevDirect(GXTevStageID(c.r[3]));
     GXSetTevIndWarp(GXTevStageID(c.r[3]), GXIndTexStageID(c.r[4]), GXBool(c.r[5]), GXBool(c.r[6]),
                     GXIndTexMtxID(c.r[7]));
 }
 GXHLE(GXSetTevIndirect) {
+    if (c.r[3] < 16)
+        sInd.tev[c.r[3]] = indWord(c.r[4] & 3, c.r[5] & 3, c.r[6] & 7, c.r[7] & 15, c.r[8] & 7, c.r[9] & 7,
+                                   c.r[10] & 1, stackArg(c, 0) & 1, stackArg(c, 1) & 3);
+    if (indOff()) return GXSetTevDirect(GXTevStageID(c.r[3]));
     GXSetTevIndirect(GXTevStageID(c.r[3]), GXIndTexStageID(c.r[4]), GXIndTexFormat(c.r[5]),
                      GXIndTexBiasSel(c.r[6]), GXIndTexMtxID(c.r[7]), GXIndTexWrap(c.r[8]), GXIndTexWrap(c.r[9]),
                      GXBool(c.r[10]), GXBool(stackArg(c, 0)), GXIndTexAlphaSel(stackArg(c, 1)));

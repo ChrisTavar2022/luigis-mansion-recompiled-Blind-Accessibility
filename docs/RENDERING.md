@@ -186,9 +186,10 @@ else there.
 | shadow buffer (heap, 0x96000) | Z16 640x480, every frame | **IA8 640x480** texture (TEV `GR16` compare against a 256x256 IA8 depth ramp: the flashlight/lightning shadow map, see "Shadows") | `fn_8005D8CC` copy, `fn_8005D41C` texture, `fn_8005DD50` TEV setup |
 | `lbl_804D86BC` (0x8021E000) | RGB565 640x480, twice per frame | RGB565 same size | `fn_8005F518` / `fn_8005F8B8` |
 | `lbl_804D86B8` (0x802B4000) | RGBA8 320x240 (box-filtered) | RGBA8 same size | `fn_8005F498` |
-| 0x803A4D00 | RGB565 70x100 from (250,140 140x200) | same | `fn_80025C98` |
+| 0x803A4D00 | RGB565, box-filtered half size of a screen region (70x100 from (250,140 140x200) in the foyer, 134x114 from (186,126 268x228) in the 2F Bathroom) | same | `fn_80025C98` |
 | transition captures | RGB565 640x480 | same | `fn_800081A8` (LMDisplayUtil) |
 | title/file select | 4 x RGB565 148x116 | same | `fn_800494E4` |
+| event 5/6 render targets (heap, +0x28 of the objects at `r13+0x768`/`+0x76C`) | IA4 (event 5) / RGB5A3 (event 6) 128x128, every frame while the event runs | same, warped by the indirect stage (Mario painting; see "Indirect effects") | `fn_8006033C` |
 
 - The shadow buffer is the one copy read with a different format. It and the two screen
   buffers are also reused as scratch memory for ARAM/DVD loads (Game Boy Horror archive,
@@ -283,7 +284,7 @@ configured/all-off every s seconds and log fps per phase, for A/B screenshots of
 | Fog | only `GX_FOG_NONE` seen; range adjust enabled (center 0), `GXInitFogAdjTable` once | range factor from a guessed NDC formula (much weaker than the table) | **Fixed model**: LUT built from the table (entry i = 256x factor at 32(i+1) EFB px from center, interpolated, 1.0 at center, last entry beyond), in EFB pixels at any resolution. Not visible in tested scenes (fog off) |
 | Texture filtering | min LINEAR/NEAR, edge LOD, no mips | hw min-filter decode had NEAR_MIP_LIN/LIN_MIP_NEAR swapped | **Fixed** decode table (raw-BP texture setups). LOD bias/edge LOD fine |
 | Lighting | spot (clamp diffuse), specular (shininess form), dist-attn fns, SRTG from COLOR0 | per-vertex, same formulas | **Reviewed, no change** (SRTG lit-color fix is in 0008). Open: Aurora normalizes transformed normals; hardware may not |
-| Indirect | ghost layer (`fn_8005FDD4`, `GXSetTevIndWarp`; only drawn while `r13+0x768` holds its 128x128 warp texture, which the per-map setup table at `0x803002C4` creates for one map), J3D indirect materials | float offsets | Texel rounding added in integer mode; the rest of the indirect path is unchanged. **Not exercised by LM in any tested scene**: `AURORA_GX_AUDIT=1` logged no indirect stage and `LM_TRACE=8005FDD4` no call through boot, title, file select, lab, training room (gold ghost), Portrificationizer, foyer, nursery, gallery (map 6), GBH scan/map/inventory screens. Ghosts (gold ghost in the training room) are not drawn with indirect warping |
+| Indirect | Only the Mario painting at the Secret Altar (`fn_8005FDD4`, event 6) and an invisible copy of it in event 5; J3D materials on the disc have no indirect stages | float offsets | **Fixed** (patch 0014, see "Indirect effects"): integer offsets (s1.10 x s8 >> 3, scale shift, 1/128-texel fixed-point coordinates) in integer TEV mode; ITF_5/4/3 low-bit offsets and positive-modulo wraps always. Offsets are in logical texels, so they scale with resolution |
 | Lines/points | width 6 (1 px), viewport jitter field=1 only | width/6, perpendicular expansion | No change needed for LM (hardware widens along x/y; noted) |
 | Logic ops, dst alpha | no logic op; dst alpha used | fine | No change |
 
@@ -292,7 +293,7 @@ configured/all-off every s seconds and log fps per phase, for A/B screenshots of
 | Toggle (ini key) | What it does | Visible effect | Cost (measured below) |
 |---|---|---|---|
 | Integer-accurate TEV (`integer_tev`) | TEV stages evaluated in integer WGSL (8-bit A/B/C, s11 D/registers, per-stage rounding/clamp) | +-1 level on ~40-45% of pixels, unbiased (mean +0.06); nothing structural | see table |
-| EFB color depth (`efb_color_depth`) | fragment output quantized to the EFB format (RGBA6 / RGB565) with the PE's 2x2 dither when the draw enables it | ~1.4 levels darker on average (LM draws much of the scene with dither off, where the PE truncates), 6-bit banding rings in smooth gradients (flashlight pool on the floor), dither grain where dither is on | see table |
+| EFB color depth (`efb_color_depth`) | fragment output quantized to the EFB format (RGBA6 / RGB565) with the PE's 2x2 dither when the draw enables it; texture copies to RGB565/RGB5A3 keep their format's precision (patch 0014) | ~1.4 levels darker on average (LM draws much of the scene with dither off, where the PE truncates), 6-bit banding rings in smooth gradients (flashlight pool on the floor), dither grain where dither is on | see table |
 | Display copy filter (`display_copy_filter`) | present-time pass (`dcopy_filter` in crt.cpp, ahead of the CRT chain) with the game's GXSetCopyFilter taps + GXSetDispCopyGamma | ~5% less vertical high-frequency detail (6/52/6 of 64), no color shift (mean 0.2 levels); only runs when the taps/gamma change the picture | see table |
 
 The fog range LUT and the texture min-filter decode are plain correctness fixes with no
@@ -341,6 +342,125 @@ full-screen pass with three texture taps.
 Remaining: blended draws are not quantized after blending; copy filter not applied to texture
 copies (GXCopyTex); whether hardware normalizes transformed normals; fog range LUT with
 widescreen is untested (LM never enables fog).
+
+## Indirect effects
+
+Aurora patch `0014-indirect-and-copy-format-accuracy.patch`; logging and test aids in
+`src/recomp/hle_gx.cpp` (`LM_IND_*`).
+
+### What uses indirect texturing (US; the European game has the same code)
+
+- **Static search.** In the DOL, the GX indirect calls (`GXSetIndTexOrder/CoordScale/Mtx`,
+  `GXSetNumIndStages`, `GXSetTevIndirect/IndWarp`) are made only from `fn_8005FDD4`, from
+  `GXInit`/`GXSetTevDirect`, and from J3D (`J3DSys::drawInit` resets, `J3DInd*::load`). None of the
+  J3D models on the disc (`Effect/*.bmd` are MAT2, the rest are in `game*.szp`, `Iwamoto/vr*.szp` and
+  `Map/map*.szp`) has an indirect material block, so `fn_8005FDD4` is the only indirect effect.
+- **Runtime sweep** (`LM_IND_LOG=1` + `AURORA_GX_AUDIT=1`, which also reports indirect state that
+  arrives as raw BP writes in display lists): boot, title, file select, foyer, every map 0-13 by warp
+  (with and without entry events: Bowser, Chauncey, Boolossus, Bogmire, map 12), the mansion appear
+  points 3/5/7/9 (Balcony Boos, Sealed Room, King Boo at the Secret Altar), the lab, Portrificationizer,
+  the fire and ice elements with L/R held in the foyer and nursery, the PAL Hidden Mansion
+  (`LM_HM_FORCE=1`: foyer, appear point 3, map 12). Indirect draws only appear in
+  events 5 and 6 (below). Ghosts, Boos, the vacuum vortex, elements, water, the GBH, mirrors and
+  screen transitions do not use indirect texturing (the mirrors and transitions are EFB copies, below).
+
+### The effect: `fn_8005FDD4` (warped render-to-texture)
+
+What starts it is not a per-map table: `0x803002C4`, `0x80300478` and `0x8030062C` are three parallel
+arrays of 109 function pointers (init, per-frame update, end) indexed by **event number** (followed by
+the string `/Event/event%02d.szp`). Two events use the effect:
+
+| Event | Where | Init / end | What is rendered |
+|---|---|---|---|
+| 6 | Secret Altar, King Boo's talk (mansion appear point 9, trigger at 2313,-550,-6457) | `fn_8002CD48` / `fn_8002CEB0` | two S3D models (`fn_800605BC`) into two 128x128 **RGB5A3** copies, cross-faded (`r13-0x7758` and 255 minus it): **Mario in the painting** |
+| 5 | 2F Bathroom (trigger at -1649,550,-4889, character `fat`, flag 38) | `fn_8002CC8C` / `fn_8002CD14` | the model of the actor of type 0x5F into one 128x128 **IA4** copy |
+
+`event05.szp`/`event06.szp` are empty placeholder scripts; the effect comes only from these code
+slots. Each frame `fn_8006033C` renders the model with its own perspective into a 128x128 viewport
+and `GXCopyTex`es it to the object (+0x28, format from +0x00); `fn_80060A9C` (scene draw,
+`fn_8000BB98`) then calls `fn_8005FDD4(texObj, alpha)` for each object:
+
+- TEXMAP0 = the 128x128 copy; TEXMAP1 = a 64x64 IA4 texture at `0x803CFD40` that `fn_8005FD80`
+  (from `BootScene::init`) fills with random intensities 0-15 (alpha 0);
+- indirect stage 0: texcoord 1 (vertex TEX1, identity), scale 1; TEV stage 0
+  `GXSetTevIndWarp(signed, no replace, ITM_0)` = ITF_8, bias STU, no wrap;
+- matrix `[[f f 0] [f f 0]]`, exponent 1, with `f` = `r13+0x760` = 0.01 (s1.10: 10/1024), so
+  offset_s = offset_t = 2 x 10/1024 x (I - 256) texels, -5..0 texels of the 128x128 copy;
+- colour = the copy, alpha = copy alpha x `alpha`, blended over the scene; a world-space quad at
+  fixed coordinates (`0x80339B80`: x 2220..2375, y -180..-375, z -7306, the painting frame at the
+  Secret Altar), s 0.1..0.9, t 0..1. Event 5 draws the same quad there, so nothing of it is visible
+  in the bathroom; its IA4 copy is also an extra TEV stage of the draw in `fn_80027D28`
+  (`fn_80027B30`, reached from `fn_80011824`).
+
+**Texcoord 1 is never generated.** `fn_8005FDD4` sets a texgen for texcoord 1 but never calls
+`GXSetNumTexGens`; the count it inherits is 1 (from `fn_80025E9C`'s draw just before, in both
+versions). Aurora reads a texcoord the rasterizer does not produce as (0,0), as other GameCube
+renderers do, so every pixel reads noise texel (0,0) (intensity 3 x 17 = 51 at the boot seed): the
+painting is shifted by a uniform -4 texels (about 3 px at 640x480) and its top 4 texel rows repeat
+the copy's edge, instead of the per-texel scatter the noise texture was made for. What the console
+does for a texcoord beyond `numTexGens` is not documented; `LM_IND_TEXGENS=2` shows the alternative
+(Mario heavily scattered, image 3) for comparison with console footage. The uniform shift is kept.
+
+### Hardware semantics vs Aurora (patch 0014)
+
+| | Hardware | Aurora before | Now |
+|---|---|---|---|
+| Matrix | s1.10 entries (`GXSetIndTexMtx` truncates x1024), exponent 2^(n) | floats of the same entries | unchanged (exact) |
+| Offset | integer `M x (s,t,u)` (s8 after bias) >> 3 = texels with 7 fractional bits, then the scale shift (right shifts floor) | float product x 2^n | integer TEV mode: the same integer steps (`floor(floor(raw/8) x 2^n)/128`); float mode unchanged |
+| Base coordinate | fixed point, texel units, 7 fractional bits | float | integer TEV mode: floor to 1/128 texel; dynamic S/T matrices likewise (`uv128 x s >> 8`) |
+| ITF_5/4/3 | offset = low 5/4/3 bits, high bits = bump alpha | high bits (`floor(v/8)`...) | low bits (matches Aurora's own bump-alpha masks) |
+| Wrap 16..256 | masks the fixed-point coordinate (positive modulo) | WGSL `%` (negative stays negative) | `x - m floor(x/m)` |
+| Units | texels of the sampled texture | texels of the game's texture object (`GXTexObj` size, not the upscaled copy) | unchanged: offsets keep their size at any internal resolution and aspect |
+| Indirect texel | 8-bit components (.abg = s,t,u) | rounded in integer mode (0010) | unchanged |
+| Missing texcoord | undocumented | (0,0) (patch 0001) | unchanged (see above) |
+
+Not changed (LM never uses them): `indLOD` (LOD from the unmodified coordinates), add-previous after
+a direct stage (Aurora does not carry a direct stage's coordinate into `t_TexCoord`), wrap/add-prev on
+stages whose indirect stage index is >= `numIndStages`.
+
+For the painting the integer path moves the offset by about 0.01 texel (-4.016 instead of -4.004);
+no visible change. The 1x/4x and 16:9 checks below are the real verification of the scaling.
+
+### EFB copies met along the way
+
+- The painting copies (RGB5A3) were blitted without the format's precision; IA4 copies (event 5)
+  were already quantized. Patch 0014 adds an RGB5A3 conversion (alpha >= 0xE0: RGB555 opaque,
+  otherwise RGB444 + 3-bit alpha, channels expanded by bit replication) and 5/6/5 precision for
+  RGB565 copies, under the "EFB color depth" toggle (`GX_AURORA_ACCURACY_EFB_DEPTH`, default on; off
+  keeps 8 bits). The painting copies hold only opaque and alpha-0 texels (`LM_IND_LOG` with
+  `LM_EFB_READBACK_ALL=1` counts them: about 9300 opaque, 7050 alpha 0, 0 translucent).
+- RGB565 copies in LM: the full-screen scene copy that `fn_8005F8B8` redraws every frame (the PAL
+  Hidden Mansion mirror flips it), the box-filtered half-size region copy at `0x803A4D00`
+  (`fn_80025C98`; 268x228 -> 134x114 in the 2F Bathroom), transition captures (`fn_800081A8`) and
+  the title/file-select thumbnails. Since the scene copy is redrawn, every frame now has 5-bit red
+  and blue as on the console: mean |d| ~1 level per channel, at most 8-21 levels where the copy
+  filter and blending meet a 5-bit step (image 6); no structural change.
+- The upscaled fast path keeps copies at render resolution; a box-filtered (mip) copy averages the
+  matching render pixels.
+
+### Verification (US, `LM_FRAME_DUMP` native frames, `LM_INPUT_CLOCK=frames`)
+
+Images in `build/indirect_fx/` (not in git):
+1. `1_painting_warp_off_on_diff.png`: `LM_IND_OFF=1` / default / |difference| x4, same frame of
+   two deterministic runs; only the painting differs (Mario 4 texels right/down, top edge rows).
+2. `2_exaggerated_warp_1x_vs_4x.png`: `LM_IND_EXP=3` (32 texels) at internal resolution 1x and 4x,
+   same frame: identical displacement; `2b_..._16x9.png` the same at 4x 16:9.
+3. `3_default_vs_LM_IND_TEXGENS2_noise.png`: what generated texcoord 1 would look like.
+4. `4_painting_before_after_diffx16.png`, 6. `6_copy_precision_before_after_diffx16.png`: main build
+   (before) vs patch 0014, same frame: RGB5A3/RGB565 precision only (difference x16).
+5. `5_event5_bathroom_mirror.png`: event 5 running in the bathroom (no visible warp).
+
+### Test aids
+
+- `LM_IND_LOG=1`: each frame's draws with indirect stages, grouped by guest call chain and state
+  (indirect/TEV stages, texmaps with image address/size/format and the first indirect texture bytes,
+  texgen matrix, indirect matrices, `numTexGens`, RGB5A3 texel classes), printed when a frame's set
+  changes. Combine with `AURORA_GX_AUDIT=1` for state from display lists.
+- `LM_IND_OFF=1` (indirect never enabled), `LM_IND_EXP=<n>` (matrix exponent + n),
+  `LM_IND_PATTERN=1` (left half of the indirect texture intensity 15, right half 0),
+  `LM_IND_TEXGENS=<n>` (`GXSetNumTexGens(n)` for the painting warp).
+- Reaching the effects: event 6 `LM_DEV_WARPS=2:9@2800` with `[debug] warp_skip_events=0` in
+  settings.ini; event 5 `LM_TELEPORT=-1648.7,550,-4889,200` from the foyer of a new game.
 
 ## Shadows
 

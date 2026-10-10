@@ -160,7 +160,9 @@ void renderingTab() {
     sDirty |= ImGui::Checkbox("EFB color depth (6-bit + dither)", &r.efbColorDepth);
     ImGui::SetItemTooltip(
         "The game renders into a 6-bit-per-channel framebuffer with an ordered dither, like the\n"
-        "console. Off: smooth 8-bit color (less banding/dither grain in dark rooms). No real cost.");
+        "console, and its screen/texture copies keep their format's precision (RGB565: 5-bit red\n"
+        "and blue in the full-screen copy the game redraws every frame; RGB5A3 for the Mario\n"
+        "painting). Off: smooth 8-bit color (less banding/dither grain in dark rooms). No real cost.");
     sDirty |= ImGui::Checkbox("Display copy filter", &r.displayCopyFilter);
     ImGui::SetItemTooltip(
         "The vertical filter (and gamma) the console applies when copying the frame to the TV\n"
