@@ -415,6 +415,11 @@ void onMainView(Ctx&) {
         l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent;
         const bool flame = (k.cat == port::kWlCandles || k.cat == port::kWlFires || k.cat == port::kWlFireFx) && k.rgb[2] < 120;
         if (flame) l.flags |= aurora::gfx::ExtraLightFire;  // yellow core, red-orange falloff (0025)
+        // Shadows (0028): fireplaces, braziers and torches, candelabras (three or more candles
+        // together) and big fire effects; the strongest few get a shadow slot (selectLights).
+        if (k.cat == port::kWlFires || (k.cat == port::kWlCandles && s.count >= 3) ||
+            (k.cat == port::kWlFireFx && k.radius >= 450.0f))
+            l.flags |= aurora::gfx::ExtraLightCastShadows;
         l.id = 0x57000000u ^ s.id;
         lights.push_back(l);
         if (logNow)
@@ -510,7 +515,8 @@ void onMainView(Ctx&) {
             if (e == 0 && w.flicker) I *= flameFlicker(t * 1.6f, 77, 1.0f);
             l.radius = kR[e];
             l.intensity = I;
-            l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent | (e == 0 ? aurora::gfx::ExtraLightFire : 0u);
+            l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent |
+                      (e == 0 ? aurora::gfx::ExtraLightFire | aurora::gfx::ExtraLightCastShadows : 0u);
             l.id = 0x57005000u;
             lights.push_back(l);
             if (logNow) log("[worldlight] f%u spray element %d world %.0f,%.0f,%.0f I %.2f", sFrame, sElem, sPos[0], sPos[1], sPos[2], I);

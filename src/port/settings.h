@@ -216,7 +216,11 @@ struct EnhancedLightingSettings {
     float extraLightIntensity = 1.0f;  // 0..3
     float extraLightSaturation = 1.6f; // 0..2.5: color vibrance of all colored lights (1 = as the source gives it)
     bool extraLightShadows = true;     // shadows of lights flagged to cast them (ghost lights: the strongest two)
-    int extraShadowQuality = 1;        // 0 low, 1 medium, 2 high (ray-march steps)
+    int extraShadowQuality = 1;        // 0 low, 1 medium, 2 high (ray-march steps / shadow-map filter taps)
+    int extraShadowMode = 1;           // 0 screen-space (cheap), 1 shadow maps (cube maps per light)
+    int extraShadowLights = 2;         // 0..3: 0 / 2 / 4 / 8 shadow-casting lights per frame
+    int extraShadowMapSize = 1;        // 0..3: 256 / 512 / 1024 / 2048 texels per cube face
+    float extraShadowSoftness = 14.0f; // light size (world units) for soft contact-hardening edges; 0 = hard
     // Volumetric haze in the flashlight beam.
     bool volumetricBeam = true;
     float volumetricIntensity = 2.0f;  // 0..3

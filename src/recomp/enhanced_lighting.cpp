@@ -19,6 +19,9 @@
 #include <string_view>
 #include <array>
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
+#include <unordered_map>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -57,11 +60,12 @@ constexpr u32 kCamViewEye = 0x00, kCamViewTarget = 0x0C;
 struct TestLights {
     int count = 0;
     float radius = 450.0f, intensity = 1.5f;
+    float speed = 1.0f, dist = 220.0f, height = 110.0f;  // orbit speed (0 = fixed), distance, height above Luigi
 };
 const TestLights sTest = [] {
     TestLights t;
     if (const char* v = std::getenv("LM_TEST_LIGHTS")) {
-        std::sscanf(v, "%d,%f,%f", &t.count, &t.radius, &t.intensity);
+        std::sscanf(v, "%d,%f,%f,%f,%f,%f", &t.count, &t.radius, &t.intensity, &t.speed, &t.dist, &t.height);
         t.count = std::clamp(t.count, 0, int(aurora::gfx::MaxExtraLights));
     }
     return t;
@@ -82,16 +86,17 @@ void addTestLights() {
     static u32 sFrame = 0;
     const float t = float(sFrame++) / 30.0f;
     for (int i = 0; i < sTest.count && sPendingCount < kMaxCandidates; i++) {
-        const float a = t * 0.9f + 6.2831853f * float(i) / float(sTest.count);
-        const float world[3] = {luigi[0] + 220.0f * std::cos(a), luigi[1] + 110.0f + 40.0f * std::sin(t * 1.7f + float(i)),
-                                luigi[2] + 220.0f * std::sin(a)};
+        const float a = t * 0.9f * sTest.speed + 6.2831853f * float(i) / float(sTest.count);
+        const float world[3] = {luigi[0] + sTest.dist * std::cos(a),
+                                luigi[1] + sTest.height + 40.0f * sTest.speed * std::sin(t * 1.7f + float(i)),
+                                luigi[2] + sTest.dist * std::sin(a)};
         aurora::gfx::ExtraLight l{};
         if (!enh::worldToView(world, l.pos)) return;
         hueToRgb(float(i) / float(sTest.count), l.color);
         l.radius = sTest.radius;
         l.intensity = sTest.intensity;
         l.flags = aurora::gfx::ExtraLightTranslucent | aurora::gfx::ExtraLightSpecular |
-                  (i < 2 ? aurora::gfx::ExtraLightCastShadows : 0u);
+                  (i < 8 ? aurora::gfx::ExtraLightCastShadows : 0u);
         l.id = 0x7E570000u + u32(i);
         sPending[sPendingCount++] = l;
     }
@@ -134,6 +139,43 @@ uint32_t selectLights(aurora::gfx::ExtraLight* l, uint32_t n) {
         if (m == aurora::gfx::MaxExtraLights) break;
         out[m++] = l[r.i];
     }
+    // Shadow slots go to the first flagged lights in this order (Aurora). Each light's shadow fades
+    // in over a few frames when it gets one and out when it loses it (weight in flags bits 8..15,
+    // multiplied with the provider's own weight), so a change in the strongest set does not pop.
+    {
+        constexpr u32 kShadow = aurora::gfx::ExtraLightCastShadows;
+        static std::unordered_map<u32, float> sW;
+        static std::unordered_map<u32, u32> sSeen;
+        static u32 sTick = 0;
+        sTick++;
+        const u32 cap = enh::shadowLightCap();
+        u32 wanted = 0;
+        for (uint32_t i = 0; i < m; i++) {
+            auto& x = out[i];
+            if (!(x.flags & kShadow) || x.id == 0) continue;
+            const bool want = wanted < cap;
+            wanted += want;
+            float& w = sW[x.id];
+            sSeen[x.id] = sTick;
+            w += ((want ? 1.0f : 0.0f) - w) * 0.25f;
+            if (!want && w < 0.03f) w = 0.0f;
+            const u32 own = (x.flags >> 8) & 0xFFu;
+            const float ow = own ? float(own) / 255.0f : 1.0f;
+            const float fw = w * ow;
+            x.flags &= ~(kShadow | 0xFF00u);
+            if (fw > 0.0f) x.flags |= kShadow | (std::clamp(u32(fw * 255.0f + 0.5f), 1u, 255u) << 8);
+        }
+        if ((sTick & 63) == 0) {
+            for (auto it = sSeen.begin(); it != sSeen.end();) {
+                if (sTick - it->second > 60) {
+                    sW.erase(it->first);
+                    it = sSeen.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+    }
     std::memcpy(l, out.data(), m * sizeof(aurora::gfx::ExtraLight));
     return m;
 }
@@ -155,6 +197,22 @@ bool frameOn() {
 }
 
 bool active() { return sActive.load(std::memory_order_relaxed) && frameOn(); }
+
+uint32_t shadowLightCap() {
+    const auto& l = port::settings().enhancedLighting;
+    if (!l.extraLightShadows) return 0;
+    static constexpr u32 kXlLights[4] = {0, 2, 4, 8};
+    u32 n = kXlLights[std::clamp(l.extraShadowLights, 0, 3)];
+    if (const char* v = std::getenv("LM_XL_SHADOWS")) {
+        int mode = -1, lights = -1;
+        std::sscanf(v, "%d,%d", &mode, &lights);
+        if (lights >= 0) n = u32(lights);
+        if (mode == 0) n = std::min(n, 4u);
+    } else if (l.extraShadowMode == 0) {
+        n = std::min(n, 4u);
+    }
+    return std::min(n, 8u);
+}
 bool masterOn() { return sActive.load(std::memory_order_relaxed); }
 int perfPhase() { return sPerfPhase; }
 
@@ -164,15 +222,19 @@ void applySettings() {
     switch (l.preset) {
     case port::EnhancedPreset::Low:
         l.softShadowQuality = 0, l.volumetricQuality = 0, l.extraShadowQuality = 0;
+        l.extraShadowLights = 1, l.extraShadowMapSize = 0;
         break;
     case port::EnhancedPreset::Medium:
         l.softShadowQuality = 1, l.volumetricQuality = 1, l.extraShadowQuality = 1;
+        l.extraShadowLights = 1, l.extraShadowMapSize = 1;
         break;
     case port::EnhancedPreset::High:
         l.softShadowQuality = 2, l.volumetricQuality = 1, l.extraShadowQuality = 1;
+        l.extraShadowLights = 2, l.extraShadowMapSize = 1;
         break;
     case port::EnhancedPreset::Ultra:
         l.softShadowQuality = 3, l.volumetricQuality = 2, l.extraShadowQuality = 2;
+        l.extraShadowLights = 3, l.extraShadowMapSize = 2;
         break;
     default:
         break;
@@ -198,6 +260,21 @@ void applySettings() {
     c.extraLightSaturation = l.extraLightSaturation;
     c.extraShadows = l.extraLightShadows;
     c.extraShadowQuality = u32(std::clamp(l.extraShadowQuality, 0, 2));
+    static const int sXlMode = [] {  // test override LM_XL_SHADOWS=<mode 0/1>[,<lights>[,<face size>]]
+        const char* v = std::getenv("LM_XL_SHADOWS");
+        return v ? std::atoi(v) : -1;
+    }();
+    static const std::array<int, 2> sXlOver = [] {
+        std::array<int, 2> o{-1, -1};
+        if (const char* v = std::getenv("LM_XL_SHADOWS")) std::sscanf(v, "%*d,%d,%d", &o[0], &o[1]);
+        return o;
+    }();
+    static constexpr u32 kXlLights[4] = {0, 2, 4, 8};
+    static constexpr u32 kXlSize[4] = {256, 512, 1024, 2048};
+    c.extraShadowMode = u32(sXlMode >= 0 ? sXlMode : std::clamp(l.extraShadowMode, 0, 1));
+    c.extraShadowLights = sXlOver[0] >= 0 ? u32(sXlOver[0]) : kXlLights[std::clamp(l.extraShadowLights, 0, 3)];
+    c.extraShadowMapSize = sXlOver[1] > 0 ? u32(sXlOver[1]) : kXlSize[std::clamp(l.extraShadowMapSize, 0, 3)];
+    c.extraShadowSoftness = l.extraShadowSoftness;
     c.volumetric = l.volumetricBeam;
     c.volumetricIntensity = l.volumetricIntensity;
     c.volumetricQuality = u32(std::clamp(l.volumetricQuality, 0, 2));
@@ -243,6 +320,15 @@ void applySettings() {
         }
     }
     aurora_enhanced_set_config(&c);
+    // LM_XL_SHADOW_LOG=1: shadow-map statistics every 120 host frames (lights, caster draws,
+    // casters skipped while their pipeline compiles).
+    static const bool sXlLog = std::getenv("LM_XL_SHADOW_LOG") != nullptr;
+    static u32 sXlTick = 0;
+    if (sXlLog && ++sXlTick % 120 == 0) {
+        u32 lights = 0, casters = 0, skipped = 0;
+        aurora_enhanced_shadow_stats(&lights, &casters, &skipped);
+        log("[xlshadow] lights %u casters %u skipped %u", lights, casters, skipped);
+    }
     sActive.store(c.enabled, std::memory_order_relaxed);
 }
 
@@ -300,6 +386,11 @@ void setCasterPass(bool on) {
 void beginScene() {
     addTestLights();
     const uint32_t count = selectLights(sPending.data(), sPendingCount);
+    // Test aid LM_XL_SHADOWS_AB=1: colored-light shadows only on even frames (consecutive frame
+    // dumps compare with / without in the same scene).
+    static const bool sXlAb = std::getenv("LM_XL_SHADOWS_AB") != nullptr;
+    if (sXlAb && (sSceneCount & 1))
+        for (uint32_t i = 0; i < count; i++) sPending[i].flags &= ~(aurora::gfx::ExtraLightCastShadows | 0xFF00u);
     sPendingCount = 0;  // a frame in which nobody submits has no extra lights
     sClass = 0xFF;      // every frame (and interpolation tape) sets its class again
     sMaterial = 0xFF;

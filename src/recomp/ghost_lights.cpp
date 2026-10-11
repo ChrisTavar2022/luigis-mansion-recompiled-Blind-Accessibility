@@ -542,7 +542,9 @@ void update(Ctx& c) {
         std::sort(ranked.begin(), ranked.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
         for (auto& [id, tr] : sTracks) {
             bool want = false;
-            for (size_t r = 0; r < ranked.size() && r < 2; r++) want |= ranked[r].second == id;
+            // As many of the strongest ghosts as colored-light shadows allow (two for screen-space).
+            const size_t cap = std::max<size_t>(enh::shadowLightCap(), 2);
+            for (size_t r = 0; r < ranked.size() && r < cap; r++) want |= ranked[r].second == id;
             tr.shadowW += ((want ? 1.0f : 0.0f) - tr.shadowW) * 0.25f;
             if (tr.shadowW < 0.02f && !want) tr.shadowW = 0.0f;
         }
@@ -551,7 +553,7 @@ void update(Ctx& c) {
     for (auto& cd : cands) {
         const auto it = sTracks.find(cd.light.id);
         const float w = it != sTracks.end() ? it->second.shadowW : 0.0f;
-        if (s.shadows && w > 0.0f && shadowed < 4) {
+        if (s.shadows && w > 0.0f && shadowed < 8) {
             cd.light.flags |= kFlagShadow | (std::clamp(u32(w * 255.0f + 0.5f), 1u, 255u) << 8);
             shadowed++;
         }
