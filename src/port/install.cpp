@@ -66,23 +66,60 @@ const char* availNote(Avail a) {
 
 InstallState& install() { return sInstall; }
 
-std::filesystem::path dataDir() {
+namespace {
+
 #ifdef _WIN32
+std::filesystem::path appDir() {
     const wchar_t* base = _wgetenv(L"APPDATA");
     std::filesystem::path dir = base ? std::filesystem::path(base) / L"Luigi's Mansion PC" : std::filesystem::path(L".");
-#else
-    const char* base = std::getenv("XDG_CONFIG_HOME");
-    std::filesystem::path dir = base ? std::filesystem::path(base) / "Luigi's Mansion PC" : std::filesystem::path(".");
-#endif
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir;
+}
+#else
+// XDG base directory: $<var> if set to an absolute path, else $HOME/<fallback>.
+std::filesystem::path xdgDir(const char* var, const char* fallback) {
+    std::filesystem::path base;
+    if (const char* v = std::getenv(var); v && v[0] == '/') base = v;
+    else if (const char* home = std::getenv("HOME"); home && home[0]) base = std::filesystem::path(home) / fallback;
+    else base = ".";
+    std::filesystem::path dir = base / "Luigi's Mansion PC";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+#endif
+
+}  // namespace
+
+std::filesystem::path configDir() {
+#ifdef _WIN32
+    return appDir();
+#else
+    return xdgDir("XDG_CONFIG_HOME", ".config");
+#endif
+}
+
+std::filesystem::path dataDir() {
+#ifdef _WIN32
+    return appDir();
+#else
+    return xdgDir("XDG_DATA_HOME", ".local/share");
+#endif
+}
+
+std::filesystem::path cacheDir() {
+#ifdef _WIN32
+    return appDir();
+#else
+    return xdgDir("XDG_CACHE_HOME", ".cache");
+#endif
 }
 
 std::filesystem::path hiddenMansionOverlayDir() { return dataDir() / "hidden_mansion"; }
 
 void loadInstall() {
-    std::ifstream in(dataDir() / "install.ini");
+    std::ifstream in(configDir() / "install.ini");
     std::string line;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -96,7 +133,7 @@ void loadInstall() {
 }
 
 void saveInstall() {
-    std::ofstream out(dataDir() / "install.ini");
+    std::ofstream out(configDir() / "install.ini");
     out << "[install]\n";
     out << "us_disc=" << sInstall.usDisc << '\n';
     out << "pal_disc=" << sInstall.palDisc << '\n';

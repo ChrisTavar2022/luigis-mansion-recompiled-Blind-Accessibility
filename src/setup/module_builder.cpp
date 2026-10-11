@@ -6,6 +6,7 @@
 #include "setup/embedded.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -17,6 +18,13 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern char** environ;
 #endif
 
 namespace setup {
@@ -24,22 +32,51 @@ namespace {
 
 // Flags for the generated code. Freestanding: no headers, no C runtime (module_rt.cpp
 // provides the few symbols the compiler may call), no thread-safe statics (they need the
-// CRT; only one guest thread runs at a time). Stack probes stay on (module_rt.cpp provides
-// __chkstk: a generated function with a frame above a page would otherwise skip the stack
-// guard page and fault). Unwind tables are required: the runtime ends guest threads
-// (OSExitThread, OSCancelThread, shutdown) by throwing sched::ThreadExit through the module's
-// frames, which Windows can only unwind with .pdata (both fixes found in the SMS port).
+// CRT; only one guest thread runs at a time). Unwind tables are required: the runtime ends
+// guest threads (OSExitThread, OSCancelThread, shutdown) by throwing sched::ThreadExit through
+// the module's frames, which Windows can only unwind with .pdata and Linux with .eh_frame
+// (+ the .eh_frame_hdr lookup table the linker writes).
+#ifdef _WIN32
+// Windows: stack probes stay on (module_rt.cpp provides __chkstk: a generated function with
+// a frame above a page would otherwise skip the stack guard page and fault; SMS port fix).
 const std::vector<std::string> kCompileFlags = {
     "--target=x86_64-pc-windows-msvc", "-std=c++20", "-O2", "-ffreestanding", "-nostdinc", "-fno-exceptions",
     "-fno-rtti", "-fno-threadsafe-statics", "-fno-math-errno", "-fno-stack-protector", "-funwind-tables",
     "-Wno-unused-label", "-Wno-unused-variable"};
 const std::vector<std::string> kLinkFlags = {"/dll", "/noentry", "/nodefaultlib", "/machine:x64", "/opt:ref",
                                              "/incremental:no"};
+constexpr const char* kModuleFile = "module.dll";
+constexpr const char* kObjExt = ".obj";
+constexpr const char* kExeSuffix = ".exe";
+constexpr const char* kLinkerName = "lld-link";
+#else
+// Linux: a position-independent shared object. Everything is hidden and bound locally
+// (-fvisibility=hidden, -Bsymbolic) except lm_module_init, so the module's g_mem, memcpy, ...
+// can never be interposed by the executable's or libc's symbols. -z defs turns a missing
+// helper (one the compiler calls that module_rt.cpp does not provide) into a link error
+// instead of a dlopen failure.
+const std::vector<std::string> kCompileFlags = {
+    "--target=x86_64-pc-linux-gnu", "-std=c++20", "-O2", "-fPIC", "-fvisibility=hidden", "-ffreestanding",
+    "-nostdinc", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics", "-fno-math-errno",
+    "-fno-stack-protector", "-funwind-tables", "-Wno-unused-label", "-Wno-unused-variable"};
+const std::vector<std::string> kLinkFlags = {"-shared", "-nostdlib", "--eh-frame-hdr", "-Bsymbolic",
+                                             "-z", "defs", "-z", "noexecstack", "-z", "now", "-O1",
+                                             "--hash-style=both", "-soname", "lm_game_module.so"};
+constexpr const char* kModuleFile = "module.so";
+constexpr const char* kObjExt = ".o";
+constexpr const char* kExeSuffix = "";
+constexpr const char* kLinkerName = "ld.lld";
+#endif
 
 bool writeText(const std::filesystem::path& p, std::string_view text) {
     std::ofstream o(p, std::ios::binary);
     o.write(text.data(), std::streamsize(text.size()));
     return bool(o);
+}
+
+std::string utf8(const std::filesystem::path& p) {
+    const auto s = p.u8string();
+    return std::string(s.begin(), s.end());
 }
 
 std::string readText(const std::filesystem::path& p) {
@@ -57,9 +94,9 @@ std::wstring widen(const std::string& s) {
 }
 
 // Runs a tool and waits; its output goes to `log`. Returns the exit code (-1: not started).
-int run(const std::filesystem::path& exe, const std::vector<std::wstring>& args, const std::filesystem::path& log) {
+int run(const std::filesystem::path& exe, const std::vector<std::string>& args, const std::filesystem::path& log) {
     std::wstring cmd = L"\"" + exe.wstring() + L"\"";
-    for (const auto& a : args) cmd += L" \"" + a + L"\"";
+    for (const auto& a : args) cmd += L" \"" + widen(a) + L"\"";
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE out = CreateFileW(log.wstring().c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS,
                              FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -80,6 +117,35 @@ int run(const std::filesystem::path& exe, const std::vector<std::wstring>& args,
     CloseHandle(pi.hProcess);
     return int(code);
 }
+#else
+// Runs a tool and waits; stdout/stderr go to `log`, stdin is /dev/null. Returns the exit
+// code (-1: not started, 128 + n: killed by signal n). The tool runs at a lower priority so
+// the setup screen stays responsive while every core compiles.
+int run(const std::filesystem::path& exe, const std::vector<std::string>& args, const std::filesystem::path& log) {
+    std::vector<std::string> argStore;
+    argStore.push_back(exe.string());
+    argStore.insert(argStore.end(), args.begin(), args.end());
+    std::vector<char*> argv;
+    for (auto& a : argStore) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 1, log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    posix_spawn_file_actions_adddup2(&fa, 1, 2);
+    pid_t pid = -1;
+    const int err = posix_spawn(&pid, exe.c_str(), &fa, nullptr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&fa);
+    if (err != 0) return -1;
+    setpriority(PRIO_PROCESS, id_t(pid), 10);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) return -1;
+    }
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return -1;
+}
 #endif
 
 std::filesystem::path exeDir() {
@@ -95,7 +161,7 @@ std::filesystem::path exeDir() {
 }  // namespace
 
 std::filesystem::path moduleDir(port::GameVersion v) { return port::dataDir() / "game" / port::gameId(v); }
-std::filesystem::path modulePath(port::GameVersion v) { return moduleDir(v) / "module.dll"; }
+std::filesystem::path modulePath(port::GameVersion v) { return moduleDir(v) / kModuleFile; }
 
 std::string moduleKey(const Disc& disc) {
     const bool pal = disc.version() == port::GameVersion::PAL;
@@ -116,15 +182,11 @@ std::string moduleKey(const Disc& disc) {
 bool moduleUpToDate(const Disc& disc) {
     const auto dir = moduleDir(disc.version());
     std::error_code ec;
-    return std::filesystem::exists(dir / "module.dll", ec) && readText(dir / "module.key") == moduleKey(disc);
+    return std::filesystem::exists(dir / kModuleFile, ec) && readText(dir / "module.key") == moduleKey(disc);
 }
 
 bool findToolchain(std::filesystem::path& clang, std::filesystem::path& lld, std::string& error) {
-#ifdef _WIN32
-    const char* exe = ".exe";
-#else
-    const char* exe = "";
-#endif
+    const char* exe = kExeSuffix;
     std::vector<std::filesystem::path> dirs{exeDir() / "llvm" / "bin"};
     if (const char* env = std::getenv("LM_LLVM_DIR")) dirs.emplace_back(env);
 #ifdef LM_DEV_LLVM_DIR
@@ -146,23 +208,24 @@ bool findToolchain(std::filesystem::path& clang, std::filesystem::path& lld, std
     }
     for (const auto& d : dirs) {
         std::error_code ec;
-        const auto c = d / (std::string("clang") + exe), l = d / (std::string("lld-link") + exe);
+        const auto c = d / (std::string("clang") + exe), l = d / (std::string(kLinkerName) + exe);
         if (std::filesystem::exists(c, ec) && std::filesystem::exists(l, ec)) {
             clang = c;
             lld = l;
             return true;
         }
     }
+#ifdef _WIN32
     error = "The bundled compiler (llvm\\bin\\clang.exe and lld-link.exe next to the game) is missing. "
             "Reinstall the game, or set LM_LLVM_DIR to an LLVM bin directory.";
+#else
+    error = "The bundled compiler (llvm/bin/clang and llvm/bin/ld.lld next to the game) is missing. "
+            "Reinstall the game, or set LM_LLVM_DIR to an LLVM bin directory.";
+#endif
     return false;
 }
 
 bool buildModule(const Disc& disc, const Progress& progress, std::string& error) {
-#ifndef _WIN32
-    error = "Building the game module is only implemented on Windows so far.";
-    return false;
-#else
     auto report = [&](const std::string& s, float f) {
         if (progress.report) progress.report(s, f);
     };
@@ -228,15 +291,16 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
                 i = next++;
             }
             const auto& src = sources[i];
-            const auto obj = work / "obj" / (src.stem().wstring() + L".obj");
-            const auto log = work / "obj" / (src.stem().wstring() + L".log");
-            std::vector<std::wstring> args;
-            for (auto& f : kCompileFlags) args.push_back(widen(f));
-            args.push_back(L"-I" + (work / "include").wstring());
-            args.push_back(L"-c");
-            args.push_back(src.wstring());
-            args.push_back(L"-o");
-            args.push_back(obj.wstring());
+            auto obj = work / "obj" / src.stem();
+            obj += kObjExt;
+            auto log = work / "obj" / src.stem();
+            log += ".log";
+            std::vector<std::string> args(kCompileFlags.begin(), kCompileFlags.end());
+            args.push_back("-I" + utf8(work / "include"));
+            args.push_back("-c");
+            args.push_back(utf8(src));
+            args.push_back("-o");
+            args.push_back(utf8(obj));
             const int rc = run(clang, args, log);
             std::lock_guard lk(m);
             if (rc != 0 && failure.empty())
@@ -261,18 +325,26 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
 
     // 3. Link.
     report("Linking the game module", 0.96f);
-    const auto tmpDll = work / "module.dll";
-    std::vector<std::wstring> args;
-    for (auto& f : kLinkFlags) args.push_back(widen(f));
-    args.push_back(L"/out:" + tmpDll.wstring());
-    args.push_back(L"/implib:" + (work / "module.lib").wstring());
-    for (const auto& s : sources) args.push_back((work / "obj" / (s.stem().wstring() + L".obj")).wstring());
+    const auto tmpDll = work / kModuleFile;
+    std::vector<std::string> args(kLinkFlags.begin(), kLinkFlags.end());
+#ifdef _WIN32
+    args.push_back("/out:" + utf8(tmpDll));
+    args.push_back("/implib:" + utf8(work / "module.lib"));
+#else
+    args.push_back("-o");
+    args.push_back(utf8(tmpDll));
+#endif
+    for (const auto& s : sources) {
+        auto obj = work / "obj" / s.stem();
+        obj += kObjExt;
+        args.push_back(utf8(obj));
+    }
     if (const int rc = run(lld, args, work / "link.log"); rc != 0) {
         error = "Linking the game module failed (exit " + std::to_string(rc) + "):\n" + readText(work / "link.log").substr(0, 2000);
         return false;
     }
-    std::filesystem::remove(dir / "module.dll", ec);
-    std::filesystem::rename(tmpDll, dir / "module.dll", ec);
+    std::filesystem::remove(dir / kModuleFile, ec);
+    std::filesystem::rename(tmpDll, dir / kModuleFile, ec);
     if (ec) {
         error = "Could not install the game module: " + ec.message();
         return false;
@@ -283,7 +355,6 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
     if (!std::getenv("LM_KEEP_BUILD")) std::filesystem::remove_all(work, ec);
     report("Done", 1.0f);
     return true;
-#endif
 }
 
 }  // namespace setup

@@ -1,5 +1,7 @@
 #include "port/settings.h"
 
+#include "port/install.h"
+
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -198,17 +200,7 @@ Settings& settings() { return sSettings; }
 
 void addSettingsExtension(const SettingsExtension& ext) { extensions().push_back(ext); }
 
-std::string settingsPath() {
-#ifdef _WIN32
-    const char* base = std::getenv("APPDATA");
-#else
-    const char* base = std::getenv("XDG_CONFIG_HOME");
-#endif
-    std::filesystem::path dir = base ? std::filesystem::path(base) / "Luigi's Mansion PC" : std::filesystem::path(".");
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    return (dir / "settings.ini").string();
-}
+std::string settingsPath() { return (configDir() / "settings.ini").string(); }
 
 void loadSettings() {
     for (auto& ext : extensions()) ext.reset();

@@ -8,6 +8,7 @@
 #include "recomp/sched.h"
 #include "recomp/skip.h"
 
+#include <cmath>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>

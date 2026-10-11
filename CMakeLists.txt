@@ -140,6 +140,16 @@ function(lm_runtime_target tgt)
             add_custom_command(TARGET ${tgt} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_dawn_extra_dlls} $<TARGET_FILE_DIR:${tgt}>)
         endif ()
+    elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # Portable Linux binary (docs/LINUX.md): SDL3, Dawn and nod are linked statically by
+        # Aurora; the C++ runtime is too, and src/port/glibc_compat.c covers the few symbols
+        # a newer build host's glibc would otherwise require, so the executable only needs
+        # glibc 2.34+ (libc, libm, libz). SDL3 and Dawn dlopen X11/Wayland, PulseAudio/
+        # PipeWire/ALSA and the Vulkan loader at run time.
+        target_sources(${tgt} PRIVATE ${CMAKE_SOURCE_DIR}/src/port/glibc_compat.c)
+        # libgcc_s stays shared: the static unwinder of a newer GCC needs _dl_find_object (glibc 2.35).
+        target_link_options(${tgt} PRIVATE -static-libstdc++)
+        target_link_libraries(${tgt} PRIVATE ${CMAKE_DL_LIBS})
     endif ()
 endfunction()
 
@@ -171,23 +181,63 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/embedded_data.cpp
     VERBATIM)
 target_sources(LuigisMansionRecomp PRIVATE ${CMAKE_BINARY_DIR}/embedded_data.cpp)
 # Dev builds use the LLVM that built them when no bundled llvm/ is next to the exe.
+# The module linker is lld-link on Windows, ld.lld on Linux (src/setup/module_builder.cpp).
+if (WIN32)
+    set(LM_MODULE_LINKER lld-link)
+else ()
+    set(LM_MODULE_LINKER ld.lld)
+endif ()
 get_filename_component(_cxx_dir ${CMAKE_CXX_COMPILER} DIRECTORY)
-if (EXISTS ${_cxx_dir}/clang${CMAKE_EXECUTABLE_SUFFIX} AND EXISTS ${_cxx_dir}/lld-link${CMAKE_EXECUTABLE_SUFFIX})
+if (EXISTS ${_cxx_dir}/clang${CMAKE_EXECUTABLE_SUFFIX} AND EXISTS ${_cxx_dir}/${LM_MODULE_LINKER}${CMAKE_EXECUTABLE_SUFFIX})
     target_compile_definitions(LuigisMansionRecomp PRIVATE "LM_DEV_LLVM_DIR=\"${_cxx_dir}\"")
 endif ()
 
 # Packaging: `cmake --install build/<preset> --prefix <dir>` lays out a release folder.
-# LM_LLVM_DIR (an LLVM bin directory) supplies the bundled clang.exe and lld-link.exe.
-set(LM_LLVM_DIR "${_cxx_dir}" CACHE PATH "LLVM bin directory whose clang and lld-link are bundled on install")
+# LM_LLVM_DIR (an LLVM bin directory) supplies the bundled clang and lld-link / ld.lld.
+set(LM_LLVM_DIR "${_cxx_dir}" CACHE PATH "LLVM bin directory whose clang and lld-link (Windows) / ld.lld (Linux) are bundled on install")
 install(TARGETS LuigisMansionRecomp RUNTIME DESTINATION .)
-install(CODE "
-    file(GLOB _dlls \"$<TARGET_FILE_DIR:LuigisMansionRecomp>/*.dll\")
-    file(INSTALL \${_dlls} DESTINATION \"\${CMAKE_INSTALL_PREFIX}\")")
-install(PROGRAMS ${LM_LLVM_DIR}/clang${CMAKE_EXECUTABLE_SUFFIX} ${LM_LLVM_DIR}/lld-link${CMAKE_EXECUTABLE_SUFFIX}
-    DESTINATION llvm/bin OPTIONAL)
 install(FILES NOTICE.md DESTINATION .)
 install(FILES data/pipelines.bin DESTINATION .)
 install(FILES packaging/LLVM-LICENSE.TXT DESTINATION llvm)
+if (WIN32)
+    install(CODE "
+        file(GLOB _dlls \"$<TARGET_FILE_DIR:LuigisMansionRecomp>/*.dll\")
+        file(INSTALL \${_dlls} DESTINATION \"\${CMAKE_INSTALL_PREFIX}\")")
+    install(PROGRAMS ${LM_LLVM_DIR}/clang${CMAKE_EXECUTABLE_SUFFIX} ${LM_LLVM_DIR}/lld-link${CMAKE_EXECUTABLE_SUFFIX}
+        DESTINATION llvm/bin OPTIONAL)
+else ()
+    # Linux (docs/LINUX.md): clang and ld.lld are usually symlinks (clang -> clang-21,
+    # ld.lld -> lld); copy the real binaries under the names the setup looks for (lld picks
+    # its flavour from its name). Use a self-contained LLVM (the official release tarball),
+    # not a distribution's clang that needs libLLVM/libclang-cpp next to it.
+    install(CODE "
+        foreach (_pair \"clang;clang\" \"ld.lld;ld.lld\")
+            list(GET _pair 0 _src)
+            list(GET _pair 1 _dst)
+            set(_from \"${LM_LLVM_DIR}/\${_src}\")
+            if (NOT EXISTS \"\${_from}\")
+                message(WARNING \"LM_LLVM_DIR has no \${_src}; the package will lack the bundled compiler\")
+                continue()
+            endif ()
+            file(REAL_PATH \"\${_from}\" _real)
+            file(MAKE_DIRECTORY \"\${CMAKE_INSTALL_PREFIX}/llvm/bin\")
+            file(COPY_FILE \"\${_real}\" \"\${CMAKE_INSTALL_PREFIX}/llvm/bin/\${_dst}\")
+            file(CHMOD \"\${CMAKE_INSTALL_PREFIX}/llvm/bin/\${_dst}\" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                 GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+            message(STATUS \"Bundled \${_real} as llvm/bin/\${_dst}\")
+        endforeach ()")
+    # The official LLVM lld needs libxml2.so.2 (only for lld-link manifests): ship a stub
+    # in llvm/lib, found through lld's RUNPATH $ORIGIN/../lib (packaging/linux/libxml2_stub.c).
+    add_library(lm_libxml2_stub SHARED packaging/linux/libxml2_stub.c)
+    set_target_properties(lm_libxml2_stub PROPERTIES OUTPUT_NAME xml2 SOVERSION 2
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/llvm_stub)
+    target_link_options(lm_libxml2_stub PRIVATE
+        -Wl,--version-script=${CMAKE_SOURCE_DIR}/packaging/linux/libxml2_stub.map)
+    add_dependencies(LuigisMansionRecomp lm_libxml2_stub)
+    install(FILES $<TARGET_FILE:lm_libxml2_stub> DESTINATION llvm/lib)
+    install(PROGRAMS packaging/linux/LuigisMansionPC.sh DESTINATION .)
+    install(FILES packaging/linux/README.txt DESTINATION .)
+endif ()
 
 # lmrecomp: developer build with the game recompiled at build time and linked in
 # statically (debuggable, no setup). LM_DOL is the user's own main.dol; LM_DOL_VERSION

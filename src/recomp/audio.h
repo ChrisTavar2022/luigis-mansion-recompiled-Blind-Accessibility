@@ -46,6 +46,9 @@ void outTagBlock(u32 dac, u32 bufL, u32 frames);
 void outPushGuestBlock(u32 addr, u32 bytes);
 // Seconds of audio queued on the host device (0 when there is no device).
 double outQueuedSeconds();
+// Closes the device stream before Aurora shuts SDL down (SDL_Quit frees every stream; the
+// AI DMA thread would otherwise use the freed one; found on Linux).
+void outShutdown();
 bool outHasDevice();
 // Host pause (window lost focus): stop the device and the audio interrupt pacing; on resume
 // drop stale queued audio so playback restarts cleanly.

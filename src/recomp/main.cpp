@@ -137,13 +137,28 @@ int main(int argc, char* argv[]) {
     // LM_BACKEND=d3d12|d3d11|vulkan (testing): graphics backend instead of Aurora's choice.
     if (const char* b = std::getenv("LM_BACKEND")) {
         const std::string s = b;
-        config.desiredBackend = s == "d3d12" ? BACKEND_D3D12 : s == "d3d11" ? BACKEND_D3D11 : s == "vulkan" ? BACKEND_VULKAN : BACKEND_AUTO;
+        config.desiredBackend = s == "d3d12"    ? BACKEND_D3D12
+                                : s == "d3d11"  ? BACKEND_D3D11
+                                : s == "vulkan" ? BACKEND_VULKAN
+                                : s == "opengl" ? BACKEND_OPENGL
+                                : s == "gles"   ? BACKEND_OPENGLES
+                                                : BACKEND_AUTO;
     }
+    // LM_ALLOW_CPU_GPU=1: accept a software renderer (e.g. Mesa llvmpipe for Vulkan in WSL or a
+    // VM without GPU passthrough; docs/LINUX.md). Slow, for testing only.
+    if (const char* c = std::getenv("LM_ALLOW_CPU_GPU"); c && *c == '1') config.allowCpuAdapter = true;
     // LM_CACHE_DIR: separate shader/pipeline cache, e.g. for test runs of different builds side by side.
     // Default: next to settings.ini, so a scratch APPDATA (test runs) also gets its own cache
     // (Aurora's default, SDL_GetPrefPath, ignores the APPDATA variable).
-    static const std::string sCacheDir = std::filesystem::path(port::settingsPath()).parent_path().string();
+    // Linux: $XDG_CACHE_HOME/Luigi's Mansion PC (port::cacheDir; docs/LINUX.md).
+    static const std::string sCacheDir = port::cacheDir().string();
     config.cachePath = sCacheDir.c_str();
+#ifndef _WIN32
+    // Memory cards (Aurora's userPath) in dataDir, which honours XDG_DATA_HOME like the rest
+    // (SDL_GetPrefPath does too, but this keeps every location defined in one place).
+    static const std::string sUserDir = port::dataDir().string() + "/";
+    config.userPath = sUserDir.c_str();
+#endif
     if (const char* dir = std::getenv("LM_CACHE_DIR")) config.cachePath = dir;
     const port::Options& opts = port::options();
     config.startFullscreen = opts.fullscreen || port::settings().video.fullscreen;
@@ -274,6 +289,7 @@ int main(int argc, char* argv[]) {
 
     vi::stopTimer();
     frame::stop();
+    audio::outShutdown();
     aurora_shutdown();
     std::_Exit(0);
 }
