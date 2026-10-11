@@ -49,6 +49,9 @@ bool worldToView(const float world[3], float view[3]);
 // Enhanced "Shadow map size": width of the offscreen shadow map (height 3/4 of it), 0 = the
 // EFB (render resolution).
 uint32_t shadowMapWidth();
+// Colored-light shadows: how many lights may cast them this frame (settings; screen-space at
+// most 4; 0 when off). Providers flag that many of their strongest lights.
+uint32_t shadowLightCap();
 }  // namespace enh
 
 }  // namespace recomp

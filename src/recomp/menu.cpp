@@ -320,12 +320,37 @@ void enhancedLightingTab() {
                           "1: the colors as the game defines them; higher: deeper, more contrasty colors.");
     sDirty |= ImGui::Checkbox("Colored light shadows", &l.extraLightShadows);
     ImGui::SetItemTooltip(
-        "The strongest colored lights (ghost lights: the two brightest) cast shadows: furniture and\n"
-        "characters between a ghost and a wall block its glow. Screen-space: a depth pre-pass of the\n"
-        "room and a ray march toward each light at half resolution. Moderate GPU cost.");
+        "The strongest colored lights (ghosts, fireplaces and braziers, candelabras, the fire spray)\n"
+        "cast shadows: furniture and characters between a light and a wall block its glow.");
+    static const char* kXlMode[] = {"Screen-space (fast)", "Shadow maps (detailed)"};
+    ImGui::BeginDisabled(!l.extraLightShadows);
+    sDirty |= ImGui::Combo("Light shadow method", &l.extraShadowMode, kXlMode, 2);
+    ImGui::SetItemTooltip(
+        "Shadow maps: the room is rendered from each shadow-casting light into a cube map, so\n"
+        "objects outside the picture (behind the camera, off to the side) still cast shadows, with\n"
+        "accurate soft edges. Cost: one extra render of the room per frame for all lights together.\n"
+        "Screen-space: a ray march through the visible depth at half resolution (up to 4 lights);\n"
+        "cheap, but only what is on screen casts shadows and the edges are approximate.");
     static const char* kXlQ[] = {"Low", "Medium", "High"};
-    ImGui::BeginDisabled(!l.extraLightShadows || l.preset != port::EnhancedPreset::Custom);
+    static const char* kXlN[] = {"Off", "2 lights", "4 lights", "8 lights"};
+    static const char* kXlS[] = {"256", "512", "1024", "2048"};
+    ImGui::BeginDisabled(l.preset != port::EnhancedPreset::Custom);
+    sDirty |= ImGui::Combo("Shadow-casting lights", &l.extraShadowLights, kXlN, 4);
+    ImGui::SetItemTooltip("How many of the strongest colored lights cast shadows each frame (screen-space: at most 4).\n"
+                          "Each light adds a cube map (shadow maps) or a ray march (screen-space).");
     sDirty |= ImGui::Combo("Light shadow quality", &l.extraShadowQuality, kXlQ, 3);
+    ImGui::SetItemTooltip("Filter taps of the soft edge (shadow maps: 8 / 16 / 32) or ray-march steps (screen-space).");
+    ImGui::BeginDisabled(l.extraShadowMode != 1);
+    sDirty |= ImGui::Combo("Shadow map size", &l.extraShadowMapSize, kXlS, 4);
+    ImGui::SetItemTooltip("Texels per cube face. Larger: sharper, more detailed shadows, more GPU memory\n"
+                          "(8 lights at 1024: about 200 MB; 2048 is reduced to fit the texture size limit).");
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(l.extraShadowMode != 1);
+    sDirty |= ImGui::SliderFloat("Light shadow softness", &l.extraShadowSoftness, 0.0f, 60.0f, "%.0f");
+    ImGui::SetItemTooltip("Size of the light source (world units): contact-hardening penumbrae, sharp where an\n"
+                          "object meets the surface and softer farther from it. 0: hard edges.");
+    ImGui::EndDisabled();
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     // ---- Ghost lights (src/recomp/ghost_lights.cpp): the game-side source of colored lights ----

@@ -119,6 +119,10 @@ std::vector<Field> fields() {
         num("enhanced_lighting", "extra_light_saturation", l.extraLightSaturation),
         flag("enhanced_lighting", "extra_light_shadows", l.extraLightShadows),
         num("enhanced_lighting", "extra_shadow_quality", l.extraShadowQuality),
+        num("enhanced_lighting", "extra_shadow_mode", l.extraShadowMode),
+        num("enhanced_lighting", "extra_shadow_lights", l.extraShadowLights),
+        num("enhanced_lighting", "extra_shadow_map_size", l.extraShadowMapSize),
+        num("enhanced_lighting", "extra_shadow_softness", l.extraShadowSoftness),
         flag("enhanced_lighting", "volumetric_beam", l.volumetricBeam),
         num("enhanced_lighting", "volumetric_intensity", l.volumetricIntensity),
         num("enhanced_lighting", "volumetric_quality", l.volumetricQuality),
@@ -251,6 +255,10 @@ void sanitize() {
     clampEnum(l.preset, EnhancedPreset::Custom, EnhancedPreset::High);
     clampTo(l.softShadowQuality, 0, 3);
     clampTo(l.extraShadowQuality, 0, 2);
+    clampTo(l.extraShadowMode, 0, 1);
+    clampTo(l.extraShadowLights, 0, 3);
+    clampTo(l.extraShadowMapSize, 0, 3);
+    clampTo(l.extraShadowSoftness, 0.0f, 60.0f);
     clampTo(l.volumetricQuality, 0, 2);
     clampTo(l.shadowMapSize, 0, 2);
     clampTo(sSettings.ghostLights.maxLights, 1, 16);
