@@ -7,6 +7,7 @@
 #include "port/install.h"
 #include "port/settings.h"
 #include "recomp/coop.h"
+#include "recomp/dev_tools.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
@@ -211,6 +212,7 @@ void debugSection() {
     galleryButton();
     ImGui::SameLine();
     textArchiveButton();
+    spawnSection(recomp::dev::inGameScene());
 }
 void drawOverlays() {
     galleryWindow();
