@@ -127,6 +127,14 @@ struct RenderingSettings {
     // EFB color depth: pixels are stored the way the game's RGBA6 framebuffer stores them,
     // 6 bits per channel with the ordered dither the game enables (GX_AURORA_ACCURACY_EFB_DEPTH).
     bool efbColorDepth = true;
+    // 6-bit blending: with efbColorDepth, blended draws (the flashlight beam, glows, HUD edges)
+    // are stored like the console's RGBA6 framebuffer stores them, the blend result dithered and
+    // truncated to 6 bits (GX_AURORA_ACCURACY_EFB_BLEND, Aurora 0176).
+    bool efbBlend6 = true;
+    // Early Z writes depth for alpha-tested pixels: draws that compare Z before texturing
+    // (GXSetZCompLoc(GX_TRUE)) update Z even where the alpha test then rejects the pixel, as the
+    // hardware does (GX_AURORA_ACCURACY_EARLY_Z, Aurora 0170/0179: depth-only pass + colour pass).
+    bool earlyZAlphaDepth = true;
     // Display copy filter: the vertical filter (and gamma) GXCopyDisp applies on the way to the TV.
     bool displayCopyFilter = true;
     // Texture copy filter: the same vertical filter applied to the game's GXCopyTex copies (the

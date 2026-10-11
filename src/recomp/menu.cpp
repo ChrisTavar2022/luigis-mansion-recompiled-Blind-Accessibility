@@ -169,6 +169,23 @@ void renderingTab() {
         "console, and its screen/texture copies keep their format's precision (RGB565: 5-bit red\n"
         "and blue in the full-screen copy the game redraws every frame; RGB5A3 for the Mario\n"
         "painting). Off: smooth 8-bit color (less banding/dither grain in dark rooms). No real cost.");
+    ImGui::BeginDisabled(!r.efbColorDepth);
+    ImGui::Indent();
+    sDirty |= ImGui::Checkbox("6-bit blending", &r.efbBlend6);
+    ImGui::SetItemTooltip(
+        "Translucent things drawn over the scene (the Game Boy Horror screen, health counter and\n"
+        "room captions, glows) are stored in the 6-bit framebuffer after blending, like on the\n"
+        "console: the same banding and dither grain as the rest of the image at their edges and\n"
+        "see-through parts instead of smooth 8-bit gradients. Subtle in this game.\n"
+        "Costs a few full-screen passes per frame (well under 1 ms at 1440p; more with MSAA).");
+    ImGui::Unindent();
+    ImGui::EndDisabled();
+    sDirty |= ImGui::Checkbox("Early depth for cut-out textures", &r.earlyZAlphaDepth);
+    ImGui::SetItemTooltip(
+        "Room geometry and Luigi test depth before texturing. On the console that also writes the\n"
+        "depth of pixels the alpha test then cuts out (transparent texels of cut-out textures), so\n"
+        "things drawn behind them later are hidden there. Off: cut-out pixels write no depth (PC\n"
+        "behaviour). Costs one extra depth-only draw for each such draw.");
     sDirty |= ImGui::Checkbox("Display copy filter", &r.displayCopyFilter);
     ImGui::SetItemTooltip(
         "The vertical filter (and gamma) the console applies when copying the frame to the TV\n"

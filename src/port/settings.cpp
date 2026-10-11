@@ -69,6 +69,8 @@ std::vector<Field> fields() {
         flag("video", "pal60", v.pal60),
         flag("rendering", "integer_tev", r.integerTev),
         flag("rendering", "efb_color_depth", r.efbColorDepth),
+        flag("rendering", "efb_blend_6bit", r.efbBlend6),
+        flag("rendering", "early_z_alpha_depth", r.earlyZAlphaDepth),
         flag("rendering", "display_copy_filter", r.displayCopyFilter),
         flag("rendering", "texture_copy_filter", r.textureCopyFilter),
         flag("rendering", "efb_copy_to_ram", sSettings.rendering.efbCopyToRam),

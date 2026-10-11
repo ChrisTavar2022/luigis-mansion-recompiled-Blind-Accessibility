@@ -427,11 +427,14 @@ const gx::DisplayCopy& gx::displayCopy() { return sDisplayCopy; }
 void gx::recheckDrawState() { sRawCheck = true; }
 
 // F1 > Visuals > Rendering accuracy options -> Aurora. Test overrides: LM_ACCURACY=<mask>
-// (bit 0 integer TEV, bit 1 EFB color depth, bit 2 texture copy filter) and LM_ACCURACY_AB=<seconds> (alternate between
-// the configured options and all off every <seconds>, for A/B screenshots of one run).
+// (bit 0 integer TEV, bit 1 EFB color depth, bit 2 texture copy filter, bit 3 6-bit blending, bit 4 early-Z alpha
+// depth) and LM_ACCURACY_AB=<seconds>
+// (alternate between the configured options and all off every <seconds>, for A/B screenshots of one run).
 void gx::applyAccuracySettings() {
     const auto& r = port::settings().rendering;
     u32 flags = (r.integerTev ? GX_AURORA_ACCURACY_INT_TEV : 0) | (r.efbColorDepth ? GX_AURORA_ACCURACY_EFB_DEPTH : 0) |
+                (r.efbColorDepth && r.efbBlend6 ? GX_AURORA_ACCURACY_EFB_BLEND : 0) |
+                (r.earlyZAlphaDepth ? GX_AURORA_ACCURACY_EARLY_Z : 0) |
                 (r.textureCopyFilter ? GX_AURORA_ACCURACY_COPY_FILTER : 0);
     static const char* sMask = std::getenv("LM_ACCURACY");
     if (sMask) flags = u32(std::strtoul(sMask, nullptr, 0));
