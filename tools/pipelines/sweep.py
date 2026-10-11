@@ -274,7 +274,8 @@ def run(args, scenario):
     # A run that crashes on its own (e.g. out of memory with many instances) is repeated.
     for attempt in range(3):
         db, code, killed = run_once(args, scenario)
-        if db and (killed or code == 0):
+        # Exit 0 before the time limit: only the model viewer sweep ends by itself.
+        if db and (killed or (code == 0 and scenario[5])):
             (d / "done").write_text("", encoding="utf-8")
             break
         print(f"{scenario[0]}: exited with {code}, attempt {attempt + 1}", flush=True)
@@ -307,7 +308,9 @@ def run_once(args, scenario):
             time.sleep(max(0.0, LAST_START + 8 - time.time()))
             LAST_START = time.time()
         t0 = time.time()
-        p = subprocess.Popen(cmd, env=e, stdout=log, stderr=subprocess.STDOUT)
+        # No console window per run (closing one would end that run).
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        p = subprocess.Popen(cmd, env=e, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
         try:
             p.wait(timeout=seconds)
         except subprocess.TimeoutExpired:

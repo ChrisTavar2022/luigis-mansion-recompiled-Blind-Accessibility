@@ -834,7 +834,7 @@ they hit on the next run.
 - **Several compile threads** (half the hardware threads, 1..8; `LM_PIPELINE_THREADS`). The
   shipped list compiles in about 3 s with 8 threads vs 13 s with one (warm driver cache).
 - **Shipped precache list** `data/pipelines.bin` (copied next to the exe, installed with it):
-  1999 pipeline configs (15 KB, zstd) recorded by an automated sweep. It holds Aurora's
+  5453 pipeline configs (79 KB, zstd) recorded by an automated sweep. It holds Aurora's
   config structs only (generated metadata, no game data). `aurora_pipeline_cache_seed` adds
   them to the known set on every launch; Aurora's own `pipeline_cache.db` adds whatever this
   PC used beyond it. The known set is compiled in the background from the **first frame**
@@ -880,8 +880,11 @@ or size are ignored, so a stale list only costs coverage, never correctness):
 python tools/pipelines/sweep.py --work <scratch dir> --jobs 4 [--merge data/pipelines.bin]
 ```
 
-It runs `lmrecomp` with a scratch APPDATA per scenario (in parallel), `LM_PRECACHE=0`, and
-merges each scenario's `pipeline_cache.db` with `tools/pipelines/pipelines.py build`:
+It runs `lmrecomp` with a scratch APPDATA per scenario (in parallel, each started without a
+console window and 8 s apart; a run that crashes on its own is repeated, `--resume` keeps the
+scenarios an earlier sweep into the same `--work` finished), `LM_PRECACHE=0`, F1 options from a
+`settings.ini` written into that APPDATA, and merges each scenario's `pipeline_cache.db` with
+`tools/pipelines/pipelines.py build`:
 boot (title, menus, file select, the opening unskipped, foyer), the same with cutscene skip,
 a teleport tour of every mansion room (points from the map's `jmp/furnitureinfo`, computed from
 the disc dump at sweep time: `tools/pipelines/rooms.py`) with vacuum/blow/A/stick input and
@@ -892,15 +895,74 @@ roof/Bowser, Chauncey, Boolossus, graveyard/Bogmire). About 20 minutes; per-scen
 boot 113, tour 757 (the tour ends at the roof and loads Bowser's map), fire 726, water 950,
 ice 445, Hidden Mansion 660/664, unused 280, maps 75-145 (graveyard 677).
 
+Second set (2026-10-11, `--only enh_,boss,appear,ending,unused,coop,training,viewer`; about
+an hour per release with 3 jobs; the machine's commit limit, not the GPU, caps the jobs):
+
+- `enh_*`: **Enhanced lighting** with every part on (Custom preset, per-pixel lights, PCSS,
+  colored-light shadows as cube shadow maps, volumetric beam, bloom, forward AO, ghost lights,
+  world lights): the whole tour (1169 / 945 after Aurora 0031/0032), each element, the Hidden
+  Mansion both rule sets, boot, maps 0, 1, 3-8, 12, the training room and the boss maps;
+  `enh_lowq` and `enh_water` use the cheap variants (screen-space colored-light shadows, low
+  quality). Enhanced lighting's GX-derived draws (enhanced shader classes, glow draws, the
+  depth pre-pass, light shadow-map draws) are pipeline-cache configs; its scene-end passes
+  (bloom, volumetric, AO, cube clears) and the CRT filter are fixed pipelines outside it.
+- `boss09/10/11/13` (+ `enh_`): the boss maps played for 6700 frames with strong vacuum,
+  weak ghosts and no damage (`gameplay` options), Boolossus with ice. Blind input does not
+  finish the fights (Bowser and Chauncey stay in their opening phase), but it reaches the
+  fight effects of Boolossus and Bogmire.
+- `training` (+ `enh_`): map 3 with A held through the controller settings screen and
+  E. Gadd's text, then the training ghosts.
+- `appear9/7/5/3`: mansion entry points whose arrival plays an event (Secret Altar/King Boo,
+  Sealed Room, Balcony Boos, roof), with `warp_skip_events=0`.
+- `ending_r8`/`ending_r1`: `LM_TEST_ENDING` (rank screen, ending scenes; unused ending
+  pictures on in r8).
+- `unused_a`/`unused_b`/`unused_enh`/`unused_bogmire`/`unused_portraits`: every unused-content
+  and debug toggle (GBH camera/tracker/clock, beta skybox, doors, early Luigi, air/water
+  nozzles, early Poltergust, green Toad, bordered view, poison, crawl fear, overheat, ghost
+  placements and colour variants, extra Speedy Spirits, depth blur, debug text), Play as
+  Mario, early Bogmire, portrait models, with the CRT filter on.
+- `coop`, `coop_mario`, `coop_map10/13`: the 2-player split screen (P2 input on port 2),
+  Mario as player 2 with Enhanced lighting.
+- `viewer`: the model viewer's `LM_DEV_VIEWER_SWEEP` over all 1458 models (289 configs);
+  `viewer_mapNN`: whole maps in the viewer (US only).
+
+Both releases ran the set (the European game with `--exe build/pal/lmrecomp.exe --disc
+orig/GLMP01.iso`): 4456 configs (US) and 4242 (European game), 2903 from the US
+Enhanced-lighting rerun after Aurora 0031/0032; merged with the earlier list: 2148 -> 5453.
+
+Fresh-cache runs with `LM_PIPELINE_LOG=1` (US unless noted; new game -> foyer, walk/vacuum;
+MISS = pipelines a draw needed that were not precached; "ready" = `[precache] all N known
+pipelines ready after` line, fresh `dawn_cache.db`, warm driver cache):
+
+| Run | 2148-config list | 5453-config list |
+|-----|------|------|
+| Foyer, default options | 0 MISS | 0 MISS |
+| Foyer, Enhanced lighting + AO + ghost/world lights | 78 MISS | 51 MISS |
+| Boolossus (map 11), Enhanced lighting, ice | 101 MISS | 64 MISS |
+| Bogmire (map 13), default options | 29 MISS | 0 MISS |
+| European game, foyer, Enhanced lighting | 76 MISS | 51 MISS |
+| Startup precompile, 8 threads (several runs, machine shared with other builds) | 2.3-6 s | 7-40 s |
+| Startup precompile, 1 thread | | 52-59 s |
+
+The precompile runs in the background from the first frame (title screen first), so the
+longer list mostly costs CPU time while the title runs; the setup's "Compiling shaders" step
+takes correspondingly longer. 2147 of the 5453 configs only occur with Enhanced lighting
+(off by default). The remaining Enhanced-lighting MISSes are **not list gaps**: the precache
+builds each known config for the scene and offscreen render-target layouts only, while
+Enhanced lighting draws known configs into its own targets (glow layout, the depth-only
+pre-pass, light shadow maps), and `pipeline_cache.db` does not record the layout. Closing them
+needs Aurora to remember the layout per config (or to precache those layouts for the configs
+Enhanced lighting derives) - and could skip Enhanced-only configs while it is off.
+
 `pipelines.py info <list|db>` summarises a list; `aurora_pipeline_cache_export` writes the
 current known set in the same format.
 
-**Not covered yet** (these compile on first use, without dropping draws): the PAL game as the
-base (its rendering code is the same, but it was not swept), the full story path (boss fights
-past their intros, ending/credits, the gallery's portrait battles, Boo radar/King Boo), every
-ghost type's capture/death effects (rooms were visited, not cleared), menus reached only from
-a save with progress, MSAA levels (built from the same configs at the new layout, at runtime),
-and the model viewer. Merging pipeline_cache.db files from longer play sessions
+**Not covered yet** (these compile on first use, without dropping draws): boss fights past
+their first phase (Bowser, Chauncey: blind input does not play them), the credits after the
+rank screen, the gallery's portrait battles, menus reached only from a save with progress,
+Enhanced-lighting settings combinations other than the two swept (most are uniforms, not
+configs), the viewer's wireframe override, and MSAA levels (built from the same configs at
+the new layout, at runtime). Merging pipeline_cache.db files from longer play sessions
 (`pipelines.py build -o data/pipelines.bin data/pipelines.bin <db>...`) closes the gaps.
 
 ### Test aids
