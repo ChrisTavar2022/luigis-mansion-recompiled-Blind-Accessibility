@@ -183,7 +183,8 @@ void marioFrame(Ctx& c) {
         if (const u32 m = marioFor(c, cur)) {
             wr32(s3d + 4, m);
             sApplied = true;
-            log("[mario] player 2 (%08X) is Mario", p2);
+            static int sLogged = 0;
+            if (sLogged++ < 3) log("[mario] player 2 (%08X) is Mario", p2);
         }
     } else if (isMarioCopy(cur) && !marioOn()) {
         wr32(s3d + 4, rd32(kModelRegistry + 8));  // back to the registry's Luigi
