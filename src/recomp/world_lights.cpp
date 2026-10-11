@@ -257,6 +257,48 @@ void onMainView(Ctx&) {
                 s.count, s.pos[0], s.pos[1], s.pos[2], l.pos[0], l.pos[1], l.pos[2], l.intensity, l.radius);
     }
 
+    // Poltergust element spray: Luigi's Poltergust mode (+0x1180: 2 fire, 3 water, 4 ice, while L
+    // is held; nozzles.cpp) and the nozzle actor (+0x7A4, position +0x44 at the nozzle). The
+    // spray itself is a model (elefire.bmd), not particles: the light sits ~170 units ahead of
+    // the nozzle (horizontal direction Luigi -> nozzle), ramps in over a few frames and out.
+    {
+        static float sSpray = 0.0f;
+        static int sElem = 0;
+        static float sPos[3] = {};
+        const u32 lu = rd32(VA(0x803D48A0));
+        const int mode = guestPtr(lu) ? s32(rd32(lu + 0x1180)) : 0;
+        const u32 noz = guestPtr(lu) ? rd32(lu + 0x7A4) : 0;
+        const bool spraying = (mode >= 2 && mode <= 4) && guestPtr(noz) && (w.on[port::kWlSprays] || sForce);
+        if (spraying) {
+            sElem = mode;
+            const float lp[3] = {rdf32(lu + 0x44), rdf32(lu + 0x48), rdf32(lu + 0x4C)};
+            const float np[3] = {rdf32(noz + 0x44), rdf32(noz + 0x48), rdf32(noz + 0x4C)};
+            float dx = np[0] - lp[0], dz = np[2] - lp[2];
+            const float len = std::sqrt(dx * dx + dz * dz);
+            if (len > 1.0f) dx /= len, dz /= len;
+            sPos[0] = np[0] + dx * 170.0f, sPos[1] = np[1] + 10.0f, sPos[2] = np[2] + dz * 170.0f;
+        }
+        sSpray += ((spraying ? 1.0f : 0.0f) - sSpray) * (spraying ? 0.35f : 0.25f);
+        if (sSpray > 0.01f && sElem) {
+            static const u8 kRgb[3][3] = {{255, 150, 55}, {70, 140, 255}, {150, 230, 255}};
+            static const float kI[3] = {2.2f, 0.7f, 0.7f}, kR[3] = {750.0f, 480.0f, 480.0f};
+            const int e = sElem - 2;
+            float rgb[3], mx = 1e-4f;
+            for (int i = 0; i < 3; i++) mx = std::max(mx, rgb[i] = srgbToLinear(kRgb[e][i]));
+            ExtraLight l{};
+            toView(view, sPos, l.pos);
+            for (int i = 0; i < 3; i++) l.color[i] = rgb[i] / mx;
+            float I = kI[e] * sSpray * master * std::clamp(w.intensity[port::kWlSprays], 0.0f, 3.0f);
+            if (e == 0 && w.flicker) I *= flameFlicker(t * 1.6f, 77, 1.0f);
+            l.radius = kR[e];
+            l.intensity = I;
+            l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent;
+            l.id = 0x57005000u;
+            lights.push_back(l);
+            if (logNow) log("[worldlight] f%u spray element %d world %.0f,%.0f,%.0f I %.2f", sFrame, sElem, sPos[0], sPos[1], sPos[2], I);
+        }
+    }
+
     // Lightning: a cool flash from the strike's light, flickering twice and fading over ~1.5 s.
     if ((w.on[port::kWlLightning] || sForce) && sStrikeFrame && sFrame - sStrikeFrame < 45) {
         const float a = float(sFrame - sStrikeFrame);
@@ -274,7 +316,17 @@ void onMainView(Ctx&) {
 
     if (sAB && (sFrame & 1)) return;
     if (!lights.empty()) submitExtraLights(lights.data(), u32(lights.size()));
-    if (logNow) log("[worldlight] f%u %d emitters, %zu lights", sFrame, n, lights.size());
+    if (logNow) {
+        log("[worldlight] f%u %d emitters, %zu lights", sFrame, n, lights.size());
+        const u32 lu = rd32(VA(0x803D48A0));
+        if (guestPtr(lu)) {
+            const u32 noz = rd32(lu + 0x7A4);
+            log("[worldlight] f%u luigi %.0f,%.0f,%.0f v50 %.2f,%.2f,%.2f v5c %.2f,%.2f,%.2f mode %d nozzle %.0f,%.0f,%.0f", sFrame,
+                rdf32(lu + 0x44), rdf32(lu + 0x48), rdf32(lu + 0x4C), rdf32(lu + 0x50), rdf32(lu + 0x54), rdf32(lu + 0x58),
+                rdf32(lu + 0x5C), rdf32(lu + 0x60), rdf32(lu + 0x64), s32(rd32(lu + 0x1180)), guestPtr(noz) ? rdf32(noz + 0x44) : 0.f,
+                guestPtr(noz) ? rdf32(noz + 0x48) : 0.f, guestPtr(noz) ? rdf32(noz + 0x4C) : 0.f);
+        }
+    }
 }
 
 // JKRArchive::getResource(type, name): remember particle resources by their data pointer.
