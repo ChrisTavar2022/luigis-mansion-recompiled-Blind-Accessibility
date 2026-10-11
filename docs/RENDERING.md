@@ -778,6 +778,13 @@ recorded there; plain-renderer frame dumps identical).
 `LM_SHADOW_SNAP=0` restores the old blending, `=2` blends the caster pass element-wise instead
 (smooth but only half as consistent).
 
+**Superseded (interp-everything, docs/INTERPOLATION.md):** the default is now `LM_SHADOW_SNAP=3`:
+the caster pass is blended as blended light camera x blended caster world matrices, and the
+receivers' matrices are rebuilt from the same blended light (K = P x LV from the shadow object,
+times each receiver's own G), so the shadows move at the presented frame rate and stay consistent
+(back-and-forth pixels over the nursery scenario at the level of the snapped mode). `=1` keeps the
+30 Hz snap.
+
 Measured (`LM_INTERP_TEST=4`, 120 fps, ballroom `LM_TELEPORT=1800,0,-1400,100`, Ultra, Luigi
 turning left/right every 4 game frames; the shadow term isolated as the difference to a run with
 `LM_NO_SHADOW=1`; pixels whose shadow goes back and forth within one game interval): blended

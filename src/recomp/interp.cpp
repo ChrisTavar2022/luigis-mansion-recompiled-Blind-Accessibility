@@ -186,7 +186,7 @@ std::deque<std::shared_ptr<const Tape>> sRetired;
 std::vector<u8> sReplay;
 u32 sPresented = 0, sTapes = 0, sBlended = 0, sSnapped = 0, sCuts = 0;
 Clock::time_point sStatsStart = Clock::now();
-u64 sTapeBytes = 0, sArrayBytes = 0, sPairedSum = 0, sUnpairedSum = 0, sGuestUs = 0, sReplayUs = 0;
+u64 sTapeBytes = 0, sArrayBytes = 0, sTexBytes = 0, sPairedSum = 0, sUnpairedSum = 0, sGuestUs = 0, sReplayUs = 0;
 u64 sPhaseUs[5] = {};
 // LM_INTERP_TRACE=1: per present, alpha, time since the last present and what
 // could not be blended (by kind).
@@ -838,7 +838,9 @@ bool blendable(Kind kind, const f32* a, const f32* b, int n) {
             return false;  // cos(angle / 2) < 0.26: more than ~150 degrees, no telling which way
         for (int k = 0; k < 3; k++) {
             const float sa = std::fabs(ra.u[k][k]), sb = std::fabs(rb.u[k][k]);
-            if (sb > 4.0f * sa + 1e-4f || sa > 4.0f * sb + 1e-4f) return false;  // particles grow fast
+            // Scales blend freely (particles grow, eyelids blink to nothing); a wrong pair would
+            // also have to agree in rotation and position.
+            if (std::max(sa, sb) > 0.05f && (sb > 16.0f * sa + 1e-4f || sa > 16.0f * sb + 1e-4f)) return false;
         }
         if (cols == 4) {
             float da = 0, db = 0, dd = 0;
@@ -864,10 +866,17 @@ bool blendable(Kind kind, const f32* a, const f32* b, int n) {
                 return std::fabs(angleDelta(sa.angle, sb.angle)) <= 2.6f && sb.scale <= 2.0f * sa.scale &&
                        sa.scale <= 2.0f * sb.scale;
         }
-        if (big <= 4.0f) {  // texture-coordinate scale/scroll: a wrap jumps by about 1
-            for (int i = 0; i < n; i++)
-                if (std::fabs(a[i] - b[i]) > 0.5f) return false;
-            return true;
+        if (big <= 4.0f) {
+            // Texture-coordinate scale/scroll: a wrap makes the translation jump by about 1.
+            // Otherwise (rows turning: environment/reflection mapping from normals) the rows are
+            // compared like a rotation below.
+            const int cols = n == 8 ? 4 : n / 3;
+            if (cols == 4)
+                for (int r = 0; r * 4 < n; r++)
+                    if (std::fabs(a[4 * r + 3] - b[4 * r + 3]) > 0.5f) return false;
+            if (cols != 4)
+                for (int i = 0; i < n; i++)
+                    if (std::fabs(a[i] - b[i]) > 0.5f) return false;
         }
         // Projection-style (projected flashlight, shadows; rows of a scaled view matrix):
         // follows the camera and the light. Translations pass through zero as things turn,
@@ -1759,6 +1768,7 @@ bool replay(bool final) {
         sTapes++;
         sTapeBytes += b->bytes.size();
         sArrayBytes += b->arrayBytes;
+        sTexBytes += b->textureBytes;
         sPairedSum += b->paired;
         sGuestUs += b->guestUs;
         for (int k = 0; k < 5; k++) sPhaseUs[k] += b->phaseUs[k];
@@ -1766,11 +1776,13 @@ bool replay(bool final) {
     }
     const double elapsed = std::chrono::duration<double>(Clock::now() - sStatsStart).count();
     if (elapsed >= 5.0) {
-        log("[interp] presented %.1f fps, game %.1f fps, tape %.0f KiB + arrays %.0f KiB, per tape %.0f paired / %.0f "
+        log("[interp] presented %.1f fps, game %.1f fps, tape %.0f KiB + arrays %.0f KiB + new texture copies %.0f KiB, "
+            "per tape %.0f paired / %.0f "
             "unpaired; per present %u blended / %u snapped; %u cut presents; tape close %.2f ms (guest: arrays %.2f, "
             "copy %.2f, draws %.2f, rest %.2f, cut %.2f), replay %.2f ms (host)",
             sPresented / elapsed, sTapes / elapsed, sTapes ? double(sTapeBytes) / sTapes / 1024.0 : 0.0,
-            sTapes ? double(sArrayBytes) / sTapes / 1024.0 : 0.0, sTapes ? double(sPairedSum) / sTapes : 0.0,
+            sTapes ? double(sArrayBytes) / sTapes / 1024.0 : 0.0, sTapes ? double(sTexBytes) / sTapes / 1024.0 : 0.0,
+            sTapes ? double(sPairedSum) / sTapes : 0.0,
             sTapes ? double(sUnpairedSum) / sTapes : 0.0, sPresented ? sBlended / sPresented : 0,
             sPresented ? sSnapped / sPresented : 0, sCuts, sTapes ? double(sGuestUs) / sTapes / 1000.0 : 0.0,
             sTapes ? double(sPhaseUs[0]) / sTapes / 1000.0 : 0.0, sTapes ? double(sPhaseUs[1]) / sTapes / 1000.0 : 0.0,
@@ -1778,7 +1790,7 @@ bool replay(bool final) {
             sTapes ? double(sPhaseUs[4]) / sTapes / 1000.0 : 0.0,
             sPresented ? double(sReplayUs) / sPresented / 1000.0 : 0.0);
         sPresented = sTapes = sBlended = sSnapped = sCuts = 0;
-        sTapeBytes = sArrayBytes = sPairedSum = sUnpairedSum = sGuestUs = sReplayUs = 0;
+        sTapeBytes = sArrayBytes = sTexBytes = sPairedSum = sUnpairedSum = sGuestUs = sReplayUs = 0;
         std::fill(std::begin(sPhaseUs), std::end(sPhaseUs), 0ull);
         sStatsStart = Clock::now();
     }
