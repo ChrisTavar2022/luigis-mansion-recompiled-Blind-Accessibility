@@ -64,6 +64,9 @@ u32 viewMatrixSource();
 // pass is rendered with, so the shadow map and its lookup always agree.
 void noteShadowLight(const float lightView[12], const float kProj[12], const float kRamp[12]);
 void pushShadowReceivers();
+// Values noted while an orthographic projection is current are 2D (HUD): not camera-factored,
+// and a jump of more than 96 units (pixels) shows them unblended.
+void setOrthographic(bool ortho);
 void popShadowReceivers();
 
 // LM_FRAME_DUMP's EFB copy (hle_gx GXCopyDisp), marked at `at`: LM_INTERP_TEST

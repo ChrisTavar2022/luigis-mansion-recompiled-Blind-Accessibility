@@ -86,7 +86,7 @@ struct Patch {
     u16 stride = 0, posOffset = 0;  // Verts
     u32 bundle = ~0u;  // the draw it belongs to (index into Tape::bundleIds)
     u16 view = 0xFFFF;  // index into Tape::views: the camera it was noted under
-    u8 role = 0;        // 1: a shadow receiver's texture matrix (noteShadowLight)
+    u8 role = 0;        // 1: a shadow receiver's texture matrix (noteShadowLight), 2: 2D (orthographic)
 };
 
 using M34 = std::array<f32, 12>;
@@ -142,6 +142,7 @@ std::vector<u64> sBundleIds;
 std::vector<M34> sViews;
 ShadowLight sShadow;
 int sShadowRecv = 0;
+bool sOrtho = false;
 
 // The camera the game is drawing with now (see viewMatrixSource), as an index into sViews.
 u16 sampleView() {
@@ -718,7 +719,7 @@ void pairTapes(const Tape& a, Tape& b) {
             continue;
         }
         b.paired++;
-        if (p.kind != Kind::PosMtx) continue;
+        if (p.kind != Kind::PosMtx || p.role == 2) continue;
         const Patch& q = a.patches[b.partner[i]];
         f32 va[12], vb[12];
         for (int k = 0; k < 12; k++) va[k] = val(a, q, k), vb[k] = val(b, p, k);
@@ -965,7 +966,8 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     Patch p{at + 5 + 4 * u32(first), u16(nFloats), kind, 0, 0, source, slot};
     p.origin = mix(u64(kind) << 56 ^ source);
     if (kind == Kind::TexMtx && sShadowRecv > 0) p.role = 1;
-    if (kind == Kind::PosMtx || kind == Kind::NrmMtx || kind == Kind::Light || p.role) p.view = sampleView();
+    else if (sOrtho && kind != Kind::Projection) p.role = 2;
+    if (p.role != 2 && (kind == Kind::PosMtx || kind == Kind::NrmMtx || kind == Kind::Light || p.role == 1)) p.view = sampleView();
     detail::drawLog("  #%u kind %u slot %u src %08X first %.2f %.2f %.2f %.2f", u32(sPatches.size()), u32(kind), slot,
                     source, loadBE(&sScratch[p.offset]), nFloats > 1 ? loadBE(&sScratch[p.offset + 4]) : 0.0f,
                     nFloats > 2 ? loadBE(&sScratch[p.offset + 8]) : 0.0f, nFloats > 3 ? loadBE(&sScratch[p.offset + 12]) : 0.0f);
@@ -1013,6 +1015,7 @@ void noteShadowLight(const float lightView[12], const float kProj[12], const flo
     std::copy(kRamp, kRamp + 12, sShadow.kr.begin());
 }
 void pushShadowReceivers() { sShadowRecv++; }
+void setOrthographic(bool ortho) { sOrtho = ortho; }
 void popShadowReceivers() { sShadowRecv = sShadowRecv > 0 ? sShadowRecv - 1 : 0; }
 
 void detail::noteDrawColor(u32 at, u32 reg, u8 fmt) {
@@ -1164,39 +1167,44 @@ float diff12(const f32* x, const f32* y) {
     return d;
 }
 // A shadow receiver's texture matrix rebuilt from the blended light (see noteShadowLight).
+// Per draw of a tape, the G of its shadow receivers' matrices T = K x G. G is the receiver's
+// world matrix (TEXMTX on model-space positions) or the inverse view the game built the actors'
+// post-transform matrices with (PT18/PT19, on view-space positions); the game uses the same G with
+// the projection K and the depth-ramp K, but the ramp's K is singular (its s and t rows are both
+// depth), so G is solved from the projection matrix of the same draw.
+std::unordered_map<u32, M34> sRecvA, sRecvB;
+void receiverGs(const Tape& t, std::unordered_map<u32, M34>& out) {
+    out.clear();
+    if (!t.shadow.valid) return;
+    for (const Patch& p : t.patches) {
+        const u32 key = p.bundle * 2 + (p.slot >= 64 ? 1 : 0);  // post-transform and TEXMTX receivers apart
+        if (p.role != 1 || p.count != 12 || out.count(key)) continue;
+        f32 v[12];
+        for (int k = 0; k < 12; k++) v[k] = val(t, p, k);
+        M34 g;
+        if (!solveAffine(t.shadow.kp.data(), v, g.data())) continue;
+        // The projection's G has orthogonal columns (a world matrix or an inverse view).
+        float skew = 0;
+        for (int i = 0; i < 3; i++)
+            for (int j = i + 1; j < 3; j++) skew += std::fabs(g[i] * g[j] + g[4 + i] * g[4 + j] + g[8 + i] * g[8 + j]);
+        if (skew < 0.05f) out.emplace(key, g);
+    }
+}
 bool blendShadowReceiver(const Tape& a, const Patch& q, const f32* ta, const Tape& b, const Patch& p, const f32* tb,
                          float alpha, f32* out) {
     if (!sLightPair.ok || p.count != 12) return false;
-    if (p.slot >= 64) {  // post-transform matrix: K x V^-1 (input is view space)
-        const ViewPair* vp = viewPair(a, q.view, b, p.view, alpha);
-        if (!vp) return false;
-        M34 kb;
-        compose(tb, vp->vb.data(), kb.data());
-        const bool ramp = diff12(kb.data(), b.shadow.kr.data()) < diff12(kb.data(), b.shadow.kp.data());
-        compose((ramp ? sLightPair.krt : sLightPair.kpt).data(), vp->it.data(), out);
-        return true;
-    }
-    // TEXMTX: K x W (input is model space): the receiver's own W blended rigidly.
-    M34 wa, wb, wt;
-    const bool ramp = [&] {
-        M34 w1, w2;
-        const bool r1 = solveAffine(b.shadow.kr.data(), tb, w1.data()), r2 = solveAffine(b.shadow.kp.data(), tb, w2.data());
-        if (r1 != r2) return r1;
-        // The right K leaves a world matrix with orthogonal columns.
-        auto skew = [](const M34& w) {
-            float s = 0;
-            for (int i = 0; i < 3; i++)
-                for (int j = i + 1; j < 3; j++) s += std::fabs(w[i] * w[j] + w[4 + i] * w[4 + j] + w[8 + i] * w[8 + j]);
-            return s;
-        };
-        return skew(w1) < skew(w2);
-    }();
-    if (!solveAffine((ramp ? a.shadow.kr : a.shadow.kp).data(), ta, wa.data()) ||
-        !solveAffine((ramp ? b.shadow.kr : b.shadow.kp).data(), tb, wb.data()))
-        return false;
-    if (!blendRigid(wa.data(), wb.data(), 4, alpha, wt.data()))
-        for (int k = 0; k < 12; k++) wt[k] = wa[k] + (wb[k] - wa[k]) * alpha;
-    compose((ramp ? sLightPair.krt : sLightPair.kpt).data(), wt.data(), out);
+    const auto ga = sRecvA.find(q.bundle * 2 + (q.slot >= 64 ? 1 : 0)), gb = sRecvB.find(p.bundle * 2 + (p.slot >= 64 ? 1 : 0));
+    if (ga == sRecvA.end() || gb == sRecvB.end()) return false;
+    // Which K: the one that rebuilds b's value from its G.
+    M34 xp, xr;
+    compose(b.shadow.kp.data(), gb->second.data(), xp.data());
+    compose(b.shadow.kr.data(), gb->second.data(), xr.data());
+    const bool ramp = diff12(xr.data(), tb) < diff12(xp.data(), tb);
+    M34 gt;
+    if (!blendRigid(ga->second.data(), gb->second.data(), 4, alpha, gt.data()))
+        for (int k = 0; k < 12; k++) gt[k] = ga->second[k] + (gb->second[k] - ga->second[k]) * alpha;
+    compose((ramp ? sLightPair.krt : sLightPair.kpt).data(), gt.data(), out);
+    (void)ta;
     return true;
 }
 // view x world values blended as blended view x blended world.
@@ -1264,9 +1272,56 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
         sCuts++;
         a = nullptr;
     }
+    if (a && alpha < 1.0f && sLogSnaps) {  // self-check: the rebuilt values at alpha 1 must equal b's
+        sViewPairs.clear();
+        makeLightPair(*a, b, 1.0f);
+        receiverGs(*a, sRecvA);
+        receiverGs(b, sRecvB);
+        u32 bad = 0, checked = 0;
+        for (u32 i = 0; i < b.patches.size(); i++) {
+            const s32 j = b.partner[i];
+            if (j < 0) continue;
+            const Patch& p = b.patches[i];
+            const Patch& q = a->patches[j];
+            if (p.kind == Kind::Verts || p.kind == Kind::Color || p.count > 16) continue;
+            f32 va[16], vb[16], out[16];
+            for (int k = 0; k < p.count; k++) va[k] = val(*a, q, k), vb[k] = val(b, p, k);
+            bool ok;
+            if (p.role == 1) ok = blendShadowReceiver(*a, q, va, b, p, vb, 1.0f, out);
+            else ok = blendFactored(*a, q, va, b, p, vb, 1.0f, out);
+            if (!ok) continue;
+            checked++;
+            float e = 0;
+            for (int k = 0; k < p.count; k++) e = std::max(e, std::fabs(out[k] - vb[k]) / (1.0f + std::fabs(vb[k])));
+            if (e > 1e-3f && bad++ < 6) {
+                char buf[600];
+                int n = std::snprintf(buf, sizeof(buf), "[interp]   self-check kind %u role %u slot %u err %.4f:", u32(p.kind), p.role, p.slot, e);
+                for (int k = 0; k < p.count && n < 560; k++) n += std::snprintf(buf + n, sizeof(buf) - n, " %.2f/%.2f", out[k], vb[k]);
+                log("%s", buf);
+                if (p.role == 1 && bad <= 2) {
+                    auto m = [](const char* n, const f32* x) {
+                        log("[interp]     %s %.3f %.3f %.3f %.2f | %.3f %.3f %.3f %.2f | %.3f %.3f %.3f %.2f", n, x[0], x[1], x[2], x[3], x[4],
+                            x[5], x[6], x[7], x[8], x[9], x[10], x[11]);
+                    };
+                    if (p.view < b.views.size()) m("V ", b.views[p.view].data());
+                    m("LV", b.shadow.lv.data());
+                    m("KP", b.shadow.kp.data());
+                    m("KR", b.shadow.kr.data());
+                    if (p.view < b.views.size()) {
+                        M34 kb;
+                        compose(vb, b.views[p.view].data(), kb.data());
+                        m("TV", kb.data());
+                    }
+                }
+            }
+        }
+        log("[interp]   self-check: %u of %u rebuilt values differ at alpha 1", bad, checked);
+    }
     if (a && alpha < 1.0f) {
         sViewPairs.clear();
         makeLightPair(*a, b, alpha);
+        receiverGs(*a, sRecvA);
+        receiverGs(b, sRecvB);
         for (u32 i = 0; i < b.patches.size(); i++) {
             const s32 j = b.partner[i];
             if (j < 0) continue;
@@ -1330,7 +1385,9 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             if (p.kind == Kind::Projection &&
                 std::memcmp(a->bytes.data() + q.offset + 24, b.bytes.data() + p.offset + 24, 4) != 0)
                 continue;
-            if (!blendable(p.kind, va, vb, p.count)) {
+            const bool jump2D = p.role == 2 && p.kind == Kind::PosMtx && p.count == 12 &&
+                                std::fabs(va[3] - vb[3]) + std::fabs(va[7] - vb[7]) + std::fabs(va[11] - vb[11]) > 96.0f;
+            if (jump2D || !blendable(p.kind, va, vb, p.count)) {
                 sSnapped++;
                 sSnapKinds[u32(p.kind)]++;
                 if (sLogSnaps && sLoggedSnaps[u32(p.kind)]++ < 12) {
@@ -1447,7 +1504,7 @@ void diagnoseMatching(const Tape& t0, const Tape& t1, const Tape& t2) {
     u32 total = 0, unmatched01 = 0, unmatched12 = 0, jerky = 0, logged = 0, bbTotal = 0, bbTracked = 0, bbJerky = 0;
     for (u32 i = 0; i < t1.patches.size(); i++) {
         const Patch& p = t1.patches[i];
-        if (p.kind != Kind::PosMtx) continue;
+        if (p.kind != Kind::PosMtx || p.role == 2) continue;
         total++;
         // Camera-facing sprites (particles, billboards): no rotation in view space.
         const bool billboard = std::fabs(val(t1, p, 1)) + std::fabs(val(t1, p, 2)) + std::fabs(val(t1, p, 4)) +
@@ -1556,9 +1613,20 @@ bool testReplay() {
         std::memcpy(g_mem + pphys, saved.data(), psize);
     }
     if (sLogSnaps) {
-        u32 unpaired[kKinds] = {};
+        u32 unpaired[kKinds] = {}, listed = 0;
         for (u32 i = 0; i < it.b->patches.size(); i++)
-            if (it.b->partner.empty() || it.b->partner[i] < 0) unpaired[u32(it.b->patches[i].kind)]++;
+            if (it.b->partner.empty() || it.b->partner[i] < 0) {
+                const Patch& p = it.b->patches[i];
+                unpaired[u32(p.kind)]++;
+                if (p.kind == Kind::PosMtx && listed++ < 6) {
+                    const u64 id = p.bundle < it.b->bundleIds.size() ? it.b->bundleIds[p.bundle] : 0;
+                    u32 same = 0;
+                    if (it.a)
+                        for (u64 x : it.a->bundleIds) same += x == id;
+                    log("[interp]   unpaired pos src %08X slot %u role %u draw %016llX (%u such draws before) t %.0f %.0f %.0f", p.source,
+                        p.slot, p.role, (unsigned long long)id, same, val(*it.b, p, 3), val(*it.b, p, 7), val(*it.b, p, 11));
+                }
+            }
         log("[interp] %s: snapped pos %u nrm %u tex %u proj %u light %u verts %u; unpaired pos %u nrm %u tex %u proj %u "
             "light %u verts %u%s",
             it.name.c_str(), sSnapKinds[0], sSnapKinds[1], sSnapKinds[2], sSnapKinds[3], sSnapKinds[4], sSnapKinds[5],

@@ -146,10 +146,12 @@ f32 pillarX(f32 x, int anchor) {
 
 bool viewportFull() { return sVp.left <= 1.0f && sVp.left + sVp.wd >= kLogicalWidth - 1.0f; }
 
-// Frame interpolation blends the matrices of 3D draws only: 2D (under an
-// orthographic projection) is often drawn with one scratch matrix reused per
-// glyph or element, so its loads don't line up between frames.
-u32 mark3D() { return sProj.type == GX_PERSPECTIVE ? interp::mark() : ~0u; }
+// Frame interpolation: 2D (under an orthographic projection) is blended too (HUD panes,
+// dialogue boxes, screen transitions), paired by draw like 3D but not camera-factored.
+u32 mark3D() {
+    interp::setOrthographic(sProj.type != GX_PERSPECTIVE);
+    return interp::mark();
+}
 
 void emitProjection(ProjMode mode) {
     f32 m[4][4];
