@@ -3,6 +3,7 @@
 // lookup; no game code is rewritten. Findings and addresses: docs/UNUSED_CONTENT.md.
 #include "port/settings.h"
 #include "recomp/hle.h"
+#include "recomp/world_lights.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
 
@@ -282,6 +283,7 @@ HLE(getResource__10JKRArchiveFPCc) {
         }
     }
     callOriginal(c, "getResource__10JKRArchiveFPCc");
+    worldlights::noteResource(path, c.r[3]);  // world_lights.cpp: the map's object/room tables
 }
 
 // JKRArchive::getResSize(const void*): size of the redirected GBH-map Luigi.

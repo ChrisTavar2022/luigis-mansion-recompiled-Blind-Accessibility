@@ -17,6 +17,7 @@
 #include "port/settings.h"
 #include "recomp/enhanced_lighting.h"
 #include "recomp/hle.h"
+#include "recomp/rarc.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
 
@@ -172,10 +173,171 @@ const char* emitterName(u32 em) {
     return n == sRes.end() ? "?" : n->second.name.c_str();
 }
 
+// ---- Lamps and chandeliers: the map's jmp tables -------------------------------------------
+// The map archive's jmp/objinfo (122 "chandelier" objects in map 2), jmp/furnitureinfo (light
+// fittings by model name) and jmp/roominfo (each room's LightColorR/G/B) are read from the disc
+// (the game loads them through its tool-data loader, not by name). JMP layout
+// (tools/jmp_dump.py): s32 count, s32 fields, s32 data offset, u32 entry size; per field u32 name
+// hash, u32 mask, u16 offset, u8 shift, u8 type (0 int, 1 string of 32 bytes, 2 float).
+#define kCurMapNo VA(0x804D80C8)  // sCurMapNo
+int sLampsMap = -1;                // map the lamp list was built for
+
+u32 jmpHash(const char* s) {
+    u32 h = 0;
+    for (; *s; s++) h = (u32(u8(*s)) + (h << 8)) % 0x1FFFFD9u;
+    return h;
+}
+u32 be32h(const rarc::Bytes& d, size_t o) {
+    return o + 4 <= d.size() ? u32(d[o]) << 24 | u32(d[o + 1]) << 16 | u32(d[o + 2]) << 8 | u32(d[o + 3]) : 0;
+}
+struct JmpField {
+    u32 off = ~0u, mask = 0;
+    u8 shift = 0, type = 0;
+};
+struct Jmp {
+    const rarc::Bytes* d = nullptr;
+    u32 count() const { return d && d->size() >= 16 ? be32h(*d, 0) : 0; }
+    JmpField field(const char* name) const {
+        const u32 nf = be32h(*d, 4), h = jmpHash(name);
+        for (u32 i = 0; i < nf && i < 64; i++) {
+            const size_t f = 0x10 + i * 12;
+            if (be32h(*d, f) == h) return {be32h(*d, f + 8) >> 16, be32h(*d, f + 4), (*d)[f + 10], (*d)[f + 11]};
+        }
+        return {};
+    }
+    size_t row(u32 e) const { return be32h(*d, 8) + size_t(e) * be32h(*d, 12); }
+    std::string str(size_t r, const JmpField& f) const {
+        std::string s;
+        for (u32 i = 0; f.off != ~0u && i < 32 && r + f.off + i < d->size(); i++) {
+            const char ch = char((*d)[r + f.off + i]);
+            if (!ch) break;
+            s += ch;
+        }
+        return s;
+    }
+    float f32v(size_t r, const JmpField& f) const {
+        const u32 v = f.off != ~0u ? be32h(*d, r + f.off) : 0;
+        float x;
+        std::memcpy(&x, &v, 4);
+        return x;
+    }
+    s32 i32v(size_t r, const JmpField& f) const { return f.off != ~0u ? s32((be32h(*d, r + f.off) & f.mask) >> f.shift) : -1; }
+};
+
+// Room containing a world position (room table lbl_804D8170: 0x30 per room, int min xyz +0x8,
+// max xyz +0x14; shadows.cpp), -1 if none.
+int roomAt(const float p[3]) {
+    const u32 rooms = rd32(VA(0x804D8170));
+    if (!guestPtr(rooms)) return -1;
+    for (int r = 0; r < 80; r++) {
+        const u32 b = rooms + u32(r) * 0x30;
+        bool in = true;
+        for (int k = 0; k < 3 && in; k++) {
+            const float lo = float(s32(rd32(b + 8 + 4 * k))), hi = float(s32(rd32(b + 0x14 + 4 * k)));
+            if (!(hi > lo) || hi - lo > 20000.0f) in = false;
+            else if (p[k] < lo - 1.0f || p[k] > hi + 1.0f) in = false;
+        }
+        if (in) return r;
+    }
+    return -1;
+}
+
+struct Lamp {
+    float pos[3];
+    int room;
+    bool chandelier;
+    u32 id;
+};
+std::vector<Lamp> sLamps;
+std::unordered_map<int, u32> sRoomColor;  // room -> 0xRRGGBB (roominfo LightColor)
+
+// Furniture models that are light fittings (model names in the map's furnitureinfo).
+bool lampModel(const std::string& m, bool& chandelier) {
+    chandelier = m.rfind("syan", 0) == 0 || m.rfind("o_syan", 0) == 0 || m.rfind("osyan", 0) == 0 ||
+                 m.rfind("shan", 0) == 0;
+    return chandelier || m.rfind("a_lamp", 0) == 0 || m.rfind("lamp", 0) == 0 || m.rfind("a_ligh", 0) == 0 ||
+           m.rfind("a_lump", 0) == 0;
+}
+
+void buildLamps() {
+    const int map = s32(rd32(kCurMapNo));
+    if (map == sLampsMap || rd32(VA(0x804D8170)) == 0) return;
+    sLampsMap = map;
+    sLamps.clear();
+    sRoomColor.clear();
+    rarc::Archive arc;
+    if (map < 0 || map > 20 || !arc.parse(rarc::decompress(rarc::readDisc(("/Map/map" + std::to_string(map) + ".szp").c_str()))))
+        return;
+    if (const rarc::Item* it = arc.find("jmp/objinfo")) {
+        const Jmp j{&it->data};
+        const JmpField name = j.field("name"), px = j.field("pos_x"), py = j.field("pos_y"), pz = j.field("pos_z");
+        for (u32 e = 0; e < std::min<u32>(j.count(), 4000); e++) {
+            const size_t r = j.row(e);
+            if (j.str(r, name) != "chandelier") continue;
+            Lamp l{{j.f32v(r, px), j.f32v(r, py) - 40.0f, j.f32v(r, pz)}, -1, true, 0x57100000u + e};
+            l.room = roomAt(l.pos);
+            sLamps.push_back(l);
+        }
+    }
+    if (const rarc::Item* it = arc.find("jmp/furnitureinfo")) {
+        const Jmp j{&it->data};
+        const JmpField name = j.field("dmd_name"), px = j.field("pos_x"), py = j.field("pos_y"), pz = j.field("pos_z");
+        for (u32 e = 0; e < std::min<u32>(j.count(), 4000); e++) {
+            const size_t r = j.row(e);
+            bool chand = false;
+            if (!lampModel(j.str(r, name), chand)) continue;
+            // Furniture sits on its origin: a chandelier model hangs below it, a lamp's bulb is above.
+            Lamp l{{j.f32v(r, px), j.f32v(r, py) + (chand ? -60.0f : 90.0f), j.f32v(r, pz)}, -1, chand, 0x57200000u + e};
+            l.room = roomAt(l.pos);
+            sLamps.push_back(l);
+        }
+    }
+    if (const rarc::Item* it = arc.find("jmp/roominfo")) {
+        const Jmp j{&it->data};
+        const JmpField no = j.field("RoomNo"), cr = j.field("LightColorR"), cg = j.field("LightColorG"), cb = j.field("LightColorB");
+        for (u32 e = 0; e < std::min<u32>(j.count(), 200); e++) {
+            const size_t r = j.row(e);
+            sRoomColor[j.i32v(r, no)] = u32(j.i32v(r, cr) & 0xFF) << 16 | u32(j.i32v(r, cg) & 0xFF) << 8 | u32(j.i32v(r, cb) & 0xFF);
+        }
+    }
+    if (sLog) log("[worldlight] map %d lamps: %zu, %zu room colors", map, sLamps.size(), sRoomColor.size());
+}
+
+// Room flags the game draws by (fn_8001CE1C(room, -1): table lbl_803A4BB0[lbl_804D8158], u16 at
+// room * 0xC, bit 1 = visible) and the room's light-on bit (room objects lbl_804D8178, 0x14C each,
+// +6 bit 0x80: fn_80018D78, what a cleared room has).
+bool roomVisible(int room) {
+    const u32 tab = rd32(VA(0x803A4BB0) + 4 * u32(s32(s8(rd8(VA(0x804D8158))))));
+    return guestPtr(tab) && (rd16(tab + u32(room) * 0xC) & 1);
+}
+bool roomLit(int room) {
+    const u32 rooms = rd32(VA(0x804D8178));
+    return guestPtr(rooms) && (rd8(rooms + u32(room) * 0x14C + 6) & 0x80);
+}
+
 }  // namespace
+
+void noteResource(const char* path, u32 data) {
+    if (sLog >= 2 && path && std::strstr(path, "info")) log("[worldlight] resource %s -> %08X", path, data);
+}
 
 void onMainView(Ctx&) {
     sFrame++;
+    // Test aid LM_ROOM_LIGHTS_ON=1: sets the current room's "light on" flag (room objects
+    // lbl_804D8178, 0x14C each, +6 bit 0x80: what CondLightOn / fn_80018D78 test, the state a
+    // cleared room is in) so lit rooms can be tested without clearing them.
+    static const bool sRoomOn = envFlag("LM_ROOM_LIGHTS_ON");
+    if (sRoomOn) {
+        const u32 rooms = rd32(VA(0x804D8178));
+        const u32 room = rd32(VA(0x803A3CA0) + 0xC) >> 24;
+        if (guestPtr(rooms) && room < 0x80) {
+            const u32 f = rooms + room * 0x14C + 6;
+            if (!(rd8(f) & 0x80)) {
+                wr8(f, rd8(f) | 0x80);
+                log("[worldlight] f%u room %u light on (test aid)", sFrame, room);
+            }
+        }
+    }
     const bool logNow = sLog > 0 && sFrame % u32(std::max(sLog, 1)) == 0;
     if (!enabled() && !logNow) return;
     const auto& w = port::settings().worldLights;
@@ -251,11 +413,66 @@ void onMainView(Ctx&) {
         l.radius = k.radius * (1.0f + 0.15f * (group - 1.0f));
         l.intensity = I;
         l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent;
+        const bool flame = (k.cat == port::kWlCandles || k.cat == port::kWlFires || k.cat == port::kWlFireFx) && k.rgb[2] < 120;
+        if (flame) l.flags |= aurora::gfx::ExtraLightFire;  // yellow core, red-orange falloff (0025)
         l.id = 0x57000000u ^ s.id;
         lights.push_back(l);
         if (logNow)
             log("[worldlight] f%u light %-12s x%d world %.0f,%.0f,%.0f view %.0f,%.0f,%.0f I %.2f r %.0f", sFrame, k.prefix,
                 s.count, s.pos[0], s.pos[1], s.pos[2], l.pos[0], l.pos[1], l.pos[2], l.intensity, l.radius);
+    }
+
+    // Lamps and chandeliers of lit rooms (the light-on bit a cleared room has), visible rooms
+    // only, in the room's own light color (roominfo LightColorR/G/B; warm white fallback).
+    if (w.on[port::kWlLamps] || sForce) {
+        buildLamps();
+        int nl = 0;
+        for (const Lamp& lp : sLamps) {
+            if (lp.room < 0 || !roomLit(lp.room) || !roomVisible(lp.room)) continue;
+            const auto c = sRoomColor.find(lp.room);
+            const u32 rgb8 = c != sRoomColor.end() && c->second ? c->second : 0xFFD8A0u;
+            const u32 cc[3] = {rgb8 >> 16, (rgb8 >> 8) & 0xFF, rgb8 & 0xFF};
+            float rgb[3], mx = 1e-4f;
+            for (int i = 0; i < 3; i++) mx = std::max(mx, rgb[i] = srgbToLinear(cc[i]));
+            ExtraLight l{};
+            toView(view, lp.pos, l.pos);
+            for (int i = 0; i < 3; i++) l.color[i] = rgb[i] / mx;
+            l.radius = lp.chandelier ? 950.0f : 520.0f;
+            float I = (lp.chandelier ? 1.5f : 1.0f) * master * std::clamp(w.intensity[port::kWlLamps], 0.0f, 3.0f);
+            if (w.flicker && lp.chandelier) I *= flameFlicker(t, lp.id, 0.12f);  // candle-lit chandeliers breathe a little
+            l.intensity = I;
+            l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent;
+            l.id = lp.id;
+            lights.push_back(l);
+            nl++;
+            if (logNow)
+                log("[worldlight] f%u lamp %s room %d world %.0f,%.0f,%.0f rgb %06X", sFrame, lp.chandelier ? "chandelier" : "lamp",
+                    lp.room, lp.pos[0], lp.pos[1], lp.pos[2], rgb8);
+        }
+    }
+
+    // Game Boy Horror screen: the GBH actor (Luigi +0x7AC, character type 0x0A) hangs on Luigi's
+    // belt (~77 units up) and is raised to his face during calls; only a raised GBH gives its
+    // screen's soft green glow (the belt one stays dark).
+    if (w.on[port::kWlSparkles] || sForce) {
+        const u32 lu = rd32(VA(0x803D48A0));
+        const u32 gbh = guestPtr(lu) ? rd32(lu + 0x7AC) : 0;
+        if (guestPtr(gbh) && !(rd32(gbh + 0x40) & 0x6000) && rd32(gbh + 0x3C) == 0x0A) {
+            const float p[3] = {rdf32(gbh + 0x44), rdf32(gbh + 0x48) + 10.0f, rdf32(gbh + 0x4C)};
+            const float up = rdf32(gbh + 0x48) - rdf32(lu + 0x48);
+            if (sLog && logNow) log("[worldlight] f%u gbh %.0f above Luigi", sFrame, up);
+            if ((p[0] != 0.0f || p[2] != 0.0f) && up > 105.0f) {
+                ExtraLight l{};
+                toView(view, p, l.pos);
+                l.color[0] = 0.35f, l.color[1] = 1.0f, l.color[2] = 0.45f;
+                l.radius = 230.0f;
+                l.intensity = 0.7f * master * std::clamp(w.intensity[port::kWlSparkles], 0.0f, 3.0f);
+                l.flags = aurora::gfx::ExtraLightTranslucent;
+                l.id = 0x57006000u;
+                lights.push_back(l);
+                if (logNow) log("[worldlight] f%u gbh glow at %.0f,%.0f,%.0f", sFrame, p[0], p[1], p[2]);
+            }
+        }
     }
 
     // Poltergust element spray: Luigi's Poltergust mode (+0x1180: 2 fire, 3 water, 4 ice, while L
@@ -293,7 +510,7 @@ void onMainView(Ctx&) {
             if (e == 0 && w.flicker) I *= flameFlicker(t * 1.6f, 77, 1.0f);
             l.radius = kR[e];
             l.intensity = I;
-            l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent;
+            l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent | (e == 0 ? aurora::gfx::ExtraLightFire : 0u);
             l.id = 0x57005000u;
             lights.push_back(l);
             if (logNow) log("[worldlight] f%u spray element %d world %.0f,%.0f,%.0f I %.2f", sFrame, sElem, sPos[0], sPos[1], sPos[2], I);
@@ -352,6 +569,7 @@ HLE(getResource__10JKRArchiveFUlPCc) {
     if (!guestPtr(namePtr) || !guestPtr(c.r[3])) return;
     const char* name = gstr(namePtr);
     const size_t len = strnlen(name, 64);
+    noteResource(name, c.r[3]);
     if (len > 4 && !std::strcmp(name + len - 4, ".pcr")) {
         std::string base(name, len - 4);
         if (const size_t slash = base.rfind('/'); slash != std::string::npos) base.erase(0, slash + 1);

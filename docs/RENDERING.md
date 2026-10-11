@@ -150,7 +150,8 @@ frames where the clipped doorway is genuinely off screen.
 
 **Debug aid.** `LM_DL_TRACE=<file>` writes one line per frame (`F<n>`) listing every
 `GXCallDisplayList` as `addr:size@caller<caller...` (guest stack back chain). Diffing the sets
-of consecutive frames finds draws that drop out for a few frames.
+of consecutive frames finds draws that drop out for a few frames. `LM_DL_TRACE_FRAMES=<first>,<last>`
+limits the trace to a window of its own frame numbers.
 
 **Side observation (not the cause, not changed).** Patch 0002 shares dynamically sized array
 uploads per frame by pointer (`sDynamicUploads`); `GXInvalidateVtxCache` clears each array's
@@ -287,7 +288,7 @@ configured/all-off every s seconds and log fps per phase, for A/B screenshots of
 | Lighting | spot (clamp diffuse), specular (shininess form), dist-attn fns, SRTG from COLOR0 | per-vertex, same formulas | **Reviewed, no change** (SRTG lit-color fix is in 0008). Open: Aurora normalizes transformed normals; hardware may not |
 | Indirect | Only the Mario painting at the Secret Altar (`fn_8005FDD4`, event 6) and an invisible copy of it in event 5; J3D materials on the disc have no indirect stages | float offsets | **Fixed** (patch 0014, see "Indirect effects"): integer offsets (s1.10 x s8 >> 3, scale shift, 1/128-texel fixed-point coordinates) in integer TEV mode; ITF_5/4/3 low-bit offsets and positive-modulo wraps always. Offsets are in logical texels, so they scale with resolution |
 | Lines/points | width 6 (1 px), viewport jitter field=1 only | width/6, perpendicular expansion | No change needed for LM (hardware widens along x/y; noted) |
-| Logic ops, dst alpha | no logic op; dst alpha used | fine | No change |
+| Logic ops, dst alpha | no logic op (`LM_GX_AUDIT` boot to foyer: blend modes NONE/BLEND only; logic-mode calls log their guest call chain); dst alpha used | only CLEAR/COPY/NOOP, any other logic op was a fatal error | **Robustness** (patch 0026, from SMS 0140): all 16 ops; exact where a blend can express them (CLEAR, COPY, NOOP, SET, INV, INVCOPY via a white/inverted shader source in the free high bits of `ShaderConfig::fogType`, so existing pipeline configs and the shipped precache list stay valid), mask-exact for AND/OR/REVAND/INVAND/NOR/INVOR, XOR/EQUIV/REVOR/NAND approximated |
 
 ### Toggles (F1 > Visuals > Rendering, all on by default, persisted in settings.ini `[rendering]`)
 
@@ -1378,3 +1379,92 @@ game frames, so consecutive frame dumps compare with and without):
 Test aids: `LM_WORLD_LIGHTS=1` (on regardless of the setting), `LM_WORLD_LIGHT_LOG=N` (every
 emitter with name/flags/position, the lights sent, spray and lightning state, Luigi/nozzle
 orientation), `LM_WORLD_LIGHT_AB=1`.
+
+
+### World lights, second pass
+
+**Fire color (Aurora patch 0025).** The fireplace/brazier read as saturated pure red. Cause: the
+shared "Light color vibrance" (`vivid()`, default 1.6) pushed each channel away from the
+luminance and clamped the ones that went negative; for orange (linear 1, 0.33, 0.05) blue and
+then most of green were clamped, a hue shift toward red. Now the boost stops where the weakest
+channel reaches 0 (hue-preserving), and flames carry `ExtraLightFire` (bit 3): in the shader
+green and blue fall off faster than red with distance (`col * (1, mix(1.2, 0.62, x), mix(1.5,
+0.35, x))`, x = distance / radius), so a fire is yellow-white near the flame and red-orange at
+the edge of its reach. Set on candles, fires, fire effects (warm colors only) and the fire spray.
+
+**Lit rooms: lamps and chandeliers.** A cleared room's light is on when its room object
+(`lbl_804D8178`, 0x14C per room) has +6 bit 0x80, the test `fn_80018D78` (used by the
+`CondLightOn` spawn condition). Test aid `LM_ROOM_LIGHTS_ON=1` sets it for the room Luigi is in
+(the game then draws the room lit, chandelier glow included). Light positions come from the map
+archive read from the disc (the game loads its jmp tables through the tool-data loader, not by
+name): `jmp/objinfo` "chandelier" objects (122 in map 2, 40 units below the object) and
+`jmp/furnitureinfo` light fittings by model (`syan*`, `o_syan*`, `osyan*`, `shan*`: chandeliers 60
+below; `a_lamp*`, `lamp*`, `a_ligh*`, `a_lump*`: lamps 90 above); each is assigned to the room
+containing it by the room table bounds and lights while that room is lit and visible, in the
+room's own color (`jmp/roominfo` LightColorR/G/B, e.g. ballroom FF8C6E), chandeliers 950 units
+reach, lamps 520. Map 2: 201 fittings, 72 room colors. In an already lit room the extra warmth is
+subtle (the room is bright), most visible on the floor under the chandeliers.
+
+**Game Boy Horror.** While Luigi holds it up (the GBH actor at Luigi +0x7AC, type 0x0A, drawn),
+a soft green screen glow (230 units). Mirrors are not light sources (they reflect; the game has
+no glow for them).
+
+**Cost of 64 lights** (after the thread-leak fix; RTX 3090 Ti, nursery, render scale 8 =
+5120x3840, uncapped, `LM_ENH_PERF_AB=6,xl` + `LM_FPS_LOG=1`, 12 two-second samples per phase,
+GPU shared with other agents): worst case, all lights overlapping Luigi on screen
+(`LM_TEST_LIGHTS=n,450,1.5`): 64 lights 56.0 fps vs 113.9 fps without colored lights (+9.1 ms per
+frame), 16 lights 102.5 vs 112.1 (+0.9 ms), 4 lights below noise. Cost scales with pixels x
+overlapping lights: at render scale 3 (2560x1440, 1/7 of the pixels) the 64-light worst case is
+~1.3 ms; real rooms have far fewer lights overlapping any pixel (a candle reaches 360 units). If
+it ever matters, per-tile light lists would cut the overlapping case.
+
+**Room tour** (lights from the log, `LM_WORLD_LIGHT_LOG`): flame objects per room from objinfo
+(`fire`/`sfire`/`chandelier`) show where candles are; e.g. the 2F room at x 1575..3125, z
+-3860..-2810 has 30 candles, the 1F room east of the foyer 12 table candles. Showcase captures
+below.
+
+**Showcase captures** (window grabs, 2560x1440, 16:9, render scale 3, Ultra preset, ghost and world
+lights on; `build/worldlights/showcase_*.png` plus `_720p` copies): `dining_brazier` (the fire
+bowl on the pillar and the violet candles), `foyer` (side-table candelabras), `dining_candelabras_ghost`
+(Mr. Luggs' glow and the violet table candles), `fireplace` (Luigi lit by the fireplace),
+`fire_spray` (nursery, fire spray in the dark), `hallway_bats` (the bats' glow under the ceiling),
+`lit_ballroom_chandeliers` (`LM_ROOM_LIGHTS_ON=1`), `ballroom_ghosts` (the shy-guy ghosts' colored
+glow around Luigi).
+
+### World lights, third pass
+
+**Vibrance at full saturation (Aurora patch 0026).** 0025 stopped the boost where the weakest
+channel reached 0. That kept hues but left already saturated ghost colors (the shy guys' red,
+Chauncey's green, the gold ghost's orange) less punchy than before. `vivid()` now works on HSV
+saturation: the boost scales saturation by the vibrance and may push it up to 1 (fully
+saturated) while hue and value stay put, so strong colors get as vivid as the old look without
+the old clamp's shift toward red. Debug compare: `AURORA_VIVID_MODE=0` (old per-channel clamp),
+`1` (0025 early stop), `2` (default, full saturation). Side by side (old | 0025 | 0026):
+`build/worldlights/vibrance_{shyguys,chauncey,goldghost}_old_0025_0026.png`.
+
+**GBH glow only when raised.** The GBH actor hangs on Luigi's belt most of the time (67-89 units
+above his feet), which lit his legs green constantly. The glow now needs the GBH more than 105
+units above Luigi (held up to his face, E. Gadd's calls). Not captured yet: holding X/Y/Z/B in a
+hallway never raised it (log `gbh <n> above Luigi` stays below 90); only the call cutscenes do.
+
+**Room tour, rest of the mansion** (window grabs, same settings as below):
+- Parlor (room 1, lit): sconces and chandelier warm the walls; `showcase_parlor_lit`.
+- Fortune-Teller's room (1F, Madame Clairvoya's): her candles exist as emitters but without the
+  emitting flag (0x000C) until her event, so they give no light; the crystal-ball room is dark
+  apart from the flashlight before she appears (`showcase_fortune_teller`). Her own glow is a
+  ghost light. The 2F 30-candle room is the Astral Hall (room 43): candelabras unlit before its
+  event, no light.
+- Graveyard (map 2 outdoors): both torches (`danro_fire` emitters) light the steps and ground
+  orange; `showcase_graveyard_torches`.
+- Boneyard: Spooky's doghouse glow (ghost light, blue); `showcase_boneyard_spooky`.
+- Billiards room: the cyan ghost's light on the wall and table; `showcase_billiards_ghost`.
+- Kitchen, Conservatory, Twins' room: no colored source in the captured views (ghosts not yet
+  present), flashlight only.
+- Washroom with Toad: no colored source nearby; Toad goes through the character material path
+  like Luigi and is lit by the flashlight (`showcase_washroom_toad`). E. Gadd's lab, the portrait
+  ghosts' portraits and Mario's painting were not captured in this pass.
+
+**Hallway bats visible.** Standing near the west end of the 1F west hallway
+(`LM_TELEPORT=-2050,0,-900,100`) puts the hanging bats in frame: their yellow bodies (the game's
+own look, unchanged with lights off) and the glow on the ceiling corner, with a purple ghost
+passing in the same shot; `showcase_hallway_bats_visible`.

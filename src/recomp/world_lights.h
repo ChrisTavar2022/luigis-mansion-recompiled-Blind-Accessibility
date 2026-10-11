@@ -10,4 +10,8 @@ namespace recomp::worldlights {
 // world lights and submit them (recomp::submitExtraLights, after the ghost lights).
 void onMainView(Ctx& c);
 
+// A resource the game loaded by path (JKRArchive::getResource(path), unused_assets.cpp's hook):
+// the map's jmp tables (objinfo, roominfo, furnitureinfo) are kept for lamps and room lights.
+void noteResource(const char* path, u32 data);
+
 }  // namespace recomp::worldlights
