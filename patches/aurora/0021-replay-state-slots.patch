@@ -2,9 +2,7 @@ diff --git a/include/dolphin/gx/GXAurora.h b/include/dolphin/gx/GXAurora.h
 index 044714f..728ae5d 100644
 --- a/include/dolphin/gx/GXAurora.h
 +++ b/include/dolphin/gx/GXAurora.h
-@@ -129,6 +129,15 @@ extern "C" {
-  */
- #define GX_AURORA_SCENE_END 0x0054
+@@ -131,2 +131,11 @@ extern "C" {
  
 +/**
 + * Replay state slots (frame interpolation): GX_AURORA_STATE_SAVE stores the processed GX state
@@ -16,8 +14,6 @@ index 044714f..728ae5d 100644
 +#define GX_AURORA_STATE_RESTORE 0x0061
 +
  #define GX2_SET_POLYGON_OFFSET 0x1000
- 
- 
 @@ -223,6 +232,12 @@ void GXSetWireframeAurora(u8 enable, u32 rgba);
   */
  void GXSetCullOverrideAurora(u8 twoSided);
