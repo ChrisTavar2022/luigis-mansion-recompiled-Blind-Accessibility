@@ -1473,13 +1473,6 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 const u64 key = u64(p.bundle) << 8 | ((p.slot - 0x600) >> 4);
                 if (std::find(sLightsBlended.begin(), sLightsBlended.end(), key) == sLightsBlended.end()) continue;
             }
-            static const u32 sDbgColor = [] { const char* v = std::getenv("LM_DBG_COLOR"); return v ? u32(std::strtoul(v, nullptr, 0)) : 0u; }();
-            if (p.kind == Kind::Color && sDbgColor) {
-                const bool xfAmbMat = p.posOffset == 0 && p.slot < 0x600, xfLight = p.posOffset == 0 && p.slot >= 0x600;
-                if (((sDbgColor & 1) && xfAmbMat) || ((sDbgColor & 2) && xfLight) || ((sDbgColor & 4) && p.posOffset == 1) ||
-                    ((sDbgColor & 8) && p.posOffset == 2) || ((sDbgColor & 16) && p.posOffset == 1 && p.stride == 1))
-                    continue;
-            }
             if (p.kind == Kind::Color) {  // material/light/TEV/fog colors: per channel
                             const auto rd = [](const u8* s) { return u32(s[0]) << 24 | u32(s[1]) << 16 | u32(s[2]) << 8 | s[3]; };
                 const u32 ca = rd(a->bytes.data() + q.offset), cb = rd(b.bytes.data() + p.offset);
@@ -1518,7 +1511,17 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 continue;
             // A GX light slot holds whichever light the game put there for this draw: blend only the
             // same light object (its colour and range differ otherwise).
-            if (p.kind == Kind::Light && p.source != q.source) {
+            // ...and only while its attenuation stays (a spot switched to another shape, or off by
+            // its attenuation, is another light: a's colour with b's attenuation is neither frame).
+            const auto attnChanged = [&] {
+                if (p.kind != Kind::Light || p.offset < 24 || q.offset < 24) return false;
+                for (int k = 0; k < 6; k++) {
+                    const f32 x = loadBE(a->bytes.data() + q.offset - 24 + 4 * k), y = loadBE(b.bytes.data() + p.offset - 24 + 4 * k);
+                    if (!(std::fabs(x - y) <= 0.02f * std::max({std::fabs(x), std::fabs(y), 1e-3f}))) return true;
+                }
+                return false;
+            };
+            if (p.kind == Kind::Light && (p.source != q.source || attnChanged())) {
                 sSnapped++;
                 sSnapKinds[u32(p.kind)]++;
                 continue;

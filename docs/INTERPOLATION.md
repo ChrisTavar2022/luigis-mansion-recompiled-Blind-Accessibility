@@ -143,7 +143,10 @@ Performance (RTX 3090 Ti, i9-12900KS, nursery, walking): 60.0 fps presented at a
 game 29.6-30.1 fps; tape ~600 KiB + ~1.2 MiB array copies per game frame; 1.1 ms guest time per
 tape, 0.4 ms host time per present for the blended replay.
 
-Test aids added with interp-everything: `LM_INTERP_POISON=<item>,<phys>,<size>` (hex) fills that
+Test aids added with interp-everything: `LM_INTERP_NOBLEND=<mask>` shows the value kinds of the
+mask (bit = `interp::Kind`: 0 position, 1 normal, 2 texture matrices, 3 projections, 4 lights,
+5 CPU-built vertices, 6 colors) as captured, to find which kind causes an artifact;
+`LM_INTERP_POISON=<item>,<phys>,<size>` (hex) fills that
 guest memory with garbage during one `LM_INTERP_TEST` replay (e.g. `f2762_fresh`): if the replay
 changes, it still reads that memory live (bisect the range); the trace logs a self-check of the
 camera-factored and shadow-receiver values at alpha 1, the values without partner (with their draw
@@ -238,8 +241,10 @@ memory the game has already changed, and shadows are both smooth and stable. Par
 
 ### Test scenarios and metrics
 
-All with `LM_INTERP_TEST=3` (fresh replay + two in-betweens + late replay per game frame, see
-below), `LM_INTERP_TRACE=1`, scratch APPDATA/`LM_CARD_DIR`, deterministic `--input`:
+`tools/interp/scenarios.sh <out dir> <scenario> [fps] [steps]` runs one with a scratch
+APPDATA/`LM_CARD_DIR`, `LM_INTERP_TEST=3` (fresh replay + two in-betweens + late replay per game
+frame, see below), `LM_INTERP_TRACE=1` and its deterministic `--input`, and prints
+`tools/interp/metrics.py`'s summary (`LM_DISC`, `LM_PYTHON` with numpy + Pillow):
 
 | Scenario | What happens | Frames |
 |----------|--------------|--------|
@@ -247,6 +252,8 @@ below), `LM_INTERP_TRACE=1`, scratch APPDATA/`LM_CARD_DIR`, deterministic `--inp
 | B gold ghosts (`LM_TELEPORT=0,550,-3300,100`, `LM_GHOST_HUNT=9 ...`, see RENDERING.md) | ghosts appear, hover, attack, vanish; stun, vacuum, capture | 3280-3600 |
 | C opening (title, `--input "600:START*10,1000:A*6"`, nothing skipped) | the attract/opening cutscene: crows, camera cuts, gate, foyer entrance | 1880-2120 |
 | D nursery, fire element (`LM_TEST_STATE=poltergust+fire`) | fire blown (L), vacuum (R) with its air stream and dust, turns | 2580-2920 |
+| water | as D with the water element | 2580-2920 |
+| ballroom (`LM_TELEPORT=1800,0,-1400,100`) | ballroom, quick left/right turns, nozzle aiming, walking | 2580-2900 |
 
 Per game frame (from the dumps; pixel threshold 40/255, blobs = after a 2-pixel erosion so
 edges that legitimately move one pixel per in-between are not counted):
@@ -311,7 +318,13 @@ edges that legitimately move one pixel per in-between are not counted):
    position matrices were drawn under moves its eye by more than 250 units or turns by more than
    30 degrees in one game frame (the matrix-based tests stay as a fallback). In the opening
    cutscene this catches all five shot changes; walking and turning stay far below.
-10. **Pairing within a draw**: a skinned model that loads its joints in another order the next
+10. **Lights stay themselves**: a GX light slot holds whichever light object the game loaded for
+    that draw; a light is blended only with the same light object of the previous frame, and its
+    color only when its position was blended (a lamp's color at the flashlight's position made the
+    in-between frames brighter than both neighbours in the water scenario). Values drawn from a
+    camera that jumped (the shadow pass when another light takes over: flashlight, room light,
+    lightning, a spray) are shown as captured, and so are the receivers' shadow matrices.
+11. **Pairing within a draw**: a skinned model that loads its joints in another order the next
     frame (index pairing would make them jump) is paired nearest-first instead. Scale changes blend
     up to 16x (particles growing, eyelids closing); environment/reflection texture matrices blend
     like rotations unless their translation wraps.
