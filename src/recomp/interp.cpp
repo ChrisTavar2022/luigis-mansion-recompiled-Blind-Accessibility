@@ -142,6 +142,7 @@ std::vector<u64> sBundleIds;
 std::vector<M34> sViews;
 ShadowLight sShadow;
 int sShadowRecv = 0;
+u32 sPass = 0;
 bool sOrtho = false;
 
 // The camera the game is drawing with now (see viewMatrixSource), as an index into sViews.
@@ -290,6 +291,15 @@ bool bundlePos(const Tape& t, Span patches, float out[3]) {
         const Patch& p = t.patches[i];
         if (p.kind == Kind::PosMtx) {
             for (int r = 0; r < 3; r++) out[r] = val(t, p, 4 * r + 3);
+            // In world space when the camera is known (camera motion is then not a draw's own
+            // motion, and the motion limit below means what it says).
+            if (p.view < t.views.size()) {
+                const M34& v = t.views[p.view];
+                float d[3], w[3];
+                for (int r = 0; r < 3; r++) d[r] = out[r] - v[4 * r + 3];
+                for (int r = 0; r < 3; r++) w[r] = v[r] * d[0] + v[4 + r] * d[1] + v[8 + r] * d[2];
+                for (int r = 0; r < 3; r++) out[r] = w[r];
+            }
             return true;
         }
         if (p.kind == Kind::Verts) {
@@ -1027,7 +1037,10 @@ void detail::noteDrawColor(u32 at, u32 reg, u8 fmt) {
     if (sUngrouped == sPatches.size() - 1) sUngrouped = u32(sPatches.size());
 }
 
+void setPass(u32 pass) { sPass = pass; }
+
 void detail::noteDraw(u64 id) {
+    id = mix(id ^ u64(sPass) << 60);  // the same model drawn in another pass is another draw
     const u32 bundle = u32(sBundleIds.size());
     sBundleIds.push_back(id);
     for (u32 i = sUngrouped; i < sPatches.size(); i++) {

@@ -276,6 +276,7 @@ HLE(fn_8005D984) {
     }
 
     if (active) enh::setCasterPass(true);
+    if (active) interp::setPass(1);
     // Frame interpolation: the shadow map and the light projection it is rendered with are
     // replayed exactly as captured (not blended), like the receivers' shadow texture matrices
     // (fn_8005DCA0 / fn_8005DD50 below): blending the caster pass (rigid slerp of the light-view
@@ -333,6 +334,7 @@ HLE(fn_8005D8CC) {
         sShadowOffscreen = false;
     }
     enh::setCasterPass(false);
+    interp::setPass(0);
     if (sCasterSnap) {
         if (shadowSnap()) interp::popNoBlend();
         else interp::popLinearPosMtx();

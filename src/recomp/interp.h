@@ -64,6 +64,8 @@ u32 viewMatrixSource();
 // pass is rendered with, so the shadow map and its lookup always agree.
 void noteShadowLight(const float lightView[12], const float kProj[12], const float kRamp[12]);
 void pushShadowReceivers();
+// The pass being drawn (0 main; e.g. 1 the shadow caster pass): draws of different passes never pair.
+void setPass(u32 pass);
 // Values noted while an orthographic projection is current are 2D (HUD): not camera-factored,
 // and a jump of more than 96 units (pixels) shows them unblended.
 void setOrthographic(bool ortho);
