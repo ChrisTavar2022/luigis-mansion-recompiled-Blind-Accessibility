@@ -19,6 +19,7 @@
 #include "recomp/skip.h"
 #include "recomp/unused2.h"
 #include "recomp/version.h"
+#include "recomp/widescreen.h"
 
 #include <aurora/imgui.h>
 #include <imgui.h>
@@ -342,9 +343,13 @@ HLE(fn_8000E050) {
     if (!alpha || s32(rd32(kEndFrame)) >= 0x7BC) return;  // 0x7BC: the scene's own fade-out starts
     if (!sColor) sColor = extraAlloc(8, 4);
     const int w = rd16(p.bti + 2), h = rd16(p.bti + 4);
-    // Right of the message, standing on the rank area's line (the screen is 640x480, the
-    // message sits at 160,36; the rank letter at 48,380).
-    const int x = 0x200 - w + 40, y = 0x17C - h + 40;
+    // Bottom-right corner of the actual screen, bottom edge flush with the screen's bottom (the
+    // pictures end at Luigi's knees; the screen edge hides the cut), right-aligned with a small
+    // margin. The game's 2D is a 640x480 frame kept at 4:3 and centered in widescreen
+    // (widescreen.h), so the screen's right edge is at 320 + 320 / factor() in its coordinates.
+    constexpr int kMargin = 16;
+    const int right = 320 + int(320.0f / ws::factor() + 0.5f);
+    const int x = right - kMargin - w, y = 480 - h;
     wr32(sColor, rd32(VA(0x804CFF88)));  // the scene's shadow colour
     gu::call(c, GU_SYM("fn_80057ACC"), {sColor});
     gu::call(c, GU_SYM("fn_80057AD8"), {p.texObj, u32(x + 2), u32(y + 2), u32(w), u32(h), alpha});

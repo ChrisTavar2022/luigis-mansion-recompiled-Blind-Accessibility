@@ -898,8 +898,13 @@ of Luigi per caption that nothing loads: `luigi_b` (sitting with a flower), `lui
 sign), `luigi_V` (two V signs). The draw hook loads the picture for the rank into guest memory
 and draws it with the scene's own quad helper (`fn_80057ACC` colour, `fn_80057AD8` quad, shadow
 and colour like the caption) with the caption's alpha (s16 at layer block +0x6C), until the
-scene's fade-out (frame 0x7BC). Verified: `ending_pictures.png` (ranks 1, 5, 8 via
-`LM_TEST_ENDING=<rank>@<frame>`, which requests scene 6).
+scene's fade-out (frame 0x7BC). The pictures end at Luigi's knees, so the picture sits in the
+bottom-right corner of the actual screen with its bottom edge on the screen's bottom (the edge
+hides the cut), 16 units from the right edge; in widescreen the right edge is at
+320 + 320 / `ws::factor()` in the game's centered 4:3 2D coordinates, so it follows 16:9 and
+21:9 (the ending backdrop itself stays pillarboxed unless `--ws-backgrounds` says otherwise).
+Verified: `ending_pictures_anchored.png` (ranks 1/8 at 4:3, 1/5 at 16:9, 8 at 21:9 via
+`LM_TEST_ENDING=<rank>@<frame>`, which requests scene 6, and `--aspect`).
 
 ### Gallery and text archive (Debug tab)
 
