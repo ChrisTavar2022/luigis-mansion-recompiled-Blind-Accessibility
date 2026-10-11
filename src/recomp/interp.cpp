@@ -2,6 +2,7 @@
 #include "recomp/interp.h"
 
 #include "recomp/efb_copy.h"
+#include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
 
 #include <dolphin/gx/GXAurora.h>
@@ -99,6 +100,18 @@ struct Tape {
     std::vector<u8> bytes;
     std::vector<Patch> patches;
     std::vector<u64> bundleIds;  // per draw: what is drawn (display list, vertex layout)
+    std::vector<std::array<u32, 2>> bundleRange;  // per draw: its tape bytes (~0u: unknown)
+    std::vector<u8> bundlePass;                    // per draw: the pass (0 main, 1 shadow casters)
+    std::vector<u8> bundleCopy;                    // per draw: an EFB copy is bound as a texture
+    // Fades (pairTapes): draws of this tape without a partner fade in; draws of pairedWith
+    // without a partner fade out, drawn from pairedWith's commands at `.second` (an offset
+    // in this tape: after the draw paired with the closest earlier paired draw).
+    std::vector<u32> spawns;
+    std::vector<std::pair<u32, u32>> dying;
+    // Per draw: how far it moved since its partner in pairedWith (world space where the camera is
+    // known), for predicting where it is next (fast particles: water spray, sparks).
+    std::vector<std::array<float, 3>> drawVel;
+    std::vector<u8> drawVelOk;
     std::vector<M34> views;      // camera view matrices the values were noted under
     ShadowLight shadow;
     std::vector<std::vector<u8>> arrays;  // vertex-array copies the tape's array loads point at
@@ -139,6 +152,10 @@ u32 sBase = 0;            // start of the current capture segment in sScratch
 std::vector<Patch> sPatches;
 u32 sUngrouped = 0;  // patches from here on wait for their draw
 std::vector<u64> sBundleIds;
+std::vector<std::array<u32, 2>> sBundleRange;
+std::vector<u8> sBundlePass;
+std::vector<u8> sBundleCopy;
+s32 sOpenDraw = -1;  // immediate-mode draw whose end is not known yet
 std::vector<M34> sViews;
 ShadowLight sShadow;
 int sShadowRecv = 0;
@@ -184,6 +201,7 @@ std::deque<std::shared_ptr<const Tape>> sRetired;
 
 // --- host side ---
 std::vector<u8> sReplay;
+std::vector<s32> sViewToA, sViewToB;  // per replay: view of b -> view of a and back (paired values)
 u32 sPresented = 0, sTapes = 0, sBlended = 0, sSnapped = 0, sCuts = 0;
 Clock::time_point sStatsStart = Clock::now();
 u64 sTapeBytes = 0, sArrayBytes = 0, sTexBytes = 0, sPairedSum = 0, sUnpairedSum = 0, sGuestUs = 0, sReplayUs = 0;
@@ -489,6 +507,57 @@ bool blendSpin(const f32* a, const f32* b, float t, f32* out) {
 
 bool blendable(Kind kind, const f32* a, const f32* b, int n);
 
+// Draws that appear (no partner in a) fade in over the in-between frames, draws that are gone
+// (no partner in b) fade out. Only 3D draws of the main pass with a model-view matrix or
+// CPU-built vertices count; their tape bytes must be known.
+void findFades(const Tape& a, Tape& b) {
+    b.spawns.clear();
+    b.dying.clear();
+    // LM_INTERP_FADES=0 (off), in, out: test aid.
+    static const char* sMode = std::getenv("LM_INTERP_FADES") ? std::getenv("LM_INTERP_FADES") : "";
+    if (sMode[0] == '0' || b.cut) return;
+    const bool fadeIn = std::strcmp(sMode, "out") != 0, fadeOut = std::strcmp(sMode, "in") != 0;
+    const auto eligible = [](const Tape& t, std::vector<u8>& out) {
+        out.assign(t.bundleIds.size(), 0);
+        for (const Patch& p : t.patches)
+            if (p.bundle < out.size() && p.role == 0 && (p.kind == Kind::PosMtx || p.kind == Kind::Verts)) out[p.bundle] = 1;
+        for (u32 k = 0; k < out.size(); k++)
+            if (k >= t.bundleRange.size() || t.bundleRange[k][0] == ~0u || t.bundleRange[k][1] == ~0u ||
+                t.bundleRange[k][1] <= t.bundleRange[k][0] || (k < t.bundlePass.size() && t.bundlePass[k] != 0) ||
+                (k < t.bundleCopy.size() && t.bundleCopy[k]))
+                out[k] = 0;
+    };
+    static std::vector<u8> eA, eB;
+    eligible(a, eA);
+    eligible(b, eB);
+    std::vector<s32> aToB(a.bundleIds.size(), -1);
+    std::vector<u8> bPaired(b.bundleIds.size(), 0);
+    for (u32 i = 0; i < b.patches.size(); i++) {
+        const s32 j = b.partner[i];
+        const u32 kb = b.patches[i].bundle;
+        if (j < 0 || kb >= bPaired.size()) continue;
+        bPaired[kb] = 1;
+        const u32 ka = a.patches[j].bundle;
+        if (ka < aToB.size() && aToB[ka] < 0) aToB[ka] = s32(kb);
+    }
+    for (u32 k = 0; k < eB.size() && fadeIn; k++)
+        if (eB[k] && !bPaired[k]) b.spawns.push_back(k);
+    s32 lastB = -1;  // b draw paired with the closest earlier paired draw of a
+    for (u32 k = 0; k < eA.size() && fadeOut; k++) {
+        if (aToB[k] >= 0) {
+            lastB = aToB[k];
+            continue;
+        }
+        if (!eA[k] || lastB < 0 || u32(lastB) >= b.bundleRange.size()) continue;
+        u32 at = b.bundleRange[lastB][1];
+        if (at == ~0u) continue;
+        // a's commands are run in order (one pass over a per replay): a draw paired out of order
+        // (particles swap places) moves the vanished draws after it a little later in b.
+        if (!b.dying.empty()) at = std::max(at, b.dying.back().second);
+        b.dying.emplace_back(k, at);
+    }
+}
+
 void pairTapes(const Tape& a, Tape& b) {
     auto tp = Clock::now();
     b.pairedWith = &a;
@@ -516,6 +585,9 @@ void pairTapes(const Tape& a, Tape& b) {
             return w;
         };
         const std::vector<Where> wa = where(a, ba), wb = where(b, bb);
+        // Where each draw of a is expected next: moved as it moved since its own predecessor
+        // (fast particles keep their velocity), else by the group's common motion (below).
+        const bool velA = a.drawVelOk.size() == wa.size();
         std::vector<s32> drawPartner(bb.key.size(), -1);
         std::vector<u8> drawUsed(ba.key.size(), 0);
         for (const auto& [key, B] : gb) {
@@ -555,6 +627,12 @@ void pairTapes(const Tape& a, Tape& b) {
                         common[c] = moves[c][moves[c].size() / 2];
                     }
             }
+            // Predicted positions of A's draws.
+            static std::vector<std::array<float, 3>> pred;
+            pred.resize(wa.size());
+            for (u32 i : A)
+                for (int c = 0; c < 3; c++)
+                    pred[i][c] = wa[i].p[c] + (velA && a.drawVelOk[i] ? a.drawVel[i][c] : common[c]);
             auto fullDistance = [&](u32 i, u32 j) {
                 float d = 0;
                 const auto& pa = ba.patches[i];
@@ -579,7 +657,7 @@ void pairTapes(const Tape& a, Tape& b) {
                     if (hi3[c] - lo3[c] > hi3[ax] - lo3[ax]) ax = c;
                 for (u32 i : A) {
                     if (drawUsed[i]) continue;
-                    if (wa[i].ok) byX.emplace_back(wa[i].p[ax] + common[ax], i);
+                    if (wa[i].ok) byX.emplace_back(pred[i][ax], i);
                     else nowhereA.push_back(i);
                 }
                 std::sort(byX.begin(), byX.end());
@@ -629,10 +707,12 @@ void pairTapes(const Tape& a, Tape& b) {
                         const u32 i = it->second;
                         float d2 = 0;
                         for (int c = 0; c < 3; c++) {
-                            const float e = pb[c] - wa[i].p[c] - common[c];
+                            const float e = pb[c] - pred[i][c];
                             d2 += e * e;
                         }
-                        if (d2 <= lim * lim) add(groupDistance(i, j), i, j);
+                        // Ranked by how far from where it was expected (CPU-built particles), or by
+                        // all its values (models: orientation too).
+                        if (d2 <= lim * lim) add(vertsOnly ? std::sqrt(d2) : groupDistance(i, j), i, j);
                     }
                     for (u32 i : nowhereA) add(groupDistance(i, j), i, j);
                 }
@@ -647,10 +727,10 @@ void pairTapes(const Tape& a, Tape& b) {
             pairNearest(A, B, drawPartner, drawUsed, [&](u32 i, u32 j) {
                 if (many) {
                     if (wa[i].ok && wb[j].ok) {
-                        const float *pa = wa[i].p, *pb = wb[j].p;
+                        const float* pb = wb[j].p;
                         float d2 = 0, r2 = 0;
                         for (int c = 0; c < 3; c++) {
-                            const float e = pb[c] - pa[c] - common[c];
+                            const float e = pb[c] - pred[i][c];
                             d2 += e * e, r2 += pb[c] * pb[c];
                         }
                         const float lim = 12.0f + 0.01f * std::sqrt(r2);
@@ -659,6 +739,14 @@ void pairTapes(const Tape& a, Tape& b) {
                 }
                 return fullDistance(i, j);
             });
+        }
+        b.drawVel.assign(wb.size(), {0, 0, 0});
+        b.drawVelOk.assign(wb.size(), 0);
+        for (u32 j = 0; j < bb.key.size(); j++) {
+            const s32 i = drawPartner[j];
+            if (i < 0 || !wb[j].ok || !wa[i].ok) continue;
+            for (int c = 0; c < 3; c++) b.drawVel[j][c] = wb[j].p[c] - wa[i].p[c];
+            b.drawVelOk[j] = 1;
         }
         for (u32 j = 0; j < bb.key.size(); j++) {
             if (drawPartner[j] < 0) continue;
@@ -817,6 +905,7 @@ void pairTapes(const Tape& a, Tape& b) {
     if (sTrace && (b.cut || b.camStep > 0.04f))
         log("[interp] tape %llu: scene step %.3f (previous %.3f), %u of %u position matrices jump%s",
             (unsigned long long)b.seq, b.camStep, a.camStep, jumps, pos, b.cut ? ": CUT" : "");
+    findFades(a, b);
     b.phaseUs[4] = usSince(tp);
 }
 
@@ -924,6 +1013,10 @@ void beginTape() {
     sBase = 0;
     sPatches.clear();
     sBundleIds.clear();
+    sBundleRange.clear();
+    sBundlePass.clear();
+    sBundleCopy.clear();
+    sOpenDraw = -1;
     sViews.clear();
     sShadow = {};
     sLights.clear();
@@ -944,6 +1037,7 @@ void endTape(u32 retraceCount) {
     std::vector<std::shared_ptr<const std::vector<u8>>> textures;
     u64 textureBytes = 0;
     detail::texEndTape(textures, textureBytes);
+    detail::drawEnd(mark());
     detail::noteDraw(0);
     sCapturing = false;
     auto tp = t0;
@@ -960,6 +1054,12 @@ void endTape(u32 retraceCount) {
     sPatches = {};
     tape->bundleIds = std::move(sBundleIds);
     sBundleIds = {};
+    tape->bundleRange = std::move(sBundleRange);
+    sBundleRange = {};
+    tape->bundlePass = std::move(sBundlePass);
+    sBundlePass = {};
+    tape->bundleCopy = std::move(sBundleCopy);
+    sBundleCopy = {};
     tape->views = std::move(sViews);
     sViews = {};
     tape->shadow = sShadow;
@@ -1114,6 +1214,11 @@ void detail::noteDraw(u64 id) {
     id = mix(id ^ u64(sPass) << 60);  // the same model drawn in another pass is another draw
     const u32 bundle = u32(sBundleIds.size());
     sBundleIds.push_back(id);
+    sBundleRange.push_back({~0u, ~0u});
+    sBundlePass.push_back(u8(sPass));
+    // Draws sampling an EFB copy (screen effects redrawing the frame, the GBH screen) never fade.
+    sBundleCopy.push_back(gx::samplesCopy());
+    sOpenDraw = -1;
     for (u32 i = sUngrouped; i < sPatches.size(); i++) {
         Patch& p = sPatches[i];
         if (p.kind == Kind::Verts || (p.kind == Kind::Color && p.stride == 1)) continue;  // already belongs to its own draw
@@ -1129,12 +1234,35 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id) 
     detail::drawLog("  #%u verts %u stride %u pos@%u", u32(sPatches.size()), count, stride, posOffset);
     p.origin = p.group;
     // It belongs to the draw just begun (vtxBegin noted it), not to the next one.
-    if (sBundleIds.empty()) sBundleIds.push_back(id);
+    if (sBundleIds.empty()) {
+        sBundleIds.push_back(id);
+        sBundleRange.push_back({~0u, ~0u});
+        sBundlePass.push_back(u8(sPass));
+        sBundleCopy.push_back(gx::samplesCopy());
+    }
     p.bundle = u32(sBundleIds.size() - 1);
     const bool tail = sUngrouped == sPatches.size();
     sPatches.push_back(p);
     if (tail) sUngrouped = u32(sPatches.size());
 }
+
+void detail::drawRange(u32 start, u32 end) {
+    if (!capturing() || sBundleRange.empty() || start == ~0u || end == ~0u) return;
+    sBundleRange.back() = {start, end};
+    sOpenDraw = -1;
+}
+void detail::drawStart(u32 start) {
+    if (!capturing() || sBundleRange.empty() || start == ~0u) return;
+    sBundleRange.back() = {start, ~0u};
+    sOpenDraw = s32(sBundleRange.size() - 1);
+}
+void detail::drawEnd(u32 end) {
+    if (sOpenDraw < 0 || end == ~0u || u32(sOpenDraw) >= sBundleRange.size()) return;
+    sBundleRange[sOpenDraw][1] = end;
+    sOpenDraw = -1;
+}
+void vtxEnd() { detail::drawEnd(mark()); }
+
 
 void suspendForDisplayList() {
     if (!sCapturing) return;
@@ -1263,7 +1391,10 @@ void makeLightPair(const Tape& a, const Tape& b, float alpha) {
         M34 pa, pb, pt;
         compose(ka.data(), ia.data(), pa.data());
         compose(kb.data(), ib.data(), pb.data());
-        for (int k = 0; k < 12; k++) pt[k] = pa[k] + (pb[k] - pa[k]) * alpha;
+        // The depth ramp follows b's near/far ("shadows at any distance" refits them every frame;
+        // the ramp is not linear in them): the caster pass writes depth with b's near/far too
+        // (its projection's depth terms are taken from b), so caster and receivers agree.
+        for (int k = 0; k < 12; k++) pt[k] = which ? pb[k] : pa[k] + (pb[k] - pa[k]) * alpha;
         compose(pt.data(), sLightPair.lvt.data(), (which ? sLightPair.krt : sLightPair.kpt).data());
     }
     sLightPair.ok = true;
@@ -1374,6 +1505,155 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
     return false;
 }
 
+// --- spawn/despawn fades ---------------------------------------------------------------
+// A value without partner, re-expressed under the blended camera: its world placement (from
+// the frame it belongs to) seen from the in-between camera, so it moves with the scene
+// instead of with the camera of its own frame.
+bool reexpress(const ViewPair& vp, bool fromA, const Patch& p, const f32* v, f32* out) {
+    if (!vp.ok || vp.cut) return false;
+    const M34& V = fromA ? vp.va : vp.vb;
+    const M34& inv = fromA ? vp.ia : vp.ib;
+    const auto rotT = [&](const f32* n, f32* o) {
+        for (int r = 0; r < 3; r++) o[r] = V[r] * n[0] + V[4 + r] * n[1] + V[8 + r] * n[2];
+    };
+    const auto rot = [&](const f32* n, f32* o) {
+        for (int r = 0; r < 3; r++) o[r] = vp.vt[4 * r] * n[0] + vp.vt[4 * r + 1] * n[1] + vp.vt[4 * r + 2] * n[2];
+    };
+    if (p.kind == Kind::PosMtx && p.count == 12) {
+        M34 w;
+        compose(inv.data(), v, w.data());
+        compose(vp.vt.data(), w.data(), out);
+        return true;
+    }
+    if (p.kind == Kind::NrmMtx && p.count == 9) {
+        for (int c = 0; c < 3; c++) {
+            const f32 n[3] = {v[c], v[3 + c], v[6 + c]};
+            f32 w[3], o[3];
+            rotT(n, w);
+            rot(w, o);
+            for (int r = 0; r < 3; r++) out[3 * r + c] = o[r];
+        }
+        return true;
+    }
+    if (p.kind == Kind::Light && p.count == 6) {
+        f32 r[3], w[3];
+        for (int k = 0; k < 3; k++) r[k] = v[k] - V[4 * k + 3];
+        rotT(r, w);
+        rot(w, out);
+        for (int k = 0; k < 3; k++) out[k] += vp.vt[4 * k + 3];
+        rotT(v + 3, w);
+        rot(w, out + 3);
+        return true;
+    }
+    return false;
+}
+
+std::vector<u8> sReplayA, sFaded;
+u32 sFadeIns = 0, sFadeOuts = 0;  // per replay (trace)
+
+void auroraCmd(std::vector<u8>& out, u16 sub, u8 arg) {
+    out.push_back(0x50);
+    out.push_back(u8(sub >> 8));
+    out.push_back(u8(sub));
+    out.push_back(arg);
+}
+
+// sReplay (b, values blended) with fades: b's draws without partner fade in; a's draws without
+// partner are drawn from a's commands (state slot 5, masked except those draws) at their place in
+// b, fading out. Returns false if there is nothing to fade (sReplay is used as is).
+bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, const std::vector<s32>& viewToA,
+                const std::vector<s32>& viewToB) {
+    sFadeIns = sFadeOuts = 0;
+    if (b.spawns.empty() && (b.dying.empty() || !haveAStart)) return false;
+    const u8 qIn = u8(std::lround((1.0f - alpha) * 255.0f)), qOut = u8(std::lround(alpha * 255.0f));
+    struct Ev {
+        u32 at;
+        u8 order;  // at the same place: a fade-in ends, then fade-outs, then a fade-in starts
+        u32 index;
+    };
+    static std::vector<Ev> evs;
+    evs.clear();
+    if (qIn != 0)
+        for (u32 k : b.spawns) {
+            evs.push_back({b.bundleRange[k][0], 2, k});
+            evs.push_back({b.bundleRange[k][1], 0, k});
+        }
+    if (haveAStart && qOut != 255) {
+        // a's values of the dying draws, seen from the blended camera.
+        sReplayA.assign(a.bytes.begin(), a.bytes.end());
+        static std::vector<u8> dyingA;
+        dyingA.assign(a.bundleIds.size(), 0);
+        for (const auto& [k, at] : b.dying) dyingA[k] = 1;
+        for (const Patch& q : a.patches) {
+            if (q.bundle >= dyingA.size() || !dyingA[q.bundle] || q.view >= a.views.size() || q.view >= viewToB.size()) continue;
+            if (viewToB[q.view] < 0 || q.count > 16) continue;
+            const ViewPair* vp = viewPair(a, q.view, b, u16(viewToB[q.view]), alpha);
+            if (!vp) continue;
+            f32 v[16], out[16];
+            for (int k = 0; k < q.count; k++) v[k] = val(a, q, k);
+            if (reexpress(*vp, true, q, v, out))
+                for (int k = 0; k < q.count; k++) storeBE(sReplayA.data() + q.offset + 4 * k, out[k]);
+        }
+        // Group the dying draws by their place in b (at most 8 passes over a per replay).
+        u32 groups = 0;
+        for (u32 i = 0; i < b.dying.size(); i++)
+            if (i == 0 || b.dying[i].second != b.dying[i - 1].second) groups++;
+        const u32 every = (groups + 7) / 8;
+        u32 g = 0;
+        for (u32 i = 0; i < b.dying.size(); i++) {
+            const bool first = i == 0 || b.dying[i].second != b.dying[i - 1].second;
+            if (first) g++;
+            const bool last = i + 1 == b.dying.size() || (b.dying[i + 1].second != b.dying[i].second && g % every == 0);
+            if (last) evs.push_back({b.dying[i].second, 1, i});  // the pass ends with dying[i]
+        }
+    }
+    if (evs.empty()) return false;
+    std::sort(evs.begin(), evs.end(), [](const Ev& x, const Ev& y) { return x.at != y.at ? x.at < y.at : x.order < y.order; });
+    if (sLogSnaps)
+        for (const Ev& e : evs)
+            log("[interp]   fade event at %u order %u index %u range %u..%u (tape %u bytes)", e.at, e.order, e.index,
+                e.order == 1 ? a.bundleRange[b.dying[e.index].first][0] : b.bundleRange[e.index][0],
+                e.order == 1 ? a.bundleRange[b.dying[e.index].first][1] : b.bundleRange[e.index][1], u32(b.bytes.size()));
+    sFaded.clear();
+    sFaded.reserve(sReplay.size() + evs.size() * 16 + (b.dying.empty() ? 0 : a.bytes.size()));
+    u32 cursor = 0;      // in sReplay (b)
+    u32 aCursor = 0;     // in sReplayA: a's commands processed so far (state in slot 5)
+    u32 nextDying = 0;   // b.dying index
+    for (const Ev& e : evs) {
+        if (e.at > sReplay.size() || e.at < cursor) continue;
+        sFaded.insert(sFaded.end(), sReplay.begin() + cursor, sReplay.begin() + e.at);
+        cursor = e.at;
+        if (e.order == 2) {
+            auroraCmd(sFaded, GX_AURORA_SET_FADE, qIn);
+            sFadeIns++;
+        } else if (e.order == 0) {
+            auroraCmd(sFaded, GX_AURORA_SET_FADE, 0);
+        } else {
+            auroraCmd(sFaded, GX_AURORA_STATE_SAVE, 4);
+            auroraCmd(sFaded, GX_AURORA_STATE_RESTORE, 5);
+            auroraCmd(sFaded, GX_AURORA_SET_REPLAY_MASK, 1);
+            for (; nextDying <= e.index; nextDying++) {
+                const auto& r = a.bundleRange[b.dying[nextDying].first];
+                if (r[0] < aCursor || r[1] > sReplayA.size()) continue;  // out of order: skipped
+                sFaded.insert(sFaded.end(), sReplayA.begin() + aCursor, sReplayA.begin() + r[0]);
+                auroraCmd(sFaded, GX_AURORA_SET_REPLAY_MASK, 0);
+                auroraCmd(sFaded, GX_AURORA_SET_FADE, qOut);
+                sFaded.insert(sFaded.end(), sReplayA.begin() + r[0], sReplayA.begin() + r[1]);
+                auroraCmd(sFaded, GX_AURORA_SET_FADE, 0);
+                auroraCmd(sFaded, GX_AURORA_SET_REPLAY_MASK, 1);
+                aCursor = r[1];
+                sFadeOuts++;
+            }
+            auroraCmd(sFaded, GX_AURORA_SET_REPLAY_MASK, 0);
+            auroraCmd(sFaded, GX_AURORA_STATE_SAVE, 5);
+            auroraCmd(sFaded, GX_AURORA_STATE_RESTORE, 4);
+        }
+    }
+    sFaded.insert(sFaded.end(), sReplay.begin() + cursor, sReplay.end());
+    (void)viewToA;
+    return true;
+}
+
 // Builds tape b with its values blended from a toward b (alpha 1 = b as captured) into
 // sReplay and submits it. `dump` redirects the LM_FRAME_DUMP copy (LM_INTERP_TEST).
 void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
@@ -1439,9 +1719,31 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             const char* v = std::getenv("LM_INTERP_NOBLEND");
             return v ? u32(std::strtoul(v, nullptr, 0)) : 0u;
         }();
+        // Which camera of a goes with which of b (for values without partner).
+        sViewToA.assign(b.views.size(), -1);
+        sViewToB.assign(a->views.size(), -1);
         for (u32 i = 0; i < b.patches.size(); i++) {
             const s32 j = b.partner[i];
             if (j < 0) continue;
+            const u16 vb = b.patches[i].view, va = a->patches[j].view;
+            if (vb < sViewToA.size() && va < sViewToB.size()) {
+                if (sViewToA[vb] < 0) sViewToA[vb] = va;
+                if (sViewToB[va] < 0) sViewToB[va] = vb;
+            }
+        }
+        for (u32 i = 0; i < b.patches.size(); i++) {
+            const s32 j = b.partner[i];
+            if (j < 0) {
+                // No partner (it appeared): b's placement in the world, seen from the blended camera.
+                const Patch& p = b.patches[i];
+                if (p.role != 0 || p.view >= sViewToA.size() || sViewToA[p.view] < 0 || p.count > 16) continue;
+                const ViewPair* vp = viewPair(*a, u16(sViewToA[p.view]), b, p.view, alpha);
+                f32 v[16], out[16];
+                for (int k = 0; k < p.count; k++) v[k] = val(b, p, k);
+                if (vp && reexpress(*vp, false, p, v, out))
+                    for (int k = 0; k < p.count; k++) storeBE(sReplay.data() + p.offset + 4 * k, out[k]);
+                continue;
+            }
             const Patch& p = b.patches[i];
             const Patch& q = a->patches[j];
             if (sNoBlendKinds & (1u << u32(p.kind))) continue;
@@ -1539,7 +1841,10 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 }
                 continue;
             }
-            if (p.role == 1) {  // a shadow receiver: rebuilt from the blended light, or as captured
+            if (p.kind == Kind::Projection && p.count == 6 && p.bundle < b.bundlePass.size() && b.bundlePass[p.bundle] == 1) {
+                // Shadow caster pass: x/y blended, depth (near/far) as in b (see makeLightPair).
+                for (int k = 0; k < 6; k++) out[k] = k >= 4 ? vb[k] : va[k] + (vb[k] - va[k]) * alpha;
+            } else if (p.role == 1) {  // a shadow receiver: rebuilt from the blended light, or as captured
                 if (!blendShadowReceiver(*a, q, va, b, p, vb, alpha, out)) std::copy(vb, vb + p.count, out);
             } else if (!(blendFactored(*a, q, va, b, p, vb, alpha, out) ||
                   (p.kind == Kind::PosMtx && p.count == 12 && blendRigid(va, vb, 4, alpha, out)) ||
@@ -1614,12 +1919,21 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
     // state of each tape is saved after it is replayed (four slots: LM_INTERP_TEST replays tape N
     // before the late replays of N-1); a tape whose predecessor was never replayed (dropped, or
     // drawn directly since reset()) starts from the current state.
-    if (b.seq > 1 && sEndSeq[(b.seq - 1) & 3] == b.seq - 1) GXRestoreStateAurora(u8((b.seq - 1) & 3));
+    const bool haveBStart = b.seq > 1 && sEndSeq[(b.seq - 1) & 3] == b.seq - 1;
+    // Fades need a's start state (in slot 5) for drawing a's vanished draws.
+    const bool haveAStart = a && haveBStart && a->seq > 1 && sEndSeq[(a->seq - 1) & 3] == a->seq - 1;
+    const bool faded = a && alpha < 1.0f && buildFades(*a, b, alpha, haveAStart, sViewToA, sViewToB);
+    if (faded && haveAStart && !b.dying.empty()) {
+        GXRestoreStateAurora(u8((a->seq - 1) & 3));
+        GXSaveStateAurora(5);
+    }
+    if (haveBStart) GXRestoreStateAurora(u8((b.seq - 1) & 3));
     // EFB copies made by this replay go into this tape's copy generation, so they don't replace the
     // previous frame's copies that this frame's early draws may still read (Aurora patch 0028).
     // Only the first replay of a tape reads its copies back into memory (bit 6 on the others).
     GXSetCopyGenerationAurora(u8((b.seq & 3) | 0x80 | (b.replayed.exchange(true) ? 0x40 : 0)));
-    AuroraReplay(sReplay.data(), u32(sReplay.size()));
+    if (faded) AuroraReplay(sFaded.data(), u32(sFaded.size()));
+    else AuroraReplay(sReplay.data(), u32(sReplay.size()));
     GXSaveStateAurora(u8(b.seq & 3));
     sEndSeq[b.seq & 3] = b.seq;
 }
@@ -1770,9 +2084,10 @@ bool testReplay() {
                 }
             }
         log("[interp] %s: snapped pos %u nrm %u tex %u proj %u light %u verts %u; unpaired pos %u nrm %u tex %u proj %u "
-            "light %u verts %u%s",
+            "light %u verts %u fadein %u fadeout %u%s",
             it.name.c_str(), sSnapKinds[0], sSnapKinds[1], sSnapKinds[2], sSnapKinds[3], sSnapKinds[4], sSnapKinds[5],
-            unpaired[0], unpaired[1], unpaired[2], unpaired[3], unpaired[4], unpaired[5], it.b->cut ? " CUT" : "");
+            unpaired[0], unpaired[1], unpaired[2], unpaired[3], unpaired[4], unpaired[5], sFadeIns, sFadeOuts,
+            it.b->cut ? " CUT" : "");
     }
     sLogSnaps = false;
     efbcopy::applyWritebacks();

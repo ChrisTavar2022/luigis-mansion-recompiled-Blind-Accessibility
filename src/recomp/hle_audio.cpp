@@ -48,15 +48,63 @@ std::atomic<bool> sAwaitingMix{false};
 // queue in big chunks) and the second frame then started right after the first: every
 // subframe looked "slow" and a voice was killed (sound effects cut short; the movie
 // player's audio stream stopped, which ended the movie). So the next interrupt waits until
-// the game has mixed for the previous one and the DSP frame it started is done.
-void waitForGuestMix() {
+// the game has mixed for the previous one and the DSP frame it started is done, for at most
+// `maxSeconds` (100 ms: the game may be stalled). Returns false when it gave up.
+//
+// The SMS port also bounds the wait by the audio still queued on the device (keeping 4 ms),
+// so a slow host replays the AI block instead of running the device dry. Measured in LM it
+// does more harm than good (docs/AUDIO.md, "AI output and pacing"): by the time the bound
+// expires the queue is empty anyway, and the early interrupt starts a DSP frame on top of
+// the unfinished one, so LM's overload check (which stops voices of any priority) cut 2-6
+// voices each time. Kept as a test aid: LM_AI_QUEUE_BOUND=1.
+bool waitForGuestMix(double maxSeconds) {
     using clock = std::chrono::steady_clock;
-    const auto deadline = clock::now() + std::chrono::milliseconds(100);  // the game may be stalled
+    const auto deadline =
+        clock::now() + std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(maxSeconds));
     while ((sAwaitingMix.load() || audio::dspFrameBusy()) && clock::now() < deadline && !audio::outPaused())
         std::this_thread::sleep_for(std::chrono::microseconds(250));
-    const auto quiet = audio::dspFrameEnd() + std::chrono::milliseconds(2);
+    const bool mixed = !sAwaitingMix.load();
+    const auto quiet = std::min(audio::dspFrameEnd() + std::chrono::milliseconds(2), deadline);
     if (clock::now() < quiet) std::this_thread::sleep_until(quiet);
+    return mixed;
 }
+
+// LM_AUDIO_LOG=1: AI pacing statistics every ~10 s (cumulative): interrupt spacing, how long
+// the interrupt waited for the game's mix (and how often the wait gave up), and the device
+// queue when each block was pushed ("dry" = the SDL stream had run empty: an audible gap).
+struct PacingStats {
+    using clock = std::chrono::steady_clock;
+    u64 blocks = 0, dry = 0, low = 0, gaveUp = 0, close = 0;
+    double minQueued = 1e9, sumQueued = 0, maxWait = 0, sumWait = 0, minGap = 1e9, maxGap = 0;
+    clock::time_point last{}, report = clock::now();
+
+    void block(double secs, double queued, double waited, bool timedOut) {
+        if (!audio::g_log) return;
+        const auto now = clock::now();
+        if (blocks) {
+            const double gap = std::chrono::duration<double>(now - last).count();
+            minGap = std::min(minGap, gap);
+            maxGap = std::max(maxGap, gap);
+            if (gap < secs * 0.5) close++;  // two interrupts nearly back to back
+        }
+        last = now;
+        blocks++;
+        if (queued <= 0) dry++;
+        if (queued < 0.004) low++;
+        minQueued = std::min(minQueued, queued);
+        sumQueued += queued;
+        maxWait = std::max(maxWait, waited);
+        sumWait += waited;
+        if (timedOut) gaveUp++;
+        if (now - report < std::chrono::seconds(10)) return;
+        report = now;
+        log("[audio] pacing: %llu blocks, gap %.1f-%.1f ms (%llu < half a block), mix wait avg %.2f max %.1f ms "
+            "(%llu gave up), queue avg %.1f min %.1f ms, %llu below 4 ms, %llu dry",
+            (unsigned long long)blocks, minGap * 1e3, maxGap * 1e3, (unsigned long long)close, sumWait / blocks * 1e3,
+            maxWait * 1e3, (unsigned long long)gaveUp, sumQueued / blocks * 1e3, minQueued * 1e3,
+            (unsigned long long)low, (unsigned long long)dry);
+    }
+} sPacing;
 
 void dmaThread() {
     using clock = std::chrono::steady_clock;
@@ -96,7 +144,24 @@ void dmaThread() {
             if (audio::outHasDevice()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
-        if (cb) waitForGuestMix();
+        const auto waitStart = clock::now();
+        bool mixed = true;
+        if (cb) {
+            static const bool sQueueBound = [] {
+                const char* e = std::getenv("LM_AI_QUEUE_BOUND");
+                return e && *e == '1';
+            }();
+            const double maxWait = sQueueBound && audio::outHasDevice()
+                                       ? std::clamp(audio::outQueuedSeconds() - 0.004, 0.0, 0.1)
+                                       : 0.1;
+            mixed = waitForGuestMix(maxWait);
+            if (!mixed && audio::g_log)
+                log("[audio] AI interrupt without the game's mix (waited %.1f ms, %.1f ms queued)", maxWait * 1e3,
+                    audio::outQueuedSeconds() * 1e3);
+        }
+        if (audio::g_log && audio::outHasDevice())
+            sPacing.block(secs, audio::outQueuedSeconds(),
+                          std::chrono::duration<double>(clock::now() - waitStart).count(), !mixed);
         // The block programmed by the last AIInitDMA starts playing now (the AI repeats
         // the previous block if the game did not supply a new one in time).
         if (const u32 addr = sDmaAddr.load(); addr && len) audio::outPushGuestBlock(addr, len);
@@ -107,6 +172,10 @@ void dmaThread() {
     }
 }
 }  // namespace
+
+// The game has mixed the DSP output into the next AI block for the last AI interrupt
+// (Jac_imixcopy; shared with the SMS port, whose mix hook is game code).
+void audio::noteGuestMixed() { sAwaitingMix = false; }
 
 HLE(AIInit) {}
 HLE(AIInitDMA) {
@@ -251,7 +320,7 @@ HLE(Jac_imixcopy__FPsPsPsl) {
     const u32 bufL = c.r[4], dac = c.r[5], frames = c.r[6];
     callOriginal(c, "Jac_imixcopy__FPsPsPsl");
     audio::outTagBlock(dac, bufL, frames);
-    sAwaitingMix = false;  // the game has mixed for the last AI interrupt (waitForGuestMix)
+    audio::noteGuestMixed();  // the game has mixed for the last AI interrupt (waitForGuestMix)
 }
 
 // JAudio DSP driver hooks (tools/recomp/hooks.txt).

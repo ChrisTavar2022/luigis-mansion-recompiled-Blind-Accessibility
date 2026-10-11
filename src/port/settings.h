@@ -256,7 +256,6 @@ struct Unused2Settings {
     float overheatBlowCool = 3.0f;      // cooling speed multiplier while blowing air (L), 1..10
     int overheatDamage = 10;            // health lost when it catches fire, 0..50
     bool endingPictures = false;   // unused Luigi pictures (luigi_V/g/b) on the ending rank screen
-    bool labEvent26 = false;       // E. Gadd's lab plays the unused early (Japanese) script event26
     bool ghostPlacements = false;  // unused ghost placements (Slim in the Hidden Room, Mr. Bones in the Courtyard, ...)
     bool pinkMice = false;         // mice use the unused pink variant (rat2)
     bool blueGhostGuys = false;    // Ghost Guys use the unused blue/cyan colour sets (heypo9/heypo10 .prm)

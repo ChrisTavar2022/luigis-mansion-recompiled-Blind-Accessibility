@@ -156,13 +156,17 @@ struct Wav {
             log("[audio] WAV recording stopped: the output changed to %d channels at %u Hz", ch, r);
             stopped = true;
             header();
+            std::fflush(f);
             return;
         }
         const u32 n = u32(frames * ch * 2);
         std::fwrite(data, 1, n, f);
         const u32 before = bytes;
         bytes += n;
-        if ((before >> 16) != (bytes >> 16)) header();  // keep the header valid while running
+        if ((before >> 16) != (bytes >> 16)) {  // keep the file valid while running (runs get killed)
+            header();
+            std::fflush(f);
+        }
     }
 };
 

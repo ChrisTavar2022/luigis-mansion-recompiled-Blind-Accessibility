@@ -61,12 +61,7 @@ struct Served {
     std::vector<u8> bytes;
     u32 builtKey = 0;
 };
-u32 labEvent26Wanted() {
-    static const bool e = std::getenv("LM_LAB_EVENT26") != nullptr;
-    return e || port::settings().unused2.labEvent26 ? 1 : 0;
-}
 Served sServed[] = {
-    {"/Event/event08.szp", buildLabEvent26, labEvent26Wanted},
     {"/Map/map2.szp", buildMapArchive2, mapArchive2Key},
     {"/Map/map3.szp", buildMapArchive3, mapArchive3Key},
 };
@@ -148,14 +143,6 @@ void unusedSection() {
         sDirty |= ImGui::Checkbox("Ending pictures of Luigi", &u.endingPictures);
         tip("The ending's rank screen shows one of three unused pictures of Luigi next to its\n"
             "message: sitting with a flower (ranks H to D), one V sign (C, B) or two V signs (A).");
-        sDirty |= ImGui::Checkbox("Early E. Gadd lab script (Japanese)", &u.labEvent26);
-        tip("Talking to E. Gadd in his lab plays event26, an early Japanese version of the lab\n"
-            "script (the Professor is still \"Oya-Mar\"), with its own dialogue in the game's kana\n"
-            "font. Its menu always offers the Hidden Mansion, as the early script did. Its debug\n"
-            "flag block and its sound effects (an older numbering) are left out.\n"
-            "Translation: Debug > Text archive. The European version's text font has no kana, so\n"
-            "there the port's English translation is shown instead of the Japanese.");
-        note("next lab visit");
         sDirty |= ImGui::Checkbox("Unused ghost placements", &u.ghostPlacements);
         tip("Places ghosts on paths the mansion's map data has but no ghost uses: Slim Bankshot in the\n"
             "Hidden Room (hustler_01), two of Mr. Bones' skeletons in the Courtyard (skul_23_1/2), a\n"

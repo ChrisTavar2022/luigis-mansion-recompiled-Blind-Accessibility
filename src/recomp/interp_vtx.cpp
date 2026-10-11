@@ -292,6 +292,7 @@ void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective) {
     u64 id = u64(prim & 0xF8 | fmt) << 56 ^ u64(vertexSize(int(fmt))) << 40 ^ (posIndexed ? sBind[0].guest : 0);
     for (int a = GX_VA_PNMTXIDX; a <= GX_VA_TEX7; a++) id = detail::mix(id ^ gx::vtxDesc(a));
     detail::noteDraw(id);
+    detail::drawStart(mark());
     detail::drawLog("begin prim %02X fmt %u n %u vsize %u %s pos desc %u size %d tex0 desc %u size %d clr0 desc %u",
                     prim & 0xF8, fmt, nVerts, vertexSize(int(fmt)), perspective ? "persp" : "ortho", gx::vtxDesc(GX_VA_POS),
                     gx::vtxAttrSize(int(fmt), GX_VA_POS), gx::vtxDesc(GX_VA_TEX0), gx::vtxAttrSize(int(fmt), GX_VA_TEX0),
@@ -335,6 +336,7 @@ void vtxDisplayList(u32 guestAddr, const u8* data, u32 size) {
     detail::drawLog("dlist %08X size %u", guestAddr, size);
     const u32 end = mark();
     sParseTapeBase = end != ~0u && end >= size ? end - size : ~0u;
+    if (sParseTapeBase != ~0u) detail::drawRange(sParseTapeBase, end);
     parse(data, size, false);
     sParseTapeBase = ~0u;
 }
