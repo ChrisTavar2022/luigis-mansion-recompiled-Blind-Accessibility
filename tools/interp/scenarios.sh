@@ -19,7 +19,8 @@
 #   call     E. Gadd's Game Boy Horror call: call screen, portrait, message windows (2590-2900)
 #   pause    the pause screen and its pages, back to the game (2590-2880)
 #   ending   the ending scene, rank A (2610-2900)
-# Env: LM_RANGE=<first>,<last> dumps part of it, LM_SECS stops earlier, LM_EXTRA_INI adds settings.
+# Env: LM_RANGE=<first>,<last> dumps part of it, LM_SECS stops earlier, LM_EXTRA_INI adds settings,
+# LM_EXE runs another build (e.g. main's, for the Original 30 byte comparison).
 set -u
 out=${1:?out dir}; scen=${2:?scenario}; fps=${3:-120}; steps=${4:-3}
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -68,5 +69,5 @@ range=${LM_RANGE:-$range}  # LM_RANGE=<first>,<last>: dump only part of the scen
 export LM_FRAME_DUMP="$(win "$run/dump"),$range"
 cd "$root"
 secs=${LM_SECS:-$secs}  # LM_SECS: stop earlier (with LM_RANGE)
-timeout "$secs" build/windows-clang/lmrecomp.exe --disc "$disc" --input "$input" > "$run/log.txt" 2>&1
+timeout "$secs" "${LM_EXE:-build/windows-clang/lmrecomp.exe}" --disc "$disc" --input "$input" > "$run/log.txt" 2>&1
 APPDATA="$user_appdata" "$py" "$root/tools/interp/metrics.py" "$run" "$steps"
