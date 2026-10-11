@@ -21,6 +21,7 @@
     {0x803CE7D0u, 0x803BBB10u},  // lbl_803CE7D0: 8 matching reference(s)
     {0x803D2D40u, 0x803C0300u},  // lbl_803D2D40: 9 matching reference(s)
     {0x803D48A0u, 0x803C1E60u},  // lbl_803D48A0: 19 matching reference(s)
+    {0x803D990Cu, 0x803C6ECCu},  // lbl_803D990C: 179 matching reference(s)
     {0x804C8898u, 0x804B5E58u},  // j3dSys: 60 matching reference(s)
     {0x804CFF98u, 0x804BD660u},  // sCurScene: 5 matching reference(s)
     {0x804CFFACu, 0x804BD674u},  // lbl_804CFFAC: 3 matching reference(s)

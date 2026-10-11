@@ -1,6 +1,7 @@
 // Enhanced lighting, port side (enhanced_lighting.h, docs/RENDERING.md "Enhanced lighting").
 #include "recomp/enhanced_lighting.h"
 #include "recomp/ghost_lights.h"
+#include "recomp/world_lights.h"
 
 #include "port/settings.h"
 #include "recomp/hle.h"
@@ -291,6 +292,7 @@ bool worldToView(const float world[3], float view[3]) {
 HLE(fn_8000BB98) {
     const bool main = c.r[3] == 0;
     if (main) ghostlights::onMainView(c);  // ghost_lights.cpp: this frame's ghost lights
+    if (main) worldlights::onMainView(c);  // world_lights.cpp: candles, fires, lamps, sprays
     if (main) enh::beginScene();
     callOriginal(c, "fn_8000BB98");
     if (main) enh::endScene();

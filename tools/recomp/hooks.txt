@@ -203,3 +203,7 @@ fn_8000BB98 us pal
 fn_8005D8CC us pal
 fn_8005DCA0 us pal
 fn_8005DD50 us pal
+# World lights (src/recomp/world_lights.cpp, docs/RENDERING.md "Enhanced lighting > World lights"):
+# particle resource names and emitter creation, to light candles, fires, sprays and sparkles.
+getResource__10JKRArchiveFUlPCc us pal
+fn_8015FE9C us pal
