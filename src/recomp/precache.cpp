@@ -80,6 +80,13 @@ void frame() {
 
     AuroraPipelineStats s{};
     aurora_pipeline_cache_get_stats(&s);
+    // The startup precompile time (fresh cache: the whole shipped list), logged once.
+    static bool sReported = false;
+    if (sLog && !sReported && s.precacheTotal > 0 && s.precacheDone >= s.precacheTotal) {
+        sReported = true;
+        log("[precache] all %u known pipelines ready after %.2f s (%u threads)", s.precacheTotal,
+            std::chrono::duration<double>(now - start).count(), s.workerThreads);
+    }
     if (sLog && now - window >= std::chrono::seconds(5)) {
         log("[precache] %.0fs: precache %u/%u, pending %u, demand-created %u, stalled draws %u (%.1f ms total, "
             "max %.1f ms), dropped draws %u, worst frame %.1f ms over %u frames, %u threads",
