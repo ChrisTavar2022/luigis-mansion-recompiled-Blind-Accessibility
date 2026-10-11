@@ -153,6 +153,22 @@ void unusedSection() {
             "flag block and its sound effects (an older numbering) are left out.\n"
             "Translation: Debug > Text archive.");
         note("next lab visit");
+        sDirty |= ImGui::Checkbox("Unused ghost placements", &u.ghostPlacements);
+        tip("Places ghosts on paths the mansion's map data has but no ghost uses: Slim Bankshot in the\n"
+            "Hidden Room (hustler_01), two of Mr. Bones' skeletons in the Courtyard (skul_23_1/2), a\n"
+            "ghost in room 8 (topoo_8_1), nine more Ghost Guys and a ghost on the roof (heypo_60_4..12,\n"
+            "poo_60_1), and three more ghost generators in the training room (mg_path).");
+        note("next mansion / training load");
+        sDirty |= ImGui::Checkbox("Pink mice", &u.pinkMice);
+        tip("The mice use the unused rat2 colour set (pink) and its parameter file rat2.prm.");
+        sDirty |= ImGui::Checkbox("Blue Ghost Guys", &u.blueGhostGuys);
+        tip("Two kinds of Ghost Guys use the unused heypo9 / heypo10 colour sets and parameter files\n"
+            "(blue / cyan glow).");
+        sDirty |= ImGui::Checkbox("Extra Speedy Spirits 16-20 (not original)", &u.extraSpeedySpirits);
+        tip("NOT ORIGINAL CONTENT: the game has Speedy Spirit types 16-20 that were never placed and have\n"
+            "no rewards. This places them in five rooms that have none (chosen by the port) with rewards\n"
+            "modelled on the retail ones. They appear like the others when the room's lights are off.");
+        note("next mansion load");
         sDirty |= ImGui::Checkbox("Mario as player 2", &u.marioP2);
         tip("In the 2-player mode (below), player 2 is Mario (the unused bmario model) instead of a\n"
             "second Luigi. Needs \"2-player mode (unfinished)\".");
