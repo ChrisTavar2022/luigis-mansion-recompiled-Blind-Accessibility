@@ -66,6 +66,7 @@ u32 labEvent26Wanted() {
 Served sServed[] = {
     {"/Event/event08.szp", buildLabEvent26, labEvent26Wanted},
     {"/Map/map2.szp", buildMapArchive2, mapArchive2Key},
+    {"/Map/map3.szp", buildMapArchive3, mapArchive3Key},
 };
 std::mutex sServedM;
 }  // namespace

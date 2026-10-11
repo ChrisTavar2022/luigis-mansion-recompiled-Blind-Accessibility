@@ -51,6 +51,9 @@ s32 overlayRead(s32 entry, void* dst, s32 length, s32 offset);
 // placements.cpp
 std::vector<u8> buildMapArchive2();  // /Map/map2.szp with the enabled placements / variants
 u32 mapArchive2Key();                // 0 when no option needs a rebuilt map 2
+std::vector<u8> buildMapArchive3();  // /Map/map3.szp (training room) with the unused generators
+u32 mapArchive3Key();
+u32 resourceRedirect(const char* path);  // guest path to load instead (colour variant .prm), or 0
 void placementsMapSetup(Ctx& c);
 void placementsFrame(Ctx& c);
 
