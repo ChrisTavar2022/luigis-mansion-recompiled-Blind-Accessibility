@@ -689,6 +689,7 @@ void gx::endPendingDraw() {
         }
     }
     GXEnd();
+    interp::vtxEnd();
 }
 
 void hw::fifoWrite(u32 v, int size) {
