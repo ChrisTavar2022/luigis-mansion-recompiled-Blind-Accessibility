@@ -18,9 +18,11 @@
 // faded out, ~0.5 s after the player was set up). So the stream is reported not ready until
 // the scene has taken its first picture, which restores the console's order of events
 // without changing the player's timing otherwise.
+#include "recomp/audio.h"
 #include "recomp/hle.h"
 
 #include <atomic>
+#include <chrono>
 
 namespace recomp {
 namespace {
@@ -32,12 +34,36 @@ HLE(Jac_HVQM_Init) {
     callOriginal(c, "Jac_HVQM_Init");
 }
 
+// LM_AUDIO_LOG=1: picture changes against host time while the movie plays (the scene shows
+// the picture for the audio stream's position, so 29.97 changes a second = audio on time).
+namespace {
+struct MovieLog {
+    using clock = std::chrono::steady_clock;
+    u32 last = 0, changes = 0;
+    clock::time_point start{};
+    void picture(u32 r3) {
+        if (!audio::g_log || !r3 || r3 == last) return;
+        last = r3;
+        if (changes++ == 0) start = clock::now();
+        if (changes % 300 == 0) report("");
+    }
+    void report(const char* what) {
+        if (!audio::g_log || !changes) return;
+        const double s = std::chrono::duration<double>(clock::now() - start).count();
+        log("[hvqm] %u picture changes in %.2f s (%.3f/s)%s", changes, s, s > 0 ? (changes - 1) / s : 0.0, what);
+    }
+} sMovieLog;
+}  // namespace
+
 HLE(Jac_GetPicture) {
     callOriginal(c, "Jac_GetPicture");
     sAwaitingFirstPicture = false;
+    sMovieLog.picture(c.r[3]);
 }
 
 HLE(Jac_HVQM_ForceStop) {
+    sMovieLog.report(", stopped");
+    sMovieLog = {};
     sAwaitingFirstPicture = false;
     callOriginal(c, "Jac_HVQM_ForceStop");
 }
