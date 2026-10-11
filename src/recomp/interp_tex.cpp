@@ -144,7 +144,9 @@ void texLoaded(u32 at) {
     const u32 size = texSize(w, h, fmt, mips);
     sLoads++;
     if (drawLogActive()) detail::drawLog("[draws] texture %08X %ux%u fmt %u size %X%s", phys | 0x80000000u, w, h, fmt, size, size && copyBacked(phys, size) ? " copy-backed" : "");
-    if (size == 0 || copyBacked(phys, size)) {
+    const bool backed = size == 0 || copyBacked(phys, size);
+    detail::noteTexMap(c[0], backed);
+    if (backed) {
         sBacked++;
         return;
     }

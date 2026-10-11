@@ -101,11 +101,16 @@ struct Tape {
     std::vector<u64> bundleIds;  // per draw: what is drawn (display list, vertex layout)
     std::vector<std::array<u32, 2>> bundleRange;  // per draw: its tape bytes (~0u: unknown)
     std::vector<u8> bundlePass;                    // per draw: the pass (0 main, 1 shadow casters)
+    std::vector<u8> bundleCopy;                    // per draw: an EFB copy is bound as a texture
     // Fades (pairTapes): draws of this tape without a partner fade in; draws of pairedWith
     // without a partner fade out, drawn from pairedWith's commands at `.second` (an offset
     // in this tape: after the draw paired with the closest earlier paired draw).
     std::vector<u32> spawns;
     std::vector<std::pair<u32, u32>> dying;
+    // Per draw: how far it moved since its partner in pairedWith (world space where the camera is
+    // known), for predicting where it is next (fast particles: water spray, sparks).
+    std::vector<std::array<float, 3>> drawVel;
+    std::vector<u8> drawVelOk;
     std::vector<M34> views;      // camera view matrices the values were noted under
     ShadowLight shadow;
     std::vector<std::vector<u8>> arrays;  // vertex-array copies the tape's array loads point at
@@ -148,6 +153,8 @@ u32 sUngrouped = 0;  // patches from here on wait for their draw
 std::vector<u64> sBundleIds;
 std::vector<std::array<u32, 2>> sBundleRange;
 std::vector<u8> sBundlePass;
+std::vector<u8> sBundleCopy;
+u32 sCopyMaps = 0;  // texture maps holding an EFB copy (guest state: kept across tapes)
 s32 sOpenDraw = -1;  // immediate-mode draw whose end is not known yet
 std::vector<M34> sViews;
 ShadowLight sShadow;
@@ -506,15 +513,18 @@ bool blendable(Kind kind, const f32* a, const f32* b, int n);
 void findFades(const Tape& a, Tape& b) {
     b.spawns.clear();
     b.dying.clear();
-    static const bool sOff = std::getenv("LM_INTERP_FADES") && std::getenv("LM_INTERP_FADES")[0] == '0';
-    if (sOff || b.cut) return;
+    // LM_INTERP_FADES=0 (off), in, out: test aid.
+    static const char* sMode = std::getenv("LM_INTERP_FADES") ? std::getenv("LM_INTERP_FADES") : "";
+    if (sMode[0] == '0' || b.cut) return;
+    const bool fadeIn = std::strcmp(sMode, "out") != 0, fadeOut = std::strcmp(sMode, "in") != 0;
     const auto eligible = [](const Tape& t, std::vector<u8>& out) {
         out.assign(t.bundleIds.size(), 0);
         for (const Patch& p : t.patches)
             if (p.bundle < out.size() && p.role == 0 && (p.kind == Kind::PosMtx || p.kind == Kind::Verts)) out[p.bundle] = 1;
         for (u32 k = 0; k < out.size(); k++)
             if (k >= t.bundleRange.size() || t.bundleRange[k][0] == ~0u || t.bundleRange[k][1] == ~0u ||
-                t.bundleRange[k][1] <= t.bundleRange[k][0] || (k < t.bundlePass.size() && t.bundlePass[k] != 0))
+                t.bundleRange[k][1] <= t.bundleRange[k][0] || (k < t.bundlePass.size() && t.bundlePass[k] != 0) ||
+                (k < t.bundleCopy.size() && t.bundleCopy[k]))
                 out[k] = 0;
     };
     static std::vector<u8> eA, eB;
@@ -530,10 +540,10 @@ void findFades(const Tape& a, Tape& b) {
         const u32 ka = a.patches[j].bundle;
         if (ka < aToB.size() && aToB[ka] < 0) aToB[ka] = s32(kb);
     }
-    for (u32 k = 0; k < eB.size(); k++)
+    for (u32 k = 0; k < eB.size() && fadeIn; k++)
         if (eB[k] && !bPaired[k]) b.spawns.push_back(k);
     s32 lastB = -1;  // b draw paired with the closest earlier paired draw of a
-    for (u32 k = 0; k < eA.size(); k++) {
+    for (u32 k = 0; k < eA.size() && fadeOut; k++) {
         if (aToB[k] >= 0) {
             lastB = aToB[k];
             continue;
@@ -574,6 +584,9 @@ void pairTapes(const Tape& a, Tape& b) {
             return w;
         };
         const std::vector<Where> wa = where(a, ba), wb = where(b, bb);
+        // Where each draw of a is expected next: moved as it moved since its own predecessor
+        // (fast particles keep their velocity), else by the group's common motion (below).
+        const bool velA = a.drawVelOk.size() == wa.size();
         std::vector<s32> drawPartner(bb.key.size(), -1);
         std::vector<u8> drawUsed(ba.key.size(), 0);
         for (const auto& [key, B] : gb) {
@@ -613,6 +626,12 @@ void pairTapes(const Tape& a, Tape& b) {
                         common[c] = moves[c][moves[c].size() / 2];
                     }
             }
+            // Predicted positions of A's draws.
+            static std::vector<std::array<float, 3>> pred;
+            pred.resize(wa.size());
+            for (u32 i : A)
+                for (int c = 0; c < 3; c++)
+                    pred[i][c] = wa[i].p[c] + (velA && a.drawVelOk[i] ? a.drawVel[i][c] : common[c]);
             auto fullDistance = [&](u32 i, u32 j) {
                 float d = 0;
                 const auto& pa = ba.patches[i];
@@ -637,7 +656,7 @@ void pairTapes(const Tape& a, Tape& b) {
                     if (hi3[c] - lo3[c] > hi3[ax] - lo3[ax]) ax = c;
                 for (u32 i : A) {
                     if (drawUsed[i]) continue;
-                    if (wa[i].ok) byX.emplace_back(wa[i].p[ax] + common[ax], i);
+                    if (wa[i].ok) byX.emplace_back(pred[i][ax], i);
                     else nowhereA.push_back(i);
                 }
                 std::sort(byX.begin(), byX.end());
@@ -687,10 +706,12 @@ void pairTapes(const Tape& a, Tape& b) {
                         const u32 i = it->second;
                         float d2 = 0;
                         for (int c = 0; c < 3; c++) {
-                            const float e = pb[c] - wa[i].p[c] - common[c];
+                            const float e = pb[c] - pred[i][c];
                             d2 += e * e;
                         }
-                        if (d2 <= lim * lim) add(groupDistance(i, j), i, j);
+                        // Ranked by how far from where it was expected (CPU-built particles), or by
+                        // all its values (models: orientation too).
+                        if (d2 <= lim * lim) add(vertsOnly ? std::sqrt(d2) : groupDistance(i, j), i, j);
                     }
                     for (u32 i : nowhereA) add(groupDistance(i, j), i, j);
                 }
@@ -705,10 +726,10 @@ void pairTapes(const Tape& a, Tape& b) {
             pairNearest(A, B, drawPartner, drawUsed, [&](u32 i, u32 j) {
                 if (many) {
                     if (wa[i].ok && wb[j].ok) {
-                        const float *pa = wa[i].p, *pb = wb[j].p;
+                        const float* pb = wb[j].p;
                         float d2 = 0, r2 = 0;
                         for (int c = 0; c < 3; c++) {
-                            const float e = pb[c] - pa[c] - common[c];
+                            const float e = pb[c] - pred[i][c];
                             d2 += e * e, r2 += pb[c] * pb[c];
                         }
                         const float lim = 12.0f + 0.01f * std::sqrt(r2);
@@ -717,6 +738,14 @@ void pairTapes(const Tape& a, Tape& b) {
                 }
                 return fullDistance(i, j);
             });
+        }
+        b.drawVel.assign(wb.size(), {0, 0, 0});
+        b.drawVelOk.assign(wb.size(), 0);
+        for (u32 j = 0; j < bb.key.size(); j++) {
+            const s32 i = drawPartner[j];
+            if (i < 0 || !wb[j].ok || !wa[i].ok) continue;
+            for (int c = 0; c < 3; c++) b.drawVel[j][c] = wb[j].p[c] - wa[i].p[c];
+            b.drawVelOk[j] = 1;
         }
         for (u32 j = 0; j < bb.key.size(); j++) {
             if (drawPartner[j] < 0) continue;
@@ -985,6 +1014,7 @@ void beginTape() {
     sBundleIds.clear();
     sBundleRange.clear();
     sBundlePass.clear();
+    sBundleCopy.clear();
     sOpenDraw = -1;
     sViews.clear();
     sShadow = {};
@@ -1027,6 +1057,8 @@ void endTape(u32 retraceCount) {
     sBundleRange = {};
     tape->bundlePass = std::move(sBundlePass);
     sBundlePass = {};
+    tape->bundleCopy = std::move(sBundleCopy);
+    sBundleCopy = {};
     tape->views = std::move(sViews);
     sViews = {};
     tape->shadow = sShadow;
@@ -1183,6 +1215,7 @@ void detail::noteDraw(u64 id) {
     sBundleIds.push_back(id);
     sBundleRange.push_back({~0u, ~0u});
     sBundlePass.push_back(u8(sPass));
+    sBundleCopy.push_back(sCopyMaps != 0);
     sOpenDraw = -1;
     for (u32 i = sUngrouped; i < sPatches.size(); i++) {
         Patch& p = sPatches[i];
@@ -1203,6 +1236,7 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id) 
         sBundleIds.push_back(id);
         sBundleRange.push_back({~0u, ~0u});
         sBundlePass.push_back(u8(sPass));
+        sBundleCopy.push_back(sCopyMaps != 0);
     }
     p.bundle = u32(sBundleIds.size() - 1);
     const bool tail = sUngrouped == sPatches.size();
@@ -1226,6 +1260,9 @@ void detail::drawEnd(u32 end) {
     sOpenDraw = -1;
 }
 void vtxEnd() { detail::drawEnd(mark()); }
+void detail::noteTexMap(u32 map, bool copy) {
+    if (map < 32) sCopyMaps = copy ? sCopyMaps | 1u << map : sCopyMaps & ~(1u << map);
+}
 
 void suspendForDisplayList() {
     if (!sCapturing) return;
@@ -1354,7 +1391,10 @@ void makeLightPair(const Tape& a, const Tape& b, float alpha) {
         M34 pa, pb, pt;
         compose(ka.data(), ia.data(), pa.data());
         compose(kb.data(), ib.data(), pb.data());
-        for (int k = 0; k < 12; k++) pt[k] = pa[k] + (pb[k] - pa[k]) * alpha;
+        // The depth ramp follows b's near/far ("shadows at any distance" refits them every frame;
+        // the ramp is not linear in them): the caster pass writes depth with b's near/far too
+        // (its projection's depth terms are taken from b), so caster and receivers agree.
+        for (int k = 0; k < 12; k++) pt[k] = which ? pb[k] : pa[k] + (pb[k] - pa[k]) * alpha;
         compose(pt.data(), sLightPair.lvt.data(), (which ? sLightPair.krt : sLightPair.kpt).data());
     }
     sLightPair.ok = true;
@@ -1569,6 +1609,11 @@ bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, cons
     }
     if (evs.empty()) return false;
     std::sort(evs.begin(), evs.end(), [](const Ev& x, const Ev& y) { return x.at != y.at ? x.at < y.at : x.order < y.order; });
+    if (sLogSnaps)
+        for (const Ev& e : evs)
+            log("[interp]   fade event at %u order %u index %u range %u..%u (tape %u bytes)", e.at, e.order, e.index,
+                e.order == 1 ? a.bundleRange[b.dying[e.index].first][0] : b.bundleRange[e.index][0],
+                e.order == 1 ? a.bundleRange[b.dying[e.index].first][1] : b.bundleRange[e.index][1], u32(b.bytes.size()));
     sFaded.clear();
     sFaded.reserve(sReplay.size() + evs.size() * 16 + (b.dying.empty() ? 0 : a.bytes.size()));
     u32 cursor = 0;      // in sReplay (b)
@@ -1796,7 +1841,10 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 }
                 continue;
             }
-            if (p.role == 1) {  // a shadow receiver: rebuilt from the blended light, or as captured
+            if (p.kind == Kind::Projection && p.count == 6 && p.bundle < b.bundlePass.size() && b.bundlePass[p.bundle] == 1) {
+                // Shadow caster pass: x/y blended, depth (near/far) as in b (see makeLightPair).
+                for (int k = 0; k < 6; k++) out[k] = k >= 4 ? vb[k] : va[k] + (vb[k] - va[k]) * alpha;
+            } else if (p.role == 1) {  // a shadow receiver: rebuilt from the blended light, or as captured
                 if (!blendShadowReceiver(*a, q, va, b, p, vb, alpha, out)) std::copy(vb, vb + p.count, out);
             } else if (!(blendFactored(*a, q, va, b, p, vb, alpha, out) ||
                   (p.kind == Kind::PosMtx && p.count == 12 && blendRigid(va, vb, 4, alpha, out)) ||
@@ -2036,9 +2084,10 @@ bool testReplay() {
                 }
             }
         log("[interp] %s: snapped pos %u nrm %u tex %u proj %u light %u verts %u; unpaired pos %u nrm %u tex %u proj %u "
-            "light %u verts %u%s",
+            "light %u verts %u fadein %u fadeout %u%s",
             it.name.c_str(), sSnapKinds[0], sSnapKinds[1], sSnapKinds[2], sSnapKinds[3], sSnapKinds[4], sSnapKinds[5],
-            unpaired[0], unpaired[1], unpaired[2], unpaired[3], unpaired[4], unpaired[5], it.b->cut ? " CUT" : "");
+            unpaired[0], unpaired[1], unpaired[2], unpaired[3], unpaired[4], unpaired[5], sFadeIns, sFadeOuts,
+            it.b->cut ? " CUT" : "");
     }
     sLogSnaps = false;
     efbcopy::applyWritebacks();

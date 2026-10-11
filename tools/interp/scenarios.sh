@@ -47,7 +47,9 @@ ballroom)
     input="$menu,2600:STICKLEFT*8,2612:STICKRIGHT*8,2624:STICKLEFT*8,2636:STICKRIGHT*8,2660:STICKUP*40,2720:CLEFT*20,2760:CRIGHT*20,2800:STICKDOWN*40" ;;
 *) echo "unknown scenario $scen"; exit 1 ;;
 esac
+range=${LM_RANGE:-$range}  # LM_RANGE=<first>,<last>: dump only part of the scenario
 export LM_FRAME_DUMP="$(win "$run/dump"),$range"
 cd "$root"
+secs=${LM_SECS:-$secs}  # LM_SECS: stop earlier (with LM_RANGE)
 timeout "$secs" build/windows-clang/lmrecomp.exe --disc "$disc" --input "$input" > "$run/log.txt" 2>&1
 APPDATA="$user_appdata" "$py" "$root/tools/interp/metrics.py" "$run" "$steps"
