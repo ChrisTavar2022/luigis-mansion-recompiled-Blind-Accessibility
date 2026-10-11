@@ -129,6 +129,11 @@ HLE(fn_80060E70) {
         explicit GhostScope(bool on) { enh::setGhostPass(on); }
         ~GhostScope() { enh::setGhostPass(prev); }
     } ghostScope(pass == 0x30);
+    struct CharScope {
+        bool prev = enh::characterPass();
+        explicit CharScope(bool on) { enh::setCharacterPass(on); }
+        ~CharScope() { enh::setCharacterPass(prev); }
+    } charScope(pass != 0x30);
     if (!sForce) return  // dev-only experiment (LM_EARLY_GHOSTS=1); the menu option is the beta lighting below
         callOriginal(c, "fn_80060E70");
     if (pass == 0x10) {

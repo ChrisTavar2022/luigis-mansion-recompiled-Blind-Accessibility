@@ -39,6 +39,8 @@ u8 sClass = 0xFF;                          // last draw class sent
 int sPerfPhase = -1;       // LM_ENH_PERF_AB phase (host thread)
 bool sPerfNoMap = false;
 bool sGhostPass = false;
+bool sCharPass = false;
+u8 sMaterial = 0xFF;  // last material hint sent
 
 // Extra lights submitted for the coming main view (guest thread only). Providers (ghost lights,
 // world lights, test lights) append; beginScene culls what cannot reach the view and keeps the
@@ -248,6 +250,7 @@ void applySettings() {
 // game's own GX commands: WORLD inside the main 3D view (fn_8000BB98), GHOST inside its ghost
 // pass, OTHER in the shadow-map caster pass and everywhere else (HUD/2D, GBH, copies). Aurora
 // additionally ignores non-perspective draws for its re-rendered passes.
+void emitMaterial();
 void emitClass() {
     if (!masterOn()) return;
     u8 cls = AURORA_DRAW_CLASS_OTHER;
@@ -261,13 +264,37 @@ void setGhostPass(bool on) {
     if (sGhostPass == on) return;
     sGhostPass = on;
     emitClass();
+    emitMaterial();
 }
 bool ghostPass() { return sGhostPass; }
+
+u32 sSceneCount = 0;
+void emitMaterial() {
+    if (!masterOn()) return;
+    // Test aid LM_CHAR_MATERIAL=0 (off: characters lit like the world, as before) / 2 (only on
+    // even frames: consecutive frame dumps compare both).
+    static const int sMode = [] {
+        const char* v = std::getenv("LM_CHAR_MATERIAL");
+        return v ? std::atoi(v) : 1;
+    }();
+    const bool allowed = sMode == 1 || (sMode == 2 && (sSceneCount & 1) == 0);
+    const u8 m = allowed && sInScene && sCharPass && !sGhostPass && !sInCaster ? AURORA_MATERIAL_CHARACTER : AURORA_MATERIAL_WORLD;
+    if (m == sMaterial) return;
+    GXSetMaterialHintAurora(m);
+    sMaterial = m;
+}
+void setCharacterPass(bool on) {
+    if (sCharPass == on) return;
+    sCharPass = on;
+    emitMaterial();
+}
+bool characterPass() { return sCharPass; }
 
 void setCasterPass(bool on) {
     if (sInCaster == on) return;
     sInCaster = on;
     emitClass();
+    emitMaterial();
 }
 
 void beginScene() {
@@ -275,8 +302,11 @@ void beginScene() {
     const uint32_t count = selectLights(sPending.data(), sPendingCount);
     sPendingCount = 0;  // a frame in which nobody submits has no extra lights
     sClass = 0xFF;      // every frame (and interpolation tape) sets its class again
+    sMaterial = 0xFF;
+    sSceneCount++;
     sInScene = true;
     emitClass();
+    emitMaterial();
     if (!active()) return;
     const u32 at = interp::mark();
     aurora::gfx::set_extra_lights(sPending.data(), count);
@@ -286,6 +316,7 @@ void beginScene() {
 void endScene() {
     sInScene = false;
     emitClass();
+    emitMaterial();
     if (active()) GXSceneEndAurora();
 }
 
