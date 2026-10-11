@@ -145,6 +145,7 @@ std::string argValue(int argc, char** argv, const char* name) {
 int main(int argc, char* argv[]) {
     using namespace recomp;
     port::installCrashHandler();
+    port::startHangWatchdog();
     port::parseOptions(argc, argv);
     port::setLaunchArgs(argc, argv);
 
@@ -285,6 +286,7 @@ int main(int argc, char* argv[]) {
     bool exiting = false;
     bool paused = false;
     while (!exiting) {
+        port::heartbeat();
         for (const AuroraEvent* ev = aurora_update(); ev && ev->type != AURORA_NONE; ++ev) {
             if (ev->type == AURORA_SDL_EVENT) menu::handleEvent(ev->sdl);
             if (ev->type == AURORA_EXIT) exiting = true;
@@ -307,6 +309,7 @@ int main(int argc, char* argv[]) {
         if (!running || menu::quitRequested()) break;
     }
 
+    menu::shutdown();
     vi::stopTimer();
     frame::stop();
     audio::outShutdown();

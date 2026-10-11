@@ -213,6 +213,55 @@ std::vector<Field> fields() {
     };
 }
 
+void writeSettings(std::ostream& out);
+
+template <typename T>
+void clampTo(T& v, T lo, T hi) {
+    if (!(v >= lo)) v = lo;  // (also catches NaN)
+    if (v > hi) v = hi;
+}
+template <typename E>
+void clampEnum(E& v, E last, E def = E(0)) {
+    if (int(v) < 0 || int(v) > int(last)) v = def;
+}
+
+// Values from a hand-edited or damaged settings.ini are brought back into the ranges the menu
+// offers: out-of-range enums would select nothing (or index past a table), and e.g. a huge render
+// scale or MSAA count fails to create the GPU targets at startup.
+void sanitize() {
+    auto& v = sSettings.video;
+    clampTo(v.targetFps, kMinFps, kMaxFps);
+    clampEnum(v.aspect, AspectMode::Ultra32x9, AspectMode::Auto);
+    clampTo(v.resolutionScale, 0, 8);
+    clampTo(v.fovScale, 0.75f, 1.5f);
+    v.msaa = v.msaa >= 8 ? 8 : v.msaa >= 4 ? 4 : v.msaa >= 2 ? 2 : 1;
+    auto& c = sSettings.crt;
+    clampEnum(c.preset, CrtPreset::Custom);
+    clampEnum(c.scanlines, CrtScanlines::Interlaced480i);
+    clampEnum(c.mask, CrtMask::None);
+    auto& a = sSettings.audio;
+    clampTo(a.masterVolume, 0.0f, 1.0f);
+    clampTo(a.musicVolume, 0.0f, 1.0f);
+    clampTo(a.sfxVolume, 0.0f, 1.0f);
+    clampEnum(a.output, AudioOutput::Surround71);
+    auto& e = sSettings.enhancements;
+    clampTo(e.palLanguage, 1, 5);
+    clampTo(e.dbgHudTest, 0, 3);
+    auto& l = sSettings.enhancedLighting;
+    clampEnum(l.preset, EnhancedPreset::Custom, EnhancedPreset::High);
+    clampTo(l.softShadowQuality, 0, 3);
+    clampTo(l.extraShadowQuality, 0, 2);
+    clampTo(l.volumetricQuality, 0, 2);
+    clampTo(l.shadowMapSize, 0, 2);
+    clampTo(sSettings.ghostLights.maxLights, 1, 16);
+    auto& g = sSettings.gameplay;
+    clampTo(g.ambientScale, 0.05f, 1.5f);
+    clampTo(g.damageScale, 0.0f, 5.0f);
+    clampTo(g.healthScale, 0.25f, 5.0f);
+    clampTo(g.ghostHealthScale, 0.25f, 5.0f);
+    clampTo(g.vacuumStrength, 0.25f, 4.0f);
+}
+
 }  // namespace
 
 Settings& settings() { return sSettings; }
@@ -252,13 +301,36 @@ void loadSettings() {
         if (!known)
             for (auto& ext : extensions()) ext.load(section, key, value);
     }
-    auto& v = sSettings.video;
-    v.targetFps = v.targetFps < kMinFps ? kMinFps : v.targetFps > kMaxFps ? kMaxFps : v.targetFps;
+    sanitize();
 }
 
 void saveSettings() {
-    std::ofstream out(settingsPath());
-    if (!out) return;
+    // Written to a temporary file and renamed over settings.ini, so a crash or power loss while
+    // saving never leaves a truncated file (which would reset every setting on the next launch).
+    const std::string path = settingsPath(), tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        if (!out) return;
+        writeSettings(out);
+        out.flush();
+        if (!out) {
+            out.close();
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+            return;
+        }
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {  // e.g. settings.ini held open by another program: write it in place instead
+        std::filesystem::remove(tmp, ec);
+        std::ofstream out(path, std::ios::trunc);
+        if (out) writeSettings(out);
+    }
+}
+
+namespace {
+void writeSettings(std::ostream& out) {
     std::string section;
     for (auto& f : fields()) {
         if (section != f.section) {
@@ -269,5 +341,6 @@ void saveSettings() {
     }
     for (auto& ext : extensions()) ext.save(out);
 }
+}  // namespace
 
 }  // namespace port

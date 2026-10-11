@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <thread>
 
 namespace recomp {
@@ -78,7 +79,9 @@ HLE(AIInitDMA) {
 HLE(AIStartDMA) {
     sDmaRunning = true;
     audio::outStart(rateHz());
-    if (!sDmaThread.joinable()) {
+    static bool sStarted = false;  // (a detached thread is never joinable: test a flag)
+    if (!sStarted) {
+        sStarted = true;
         sDmaThread = std::thread(dmaThread);
         sDmaThread.detach();
     }
@@ -236,4 +239,68 @@ HLE(DSPReleaseHalt__Fv) {
 }
 HLE(DSPWaitFinish__Fv) {}
 HLE(DiplSec__FUl) {}
+
+// ---- JAI sound-effect starts: no interrupt between taking a JAISound and setting it up ----
+// Each SE category keeps a free list and an active list of JAISounds (descriptor at
+// [JAISeMgr+0x1E8] + cat*0xC: +0 free head, +4 active head; links prev +0x28, next +0x2C).
+// The start functions below take a sound off the free list onto the active list
+// (fn_8018FF88) and only then fill it in (+0x38 parameter block, +0x01 state, fn_801974C0).
+// The game also starts sounds from its scene-loading thread (priority 17, e.g. during the map
+// setup after the opening): if an interrupt wakes the main thread inside that window, the
+// main thread's SE update (fn_80191A1C, fn_80191F38) sees the half-made sound, releases it
+// into the wrong category's free list (fn_8018FFE0) and the lists become circular; the next
+// SE update then never returns (game frozen, window not responding). On the console the
+// window is a few instructions long; here interrupts are taken at loop back-edges inside it,
+// and while a cutscene is skipped (fast-forward: retrace interrupts back to back) it happened
+// in about 1 of 15 opening skips. Running the start with interrupts off (as if the game had
+// wrapped it in OSDisableInterrupts) closes the window; the interrupt is taken right after.
+namespace {
+void callWithInterruptsOff(Ctx& c, const char* name) {
+    const u32 ee = c.msr & 0x8000u;
+    c.msr &= ~0x8000u;
+    callOriginal(c, name);
+    c.msr |= ee;
+    if (ee) c.poll();
+}
+}  // namespace
+HLE(fn_8019754C) { callWithInterruptsOff(c, "fn_8019754C"); }
+HLE(fn_80197810) { callWithInterruptsOff(c, "fn_80197810"); }
+HLE(fn_80197B30) { callWithInterruptsOff(c, "fn_80197B30"); }
+
+// JAI sound-effect frame update (US fn_80191A1C, r3 = JAI SE manager): for each category
+// (count at r13-0x6B4) walks the active JAISound list (head: [[mgr+0]+0x1E8] + cat*0xC + 4,
+// next at +0x2C). Diagnostic: a list that loops back on itself hangs the game in here.
+HLE(fn_80191A1C) {
+    static const bool sCheck = std::getenv("LM_JAI_CHECK") != nullptr;
+    if (sCheck) {
+        const u32 mgr = c.r[3];
+        const u32 cats = rd32(c.r[13] - 0x6B4);
+        const u32 base = rd32(rd32(mgr) + 0x1E8);
+        static bool sReported = false;
+        for (u32 cat = 0; cat < cats && cat < 64 && !sReported; cat++) {
+            u32 slow = rd32(base + cat * 0xC + 4), fast = slow;
+            bool loop = false;
+            while (fast && rd32(fast + 0x2C)) {
+                fast = rd32(rd32(fast + 0x2C));
+                slow = rd32(slow + 0x2C);
+                if (fast == slow && fast) {
+                    loop = true;
+                    break;
+                }
+            }
+            if (!loop) continue;
+            sReported = true;
+            std::string chain;
+            u32 n = rd32(base + cat * 0xC + 4);
+            for (int i = 0; i < 24 && n; i++, n = rd32(n + 0x2C)) {
+                char b[16];
+                std::snprintf(b, sizeof(b), " %08X", n);
+                chain += b;
+            }
+            log("[jai] SE category %u list loops (mgr %08X, list base %08X):%s ...", cat, mgr, base, chain.c_str());
+            sched::dumpThreads();
+        }
+    }
+    callOriginal(c, "fn_80191A1C");
+}
 }  // namespace recomp

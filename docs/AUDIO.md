@@ -370,6 +370,24 @@ JAudio's `StreamMain` (jaudio/streamctrl.c) drives DTK streaming through
 never uses it. Those SDK calls stay stubs. The game's music is sequenced (BMS
 via JAudio) plus AFC streams through DSP ring voices, as described above.
 
+## JAI sound-effect lists (hang fix)
+
+JAI keeps, per SE category, a free list and an active list of `JAISound`s (descriptor at
+`[JAISeMgr+0x1E8] + cat*0xC`: +0 free head, +4 active head; links prev +0x28, next +0x2C).
+A start (`fn_8019754C`, `fn_80197810`, `fn_80197B30`) moves a sound to the active list
+(`fn_8018FF88`) and only then sets it up. The game also starts sounds from its
+scene-loading thread (priority 17, e.g. the map setup after the opening). When an interrupt
+woke the main thread inside that window, the main thread's SE update released the
+half-made sound into another category's free list (`fn_8018FFE0`), the lists became
+circular and `fn_80191A1C` never returned: the game froze right after the opening with the
+window not responding, in about 1 of 15 skipped openings (cutscene skipping posts retrace
+interrupts back to back; never seen without it, but the window exists at normal speed too).
+The three start functions run with interrupts off (hooks in `hle_audio.cpp`), as if the
+game had wrapped them in `OSDisableInterrupts`. 60/60 skipped openings passed afterwards.
+Diagnostics: `LM_JAI_CHECK=1` logs an SE list that loops; `LM_HANG_DUMP=<s>` prints every
+thread's host stack when the main loop stalls; `LM_WATCH=<addr>,<len>,<stride>,<offset>`
+with `LM_TRACE=ring` logged the list writes (`8070xxxx+0x2C`, stride 0x40, US).
+
 ## Verification
 
 Use `LM_AUDIO_WAV=build/x.wav` to record the output (what goes to the device),

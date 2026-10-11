@@ -588,7 +588,9 @@ void generalEnhancementsTab() {
         sDirty = true;
         applyWindowSettings();
     }
-    sDirty |= ImGui::Checkbox("Skip intro logos", &e.skipIntroLogos);
+    ImGui::BeginDisabled();  // not implemented yet: greyed out so it is not mistaken for a working option
+    ImGui::Checkbox("Skip intro logos", &e.skipIntroLogos);
+    ImGui::EndDisabled();
     pending("planned");
     {
         sDirty |= ImGui::Checkbox("Skippable cutscenes", &e.skipCutscenes);
@@ -796,6 +798,15 @@ void init() {
 
 bool isOpen() { return sOpen || recomp::dev::capturesInput(); }
 bool quitRequested() { return sQuit; }
+
+void shutdown() {
+    // Settings are written when the menu closes; closing the window (or Alt+F4) while it is
+    // still open would otherwise drop every change made in this visit.
+    if (sDirty) {
+        port::saveSettings();
+        sDirty = false;
+    }
+}
 
 void handleEvent(const SDL_Event& ev) {
     if (recomp::controls::handleEvent(ev)) return;  // binding capture owns the key

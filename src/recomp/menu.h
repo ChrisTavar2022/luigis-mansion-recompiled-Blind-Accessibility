@@ -6,6 +6,7 @@ namespace recomp::menu {
 void init();                              // loads settings, applies window options
 void handleEvent(const SDL_Event& ev);    // host event loop
 void draw();                              // host thread, inside an Aurora frame
-bool isOpen();
-bool quitRequested();                     // "Quit game" chosen in the menu                            // game input is suppressed while open
+bool isOpen();                            // game input is suppressed while open
+bool quitRequested();                     // "Quit game" chosen in the menu
+void shutdown();                          // saves changes not yet written (window closed with the menu open)
 }  // namespace recomp::menu
