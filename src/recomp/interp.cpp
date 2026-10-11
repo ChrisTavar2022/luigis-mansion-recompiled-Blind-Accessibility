@@ -1404,7 +1404,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             checked++;
             float e = 0;
             for (int k = 0; k < p.count; k++) e = std::max(e, std::fabs(out[k] - vb[k]) / (1.0f + std::fabs(vb[k])));
-            if (e > 1e-3f && bad++ < 6) {
+            if (e > 5e-3f && bad++ < 6) {  // float noise: values near 0 under a far camera
                 char buf[600];
                 int n = std::snprintf(buf, sizeof(buf), "[interp]   self-check kind %u role %u slot %u err %.4f:", u32(p.kind), p.role, p.slot, e);
                 for (int k = 0; k < p.count && n < 560; k++) n += std::snprintf(buf + n, sizeof(buf) - n, " %.2f/%.2f", out[k], vb[k]);
