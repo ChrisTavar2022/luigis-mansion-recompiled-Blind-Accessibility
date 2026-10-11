@@ -23,6 +23,9 @@ bool dspRunSubframe();
 // subframe), and the steady_clock time its last frame finished.
 bool dspFrameBusy();
 std::chrono::steady_clock::time_point dspFrameEnd();
+// The game has mixed the DSP output into the next AI block for the last AI interrupt
+// (Jac_imixcopy; hle_audio.cpp waits for it before raising the next one).
+void noteGuestMixed();
 
 // Per output sample of the DSP's stereo mix, the parts that did not come from the
 // front buses, at the output level: lExtra / rExtra are what the centre, surround and

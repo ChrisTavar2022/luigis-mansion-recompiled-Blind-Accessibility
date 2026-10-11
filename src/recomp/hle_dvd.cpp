@@ -180,7 +180,8 @@ HLE(DVDReadAsyncPrio) {
     // As in DVDReadPrio, a slow host read must not hold off interrupts. On the console this call
     // returns at once, so with interrupts off (a caller's critical section) no other thread may
     // run in it: then the read just happens in place.
-    if (c.msr & 0x8000) sched::withCpuReleased(read);
+    // (sched::interruptsEnabled() is also false inside an interrupt handler.)
+    if (sched::interruptsEnabled()) sched::withCpuReleased(read);
     else read();
     wr32(guest + 0x0C, 1);  // busy until the completion interrupt
     wr32(guest + 0x38, cb);
