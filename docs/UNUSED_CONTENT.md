@@ -893,9 +893,13 @@ labels are USA-only).
 ### Ending pictures (`gallery.cpp`)
 
 Scene 6 (ENDING, `lbl_8021DEE8`: setup `fn_8000D1CC`, draw `fn_8000E050`) picks a caption by
-rank (`lbl_804D8100`, 1 worst .. 8 best: `mes_bE`, `mes_gE`, `mes_VE`). The disc has one picture
-of Luigi per caption that nothing loads: `luigi_b` (sitting with a flower), `luigi_g` (one V
-sign), `luigi_V` (two V signs). The draw hook loads the picture for the rank into guest memory
+rank (`lbl_804D8100`: 1 `mes_bE`, 2-7 `mes_gE`, 8 `mes_VE`). The value is the rank letter:
+`fn_8000D1CC` loads `Ending/ENGLISH/ra_<X>E.bti` from the table at `lbl_8021DC28 + 0x1A0 + 0x20 *
+rank` (1 H, 2 G, 3 F, 4 E, 5 D, 6 C, 7 B, 8 A) and the house `h_P0<rank-1>` (8 = the big mansion).
+The disc has three pictures of Luigi that nothing loads: `luigi_b` (sitting with a flower),
+`luigi_g` (one V sign), `luigi_V` (two V signs). User's mapping: flower for H-D, one V sign for
+C-B, two V signs for A only. With the option off the hook only calls the original draw (no
+load, no change). The draw hook loads the picture for the rank into guest memory
 and draws it with the scene's own quad helper (`fn_80057ACC` colour, `fn_80057AD8` quad, shadow
 and colour like the caption) with the caption's alpha (s16 at layer block +0x6C), until the
 scene's fade-out (frame 0x7BC). The pictures end at Luigi's knees, so the picture sits in the
@@ -905,8 +909,9 @@ bottom-right corner of the ending's background picture, its bottom edge on the s
 (default) the right edge stays at 640, stretched or zoomed (`--ws-backgrounds`) it is the
 screen's edge at 320 + 320 / `ws::factor()`. Verified:
 `ending_pictures_background_anchored.png` (ranks 1/5/8 at 4:3, 16:9 and 21:9, plus rank 5 at
-21:9 with `--ws-backgrounds stretch`), via `LM_TEST_ENDING=<rank>@<frame>` (requests scene 6)
-and `--aspect`.
+21:9 with `--ws-backgrounds stretch`), `ending_pictures_rank_groups.png` (D, C, A on and D off,
+16:9), via `LM_TEST_ENDING=<rank>@<frame>` (requests scene 6) and `--aspect`. The forced scene
+does not reach the rank-letter display, so the letter mapping rests on the table above.
 
 ### Gallery and text archive (Debug tab)
 

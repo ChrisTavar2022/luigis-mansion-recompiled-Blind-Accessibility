@@ -145,7 +145,7 @@ void unusedSection() {
             "560,430) with a black border, like a TV-safe window. The HUD stays where it is.");
         sDirty |= ImGui::Checkbox("Ending pictures of Luigi", &u.endingPictures);
         tip("The ending's rank screen shows one of three unused pictures of Luigi next to its\n"
-            "message: two V signs (best rank), one V sign (middle ranks) or sitting with a flower (worst).");
+            "message: sitting with a flower (ranks H to D), one V sign (C, B) or two V signs (A).");
         sDirty |= ImGui::Checkbox("Early E. Gadd lab script (Japanese)", &u.labEvent26);
         tip("Talking to E. Gadd in his lab plays event26, an early Japanese version of the lab\n"
             "script (the Professor is still \"Oya-Mar\"), with its own dialogue in the game's kana\n"

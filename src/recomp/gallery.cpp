@@ -3,10 +3,11 @@
 //
 // Ending: scene 6 (ENDING, lbl_8021DEE8: setup fn_8000D1CC, update fn_8000D624, draw fn_8000E050)
 // shows the house the money bought, the rank and a caption whose file depends on the rank
-// (lbl_804D8100, 1 worst .. 8 best: 1 -> mes_bE "The haunted mansion disappeared without a
-// trace...", 2..7 -> mes_gE "Welcome to Luigi's NEW Mansion!", 8 -> mes_VE "Congratulations!").
-// The disc also has Ending/luigi_V.bti (Luigi with two V signs), luigi_g.bti (one V sign) and
-// luigi_b.bti (sitting with a flower) - one per caption - that nothing loads. With the option on, the picture
+// (lbl_804D8100 = rank letter, 1 H (worst) .. 8 A (best): 1 -> mes_bE "The haunted mansion
+// disappeared without a trace...", 2..7 -> mes_gE "Welcome to Luigi's NEW Mansion!", 8 -> mes_VE
+// "Congratulations!"). The disc also has Ending/luigi_V.bti (Luigi with two V signs), luigi_g.bti
+// (one V sign) and luigi_b.bti (sitting with a flower) that nothing loads; the option shows the
+// flower picture for H-D, one V sign for C-B, two for A (user's mapping). With the option on, the picture
 // for the rank is drawn with the message's own fade (+0x6C of the scene's layer block
 // lbl_803A3B40) through the scene's 2D quad helper (fn_80057ACC colour, fn_80057AD8 texture quad).
 //
@@ -173,7 +174,7 @@ std::vector<u8> readDiscItem(const char* disc, const char* inner) {
 // ---- ending pictures ------------------------------------------------------------------------
 namespace {
 
-#define kEndRank VA(0x804D8100)    // rank 1..8 (1 best)
+#define kEndRank VA(0x804D8100)    // rank 1..8 = letters H..A (1 worst, 8 best; see endPicFor)
 #define kEndLayers VA(0x803A3B40)  // the ending scene's layer block
 #define kEndFrame VA(0x804D8108)   // the ending scene's frame counter
 
@@ -194,7 +195,10 @@ struct EndPic {
 EndPic sEndPics[3] = {{"/Ending/luigi_V.bti"}, {"/Ending/luigi_g.bti"}, {"/Ending/luigi_b.bti"}};
 u32 sColor = 0;  // u32 colour words for fn_80057ACC
 
-EndPic* endPicFor(u32 rank) { return &sEndPics[rank <= 1 ? 2 : rank >= 8 ? 0 : 1]; }  // 1 worst (tent), 8 best
+// lbl_804D8100 is the rank letter: fn_8000D1CC loads Ending/ENGLISH/ra_<X>E.bti from the table at
+// lbl_8021DC28 + 0x1A0 + 0x20 * rank: 1 H, 2 G, 3 F, 4 E, 5 D, 6 C, 7 B, 8 A. Pictures (user's
+// mapping): sad Luigi with the flower for H-D, one V sign for C-B, two V signs for A.
+EndPic* endPicFor(u32 rank) { return &sEndPics[rank <= 5 ? 2 : rank >= 8 ? 0 : 1]; }
 
 bool loadEndPic(Ctx& c, EndPic& p) {
     if (p.tried) return p.bti != 0;
@@ -247,9 +251,9 @@ struct GalleryItem {
 };
 
 GalleryItem sItems[] = {
-    {"Ending", "luigi_V (best rank)", "/Ending/luigi_V.bti", nullptr, "Luigi with two V signs; goes with the best-rank caption mes_VE"},
-    {"Ending", "luigi_g (middle ranks)", "/Ending/luigi_g.bti", nullptr, "One V sign; goes with mes_gE"},
-    {"Ending", "luigi_b (worst rank)", "/Ending/luigi_b.bti", nullptr, "Sitting with a flower; goes with mes_bE"},
+    {"Ending", "luigi_V (rank A)", "/Ending/luigi_V.bti", nullptr, "Luigi with two V signs; shown for rank A"},
+    {"Ending", "luigi_g (ranks C, B)", "/Ending/luigi_g.bti", nullptr, "One V sign; shown for ranks C and B"},
+    {"Ending", "luigi_b (ranks H-D)", "/Ending/luigi_b.bti", nullptr, "Sitting with a flower; shown for ranks H to D"},
     {"Ending", "mes_b1 (Japanese)", "/Ending/mes_b1.bti", nullptr,
      "Unused Japanese worst-rank caption. Translation: \"Hmm... Reality was harsh. Luigi's Mansion fades away like a dream.\""},
     {"Ending", "sosite (Japanese)", "/Ending/sosite.bti", nullptr, "Unused Japanese caption. Translation: \"And then... a present from the Professor!\""},
