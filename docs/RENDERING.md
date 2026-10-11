@@ -1414,3 +1414,11 @@ it ever matters, per-tile light lists would cut the overlapping case.
 (`fire`/`sfire`/`chandelier`) show where candles are; e.g. the 2F room at x 1575..3125, z
 -3860..-2810 has 30 candles, the 1F room east of the foyer 12 table candles. Showcase captures
 below.
+
+**Showcase captures** (window grabs, 2560x1440, 16:9, render scale 3, Ultra preset, ghost and world
+lights on; `build/worldlights/showcase_*.png` plus `_720p` copies): `dining_brazier` (the fire
+bowl on the pillar and the violet candles), `foyer` (side-table candelabras), `dining_candelabras_ghost`
+(Mr. Luggs' glow and the violet table candles), `fireplace` (Luigi lit by the fireplace),
+`fire_spray` (nursery, fire spray in the dark), `hallway_bats` (the bats' glow under the ceiling),
+`lit_ballroom_chandeliers` (`LM_ROOM_LIGHTS_ON=1`), `ballroom_ghosts` (the shy-guy ghosts' colored
+glow around Luigi).
