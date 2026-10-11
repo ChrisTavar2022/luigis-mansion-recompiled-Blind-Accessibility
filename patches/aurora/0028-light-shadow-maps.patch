@@ -31,7 +31,7 @@ index 68eb07d..ede775d 100644
  #ifdef __cplusplus
  }
 diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
-index c2d9eaf..37c29ad 100644
+index c2d9eaf..95f0bc6 100644
 --- a/lib/gfx/enhanced.cpp
 +++ b/lib/gfx/enhanced.cpp
 @@ -4,6 +4,8 @@
@@ -547,12 +547,12 @@ index c2d9eaf..37c29ad 100644
    }
    if (c.extraLights && c.extraShadows && g_shadowCount > 0) {
      if (!g_maskReserved) {
-+      // Screen-space: half resolution (the ray march is the cost). Shadow maps: full resolution
++      // Half resolution (bloom level 0 size), except shadow maps at high quality: full resolution
 +      // (sharp contact edges) up to 1440 lines, within the mask buffer (two planes).
        const auto size = get_render_target_size();
 -      const auto [w, h] = bloom_base_size(size.x, size.y);
 +      uint32_t w, h;
-+      if (shadow_maps()) {
++      if (shadow_maps() && g_cfg.extraShadowQuality >= 2) {
 +        w = std::max(size.x, 1u);
 +        h = std::max(size.y, 1u);
 +        if (h > 1440) {

@@ -386,6 +386,11 @@ void setCasterPass(bool on) {
 void beginScene() {
     addTestLights();
     const uint32_t count = selectLights(sPending.data(), sPendingCount);
+    // Test aid LM_XL_SHADOWS_AB=1: colored-light shadows only on even frames (consecutive frame
+    // dumps compare with / without in the same scene).
+    static const bool sXlAb = std::getenv("LM_XL_SHADOWS_AB") != nullptr;
+    if (sXlAb && (sSceneCount & 1))
+        for (uint32_t i = 0; i < count; i++) sPending[i].flags &= ~(aurora::gfx::ExtraLightCastShadows | 0xFF00u);
     sPendingCount = 0;  // a frame in which nobody submits has no extra lights
     sClass = 0xFF;      // every frame (and interpolation tape) sets its class again
     sMaterial = 0xFF;

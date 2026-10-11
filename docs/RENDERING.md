@@ -1461,3 +1461,132 @@ hallway never raised it (log `gbh <n> above Luigi` stays below 90); only the cal
 (`LM_TELEPORT=-2050,0,-900,100`) puts the hanging bats in frame: their yellow bodies (the game's
 own look, unchanged with lights off) and the glow on the ceiling corner, with a purple ghost
 passing in the same shot; `showcase_hallway_bats_visible`.
+
+### Colored-light shadow maps (Aurora patch 0028)
+
+The screen-space light shadows (patch 0016/0020) only know what the camera sees: a blocker
+outside the picture (behind the camera, beside it, above the frame) casts nothing, a ray toward a
+light behind the camera leaves the screen at once, and the fixed "thickness" turns thin objects
+into long smears. Shadow maps fix all three. F1 > Visuals > Enhanced lighting: "Light shadow
+method" (Shadow maps, default / Screen-space), "Shadow-casting lights" (Off/2/4/8), "Light shadow
+quality", "Shadow map size" (256..2048 texels per cube face), "Light shadow softness" (light size
+in world units, default 14). Presets: Low 2 lights at 256, Medium 2 at 512, High 4 at 512, Ultra
+8 at 1024. Settings keys `[enhanced_lighting] extra_shadow_mode / extra_shadow_lights /
+extra_shadow_map_size / extra_shadow_softness`.
+
+**Which lights.** Providers flag `ExtraLightCastShadows`: ghost lights (the strongest ghosts, as
+many as the setting allows), fires (fireplaces, braziers, torches), candelabras (three or more
+candles merged into one light), big fire effects and the fire spray. `selectLights`
+(enhanced_lighting.cpp) ranks every light (intensity x reach over distance); the first N flagged
+lights in that order get a shadow slot in Aurora. Each light's shadow fades in/out over a few
+frames when it gains/loses a slot (weight in flags bits 8..15, multiplied with the ghost lights'
+own fade), so the strongest set changing as Luigi walks does not pop.
+
+**How (one frame).**
+1. Every opaque world draw that the depth pre-pass already re-renders also gets a *caster*
+   pipeline variant: `ShaderConfig::lightDepth` (a former padding bit, so existing configs and
+   the shipped pipeline list keep their keys), depth only, no culling, depth test LEQUAL, no
+   polygon offset. Its vertex shader takes the draw's own eye-space position (`mv_pos`) and
+   multiplies it by a matrix read from the storage buffer at `imm._pad + instance_index * 20`;
+   the fragment shader discards fragments outside the record's tile and keeps the game's alpha
+   test (fences, plants, cut-out cards cast cut-out shadows). The enhanced lighting code of the
+   variant is off (the uniform block keeps its layout, so the original draw's uniforms are used
+   as they are).
+2. Before the EFB pass whose world draws read the mask (the same pre-pass op as before), the
+   caster draws are rendered into a depth atlas: per shadowed light a cube map as 3x2 faces of
+   S x S texels, lights in two columns (8 lights at 1024: 6144 x 8192). One instanced draw per
+   caster covers every light and face (instance = light x 6 + face): about 85 draws in a room,
+   not 85 x 48. A caster whose pipeline is still compiling is skipped (`try_get_pipeline`)
+   instead of stalling the frame; its shadow appears a frame later. The pipelines are recorded
+   in the pipeline cache like any other, so later sessions precompile them.
+3. Face matrices: view space -> face (forward/right/up along the view axes) -> perspective with
+   a field of view a little over 90 degrees (tan = 1 + 48/S, so a filter kernel near a face edge
+   stays on that face) -> the face's tile in atlas clip space. Depth is reversed (z = near/axis
+   distance, cleared to 0), near = 2% of the light's reach (3..20 units), so the light's own
+   holder (candle stick, brazier bowl) does not wrap it in shadow.
+4. The mask pass (`fs_xlcube`, two RGBA8 targets = 8 lights) reconstructs each pixel's view
+   position and normal from the camera depth pre-pass, picks the cube face by the major axis,
+   offsets the point along the normal (more at grazing angles) and toward the light by about one
+   texel, and filters: PCSS blocker search (8..10 taps) in a region the size of the light, umbra
+   early-out when every search tap is blocked, then 8/12/20 PCF taps (quality) with hardware 2x2
+   comparison each. Taps lie on the receiver's tangent plane in world space and are projected
+   one by one (receiver-plane depth), so a wide penumbra on a floor lit at a grazing angle does
+   not shadow the floor itself. The per-pixel tap rotation is fixed (no crawling between frames
+   or interpolated replays). Pixels on a one-pixel depth ledge (both neighbours on an axis jump
+   away) use the light direction instead of the reconstructed normal for the offset.
+5. The mask now lives in its own GPU buffer (`maskBuffer`, 32 MiB, static bind group binding 2,
+   `mbuf` in the GX shaders) instead of a range of the per-frame storage upload: nothing is
+   uploaded for it any more (before: 3.7 MB of zeros per frame at 1280x720), and it can be full
+   resolution: shadow maps at high quality (Ultra) use a full-resolution mask (up to 1440 lines),
+   otherwise half resolution (the receivers' 4-tap tent smooths it). Two planes: slots 0-3 and
+   4-7 (`enh_mask` reads plane slot/4).
+6. Casters and the depth pre-pass use a depth-only shader variant (`ShaderConfig::depthOnly`,
+   also a former padding bit): the copy no longer runs the enhanced per-pixel lighting it cannot
+   show (pre-pass 1.3 -> 0.2 ms in a furnished room). Each instance is clipped to its face with
+   `clip_distances` (Dawn feature ClipDistances; without it the fragment shader discards outside
+   the tile, which is much slower: 13 ms instead of 1.5 ms for 8 lights at 1024). A second mask
+   in the same frame (a later EFB pass) only adds the new draws to the pre-pass and the atlas
+   (load instead of clear) instead of rendering every caster again.
+
+**Frame interpolation.** Nothing here is cached across presented frames: tape replays go through
+the command processor like a fresh frame, so the caster list, the light positions (blended by
+id) and the atlas are rebuilt from the replayed (blended) draws every presented frame, and the
+shadow always matches the geometry it is drawn with. Cost therefore scales with the presented
+frame rate, like the other enhanced passes. The hooks are all inside Aurora's enhanced lighting
+(`note_draw` / `flush_shadows` / `encode_mask`) and the shader generator; no interpolation code
+changed. Overlap with the interp-everything branch: none in `src/recomp/interp*.cpp`; if that
+branch changes how replayed draws reach `note_draw` (e.g. skipping the command processor), the
+caster list must still be filled from the replayed draws.
+
+**Limits.** Only what the game draws casts: the game culls rooms and actors outside the view
+(portal culling, actor visibility), so a blocker in a room the game does not draw this frame
+casts nothing. Ghosts (ghost pass) and additive effects do not cast. Translucent receivers
+(ghosts lit by translucent lights) use the depth behind them. 8 lights at 2048 are reduced to
+fit the 8192 texture limit.
+
+**Test aids.** `LM_XL_SHADOWS=<mode>[,<lights>[,<face size>]]` overrides the settings;
+`LM_XL_SHADOW_LOG=1` logs shadowed lights / caster draws / casters skipped while compiling;
+`LM_TEST_LIGHTS=<n>,<radius>,<intensity>[,<orbit speed>[,<distance>[,<height>]]]` (speed 0 =
+fixed positions; all test lights are flagged to cast shadows); `AURORA_ENH_GLOWDBG=8` shows the
+mask (red/green/blue/alpha = lights 0-3), `=9` the atlas depth vs receiver distance and face.
+
+**Cost** (GPU timestamps, `AURORA_ENH_GPU_TIMING=1`: per mask, the depth pre-pass, atlas and mask
+passes; a frame has two masks, the second incremental; RTX 3090 Ti at 2560x1440, shared with other
+agents' game instances, so treat as upper bounds). Per frame:
+
+| Scene | Screen-space (4) | High: 4 lights, 512, 12 taps, half-res mask | Ultra: 8 lights, 1024, 20 taps, full-res mask |
+|---|---|---|---|
+| Brazier room (3 shadowed lights, ~170 caster draws) | 0.4 ms | 1.0-1.2 ms | 3.2-3.8 ms |
+| 1F hallway, 8 test lights all reaching every pixel | - | 1.1 ms (4 lights) | 5.3-5.9 ms |
+
+The atlas scales with lights x face size squared x room geometry; the mask pass with mask pixels
+x lights reaching them x taps (the worst case is many lights overlapping the whole screen). The
+earlier frame-rate A/B (`LM_ENH_PERF_AB=6,xls`) could not resolve these against the other
+processes' load, hence the timestamps.
+
+**Before / after** (`build/lightshadows/`): window grabs at 2560x1440, Ultra, screen-space vs
+shadow maps (separate runs, so poses differ): `showcase_lydia_*` (Lydia's magenta glow: the
+vanity mirror and the painting cast sharp colored-light shadows on the wall),
+`showcase_brazier_*`, `showcase_dining_*` (the brazier's column and the cabinet shadow the wall),
+`showcase_study_*` (Neville's study, fireplace light), `showcase_luggs_*` (Mr. Luggs);
+`ab_<room>_shadows_none_diff.png`: native frame dumps of the same scene with and without the
+colored-light shadows (`LM_XL_SHADOWS_AB=1`: shadows only on even frames) and their difference.
+
+### NPCs, portrait ghosts and the GBH call (world lights, fourth pass)
+
+- **E. Gadd's lab** (map 1): no colored light sources (no flame/fire particles; the lab's own GX
+  lighting is warm already); E. Gadd and Luigi use the character material
+  (`build/worldlights/npc_egadd_lab.png`).
+- **Portrait ghosts**: Neville (`father`, Study, 2F room 34) and Lydia (`mother`, Master
+  Bedroom, room 33, appears with event flag 62) are ghost lights like any ghost; Lydia's glow
+  floods her vanity corner magenta and, with shadow maps, the mirror and painting cast its
+  shadows (`npc_lydia_bedroom.png`, `showcase_lydia_*`); the Study's fireplace is a fire light
+  that lights Luigi and Neville from behind (`npc_neville_study.png`). Positions come from
+  `jmp/characterinfo` of map 2 (`tools/jmp_dump.py`).
+- **Mario's painting** (`marioe`, Secret Altar room 70, appear flag 66): not reached. Setting
+  flag 66 and teleporting to the altar shows the room without the painting; it appears in the
+  ending sequence, which these test aids do not reach.
+- **GBH glow during E. Gadd's call**: `LM_SKIP_TEST=2500:flag:15` starts the "first Boo" call;
+  Luigi lifts the Game Boy Horror to chest height (106 units above his feet, over the 105 gate)
+  and its green screen glow lights his face and hands before the call screen opens
+  (`build/worldlights/gbh_call_glow_off_on.png`, `LM_WORLD_LIGHT_AB=1` off / on).
