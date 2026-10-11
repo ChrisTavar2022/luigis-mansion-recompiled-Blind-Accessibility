@@ -2,6 +2,7 @@
 #include "recomp/interp.h"
 
 #include "recomp/efb_copy.h"
+#include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
 
 #include <dolphin/gx/GXAurora.h>
@@ -154,7 +155,6 @@ std::vector<u64> sBundleIds;
 std::vector<std::array<u32, 2>> sBundleRange;
 std::vector<u8> sBundlePass;
 std::vector<u8> sBundleCopy;
-u32 sCopyMaps = 0;  // texture maps holding an EFB copy (guest state: kept across tapes)
 s32 sOpenDraw = -1;  // immediate-mode draw whose end is not known yet
 std::vector<M34> sViews;
 ShadowLight sShadow;
@@ -549,12 +549,13 @@ void findFades(const Tape& a, Tape& b) {
             continue;
         }
         if (!eA[k] || lastB < 0 || u32(lastB) >= b.bundleRange.size()) continue;
-        const u32 at = b.bundleRange[lastB][1];
+        u32 at = b.bundleRange[lastB][1];
         if (at == ~0u) continue;
+        // a's commands are run in order (one pass over a per replay): a draw paired out of order
+        // (particles swap places) moves the vanished draws after it a little later in b.
+        if (!b.dying.empty()) at = std::max(at, b.dying.back().second);
         b.dying.emplace_back(k, at);
     }
-    // Inserted in b's stream in order of position.
-    std::stable_sort(b.dying.begin(), b.dying.end(), [](const auto& x, const auto& y) { return x.second < y.second; });
 }
 
 void pairTapes(const Tape& a, Tape& b) {
@@ -1215,7 +1216,8 @@ void detail::noteDraw(u64 id) {
     sBundleIds.push_back(id);
     sBundleRange.push_back({~0u, ~0u});
     sBundlePass.push_back(u8(sPass));
-    sBundleCopy.push_back(sCopyMaps != 0);
+    // Draws sampling an EFB copy (screen effects redrawing the frame, the GBH screen) never fade.
+    sBundleCopy.push_back(gx::samplesCopy());
     sOpenDraw = -1;
     for (u32 i = sUngrouped; i < sPatches.size(); i++) {
         Patch& p = sPatches[i];
@@ -1236,7 +1238,7 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id) 
         sBundleIds.push_back(id);
         sBundleRange.push_back({~0u, ~0u});
         sBundlePass.push_back(u8(sPass));
-        sBundleCopy.push_back(sCopyMaps != 0);
+        sBundleCopy.push_back(gx::samplesCopy());
     }
     p.bundle = u32(sBundleIds.size() - 1);
     const bool tail = sUngrouped == sPatches.size();
@@ -1260,9 +1262,7 @@ void detail::drawEnd(u32 end) {
     sOpenDraw = -1;
 }
 void vtxEnd() { detail::drawEnd(mark()); }
-void detail::noteTexMap(u32 map, bool copy) {
-    if (map < 32) sCopyMaps = copy ? sCopyMaps | 1u << map : sCopyMaps & ~(1u << map);
-}
+
 
 void suspendForDisplayList() {
     if (!sCapturing) return;

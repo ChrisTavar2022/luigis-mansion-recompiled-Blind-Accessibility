@@ -398,6 +398,14 @@ ProjMode classifyHeld() {
 
 // Vertex layout for interp's vertex-array tracking (interp_vtx.cpp).
 int gx::vtxAttrSize(int fmt, int attr) { return fmt < GX_MAX_VTXFMT ? attrSize(fmt, attr) : -1; }
+// Whether an active TEV stage samples an EFB copy (frame interpolation: such draws don't fade).
+bool gx::samplesCopy() {
+    for (u32 s = 0; s < sNumTevStages && s < 16; s++) {
+        const u32 map = sTevMap[s];
+        if (map < 8 && sMapImage[map] && isCopyDest(sMapImage[map])) return true;
+    }
+    return false;
+}
 u8 gx::vtxDesc(int attr) { return attr < GX_VA_MAX_ATTR ? sDesc[attr] : 0; }
 
 namespace {

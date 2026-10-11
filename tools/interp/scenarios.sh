@@ -16,6 +16,10 @@
 #   fire     nursery with the fire element: blowing fire, vacuum air stream, turns (2580-2920)
 #   water    as fire with the water element (2580-2920)
 #   ballroom ballroom (dancing ghosts, chairs, flashlight), turning (2580-2900)
+#   call     E. Gadd's Game Boy Horror call: call screen, portrait, message windows (2590-2900)
+#   pause    the pause screen and its pages, back to the game (2590-2880)
+#   ending   the ending scene, rank A (2610-2900)
+# Env: LM_RANGE=<first>,<last> dumps part of it, LM_SECS stops earlier, LM_EXTRA_INI adds settings.
 set -u
 out=${1:?out dir}; scen=${2:?scenario}; fps=${3:-120}; steps=${4:-3}
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -24,6 +28,8 @@ disc=${LM_DISC:-$root/orig/GLME01.iso}
 run="$out/$scen"
 rm -rf "$run"; mkdir -p "$run/appdata/Luigi's Mansion PC" "$run/card" "$run/dump"
 printf '[video]\ntarget_fps=%s\nmatch_display_refresh=false\n' "$fps" > "$run/appdata/Luigi's Mansion PC/settings.ini"
+# LM_EXTRA_INI='[section]\nkey=value...': more settings (e.g. enhanced lighting, world lights)
+if [ -n "${LM_EXTRA_INI:-}" ]; then printf '%b\n' "$LM_EXTRA_INI" >> "$run/appdata/Luigi's Mansion PC/settings.ini"; fi
 user_appdata=${APPDATA:-}  # Python finds user-installed packages through it
 win() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
 export APPDATA="$(win "$run/appdata")" LM_CARD_DIR="$(win "$run/card")" LM_BACKGROUND=1
@@ -45,6 +51,17 @@ opening)
 ballroom)
     nursery; export LM_TEST_STATE=poltergust LM_TELEPORT=1800,0,-1400,100; range=2580,2900; secs=700
     input="$menu,2600:STICKLEFT*8,2612:STICKRIGHT*8,2624:STICKLEFT*8,2636:STICKRIGHT*8,2660:STICKUP*40,2720:CLEFT*20,2760:CRIGHT*20,2800:STICKDOWN*40" ;;
+call)  # E. Gadd's Game Boy Horror call ("first Boo", event flag 15): call screen, portrait, message windows
+    nursery; export LM_TEST_STATE=poltergust LM_SKIP_AUTO=30:1 LM_SKIP_TEST=2600:flag:15; range=2590,2900; secs=700
+    a=""; for f in $(seq 2640 24 2900); do a="$a,$f:A*4"; done
+    input="$menu$a" ;;
+pause)  # the pause screen (START) and its pages (L/R), back to the game
+    nursery; export LM_TEST_STATE=poltergust; range=2590,2880; secs=700
+    input="$menu,2610:STICKLEFT*20,2630:START*3,2670:R*3,2700:R*3,2730:L*3,2760:L*3,2790:B*3,2810:START*3,2830:STICKRIGHT*30" ;;
+ending)  # the ending scene (house, rank, caption fades), rank A
+    nursery; export LM_TEST_STATE=poltergust LM_TEST_ENDING=8@2620; range=2610,2900; secs=700
+    a=""; for f in $(seq 2700 40 2900); do a="$a,$f:A*4"; done
+    input="$menu$a" ;;
 *) echo "unknown scenario $scen"; exit 1 ;;
 esac
 range=${LM_RANGE:-$range}  # LM_RANGE=<first>,<last>: dump only part of the scenario

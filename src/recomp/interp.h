@@ -112,9 +112,6 @@ void vtxEndTape(u8* tape, u32 size, std::vector<std::vector<u8>>& keep, u64& sna
 void drawRange(u32 start, u32 end);
 void drawStart(u32 start);
 void drawEnd(u32 end);
-// A texture loaded into GX texture map `map`; `copy`: it is (over) an EFB copy. Draws with a copy
-// bound (screen effects redrawing the frame, the GBH screen) never fade.
-void noteTexMap(u32 map, bool copy);
 // A draw with identity `id`: values noted since the previous draw belong to it.
 void noteDraw(u64 id);
 // Immediate-mode vertices with direct f32 XYZ positions: `count` vertices of `stride`
