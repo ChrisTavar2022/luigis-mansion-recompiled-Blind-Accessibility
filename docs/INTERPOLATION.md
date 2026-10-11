@@ -338,11 +338,13 @@ lights switching on, a fire burst appearing):
 
 | | stale px | snap blobs | back-and-forth | snapped / in-between | unpaired / in-between |
 |---|---|---|---|---|---|
-| A nursery, before | 83,150 (GBH closing frame) | 1,015,870 | (not measured) | 1.8 | 23.2 |
-| A nursery, after | **0** | 538,177 (of which 412,806 are the 3 instant events) | 63,773 (snapped shadows: 68,317) | 3.9 | 32.4 |
-| B gold ghosts, after | **0** | 52,709 (23,351 the flashlight switching off for the vacuum) | 22,017 | 3.8 | 12.5 |
-| C opening, after | **0** (the crow frame had 88,685) | 118,614 (the five shot changes, all detected as cuts) | 11,087 (texture detail sliding under the moving camera) | 0.0 | 4.2 |
-| D fire + vacuum, after | **0** | 632,300 (lights on, fire bursts appearing) | 33,400 | 14.3 | 45.0 |
+| nursery, before | 83,150 (GBH closing frame) | 1,015,870 | (not measured) | 1.8 | 23.2 |
+| nursery, after | **0** | 640,861 (412,806 are 3 instant events: lightning strike, GBH open/close cuts) | 63,810 (snapped shadows: 68,317) | 4.3 | 32.4 |
+| ghosts, after | **0** | 135,006 (52,681 the flashlight going off/on for the vacuum) | 28,592 | 3.8 | 38.2 |
+| opening, after | **0** (the crow frame had 88,685) | 118,614 (the shot changes, all detected as cuts) | 11,087 (texture detail sliding under the moving camera) | 0.0 | 4.2 |
+| fire, after | **0** | 599,103 (room lights on, fire bursts appearing) | 30,076 | 14.9 | 45.0 |
+| water, after | **0** | 708,590 (room lights on, spray starting) | 63,009 | 19.6 | 70.1 (13 are spray droplets moving too fast to pair) |
+| ballroom, after | **0** | 254,740 | 35,786 | 2.0 | 42.3 |
 
 More values are interpolated now (colors, 2D, the shadow caster pass), so the snapped/unpaired
 counts per frame are not comparable to before one to one; per tape about 1.5% of ~5,300 values
