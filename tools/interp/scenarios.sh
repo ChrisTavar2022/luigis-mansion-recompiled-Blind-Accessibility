@@ -35,6 +35,7 @@ user_appdata=${APPDATA:-}  # Python finds user-installed packages through it
 win() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
 export APPDATA="$(win "$run/appdata")" LM_CARD_DIR="$(win "$run/card")" LM_BACKGROUND=1
 export LM_INTERP_TEST=$steps LM_INTERP_TRACE=1
+[ "$steps" = 0 ] && unset LM_INTERP_TEST  # steps 0: a real-time run (pacing, alpha, cost)
 menu="300:START*10,450:START*10,600:A*6,750:A,900:A,1050:A,1200:A,1350:A,1500:A,1650:A"
 nursery() { export LM_INPUT_CLOCK=frames LM_START_MAP=2 LM_START_APPEAR=1 LM_SKIP_CUTSCENES=1 LM_SKIP_AUTO=30; }
 case $scen in
