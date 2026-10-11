@@ -32,6 +32,10 @@ bool playerHeld();  // player 1's pad is neutralised (poisoned); any thread
 void jukeboxFrame(Ctx& c);
 // spawn.cpp
 void spawnFrame(Ctx& c);
+// gallery.cpp
+void endingFrame(Ctx& c);
+void galleryButton();   // host
+void galleryWindow();   // host
 // placements.cpp
 void placementsMapSetup(Ctx& c);
 void placementsFrame(Ctx& c);

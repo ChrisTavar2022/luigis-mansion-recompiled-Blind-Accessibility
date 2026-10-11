@@ -57,6 +57,7 @@ void onFrame(Ctx& c) {
         setPatch(50, border != 0);
     }
     marioFrame(c);
+    endingFrame(c);
     statesFrame(c);
     jukeboxFrame(c);
     spawnFrame(c);
@@ -81,6 +82,9 @@ void unusedSection() {
         sDirty |= ImGui::Checkbox("Bordered view", &u.borderedView);
         tip("The game's view setup has a third, unused layout: a fixed 560x400 3D view (40,30 to\n"
             "560,430) with a black border, like a TV-safe window. The HUD stays where it is.");
+        sDirty |= ImGui::Checkbox("Ending pictures of Luigi", &u.endingPictures);
+        tip("The ending's rank screen shows one of three unused pictures of Luigi next to its\n"
+            "message: two V signs (best rank), one V sign (middle ranks) or sitting with a flower (worst).");
         sDirty |= ImGui::Checkbox("Mario as player 2", &u.marioP2);
         tip("In the 2-player mode (below), player 2 is Mario (the unused bmario model) instead of a\n"
             "second Luigi. Needs \"2-player mode (unfinished)\".");
@@ -135,7 +139,10 @@ void gameplaySection() {
         sDirty = false;
     }
 }
-void debugSection() {}
-void drawOverlays() {}
+void debugSection() {
+    ImGui::SeparatorText("Unused content viewers");
+    galleryButton();
+}
+void drawOverlays() { galleryWindow(); }
 
 }  // namespace recomp::unused2
