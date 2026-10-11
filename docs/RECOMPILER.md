@@ -46,7 +46,9 @@ Runtime lessons:
   the console too give the CPU up (`sched::releaseForHost` / `reacquireAfterHost`,
   `withCpuReleased`): the lockstep frame handoff in `VISetNextFrameBuffer` (up to a
   display refresh), `GXDrawDone` (draining Aurora's FIFO), and the host side of disc
-  reads. GX calls from other threads meanwhile wait for the guest's turn
+  reads, unless the caller has interrupts off (`sched::interruptsEnabled()`: a critical
+  section keeps the CPU, as on the console; from the SMS port). GX calls from other
+  threads meanwhile wait for the guest's turn
   (`frame::gxWaitForGuestTurn`, in every GX HLE and the write-gather pipe). Before this,
   AI interrupts arrived in pairs after each frame handoff and JAudio's DSP overload check
   stopped a voice several times a second (cut sound effects, the Pikmin movie's stream;

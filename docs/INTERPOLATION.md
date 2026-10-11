@@ -4,7 +4,7 @@ Code: `src/recomp/interp.cpp` (tapes, pairing, blending, test mode), `src/recomp
 (draw identities, vertex-array copies, CPU-built vertices), `src/recomp/interp_tex.cpp` (texture and
 TLUT copies), `src/recomp/shadows.cpp` (LM: camera source, shadow light), `src/recomp/frame.cpp` (decoupled
 guest, target frame rate, pacing), hooks in `src/recomp/hle_gx.cpp`, Aurora patches
-`0005-capture-and-replay`, `0021-replay-state-slots`, `0028-replay-copy-generations`. Background and the original design: docs/ENHANCEMENTS.md section 3.
+`0005-capture-and-replay`, `0021-replay-state-slots`, `0028-replay-copy-generations`, `0030-interp-fades`. Background and the original design: docs/ENHANCEMENTS.md section 3.
 
 ## Setting
 
@@ -370,6 +370,74 @@ pairing 1.1-2.3 ms (up from ~1 ms: colors, more values per draw); replay 0.7-0.8
 frame (host). About 5,300 values paired per tape, 60-130 without partner, 1-7 shown unblended per
 presented frame.
 
+## Polish: fades, particles, shadow depth (interp-polish, October 2026)
+
+1. **Spawns and despawns fade** (generic; Aurora patch `0030-interp-fades`). A draw without a
+   partner used to pop in at the first in-between frame (spawns) or vanish there (despawns).
+   - `GX_AURORA_SET_FADE q` makes later draws drop q/255 of their pixels with a 4x4 ordered
+     dither (the fragment shader discards; the amount rides in bits 8..15 of the per-draw
+     `current_pnmtx` immediate, so no pipeline or uniform changes). Dither instead of alpha works
+     for opaque and blended draws alike and keeps depth right; at 120+ fps it reads as a fade.
+   - Fade-in: each 3D main-pass draw of b without a partner (a model-view matrix or CPU-built
+     vertices, none paired) is bracketed by `SET_FADE (1 - alpha)` / `SET_FADE 0` in the replayed
+     stream (draw byte ranges are recorded at capture: a display list's inlined bytes, an
+     immediate draw from its setup to its last vertex).
+   - Fade-out: a's draws without a partner are drawn again from a's own commands, so their state
+     (textures, TEV, lights, arrays) is a's. `GX_AURORA_SET_REPLAY_MASK` runs a's commands with
+     draws, EFB copies, offscreen passes, depth snapshots, extra lights and texture evictions
+     skipped; only the vanished draws are unmasked, at `SET_FADE alpha`. The pass is spliced into
+     b's stream after the draw paired with the closest earlier paired draw of a, between state
+     slot 4 (b's state, saved and restored around it) and slot 5 (a's state so far: starts as the
+     end state of a's predecessor; slots 4..7 hold GX state only). At most 8 passes per replay,
+     in a's order.
+   - Values without partner (spawned draws, vanished draws) are placed under the blended camera
+     (their world placement seen from the in-between camera), so they move with the scene.
+   - Not faded: draws sampling an EFB copy (the TEV reads a copy destination; screen effects that
+     redraw the frame, the GBH screen, shadow receivers: fading a full-screen redraw of the frame
+     darkened the whole picture on the lights-on frame), the shadow caster pass, 2D, and cut frames.
+   - `LM_INTERP_FADES=0|in|out` (test aid) turns them off or keeps one direction.
+2. **Fast particles pair by predicted position** (generic). For groups of many draws of one
+   kind, each draw of a is expected where its own motion since its predecessor carries it (falls
+   back to the group's common motion); candidates are limited and, for CPU-built particles,
+   ranked by the distance from that prediction. Water spray droplets (point sprites) without
+   partner went from 13.0 to 10.4 per in-between frame (the rest are born or die and now fade).
+3. **Shadow depth from b** ("shadows at any distance" refits the light's near/far every frame,
+   and the depth ramp is not linear in them): the caster pass's projection keeps b's depth terms
+   (x/y blended) and the receivers' ramp matrix uses b's projection with the blended light view,
+   so caster depth and receiver ramp always use the same near/far.
+4. **New scenarios** (`tools/interp/scenarios.sh`): `call` (E. Gadd's GBH call: call screen,
+   portrait, four message windows), `pause` (pause screen, its pages, back), `ending` (ending
+   scene, rank A, caption fade). Env: `LM_RANGE`, `LM_SECS`, `LM_EXTRA_INI` (e.g. enhanced lighting
+   and world lights), `LM_EXE` (another build), steps 0 = a real-time run.
+
+Results (same metrics as above; "before" = the interp-everything results):
+
+| | stale px | snap blobs | back-and-forth | snapped / in-between | unpaired / in-between | fades in/out |
+|---|---|---|---|---|---|---|
+| nursery | 0 | 639,731 (before 640,863) | 63,749 (64,824) | 4.3 | 32.4 | 6.7 / 5.7 |
+| ghosts | 0 | 39,413 (131,433) | 25,142 (28,230) | 3.0 | 12.8 (36.8) | 2.6 / 2.3 |
+| opening | 0 | 126,450 (126,450) | 11,137 (11,137) | 0.0 | 4.1 | 0 / 0 |
+| fire | 0 | 684,471 (630,933; room lights on, fire burst: game events) | 27,484 (31,919) | 14.3 | 48.3 | 8.3 / 7.5 |
+| water | 0 | 594,325 (647,350) | 57,155 (89,140) | 20.3 | 70.4 (13 droplets -> 10.4) | 22.1 / 20.4 |
+| ballroom | 0 | 242,973 (254,740) | 36,694 (35,786) | 2.0 | 38.3 (42.3) | 5.3 / 5.0 |
+| call | 0 | 95,865 | 6,829 | 1.8 | 11.9 | 2.2 / 2.0 |
+| pause | 0 | 368,019 (opening/closing the pause screen) | 4,713 | 1.1 | 16.6 | 1.8 / 0.5 |
+| ending | 0 | 1,081 | 0 | 0.0 | 1.1 | 0 / 0.1 |
+| ballroom + enhanced lighting, world lights, light shadow maps, 120 / 240 | 0 / 0 | 263,675 / 262,684 | 35,820 / 35,669 | 2.0 | 38.3 | 5.3 / 5.0 |
+
+- Fades do not add dither noise to the back-and-forth metric (nursery 63,775 without, 63,749 with).
+- The call's message windows, the pause screen and the ending caption interpolate (their opening
+  and closing are the game's own one-frame events). The message window appears in one frame and
+  is not faded (2D).
+- Light shadow maps and world lights: the same tape at 120 and 240 targets gives the same metrics;
+  they are rebuilt per replay from blended lights and casters.
+- Original 30 is byte-identical to main (19 frames of the nursery scenario at 30 fps, main's
+  executable vs this branch: 0 pixels differ).
+- Scheduler changes (guest threads release the CPU during the frame handoff, GXDrawDone and DVD
+  waits): a decoupled guest records and closes its tapes as before (the present path never waits
+  for the host); real-time nursery run at 120: alpha rises monotonically within a tape (5 of
+  2,000 presents stepped back), tape close 1.7-4 ms on a machine shared with two other runs.
+
 ## Known limitations
 
 - On the test machine presentation never exceeded the display's 60 Hz even with VSync off
@@ -378,14 +446,13 @@ presented frame.
   VSync in the GPU control panel); targets below the refresh rate are hit exactly (45 and 50 fps
   measured). `LM_BACKEND=d3d12|d3d11|vulkan` picks the backend for such tests.
 - Things the game snaps itself (Luigi's instant turns, a light switching on) stay snapped.
-- Particles and objects that die or are born between two game frames vanish/appear at the first
-  in-between frame instead of fading (no partner to blend with; fading would need a per-draw
-  alpha override in Aurora's pipelines).
-- 2D/HUD interpolation is verified only for what the scenarios show (GBH, health, element meter,
-  room name); dialogue boxes and the pause screen were not exercised.
-- Shadows: when the "shadows at any distance" fit steps its near/far planes, the caster depth and
-  the receivers' depth ramp are blended separately for that one interval (the ramp is not linear
-  in near/far), which could show for a single in-between frame.
+- Spawns and despawns fade by dithering (see Polish); 2D elements, draws sampling EFB copies and
+  the shadow caster pass still appear/vanish at the first in-between frame. A draw that loses its
+  partner by mispairing crossfades between its two positions instead of jumping.
+- 2D/HUD interpolation is verified for the GBH, health, element meter, room name, E. Gadd's call
+  and its message windows, the pause screen and the ending caption; GBH map/inventory pages
+  beyond the pause screen and the PAL GBH screens are untested.
+- Shadow depth (near/far) changes at the game frame, not in between (by design, see Polish 3).
 - The `back-and-forth` metric also counts fine texture detail sliding under a moving camera, so
   it never reaches 0 in textured scenes.
 - (Fixed) Replaying a tape used to start from the GX state the previous replay left; each

@@ -84,6 +84,7 @@ void arrayBase(u32 at, u32 attr, u32 guestAddr, u32 stride);  // GXSetArray, mar
 void invalidateVtxCache();                                    // GXInvalidateVtxCache
 void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective);  // GXBegin (before Aurora's header)
 void vtxBytes(u32 v, int size);                               // raw FIFO write from game code
+void vtxEnd();  // gx::endPendingDraw: the immediate-mode draw is complete
 void vtxDisplayList(u32 guestAddr, const u8* data, u32 size);  // after GXCallDisplayList
 
 // Textures and TLUTs (interp_tex.cpp): the data a load points at is copied at capture time.
@@ -106,6 +107,11 @@ namespace detail {  // interp.cpp <-> interp_vtx.cpp
 void vtxBeginTape();
 // Copies are finished: points the tape's array loads at them (moved into `keep`).
 void vtxEndTape(u8* tape, u32 size, std::vector<std::vector<u8>>& keep, u64& snapshotBytes);
+// The tape bytes of the draw just noted (noteDraw): a display list's inlined commands, or an
+// immediate-mode draw from before its setup (drawStart) to after its vertices (drawEnd).
+void drawRange(u32 start, u32 end);
+void drawStart(u32 start);
+void drawEnd(u32 end);
 // A draw with identity `id`: values noted since the previous draw belong to it.
 void noteDraw(u64 id);
 // Immediate-mode vertices with direct f32 XYZ positions: `count` vertices of `stride`

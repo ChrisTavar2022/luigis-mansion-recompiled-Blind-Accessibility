@@ -61,7 +61,6 @@ evidence in `build/pal_parity2/` (not committed).
 | Crawling fear (patch 51) | works | **fixed** | `patch 51 800BA7B8 2C00007F pal`; fear table reached through `lbl_804D2428` (the table itself has no code reference) |
 | Vacuum overheat | works | **fixed** | meter hooks `fn_80045F58`/`fn_80046120` tagged; burned at full heat |
 | Ending pictures | works | **fixed** | `fn_8000E050` tagged (European version only centres the caption; layer block and colours identical); rank 8 checked |
-| Early lab script | works | **fixed** | European archives: per-language messages, Latin font: the port's English translation is served (see UNUSED_CONTENT.md) |
 | Unused ghost placements | works | **fixed** | European JMP tables have other byte layouts, same rows; fields found by name. Roof Ghost Guys and Courtyard `skul` checked |
 | Pink mice / Blue Ghost Guys | works | **fixed** | type table identical; European `game_<l>.szp` have `rat2.prm`, `heypo9/10.prm`. Pink mice seen on both |
 | Extra Speedy Spirits | **fixed** | **fixed** | were never created on either release (no group observer); observers added, `iyapoo16` created in room 4 on both |

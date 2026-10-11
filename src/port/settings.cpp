@@ -228,7 +228,6 @@ std::vector<Field> fields() {
         num("unused2", "overheat_blow_cool", u.overheatBlowCool),
         num("unused2", "overheat_damage", u.overheatDamage),
         flag("unused2", "ending_pictures", u.endingPictures),
-        flag("unused2", "lab_event26", u.labEvent26),
         flag("unused2", "ghost_placements", u.ghostPlacements),
         flag("unused2", "pink_mice", u.pinkMice),
         flag("unused2", "blue_ghost_guys", u.blueGhostGuys),

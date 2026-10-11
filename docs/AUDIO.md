@@ -113,6 +113,54 @@ the DSP frame that started is done (`audio::dspFrameBusy`, plus 2 ms), and guest
 threads no longer hold interrupts off during host waits (docs/RECOMPILER.md,
 runtime lessons). `LM_TRACE=801A13C0` (US) logs every such voice stop.
 
+**Backport from the SMS port (2026-10, SMS docs/BACKPORT.md rows 74-76).**
+Taken: the host waits that release the guest CPU (the lockstep handoff in
+`frame::present`, `frame::gxBlockingWait` for `GXDrawDone`, and
+`DVDReadAsyncPrio`'s host read) keep it when the caller has interrupts off
+(`sched::interruptsEnabled()`, which is also false in an interrupt handler): no
+other thread may run inside a critical section, as on the console.
+`Jac_imixcopy` reports the mix through `audio::noteGuestMixed()` (the shared
+entry SMS calls from its game-code hook). `LM_AUDIO_WAV` files are flushed with
+each header update, so a killed test run leaves a complete file (before, the
+last ~40 s of a 210 s run could be missing).
+
+Not taken: SMS also bounds the wait for the game's mix by the audio still
+queued on the device (keeping 4 ms), so on a slow host the AI raises the
+interrupt anyway and replays its block instead of letting the device run dry.
+Measured in LM with four instances side by side (foyer route, 150 s each): with
+the bound the wait gave up 8-14 times per run, every time with the queue
+already at 0 ms (the underrun happened anyway: 758-802 dry pushes against
+803-843 without it), and each early interrupt started a DSP frame on top of
+the unfinished one, so the overload check stopped 2-6 voices: 18-49 voice
+stops per run against 3 without the bound. SMS's check only stops voices of
+priority <= 126, LM's stops any voice, so the trade is worse here. The bound
+stays available as a test aid, `LM_AI_QUEUE_BOUND=1`.
+
+**Pacing statistics.** With `LM_AUDIO_LOG=1` the AI thread logs every ~10 s
+(cumulative): the spacing of the interrupts (and how many came less than half
+a block after the previous one), how long each waited for the game's mix (and
+how often it gave up; each give-up is also logged), and the device queue when
+the block was pushed (average, minimum, pushes below 4 ms, pushes with the
+SDL stream empty). The queue average (~35 ms) is the port's added output
+latency on top of the device's own buffer. Measurements for the backport
+(scratch APPDATA/card, `LM_IRQ_STALL=1`, recordings checked for digital-silence
+gaps of 3 ms or more inside sound: none in any run):
+
+| Run | Build | Interrupt gap | Close pairs | Queue avg / dry | IRQ stalls | Voice stops |
+|---|---|---|---|---|---|---|
+| Foyer, 115 s, alone | before | 4.8-29.1 ms | 16 | 35.3 ms / 1 | 1 | 0 |
+| Foyer, 115 s, alone | after | 9.9-19.8 ms | 0 | 35.2 ms / 1 | 1 | 0 |
+| Pikmin movie, 210 s, alone | before | 8.5-34.4 ms | 1 | 35.2 ms / 1 | 1 | 0 |
+| Pikmin movie, 210 s, alone | after | 4.7-31.7 ms | 7 | 35.2 ms / 1 | 1 | 0 |
+| Foyer, 150 s, 4 instances | before (x2) | 3.0-56.2 ms | 47-68 | 34.1-34.4 ms / 56-83 | 13-16 | 2-3 |
+| Foyer, 150 s, 4 instances | after (x2) | 2.8-63.8 ms | 77-89 | 33.5-33.6 ms / 97-109 | 11-14 | 0-1 |
+
+The one dry push per run is the first block. The differences between the
+before and after rows are within the run-to-run spread (other agents' builds
+and runs share the machine): the backport is a correctness guard, not a timing
+change. The movie played its full length in both builds (122.5 s from the
+first to the last picture, see below).
+
 **Output rate.** The AI's rates are derived from a 54 MHz clock: "48 kHz" is
 54 MHz / 1124 = 48042.7 Hz and "32 kHz" (what `AISetDSPSampleRate` selects in
 LM) two thirds of it, 32028.5 Hz. The port treats the blocks as 32028.5 Hz
@@ -402,6 +450,13 @@ good. On the console decoding takes long enough that the scene has drawn (and fr
 buffer 0) by then; recompiled, all 17 pictures are decoded ~0.3 s before the scene's
 first draw (the options menu fades out first). `src/recomp/hvqm.cpp` reports the
 stream not ready until the scene has taken its first picture.
+
+Sync check: with `LM_AUDIO_LOG=1`, `[hvqm]` lines count the picture changes the
+scene takes (`Jac_GetPicture`) against host time every 300 changes and when
+the player stops. Since the scene shows the picture for the audio position, a
+run whose audio is on time ends at ~122.5 s: e.g. 3513 changes in 122.51 s
+(the game draws at ~30 Hz, so a few of the 3669 pictures are never shown; a
+host under heavy load shows fewer, ~3300, in the same 122.5 s).
 
 ## DVD audio streaming
 

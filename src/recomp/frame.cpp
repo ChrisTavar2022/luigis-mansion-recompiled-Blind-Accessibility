@@ -218,9 +218,11 @@ void present(Ctx& c, u32, bool) {
     // frame (up to a display refresh). Holding the guest CPU through that wait delayed every
     // interrupt by as much: AI DMA interrupts then arrived in pairs, JAudio's DSP frames ran
     // back to back, its overload check (UpdateDSPchannelAll) stopped a voice each time, and
-    // threads like the movie player's decoder starved.
+    // threads like the movie player's decoder starved. A caller with interrupts off (a
+    // critical section) keeps the CPU, since no other thread may run in it (from SMS).
+    const bool release = sched::interruptsEnabled();
     lk.unlock();
-    sched::releaseForHost();
+    if (release) sched::releaseForHost();
     lk.lock();
     sCv.wait(lk, [] { return sTurn == Turn::Guest || sStopping; });
     if (sStopping) {
@@ -233,7 +235,7 @@ void present(Ctx& c, u32, bool) {
         sGuestDecoupled = true;
     }
     lk.unlock();
-    sched::reacquireAfterHost();
+    if (release) sched::reacquireAfterHost();
     if (enterDecoupled) interp::beginTape();
 }
 
@@ -267,14 +269,15 @@ void gxBlockingWait(void (*wait)()) {
         std::lock_guard lk(sM);
         sGxBusy = true;
     }
-    sched::releaseForHost();
+    const bool release = sched::interruptsEnabled();  // (critical sections keep the CPU; from SMS)
+    if (release) sched::releaseForHost();
     wait();
     {
         std::lock_guard lk(sM);
         sGxBusy = false;
         sCv.notify_all();
     }
-    sched::reacquireAfterHost();
+    if (release) sched::reacquireAfterHost();
 }
 
 }  // namespace recomp::frame

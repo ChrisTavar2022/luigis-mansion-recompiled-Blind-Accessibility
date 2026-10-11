@@ -43,7 +43,6 @@ void galleryWindow();   // host
 // text_archive.cpp
 void textArchiveButton();  // host
 void textArchiveWindow();  // host
-std::vector<u8> buildLabEvent26();
 // Disc overlay (hle_dvd.cpp): files served rebuilt while an option needs them (virtual FST
 // entries 0x50000000+).
 s32 overlayEntry(const char* guestPath);  // -1 when not redirected

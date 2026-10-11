@@ -30,4 +30,6 @@ extern bool g_discardDraws;
 // format `fmt` (-1 unknown), and its GXAttrType.
 int vtxAttrSize(int fmt, int attr);
 unsigned char vtxDesc(int attr);
+// An active TEV stage samples an EFB copy.
+bool samplesCopy();
 }  // namespace recomp::gx
