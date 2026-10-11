@@ -9,8 +9,9 @@
 // created (fn_8015FE9C(manager, pcr, texture, ...)). An emitter is lit while it is drawn
 // (+0xBE bit 8), emitting (bit 2) and in a visible room (bit 0x40 clear: fn_8015F990, the
 // draw's own room test).
-// Lightning: the strike fn_80029250(thunder entry, ...) starts the room's lightning; the flash is
-// a cool light at the strike's light position (the entry's +4/+8/+C) for its duration.
+// Lightning: the strike fn_80029250(thunder entry, ...) starts the room's lightning and points the
+// game's shadow light camera (lbl_803A3820 +0x24 eye) at the window; the flash is a cool light
+// there, flickering and fading over ~1.5 s.
 #include "recomp/world_lights.h"
 
 #include "port/settings.h"
@@ -304,10 +305,25 @@ void onMainView(Ctx&) {
         const float a = float(sFrame - sStrikeFrame);
         const float env = (a < 3.0f ? 1.0f : a < 6.0f ? 0.35f : a < 9.0f ? 0.9f : std::exp(-(a - 9.0f) / 9.0f));
         ExtraLight l{};
+        // The strike points the game's shadow light camera at the window (camera +0x24 eye):
+        // the flash comes from there.
+        const u32 cam = kCamera;
+        sStrikePos[0] = rdf32(cam + 0x24), sStrikePos[1] = rdf32(cam + 0x28), sStrikePos[2] = rdf32(cam + 0x2C);
+        // That eye is far outside (thousands of units): the point light goes 700 units from Luigi
+        // toward it, so the room gets the flash from the window side without a huge radius.
+        const u32 lu = rd32(VA(0x803D48A0));
+        if (guestPtr(lu)) {
+            const float lp[3] = {rdf32(lu + 0x44), rdf32(lu + 0x48) + 100.0f, rdf32(lu + 0x4C)};
+            float d[3] = {sStrikePos[0] - lp[0], sStrikePos[1] - lp[1], sStrikePos[2] - lp[2]};
+            const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (len > 700.0f)
+                for (int i = 0; i < 3; i++) sStrikePos[i] = lp[i] + d[i] / len * 700.0f;
+        }
+        if (logNow) log("[worldlight] f%u lightning flash at %.0f,%.0f,%.0f env %.2f", sFrame, sStrikePos[0], sStrikePos[1], sStrikePos[2], env);
         toView(view, sStrikePos, l.pos);
         const float c[3] = {0.62f, 0.78f, 1.0f};
         for (int i = 0; i < 3; i++) l.color[i] = c[i];
-        l.radius = 3000.0f;
+        l.radius = 1900.0f;
         l.intensity = 2.5f * env * master * std::clamp(w.intensity[port::kWlLightning], 0.0f, 3.0f);
         l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent;
         l.id = 0x5700FFFFu;
@@ -350,14 +366,13 @@ HLE(fn_8015FE9C) {
     if (guestPtr(c.r[3])) sEmitterRes[c.r[3]] = res;
 }
 
-// Lightning strike (thunder light entry, ...): +4/+8/+C the strike light's position.
+// Lightning strike (thunder light entry: light fov/near/far, ...).
 HLE(fn_80029250) {
     const u32 entry = c.r[3];
     callOriginal(c, "fn_80029250");
     if (!guestPtr(entry)) return;
     sStrikeFrame = sFrame;
-    for (int i = 0; i < 3; i++) sStrikePos[i] = rdf32(entry + 4 + 4 * i);
-    if (sLog) log("[worldlight] f%u lightning strike, light at %.0f,%.0f,%.0f", sFrame, sStrikePos[0], sStrikePos[1], sStrikePos[2]);
+    if (sLog) log("[worldlight] f%u lightning strike (thunder entry %08X)", sFrame, entry);
 }
 
 }  // namespace recomp::worldlights

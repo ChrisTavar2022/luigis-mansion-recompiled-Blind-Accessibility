@@ -1068,7 +1068,7 @@ void set_extra_lights(const ExtraLight* lights, uint32_t count);  // once per ga
 ```
 
 Port side: `recomp::submitExtraLights(lights, count)` (guest thread, once per game frame,
-strongest first, up to 16); `enh::worldToView` converts world positions with the current
+appending; up to 64 sent after culling and ranking, see "Light budget"); `enh::worldToView` converts world positions with the current
 camera. The set is written into the GX FIFO (`GX_AURORA_SET_EXTRA_LIGHTS`) at the start of the
 main view, so it is part of interpolation tapes: `interp.cpp` blends position, color, radius and
 intensity between game frames by `id` (unpaired lights are shown as captured; jumps > 600 units
@@ -1267,3 +1267,107 @@ tilted up once it is stunned, pulls away when hooked), `LM_GHOST_HUNT_BEAM=<stat
 `LM_GHOST_HUNT_CY`, `LM_GHOST_HUNT_DIV`, `LM_GHOST_HUNT_FLIP`. The log line's `ai` field is the
 ghost's strategy state (EnThought +0x800 → +0x0E; decorator inner state in the high half), and
 the first AI of each type logs its strategy vtable.
+
+
+### Light budget (Aurora patch 0023)
+
+`MaxExtraLights` 16 → 64 (the fragment loop's bound follows; the bloom glow cores stay the
+16 strongest, `fx.xl` holds 16 pairs). `recomp::submitExtraLights` now appends (ghost lights,
+world lights, test lights); at the start of the main view the candidates are culled (sphere
+entirely behind the camera or outside a generous ~136-degree view cone) and ranked by
+intensity x radius over distance, and the strongest 64 are sent in that order (Aurora gives the
+four shadow slots to the first flagged ones). The per-pixel loop rejects a light with one
+distance test, so per-tile light lists were not needed at these counts. Ghost lights: "Max
+ghost lights" now 1..64, default 48 (setting key `max_lights_64`, so the old default of 8 does
+not carry over). Small ghosts (class 1: bats, mice, Boos, rats) are in the ghost list like the
+rest (type flag 8) and glow at 0.55x (several hang right under hallway ceilings, where full
+strength burnt hot spots into the plaster).
+
+Verified in the 1F west hallway (map 2 room 6, `LM_TELEPORT=-1600,0,-985,100`; the generator
+table has bat1 x2 + bat2 x4 there): all six bats tracked and sent as lights every frame
+(`LM_GHOST_LIGHT_LOG`: `light 0..5`), their glow on the ceiling corner
+(`build/worldlights/hallway_bats.png`).
+
+### Character material (Aurora patch 0024)
+
+User report: Luigi looked shiny and a bit odd under enhanced lighting (and his face a bit dark in
+the beam). Cause: characters went through the world path, so the per-pixel re-evaluation of the
+game's GX lights (with its flashlight highlight, `pow(n.h, 28)`) and the extra lights' specular
+lobe made cloth and skin glossy, and the per-pixel spot evaluation on his low-poly normals
+darkened the face.
+- New FIFO command `GX_AURORA_SET_MATERIAL_HINT` (`GXSetMaterialHintAurora`,
+  `AURORA_MATERIAL_WORLD` / `_CHARACTER`): a uniform only (the free `enh_material` slot of the
+  draw uniform), so no new pipeline variants and nothing new for the precache.
+- Port: `enh::setCharacterPass` around the actor draw pass `fn_80060E70` (every pass but the ghost
+  layer) tags Luigi, NPCs and other actors as characters (the hook in unused_content.cpp).
+- Characters keep the game's own vertex lighting (per-pixel bits 0/3 cleared for their draws:
+  the original balance, no flashlight highlight). The colored extra lights still reach them, with
+  a matte wrap-around response (`(n.l + 0.45) / 1.45 x 0.85`) and no specular, so ghost, candle,
+  fire-spray and lightning light colors Luigi softly without hot spots.
+- Test aid `LM_CHAR_MATERIAL=0` (off) / `2` (even frames only, for A/B dumps).
+- `build/worldlights/luigi_material_before_after.png`: nursery, left before (glossy highlight on
+  the cap), right after (matte, the game's shading); `fire_spray_ab.png` shows Luigi taking the
+  spray's orange light.
+
+### World lights
+
+F1 > Visuals > Enhanced lighting > "World lights" (`[world_lights]`; needs the master switch and
+"Dynamic colored lights"; on by default inside the enhanced mode, the vanilla renderer is
+untouched). Per-category toggles and intensity sliders (Candles, Fireplaces and torches, Lamps
+and chandeliers, Element sprays, Fire effects, Lightning, Sparkles and glows), a master
+intensity, "Flame flicker" and "Merge nearby flames"; colors go through the shared "Light color
+vibrance". Code: `src/recomp/world_lights.cpp` (hooks tagged US + PAL).
+
+**Sources.**
+- Flames and glows are the game's own particle emitters. The LPS manager `lbl_803D990C` (drawn
+  by `fn_801604FC`) keeps live emitters in a list: manager +0xAB4 group, group +0x2A0 sentinel,
+  emitter +0x20C next; emitter +0xBE flags (8 drawn, 2 emitting, 0x40 room not visible, set by
+  the draw's room test `fn_8015F990`), +0x214 world position. Resource names are recorded in a
+  hook on `JKRArchive::getResource(type, name)` (.pcr data pointer → name) and emitters are
+  matched to their resource in a hook on the creation `fn_8015FE9C(manager, pcr, texture, ...)`.
+  The map's `objinfo` places the flame objects (`fire`, `sfire`, 122 `chandelier`); the mansion's
+  candles exist as emitters all the time and give light only where the game draws them, emitting,
+  in a visible room.
+- Kinds by resource prefix (`kKinds`): `candle_*` (orange; `candle_vio` violet), `danro_fire`
+  (hearths and braziers), `torch` / `tc_s*`, `chandelier` / `shanyb` / `m_light1_*` (lamps),
+  `fireball` / `firehit` / `kpa_fire` / `lg_eledmg_f` / `kobk_el_fire` / `kaen_hinoko` /
+  `iceball` (fire effects), `kira_*` / `coin_ef` / `key_kira` / `bkey_*` / `btel_*` /
+  `dancer_kira` / `takarabako` (subtle sparkles). Nearby emitters of one kind merge (a
+  candelabra = one light at the centroid, intensity x n^0.6, radius +15% per extra flame); id =
+  the lowest emitter address, stable while the emitter lives.
+- Flicker: three octaves of smooth value noise per light; amount per kind (candles 0.8, fires
+  1.0, lamps 0.1-0.15, sparkles 0.3-0.5). Updated per game frame; interpolation blends by id.
+- Poltergust element spray: the spray is a model (`elefire.bmd`), not particles. Luigi's
+  Poltergust mode (+0x1180: 2 fire, 3 water, 4 ice while L is held) and the nozzle actor
+  (+0x7A4, position +0x44) place the light 170 units ahead of the nozzle; it ramps in and out
+  over a few frames; fire 2.2 orange with flicker, water and ice 0.7 blue / cyan.
+- Lightning: the strike `fn_80029250` (hooked) points the game's shadow light camera at the
+  window (camera +0x24); a cool blue-white light 700 units from Luigi toward it flashes
+  (1 / 0.35 / 0.9, then decays over ~1.5 s) on top of the game's own flash. (The thunder
+  entry's +4/+8/+C are the light's fov/near/far, not a position.)
+
+**Open.** Lamps and chandeliers light only through their particle emitters (`chandelier.pcr`
+etc.), which appear in lit rooms; no lit room was reached in testing, so that path is
+unverified. Next: a fallback from the map's `objinfo` chandelier objects with the room's own
+`roominfo` LightColorR/G/B (warm/cool per room). The GBH screen and mirror glows are not light
+sources yet; fire ghosts get their element color from the ghost lights. One transient Dawn
+crash (bind group creation) happened once during a frame-dump run and did not reproduce.
+
+**Verification** (`build/worldlights/*.png`; A/B via `LM_WORLD_LIGHT_AB=1`: lights only on even
+game frames, so consecutive frame dumps compare with and without):
+- `kitchen_fire_ab.png`: the brazier on the pillar (`danro_fire`) lights the wall and floor.
+- Foyer: the three-candle groups on the side tables and the upstairs candles (6 lights in
+  `LM_WORLD_LIGHT_LOG`), warm pools on the side walls (`foyer_candles_ab.png`).
+- `fire_spray_ab.png`: nursery, fire spray (`LM_TEST_STATE=poltergust+fire`, L held): walls, crib
+  and Luigi take a flickering orange light.
+- Lightning (`LM_LIGHTNING=200,150`, nursery): strike hooked, the flash placed toward the window
+  (`lightning flash at ...` in the log); the game's own frame-to-frame flash flicker dominates
+  the A/B dumps, so there is no clean image.
+- 120 fps (`target_fps=120`): interpolation active (`[interp] ... blended`), lights blended by id.
+- Enhanced off: world lights are not built and no material hints are sent (both need
+  `enh::masterOn()`); patches 0023/0024 only change the enhanced paths, so the plain renderer is
+  unchanged by construction.
+
+Test aids: `LM_WORLD_LIGHTS=1` (on regardless of the setting), `LM_WORLD_LIGHT_LOG=N` (every
+emitter with name/flags/position, the lights sent, spray and lightning state, Luigi/nozzle
+orientation), `LM_WORLD_LIGHT_AB=1`.
