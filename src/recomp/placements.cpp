@@ -347,6 +347,30 @@ Bytes buildMapArchive2() {
                 t.rows.push_back(r);
             }
         });
+        // A Speedy Spirit row is created through its group (create_name "<room>_99"), which the
+        // room's observer with string_arg0 "<room>_99" (cond_type 15, do_type 10) creates. Every
+        // retail Speedy Spirit room has one; the extra rooms get a copy of room 14's.
+        editTable(a, "jmp/observerinfo", [&](Jmp& t) {
+            const Bytes* tmpl = nullptr;
+            for (const Bytes& r : t.rows)
+                if (t.str(r, "string_arg0") == "14_99") tmpl = &r;
+            if (!tmpl) {
+                log("[placements] observerinfo: no Speedy Spirit observer to copy");
+                return;
+            }
+            const Bytes obs = *tmpl;
+            for (const Spirit& s : kSpirits) {
+                Bytes r = obs;
+                char group[16];
+                std::snprintf(group, sizeof group, "%d_99", s.room);
+                t.setStr(r, "string_arg0", group);
+                t.setFloat(r, "pos_x", s.x);
+                t.setFloat(r, "pos_y", s.y);
+                t.setFloat(r, "pos_z", s.z);
+                t.setInt(r, "room_no", s.room);
+                t.rows.push_back(r);
+            }
+        });
         editTable(a, "jmp/iyapootable", [&](Jmp& t) {
             if (t.rows.empty()) return;
             for (const Spirit& s : kSpirits) {
