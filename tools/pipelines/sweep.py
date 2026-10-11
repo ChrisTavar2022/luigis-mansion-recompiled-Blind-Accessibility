@@ -204,6 +204,12 @@ def scenarios(map2: Path, only):
         for tag, ini in (("", STRONG), ("enh_", merge(ENH, STRONG))):
             add(f"{tag}boss{m:02}", {**base, "LM_START_MAP": str(m), "LM_TEST_STATE": state},
                 [BOOT] + explore(INGAME, 6600), INGAME + 6700, ini)
+    # Training room (map 3): A on the controller settings screen and through E. Gadd's text, then
+    # the training ghosts are vacuumed.
+    for tag, ini in (("", STRONG), ("enh_", merge(ENH, STRONG))):
+        add(f"{tag}training", {**base, "LM_START_MAP": "3"},
+            [BOOT] + [f"{t}:A*3" for t in range(INGAME, INGAME + 1800, 40)] + explore(INGAME + 1800, 4200),
+            INGAME + 6100, ini)
     # Mansion entry points whose arrival plays an event: 9 Secret Altar (King Boo), 7 Sealed Room,
     # 5 Balcony (Boos), 3 roof.
     for p in (9, 7, 5, 3):
@@ -227,8 +233,6 @@ def scenarios(map2: Path, only):
         merge({"enhancements": {"early_bogmire": 1}}, STRONG))
     add("unused_portraits", {**base, "LM_START_MAP": "4"}, [BOOT] + explore(), INGAME + 1900,
         {"enhancements": {"unused_portrait_models": 1}})
-    add("unused_lab26", {"LM_START_MAP": "1", "LM_TEST_STATE": "poltergust"},
-        [BOOT] + [f"{t}:A*3" for t in range(2000, 6000, 60)], 6000, {"unused2": {"lab_event26": 1}})
     add("unused_enh", {**base, "LM_TEST_STATE": "poltergust+ice", "LM_SKIP_TEST": tour(pts[1::4])[0]},
         [BOOT] + tour(pts[1::4])[1] + dpad(INGAME + 120, tour(pts[1::4])[2]), tour(pts[1::4])[2] + 100,
         merge(UNUSED_A, ENH, STRONG))
