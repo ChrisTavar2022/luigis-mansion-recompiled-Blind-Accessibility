@@ -35,6 +35,7 @@
 #include "port/install.h"
 #include "port/settings.h"
 #include "recomp/coop.h"
+#include "recomp/dev_tools.h"
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
@@ -328,6 +329,7 @@ void statesFrame(Ctx& c) {
         if (rd32(f) == 0x3F000000u || rd32(f) == 0x3F800000u) wr32(f, want);
         else log("[states] fear table value %08X unexpected, left alone", rd32(f));
     }
+    if (!dev::inGameScene()) return;  // Luigi exists only in the game scene
     const u32 l = luigi(c);
     if (!l || !gu::inMem1(rd32(l + kCtrl))) return;
     testAids(c, l);
