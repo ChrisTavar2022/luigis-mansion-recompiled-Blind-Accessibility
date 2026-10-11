@@ -6,7 +6,9 @@
 #include "setup/embedded.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -232,6 +234,10 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
     auto cancelled = [&] { return progress.cancel && progress.cancel->load(); };
     std::filesystem::path clang, lld;
     if (!findToolchain(clang, lld, error)) return false;
+    std::printf("[setup] building the %s game module with %s and %s\n", port::gameId(disc.version()),
+                utf8(clang).c_str(), utf8(lld).c_str());
+    std::fflush(stdout);
+    const auto buildStart = std::chrono::steady_clock::now();
 
     const bool pal = disc.version() == port::GameVersion::PAL;
     const auto dir = moduleDir(disc.version());
@@ -353,6 +359,9 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
     writeText(dir / "recompiler.log", out.summary + "\n");
     // Generated code is derived from the user's game; keep it only while building.
     if (!std::getenv("LM_KEEP_BUILD")) std::filesystem::remove_all(work, ec);
+    std::printf("[setup] game module built in %.1f s (%u compile jobs)\n",
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - buildStart).count(), jobs);
+    std::fflush(stdout);
     report("Done", 1.0f);
     return true;
 }

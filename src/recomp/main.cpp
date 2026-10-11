@@ -5,6 +5,7 @@
 #include <aurora/event.h>
 #include <aurora/main.h>
 #include <dolphin/dvd.h>
+#include <SDL3/SDL_messagebox.h>
 
 #include "port/crash_handler.h"
 #include "port/dol.h"
@@ -86,12 +87,31 @@ void boot() {
     log("[boot] main returned %d", s32(c.r[3]));
 }
 
+bool sNoGpuAdapter = false;  // Aurora found no usable graphics adapter (no Vulkan/D3D driver)
+
 void logCallback(AuroraLogLevel level, const char* module, const char* message, unsigned int) {
     static const char* names[] = {"DEBUG", "INFO", "WARNING", "ERROR", "FATAL"};
     std::fprintf(level >= LOG_ERROR ? stderr : stdout, "[%s: %s] %s\n", names[level], module, message);
     std::fflush(stdout);
+    if (level == LOG_ERROR && std::strstr(message, "Failed to create adapter")) sNoGpuAdapter = true;
     if (level == LOG_FATAL) {
         std::fflush(stderr);
+        // Without any usable GPU Aurora falls back to its null device and stops on the first
+        // allocation; tell the player what is missing instead of only crashing.
+        std::string text = std::string("The game stopped with an error:\n\n") + message;
+        if (sNoGpuAdapter) {
+#ifdef _WIN32
+            text = "No usable graphics adapter was found (Direct3D 12, Direct3D 11 or Vulkan).\n\n"
+                   "Update your graphics driver.";
+#else
+            text = "No usable Vulkan graphics driver was found.\n\n"
+                   "Install the Vulkan driver for your GPU (AMD/Intel: Mesa's Vulkan drivers, e.g. the "
+                   "mesa-vulkan-drivers package; NVIDIA: the proprietary driver) and check it with "
+                   "'vulkaninfo --summary'. See README.txt.";
+#endif
+        }
+        if (!std::getenv("LM_BACKGROUND"))  // automated runs must not block on a dialog
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Luigi's Mansion PC", text.c_str(), nullptr);
         std::abort();
     }
 }

@@ -288,5 +288,5 @@ code with raw USA addresses checks `port::usCodeFeature()`.
 
 ## Not done yet / design notes
 
-- Linux/macOS: the module build is Windows-only (`CreateProcess`, `.dll`); the module
-  boundary itself is portable (`dlopen` is wired up).
+- Linux: supported (`module.so` via `ld.lld`, XDG folders, bundled official LLVM clang/lld;
+  docs/LINUX.md). macOS: not done (the module build has no Mach-O path).
