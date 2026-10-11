@@ -5,6 +5,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <atomic>
 #include <chrono>
 #include <exception>
@@ -24,11 +25,26 @@ namespace {
 void printStack(const char* reason) {
     std::fprintf(stderr, "\n=== crash: %s ===\n", reason);
 #ifdef _WIN32
+    void* frames[64];
+    const USHORT count = CaptureStackBackTrace(0, 64, frames, nullptr);
+    // Module + offset first, before loading symbols: symbol loading for a large game module
+    // can take long enough that a killed or hung process never prints the symbolized trace
+    // (llvm-symbolizer --obj=<module> 0x<offset> resolves these offline).
+    std::fprintf(stderr, "  thread %lu, raw frames:\n", static_cast<unsigned long>(GetCurrentThreadId()));
+    for (USHORT i = 0; i < count; i++) {
+        HMODULE mod = nullptr;
+        char name[MAX_PATH] = "?";
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCSTR>(frames[i]), &mod))
+            GetModuleFileNameA(mod, name, sizeof(name));
+        const char* base = std::strrchr(name, '\\');
+        std::fprintf(stderr, "  #%02u %s+0x%llx\n", i, base ? base + 1 : name,
+                     static_cast<unsigned long long>(static_cast<const char*>(frames[i]) - reinterpret_cast<const char*>(mod)));
+    }
+    std::fflush(stderr);
     HANDLE process = GetCurrentProcess();
     static bool sSymInit = SymInitialize(process, nullptr, TRUE);
     (void)sSymInit;
-    void* frames[64];
-    const USHORT count = CaptureStackBackTrace(0, 64, frames, nullptr);
     alignas(SYMBOL_INFO) char buffer[sizeof(SYMBOL_INFO) + 256];
     auto* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
     for (USHORT i = 0; i < count; i++) {

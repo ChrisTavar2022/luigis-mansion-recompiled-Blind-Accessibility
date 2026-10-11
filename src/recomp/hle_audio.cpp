@@ -79,7 +79,9 @@ HLE(AIInitDMA) {
 HLE(AIStartDMA) {
     sDmaRunning = true;
     audio::outStart(rateHz());
-    if (!sDmaThread.joinable()) {
+    static bool sStarted = false;  // (a detached thread is never joinable: test a flag)
+    if (!sStarted) {
+        sStarted = true;
         sDmaThread = std::thread(dmaThread);
         sDmaThread.detach();
     }
