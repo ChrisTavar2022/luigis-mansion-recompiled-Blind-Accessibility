@@ -153,7 +153,8 @@ void unusedSection() {
             "script (the Professor is still \"Oya-Mar\"), with its own dialogue in the game's kana\n"
             "font. Its menu always offers the Hidden Mansion, as the early script did. Its debug\n"
             "flag block and its sound effects (an older numbering) are left out.\n"
-            "Translation: Debug > Text archive.");
+            "Translation: Debug > Text archive. The European version's text font has no kana, so\n"
+            "there the port's English translation is shown instead of the Japanese.");
         note("next lab visit");
         sDirty |= ImGui::Checkbox("Unused ghost placements", &u.ghostPlacements);
         tip("Places ghosts on paths the mansion's map data has but no ghost uses: Slim Bankshot in the\n"
