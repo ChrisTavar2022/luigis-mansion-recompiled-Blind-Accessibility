@@ -1,4 +1,5 @@
-// Unused 2-player mode (F1 > Enhancements > Unused content, off by default; US game code).
+// Unused 2-player mode (F1 > Enhancements > Unused content, off by default; both releases:
+// addresses through VA(), the patches have European lines in hooks.txt).
 //
 // The retail game still contains an unfinished two-player mode behind one variable that
 // nothing writes: Koga::EnManager::sAppearPointSlotIndex (0x804D80B0) is the index of the
@@ -24,14 +25,15 @@
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
+#include "recomp/version.h"
 
 #include <cstdlib>
 
 namespace recomp::coop {
 namespace {
 
-constexpr u32 kSlotIndex = 0x804D80B0;  // Koga::EnManager::sAppearPointSlotIndex
-constexpr u32 kGamePad2 = 0x804D807C;   // sGamePad[1] (r13 + 0x11C)
+#define kSlotIndex VA(0x804D80B0)        // Koga::EnManager::sAppearPointSlotIndex
+#define kGamePad2 (VA(0x804D8078) + 4)  // sGamePad[1] (r13 + 0x11C on both releases)
 constexpr u32 kPatchFirst = 40, kPatchCount = 8;
 
 bool envFlag(const char* name) {
@@ -46,7 +48,7 @@ bool sFixes = false;
 
 bool wanted() {
     static const bool sEnv = envFlag("LM_COOP");
-    return (sEnv || port::settings().enhancements.twoPlayer) && port::usCodeFeature() == port::Avail::Yes;
+    return sEnv || port::settings().enhancements.twoPlayer;
 }
 
 bool fixesWanted() {
@@ -58,8 +60,6 @@ bool active() { return sActive; }
 bool fixes() { return sActive && sFixes; }
 
 void onMapSetup(Ctx& c) {
-    // The map-setup hook also runs on the European game; the addresses here are the USA game's.
-    if (port::usCodeFeature() != port::Avail::Yes) return;
     const bool on = wanted();
     if (on && rd32(kGamePad2) == 0) {
         // The AR cave: new JUTGamePad(EPadPort 1) stored in sGamePad[1]. The constructor links

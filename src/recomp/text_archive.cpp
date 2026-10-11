@@ -527,8 +527,26 @@ std::vector<u8> buildLabEvent26() {
     if (!retail.parse(rarc::decompress(rarc::readDisc("/Event/event08.szp")))) return {};
     if (!early.parse(rarc::decompress(rarc::readDisc("/Event/event26.szp")))) return {};
     const rarc::Item* txt = early.find("text/event26.txt");
-    const rarc::Item* csv = early.find("message/message26.csv");
-    if (!txt || !csv || !retail.find("text/event08.txt") || !retail.find("message/message8.csv")) return {};
+    if (!txt || !retail.find("text/event08.txt")) return {};
+    // Messages: the USA archives have one message/message<N>.csv; the European ones one file per
+    // language directory (event26: message/<language>/message26.csv, all six the same Japanese
+    // text; event08: message/<language>/book1.txt). The early messages take the retail file's
+    // place under the retail name.
+    static const char* const kLangs[] = {"english", "french", "german", "italian", "japanese", "spanish"};
+    std::vector<std::pair<std::string, rarc::Bytes>> messages;
+    if (const rarc::Item* csv = early.find("message/message26.csv"); csv && retail.find("message/message8.csv")) {
+        messages.emplace_back("message/message8.csv", csv->data);
+    } else {
+        for (const char* l : kLangs) {
+            const rarc::Item* csvL = early.find(std::string("message/") + l + "/message26.csv");
+            const std::string dst = std::string("message/") + l + "/book1.txt";
+            if (csvL && retail.find(dst)) messages.emplace_back(dst, csvL->data);
+        }
+    }
+    if (messages.empty()) {
+        log("[text] early lab script: message files not found");
+        return {};
+    }
     std::string s(txt->data.begin(), txt->data.end());
     // Drop the debug flag block (first lines up to the "!!!!" separator).
     const size_t bang = s.find("!!!!!!!!!!");
@@ -541,7 +559,7 @@ std::vector<u8> buildLabEvent26() {
         s.erase(p, (q == std::string::npos ? s.size() : q + 1) - p);
     }
     retail.put("text/event08.txt", rarc::Bytes(s.begin(), s.end()));
-    retail.put("message/message8.csv", csv->data);
+    for (auto& [path, data] : messages) retail.put(path, std::move(data));
     log("[text] early lab script served as event08 (%zu bytes of script)", s.size());
     return rarc::yay0Store(retail.build());
 }

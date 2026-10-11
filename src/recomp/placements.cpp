@@ -1,5 +1,5 @@
 // Unused ghost placements, colour variants and the extra Speedy Spirits (F1 > Enhancements >
-// Unused content, each off by default; US game). Docs: docs/UNUSED_CONTENT.md ("Second batch").
+// Unused content, each off by default; both releases). Docs: docs/UNUSED_CONTENT.md ("Second batch").
 //
 // Placements: the mansion's map archive (/Map/map2.szp) has path files (path/<name>, a JMP table
 // of x,y,z points the enemy code follows: EnZako reads path_name and getPathResource) that no
@@ -52,7 +52,9 @@ bool envFlag(const char* n) {
     const char* v = std::getenv(n);
     return v && *v && *v != '0';
 }
-bool us() { return port::usCodeFeature() == port::Avail::Yes; }
+// Both releases: the map archives are the running disc's (the European tables have other byte
+// layouts but the same rows; fields are found by name), the tables are reached through VA().
+bool us() { return true; }
 bool placementsOn() { return us() && (envFlag("LM_GHOST_PLACEMENTS") || port::settings().unused2.ghostPlacements); }
 bool spiritsOn() { return us() && (envFlag("LM_EXTRA_SPIRITS") || port::settings().unused2.extraSpeedySpirits); }
 bool pinkMiceOn() { return us() && (envFlag("LM_PINK_MICE") || port::settings().unused2.pinkMice); }

@@ -186,28 +186,37 @@ fn_800293A8 us pal
 fn_80029050 us pal
 # Unused 2-player mode (src/recomp/coop.cpp, docs/UNUSED_CONTENT.md): the known Action Replay
 # code's instruction patches, all switched on with the mode (the flag and the port-2 pad of the
-# code's boot cave are host code at map setup).
+# code's boot cave are host code at map setup). European lines: the same instructions in the
+# matched functions (tools/pal_diff.py show; sGamePad is r13+0x118 on both releases).
 # 0x800726D8 player creation: players after the first get sGamePad[1] (r13+0x11C) instead of none.
 patch 40 800726D8 800D011C
+patch 40 80075560 800D011C pal
 # Doors (fn_80079E20): skip the room-blocked check, and treat every locked door as unlockable.
 patch 41 80079EB4 60000000
 patch 42 80079E6C 48000010
+patch 41 8007CD34 60000000 pal
+patch 42 8007CCEC 48000010 pal
 # fn_800B9430 (Luigi +0x792 event-bit test, e.g. <WEAPON>): always true, so player 2 has the
 # Poltergust and Game Boy Horror.
 patch 43 800B943C 3003FFFE
+patch 43 800BC854 3003FFFE pal
 # fn_8000BB98 (draw one view): view 1 draws the whole scene like view 0 (ghost layer, effects).
 patch 44 8000BBC4 60000000
 patch 45 8000BC24 60000000
+patch 44 8000CA40 60000000 pal
+patch 45 8000CAA0 60000000 pal
 # fn_8003E7B0 (HUD after each view): the HUD is not skipped in 2-player mode.
 patch 46 8003E7D8 60000000
+patch 46 8003FE58 60000000 pal
 # fn_80079440 (door touch): a door with no free side still opens (fn_80079E20).
 patch 47 80079574 60000000
+patch 47 8007C3F4 60000000 pal
 # 2-player mode, per-frame work (coop_fixes.cpp): the game-scene view/camera update.
-fn_800112F8
+fn_800112F8 us pal
 # Flashlight update (per Luigi): which player's light a ghost message comes from.
-fn_800850B4
+fn_800850B4 us pal
 # HUD overlay pass after each view (2-player HUD after both views, player 2's health meter).
-fn_8003E7B0
+fn_8003E7B0 us pal
 
 # Enhanced lighting (src/recomp/enhanced_lighting.cpp, docs/RENDERING.md): the main 3D view of the
 # game scene is bracketed to send the frame's extra lights and the scene-end marker (bloom,
@@ -226,16 +235,19 @@ fn_80029250 us pal
 # Second unused-content batch (src/recomp/unused2.cpp and friends, docs/UNUSED_CONTENT.md
 # "Second batch"). Bordered view: fn_80010F20 (game-scene viewport setup) only reaches its third
 # case, a fixed 40,30-560,430 bordered view, for a view-mode value nothing sets; the patch turns
-# the `beq` at 0x80010FD4 (41820064) into a branch to that case (US).
+# the `beq` at 0x80010FD4 (41820064) into a branch to that case; European fn_80011B00 is the same
+# (0x80011BB4).
 patch 50 80010FD4 480000D8
+patch 50 80011BB4 480000D8 pal
 # Luigi's message handler (poison mushroom, startle -> crawling fear) and the element-meter HUD
 # (overheat meter): luigi_states.cpp.
-fn_800AEEA8
-fn_80045F58
-fn_80046120
+fn_800AEEA8 us pal
+fn_80045F58 us pal
+fn_80046120 us pal
 # fn_800B7090: the cut panic mode (fear mode 4) starts effect 0xE every frame and floods the view
 # with heart particles; with the crawling-fear option the mode test at 0x800B742C (2C000004
 # cmpwi r0, 4) never matches, so the effect is not started (luigi_states.cpp).
 patch 51 800B742C 2C00007F
+patch 51 800BA7B8 2C00007F pal
 # Ending scene draw (gallery.cpp): the unused Luigi pictures by rank.
-fn_8000E050
+fn_8000E050 us pal

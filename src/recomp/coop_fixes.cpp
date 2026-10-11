@@ -5,6 +5,7 @@
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
 #include "recomp/skip.h"
+#include "recomp/version.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -23,7 +24,7 @@ u32 sMsg2[2] = {};
 
 // Player records of the view setup (lbl_803A3CA0, 0x28 per player): +0 position, +0xC the
 // room number in its top byte (from the player's room, fn_800E9750(i) +0xB4).
-constexpr u32 kViewPlayers = 0x803A3CA0;
+#define kViewPlayers VA(0x803A3CA0)
 u32 roomOf(int idx) { return rd8(kViewPlayers + 0x28 * idx + 0xC); }
 u32 sLastRoom[2] = {~0u, ~0u};
 
@@ -32,7 +33,7 @@ u32 sLastRoom[2] = {~0u, ~0u};
 std::vector<u32> sGhosts;
 
 // Character type flags (type table lbl_8033B590, 0x1C per type, u16 at +8; fn_8006A3BC): 8 = ghost.
-constexpr u32 kTypeTable = 0x8033B590;
+#define kTypeTable VA(0x8033B590)
 bool isGhost(u32 actor) { return gu::inMem1(actor) && (rd16(kTypeTable + 0x1C * rd32(actor + 0x3C) + 8) & 8); }
 
 // LM_COOP_GHOST_TEST=<from>,<to> (guest frames, test aid): keeps the first live ghost 220
@@ -166,13 +167,16 @@ void onLuigiHealth(Ctx& c) {
 // bottom half where the health meter and the Game Boy Horror are. With the improvements the
 // HUD is drawn once after the last view, and player 2 gets a health meter of their own.
 namespace {
-constexpr u32 kViewCount = 0x804CFF90;   // lbl_804CFF90, fn_8000ADFC
-constexpr u32 kHpShown = 0x804D8490;     // s16 health shown by the meter (eased toward Luigi's)
-constexpr u32 kHpShown2 = 0x804D8492;    // s16 second meter value (damage flash)
-constexpr u32 kHeartPhase = 0x804D84B0;  // heartbeat animation phase
-constexpr u32 kTextX = 0x804D8496, kTextY = 0x804D8498;  // s16 digits position
-constexpr u32 kHeartSprites = 0x803CE698;                // +0x30/+0x48/+0x60: s32 x, y
-constexpr u32 kMeterArg = 0x804D84CC;                    // fn_800417F8's argument
+#define kViewCount VA(0x804CFF90)   // lbl_804CFF90, fn_8000ADFC
+#define kHpShown VA(0x804D8490)     // s16 health shown by the meter (eased toward Luigi's)
+#define kHpShown2 VA(0x804D8492)    // s16 second meter value (damage flash)
+#define kHeartPhase VA(0x804D84B0)  // heartbeat animation phase
+#define kTextX VA(0x804D8496)
+#define kTextY VA(0x804D8498)  // s16 digits position
+// Heart sprites (+0/+4: s32 x, y; 0x18 apart): lbl_803CE698 +0x30 on the USA game; the European
+// object (lbl_803BBA08) starts with them.
+#define kHeartSprites (VA(0x803CE698) + VOFF(0x30, 0))
+#define kMeterArg VA(0x804D84CC)                    // fn_800417F8's argument
 
 struct MeterOffset {
     s32 dx, dy;
@@ -184,7 +188,7 @@ struct MeterOffset {
         wr16(kTextX, u16(s16(text[0]) + dx));
         wr16(kTextY, u16(s16(text[1]) + dy));
         for (int i = 0; i < 3; i++) {
-            const u32 sp = kHeartSprites + 0x30 + 0x18 * i;
+            const u32 sp = kHeartSprites + 0x18 * i;
             sprite[i][0] = rd32(sp);
             sprite[i][1] = rd32(sp + 4);
             wr32(sp, u32(s32(sprite[i][0]) + dx));
@@ -195,8 +199,8 @@ struct MeterOffset {
         wr16(kTextX, text[0]);
         wr16(kTextY, text[1]);
         for (int i = 0; i < 3; i++) {
-            wr32(kHeartSprites + 0x30 + 0x18 * i, sprite[i][0]);
-            wr32(kHeartSprites + 0x34 + 0x18 * i, sprite[i][1]);
+            wr32(kHeartSprites + 0x18 * i, sprite[i][0]);
+            wr32(kHeartSprites + 4 + 0x18 * i, sprite[i][1]);
         }
     }
 };

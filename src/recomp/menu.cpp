@@ -738,7 +738,6 @@ void unusedContentTab() {
         pending("next map load");
     }
     {
-        Gate g2(port::usCodeFeature());  // 2-player mode: USA game code only (coop.cpp)
         sDirty |= ImGui::Checkbox("2-player mode (unfinished)", &e.twoPlayer);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("The game's leftover two-player mode: a second Luigi on controller port 2\n"
@@ -746,7 +745,7 @@ void unusedContentTab() {
                               "close in the same room, top/bottom split screen when apart. As the game left\n"
                               "it: player 2 is left behind at doors, has no health meter, and the HUD\n"
                               "disappears in split screen.");
-        if (g2.a == port::Avail::Yes) pending("next map load");
+        pending("next map load");
         ImGui::BeginDisabled(!e.twoPlayer);
         ImGui::Indent();
         sDirty |= ImGui::Checkbox("Co-op improvements", &e.coopImprovements);
