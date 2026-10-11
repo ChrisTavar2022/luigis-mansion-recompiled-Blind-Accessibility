@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <vector>
 
 namespace recomp {
 u32 copyDispCount();  // hle_gx.cpp
@@ -39,8 +40,11 @@ int sPerfPhase = -1;       // LM_ENH_PERF_AB phase (host thread)
 bool sPerfNoMap = false;
 bool sGhostPass = false;
 
-// Extra lights submitted for the coming main view (guest thread only).
-std::array<aurora::gfx::ExtraLight, aurora::gfx::MaxExtraLights> sPending{};
+// Extra lights submitted for the coming main view (guest thread only). Providers (ghost lights,
+// world lights, test lights) append; beginScene culls what cannot reach the view and keeps the
+// MaxExtraLights strongest.
+constexpr uint32_t kMaxCandidates = 512;
+std::array<aurora::gfx::ExtraLight, kMaxCandidates> sPending{};
 uint32_t sPendingCount = 0;
 
 // Camera (lbl_803A3820): the player's view eye/target in world space.
@@ -75,7 +79,7 @@ void addTestLights() {
     const float luigi[3] = {rdf32(actor + 0x44), rdf32(actor + 0x48), rdf32(actor + 0x4C)};
     static u32 sFrame = 0;
     const float t = float(sFrame++) / 30.0f;
-    for (int i = 0; i < sTest.count && sPendingCount < aurora::gfx::MaxExtraLights; i++) {
+    for (int i = 0; i < sTest.count && sPendingCount < kMaxCandidates; i++) {
         const float a = t * 0.9f + 6.2831853f * float(i) / float(sTest.count);
         const float world[3] = {luigi[0] + 220.0f * std::cos(a), luigi[1] + 110.0f + 40.0f * std::sin(t * 1.7f + float(i)),
                                 luigi[2] + 220.0f * std::sin(a)};
@@ -94,10 +98,44 @@ void addTestLights() {
 }  // namespace
 
 void submitExtraLights(const aurora::gfx::ExtraLight* lights, uint32_t count) {
-    count = std::min<uint32_t>(count, aurora::gfx::MaxExtraLights);
-    std::memcpy(sPending.data(), lights, count * sizeof(aurora::gfx::ExtraLight));
-    sPendingCount = count;
+    count = std::min<uint32_t>(count, kMaxCandidates - sPendingCount);
+    std::memcpy(sPending.data() + sPendingCount, lights, count * sizeof(aurora::gfx::ExtraLight));
+    sPendingCount += count;
 }
+
+namespace {
+// Lights whose sphere cannot touch the view frustum are dropped (generous side margins: the
+// widescreen/FOV options widen the view); the rest are ranked by intensity x reach over distance
+// and the strongest MaxExtraLights kept, in that order (Aurora gives shadow slots to the first
+// flagged lights).
+uint32_t selectLights(aurora::gfx::ExtraLight* l, uint32_t n) {
+    struct Ranked {
+        float score;
+        uint32_t i;
+    };
+    static std::vector<Ranked> rank;
+    rank.clear();
+    for (uint32_t i = 0; i < n; i++) {
+        const auto& x = l[i];
+        if (!(x.intensity > 0.0f) || !(x.radius > 0.0f)) continue;
+        const float z = -x.pos[2];  // distance in front of the camera
+        if (z < -x.radius) continue;  // entirely behind the camera
+        const float side = std::max(z, 0.0f) * 2.5f + x.radius;  // ~136 degrees wide, 2.5:1
+        if (std::fabs(x.pos[0]) > side || std::fabs(x.pos[1]) > side) continue;
+        const float d = std::sqrt(x.pos[0] * x.pos[0] + x.pos[1] * x.pos[1] + x.pos[2] * x.pos[2]);
+        rank.push_back({x.intensity * x.radius / (1.0f + std::max(d - x.radius, 0.0f) / 800.0f), i});
+    }
+    std::stable_sort(rank.begin(), rank.end(), [](const Ranked& a, const Ranked& b) { return a.score > b.score; });
+    static std::array<aurora::gfx::ExtraLight, aurora::gfx::MaxExtraLights> out;
+    uint32_t m = 0;
+    for (const auto& r : rank) {
+        if (m == aurora::gfx::MaxExtraLights) break;
+        out[m++] = l[r.i];
+    }
+    std::memcpy(l, out.data(), m * sizeof(aurora::gfx::ExtraLight));
+    return m;
+}
+}  // namespace
 
 namespace enh {
 
@@ -234,7 +272,7 @@ void setCasterPass(bool on) {
 
 void beginScene() {
     addTestLights();
-    const uint32_t count = sPendingCount;
+    const uint32_t count = selectLights(sPending.data(), sPendingCount);
     sPendingCount = 0;  // a frame in which nobody submits has no extra lights
     sClass = 0xFF;      // every frame (and interpolation tape) sets its class again
     sInScene = true;

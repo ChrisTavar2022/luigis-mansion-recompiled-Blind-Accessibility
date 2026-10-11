@@ -207,3 +207,4 @@ fn_8005DD50 us pal
 # particle resource names and emitter creation, to light candles, fires, sprays and sparkles.
 getResource__10JKRArchiveFUlPCc us pal
 fn_8015FE9C us pal
+fn_80029250 us pal

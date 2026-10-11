@@ -203,6 +203,49 @@ void renderingTab() {
 }
 
 // ---- Enhanced lighting > Ghost lights (src/recomp/ghost_lights.cpp) ----
+// ---- Enhanced lighting > World lights (src/recomp/world_lights.cpp) ----
+void worldLightsSection() {
+    auto& w = port::settings().worldLights;
+    sDirty |= ImGui::Checkbox("World lights", &w.enabled);
+    ImGui::SetItemTooltip(
+        "Candles, fireplaces, lamps, the Poltergust's element sprays, fire, lightning and sparkles\n"
+        "light the room around them in color, like the ghost lights. Positions come from the game's\n"
+        "own flames and effects. Off: only the game's own lighting. GPU cost grows with the number\n"
+        "of lights in view (up to 64 colored lights in total).");
+    ImGui::BeginDisabled(!w.enabled);
+    sDirty |= ImGui::SliderFloat("World light intensity", &w.masterIntensity, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    struct Row {
+        int cat;
+        const char* name;
+        const char* tip;
+    };
+    static const Row kRows[] = {
+        {port::kWlCandles, "Candles", "Candles and candelabras: fiery orange (violet where the game's flame is violet), flickering."},
+        {port::kWlFires, "Fireplaces and torches", "Hearth fires and torches: strong flickering orange light."},
+        {port::kWlLamps, "Lamps and chandeliers", "Lamps and chandeliers: steady warm light."},
+        {port::kWlSprays, "Element sprays", "The Poltergust's fire spray lights the room orange; water and ice sprays a subtle blue/cyan."},
+        {port::kWlFireFx, "Fire effects", "Fireballs, burning objects and characters."},
+        {port::kWlLightning, "Lightning", "A cool blue-white flash from the windows when lightning strikes."},
+        {port::kWlSparkles, "Sparkles and glows", "Subtle glows of treasure, coins, keys and other sparkling pickups."},
+    };
+    for (const Row& r : kRows) {
+        ImGui::PushID(r.cat);
+        sDirty |= ImGui::Checkbox(r.name, &w.on[r.cat]);
+        ImGui::SetItemTooltip("%s", r.tip);
+        ImGui::SameLine(ImGui::GetWindowWidth() * 0.42f);
+        ImGui::SetNextItemWidth(ImGui::GetWindowWidth() * 0.3f);
+        ImGui::BeginDisabled(!w.on[r.cat]);
+        sDirty |= ImGui::SliderFloat("##i", &w.intensity[r.cat], 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::EndDisabled();
+        ImGui::PopID();
+    }
+    sDirty |= ImGui::Checkbox("Flame flicker", &w.flicker);
+    ImGui::SetItemTooltip("Flames flicker naturally. Off: steady flames.");
+    sDirty |= ImGui::Checkbox("Merge nearby flames", &w.mergeNearby);
+    ImGui::SetItemTooltip("Flames of one kind close together (a candelabra) become one light. Faster; off: one light per flame.");
+    ImGui::EndDisabled();
+}
+
 void ghostLightsSection() {
     auto& g = port::settings().ghostLights;
     sDirty |= ImGui::Checkbox("Ghost lights", &g.enabled);
@@ -220,7 +263,7 @@ void ghostLightsSection() {
         "The light pulses gently, flares when a ghost appears, ramps up and flickers while the\n"
         "Poltergust drains the ghost, and bursts then fades when it is captured.\n"
         "Off: a steady light that only follows the ghost's visibility.");
-    sDirty |= ImGui::SliderInt("Max ghost lights", &g.maxLights, 1, 16, "%d", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= ImGui::SliderInt("Max ghost lights", &g.maxLights, 1, 64, "%d", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Most ghost lights at once (the strongest/nearest first). Lower is faster.");
     sDirty |= ImGui::Checkbox("Shadows from ghost lights", &g.shadows);
     ImGui::SetItemTooltip("The one or two strongest ghost lights cast shadows. Costs a shadow pass per light.");
@@ -291,6 +334,12 @@ void enhancedLightingTab() {
     ghostLightsSection();
     ImGui::EndDisabled();
     // ---- end Ghost lights ----
+    // ---- World lights (src/recomp/world_lights.cpp) ----
+    ImGui::SeparatorText("World lights");
+    ImGui::BeginDisabled(!l.extraLights);
+    worldLightsSection();
+    ImGui::EndDisabled();
+    // ---- end World lights ----
 
     ImGui::SeparatorText("Shadows");
     sDirty |= ImGui::Checkbox("Soft shadows", &l.softShadows);

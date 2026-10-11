@@ -157,9 +157,31 @@ struct GhostLightSettings {
     float intensity = 1.0f;     // 0..4, multiplies every ghost light
     float radiusScale = 1.0f;   // 0.25..3, multiplies the per-ghost-size radius
     bool dramatic = true;       // pulse, flare on appearing/attacking, flicker when stunned, vacuum struggle, capture burst
-    int maxLights = 8;          // 1..16, strongest ghosts first
+    int maxLights = 48;         // 1..64, strongest/nearest visible ghosts first (shared 64-light budget)
     bool shadows = true;        // the 1-2 strongest ghost lights cast shadows (if the renderer supports it)
     float invisibleHint = 0.0f; // 0..0.3: faint glow of fully invisible ghosts (0 = none)
+};
+
+// ---- Enhanced lighting > World lights (src/recomp/world_lights.cpp; docs/RENDERING.md) ----
+// Candles, fireplaces, lamps, element sprays, fire, lightning and sparkles as coloured lights.
+// Only with the Enhanced lighting master switch (and its "Dynamic colored lights" part).
+enum WorldLightCategory {
+    kWlCandles,     // candles and candelabras
+    kWlFires,       // fireplaces, torches
+    kWlLamps,       // lamps, chandeliers, lit-room lights
+    kWlSprays,      // Poltergust fire/water/ice spray
+    kWlFireFx,      // fireballs, burning objects/characters, fire ghosts
+    kWlLightning,   // lightning through the windows
+    kWlSparkles,    // treasure, coins, keys, Boo and pickup glows
+    kWlCount
+};
+struct WorldLightSettings {
+    bool enabled = true;
+    bool on[kWlCount] = {true, true, true, true, true, true, true};
+    float intensity[kWlCount] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};  // 0..3 each
+    float masterIntensity = 1.0f;  // 0..3
+    bool flicker = true;           // natural flame flicker (off: steady flames)
+    bool mergeNearby = true;       // nearby flames of one kind become one light (a candelabra = one light)
 };
 
 // Enhanced lighting (F1 > Visuals > Enhanced lighting; docs/RENDERING.md "Enhanced lighting"):
@@ -218,6 +240,7 @@ struct Settings {
     VideoSettings video;
     RenderingSettings rendering;
     GhostLightSettings ghostLights;
+    WorldLightSettings worldLights;
     EnhancedLightingSettings enhancedLighting;
     CrtSettings crt;
     AudioSettings audio;
