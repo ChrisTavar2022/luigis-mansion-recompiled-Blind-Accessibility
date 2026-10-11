@@ -320,6 +320,15 @@ void applySettings() {
         }
     }
     aurora_enhanced_set_config(&c);
+    // LM_XL_SHADOW_LOG=1: shadow-map statistics every 120 host frames (lights, caster draws,
+    // casters skipped while their pipeline compiles).
+    static const bool sXlLog = std::getenv("LM_XL_SHADOW_LOG") != nullptr;
+    static u32 sXlTick = 0;
+    if (sXlLog && ++sXlTick % 120 == 0) {
+        u32 lights = 0, casters = 0, skipped = 0;
+        aurora_enhanced_shadow_stats(&lights, &casters, &skipped);
+        log("[xlshadow] lights %u casters %u skipped %u", lights, casters, skipped);
+    }
     sActive.store(c.enabled, std::memory_order_relaxed);
 }
 

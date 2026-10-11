@@ -339,7 +339,7 @@ void enhancedLightingTab() {
     ImGui::SetItemTooltip("How many of the strongest colored lights cast shadows each frame (screen-space: at most 4).\n"
                           "Each light adds a cube map (shadow maps) or a ray march (screen-space).");
     sDirty |= ImGui::Combo("Light shadow quality", &l.extraShadowQuality, kXlQ, 3);
-    ImGui::SetItemTooltip("Filter taps of the soft edge (shadow maps: 8 / 16 / 32) or ray-march steps (screen-space).");
+    ImGui::SetItemTooltip("Filter taps of the soft edge (shadow maps: 8 / 12 / 20) or ray-march steps (screen-space).");
     ImGui::BeginDisabled(l.extraShadowMode != 1);
     sDirty |= ImGui::Combo("Shadow map size", &l.extraShadowMapSize, kXlS, 4);
     ImGui::SetItemTooltip("Texels per cube face. Larger: sharper, more detailed shadows, more GPU memory\n"
