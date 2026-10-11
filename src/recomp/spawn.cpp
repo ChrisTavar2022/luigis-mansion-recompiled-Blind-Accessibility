@@ -194,7 +194,7 @@ void startParticle(Ctx& c, const Particle& p) {
 void particleSection(bool inGame) {
     if (!ImGui::TreeNode("Particle test (unused effects)")) return;
     ImGui::TextDisabled("Starts the effect 150 units in front of Luigi with the game's particle system.");
-    ImGui::BeginDisabled(!inGame || port::usCodeFeature() != port::Avail::Yes);
+    ImGui::BeginDisabled(!inGame);
     for (size_t i = 0; i < std::size(kParticles); i++) {
         char label[48];
         std::snprintf(label, sizeof label, "%s##pt%zu", kParticles[i].pcr, i);
@@ -271,7 +271,7 @@ void spawnSection(bool inGame) {
     ImGui::TextDisabled("Creates the character in front of Luigi with the game's own factory, without its map\n"
                         "data. Some only make sense in their scripted scene. Debug feature: may misbehave.");
     if (!inGame) ImGui::TextDisabled("Available while playing.");
-    ImGui::BeginDisabled(!inGame || port::usCodeFeature() != port::Avail::Yes);
+    ImGui::BeginDisabled(!inGame);
     if (ImGui::BeginTable("spawn", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
         for (size_t i = 0; i < std::size(kList); i++) {
             const Spawnable& s = kList[i];

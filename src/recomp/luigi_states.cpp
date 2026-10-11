@@ -1,5 +1,5 @@
 // Luigi states left unfinished in the retail code (F1 > Enhancements > Gameplay, all off by
-// default; US game code). Docs: docs/UNUSED_CONTENT.md ("Second batch").
+// default; both releases). Docs: docs/UNUSED_CONTENT.md ("Second batch").
 //
 // Luigi's pieces used here (USA offsets):
 //   +0x0FC  health (s16), set only through fn_800B9488(luigi, hp)
@@ -57,7 +57,9 @@ bool envFlag(const char* n) {
     const char* v = std::getenv(n);
     return v && *v && *v != '0';
 }
-bool usCode() { return port::usCodeFeature() == port::Avail::Yes; }
+// Both releases: the Luigi fields used here sit below +0x134C (unchanged on the European game),
+// the functions are matched by name, data through VA(), patch 51 has a European line.
+bool usCode() { return true; }
 bool poisonOn() {
     static const bool e = envFlag("LM_POISON");
     return usCode() && (e || port::settings().unused2.poisonState);
@@ -324,7 +326,9 @@ void statesFrame(Ctx& c) {
         // fn_800B61C8 multiplies the maximum health by the fear mode's factor every frame (mode 4:
         // 0.5, so Luigi's health halves each frame and he dies in a few frames). With the option on,
         // mode 4's factor is 1.0 (data written only over the retail value).
-        const u32 f = VA(0x80354C40);  // lbl_80354B9C, mode 4 entry (+0x9C) +8
+        // lbl_80354B9C (mode table; reached through the pointer lbl_804D2428 so the European copy
+        // is found too), mode 4 entry (+0x9C) +8.
+        const u32 f = rd32(VA(0x804D2428)) + 0xA4;
         const u32 want = sPanicPatch ? 0x3F800000u : 0x3F000000u;
         if (rd32(f) == 0x3F000000u || rd32(f) == 0x3F800000u) wr32(f, want);
         else log("[states] fear table value %08X unexpected, left alone", rd32(f));

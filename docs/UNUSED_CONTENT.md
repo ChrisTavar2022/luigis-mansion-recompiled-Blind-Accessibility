@@ -421,8 +421,12 @@ Not checked in game: the retail-only expressions that use the appended eye textu
 ## 2-player mode ("2-player mode (unfinished)", "Co-op improvements")
 
 `src/recomp/coop.cpp` (the mode as the game left it), `src/recomp/coop_fixes.cpp` (the
-improvements and test aids). US code only (`port::usCodeFeature()`), both options off by
-default, and both take effect at the next map load.
+improvements and test aids). Both releases (addresses through `VA()`, the AR patches 40-47
+have European lines in `hooks.txt`, the HUD meter values are mapped by hand in
+`gen_version_map.py`), both options off by default, and both take effect at the next map load.
+Checked on the European game (October 2026): shared view, both health meters, player 2 moved by
+port 2, Mario as player 2 (`pal_coop_mario_p2.png`); also through the shipped program after a
+PAL-only setup.
 
 ### How it works in the retail code
 
@@ -791,8 +795,9 @@ Debug, Sound > Jukebox), and owns a disc overlay (`hle_dvd.cpp`, virtual FST ent
 `0x50000000+`) that serves rebuilt files while an option needs them (keyed by the options, so a
 change applies the next time the game opens the file). Host-built guest data (model copies,
 textures, strings) lives in `unused2::extraAlloc` memory (0x81820000-0x81F00000, host-backed,
-above MEM1). Unless noted, the features run on the USA game only (`port::usCodeFeature()`;
-greyed out otherwise). Evidence images: `build/unused2/` (not committed).
+above MEM1). Every option runs on both releases (October 2026: European patch lines for patches
+50/51, hooks tagged `us pal`, the fear table through its pointer `lbl_804D2428`; checked on the
+European dev build, evidence in `build/pal_parity2/`, and docs/PAL_PARITY.md). Evidence images: `build/unused2/` (not committed).
 
 ### Play as Mario / Mario as player 2 (`play_as_mario.cpp`)
 
@@ -828,7 +833,8 @@ as Luigi's own, so the body model is the only Mario-specific asset. `bmario.mdl`
 `fn_80010F20` (game-scene viewport setup) chooses the main view rectangle from a mode that is
 always 1 or 2; its third case, a fixed 40,30-560,430 view with a black border, is never reached.
 `patch 50 80010FD4 480000D8` turns the `beq` (original `41820064`) into a branch to that case.
-Verified: `bordered_view.png`. USA only (no PAL patch line yet).
+Verified: `bordered_view.png`. European line: `patch 50 80011BB4 480000D8 pal` (`fn_80011B00`, the
+same function), verified (`pal_mario_border_overheat_poison.png`).
 
 ### Luigi states (`luigi_states.cpp`, Enhancements > Gameplay)
 
@@ -941,7 +947,12 @@ unlocked - they would alter the save) and its `<SE>(n)` commands (an older sound
 Everything else is the early script; its menu always offers the Hidden Mansion. Verified: a new
 game started in the lab (`LM_START_MAP=1 LM_LAB_EVENT26=1`) plays the first-visit branch in
 Japanese ("Professor Oya-Mar's Ghost Research Center") up to the warp to training:
-`lab_event26_*.png`.
+`lab_event26_*.png`. European game: its event archives have one message file per language
+(`message/<language>/book1.txt` in event08, `message/<language>/message26.csv` in event26, the
+latter all the same Japanese) and its message font is Latin only, so the Japanese came out as
+garbage. There every language gets the port's English translation (the text archive's), reflowed
+to the retail 32-character box with Luigi highlighted; fillers kept. Verified through the
+first-visit branch (`pal_lab_event26_english.png`).
 
 ### Unused placements, colour variants, extra Speedy Spirits (`placements.cpp`)
 
@@ -959,8 +970,12 @@ Japanese ("Professor Oya-Mar's Ghost Research Center") up to the warp to trainin
   `LM_ACTOR_DUMP=100`, teleports): the actors exist at the path starts (`skul` x2 in the
   Courtyard, `hustler` + its cue in the Hidden Room, nine Ghost Guys + `yapoo1` on the roof,
   `topoo1` in room 8; `placements_actor_log.txt`), and the roof Ghost Guys attack
-  (`roof_ghost_guys.png`). Not verified: that the training-room copies start (map 3 loads with
-  9 generator rows).
+  (`roof_ghost_guys.png`). Same on the European game (15 Ghost Guys on the roof, the two `skul`
+  in the Courtyard). Training room: the copies are of the `mg_path1` rows, whose codes
+  (`mg_gene1..3`) the first-visit tutorial never starts: it uses the `mg_path0` rows `step1_1..3`
+  (1, 2 and 5 `mgyapoo1`, the same with the option on and off, checked through the whole first
+  visit). The `mg_gene` generators belong to a later training run (the lab's "Training Room"
+  choice), which was not reached in a test, so the three extra generators remain unverified.
 - **Colour variants**: a type's +0x10 picks the model's `.txp` set, and `/param/ctp/<type>.prm`
   its parameters (glow colour, speed...). Never used: `rat2` (rat set 1, pink, `rat2.prm`) and
   the Ghost Guy sets 9 and 1 (`heypo9.txp`/`heypo10.txp`, `heypo9.prm`/`heypo10.prm`). "Pink
@@ -968,11 +983,18 @@ Japanese ("Professor Oya-Mar's Ghost Research Center") up to the warp to trainin
   `heypo9.prm` and `heypo2` set 1 + `heypo10.prm`. The type table is written at map setup, live
   actors' patterns every frame (disc models load late, as for the green Toad) and the `.prm`
   name is redirected in `getResource` (`unused_assets.cpp`). Verified: spawned Ghost Guys glow
-  blue/white instead of green/red (`colour_variants_ghost_guys.png`); the mice were not seen.
+  blue/white instead of green/red (`colour_variants_ghost_guys.png`). Pink mice verified on both
+  releases in the hallway with the mouse generators (room 18, teleport 410,260,-4100): pink with
+  the option, the retail cyan without (`us_pink_mice_on_off.png`, `pal_pink_mice_zoom.png`).
 - **Extra Speedy Spirits** (not original): types `iyapoo16..20` are never placed and the reward
   table `iyapootable` ends at 15. Rows are added in rooms 4, 10, 13, 27, 40 (rooms with ghosts
   but no Speedy Spirit, at a retail ghost's spot) with create names `<room>_99` like the retail
-  ones, and five reward rows in the retail pattern. Not verified in play.
+  ones, and five reward rows in the retail pattern. A Speedy Spirit is created through its group:
+  each retail Speedy Spirit room has an observer with `string_arg0` `<room>_99` (cond_type 15,
+  do_type 10) that creates it. The extra rooms had none, so the spirits were never created; they
+  now get copies of room 14's observer, and `iyapoo16` exists in the Mirror Room (room 4) on both
+  releases, in the same idle state as the retail `iyapoo1` in room 14 under the same test
+  (teleport, no input). Catching one and its reward were not played through.
 
 ### Debug: spawn list, particle test, viewer labels
 

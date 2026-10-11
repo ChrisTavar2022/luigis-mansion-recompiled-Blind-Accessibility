@@ -1,5 +1,5 @@
 // Unused ghost placements, colour variants and the extra Speedy Spirits (F1 > Enhancements >
-// Unused content, each off by default; US game). Docs: docs/UNUSED_CONTENT.md ("Second batch").
+// Unused content, each off by default; both releases). Docs: docs/UNUSED_CONTENT.md ("Second batch").
 //
 // Placements: the mansion's map archive (/Map/map2.szp) has path files (path/<name>, a JMP table
 // of x,y,z points the enemy code follows: EnZako reads path_name and getPathResource) that no
@@ -52,7 +52,9 @@ bool envFlag(const char* n) {
     const char* v = std::getenv(n);
     return v && *v && *v != '0';
 }
-bool us() { return port::usCodeFeature() == port::Avail::Yes; }
+// Both releases: the map archives are the running disc's (the European tables have other byte
+// layouts but the same rows; fields are found by name), the tables are reached through VA().
+bool us() { return true; }
 bool placementsOn() { return us() && (envFlag("LM_GHOST_PLACEMENTS") || port::settings().unused2.ghostPlacements); }
 bool spiritsOn() { return us() && (envFlag("LM_EXTRA_SPIRITS") || port::settings().unused2.extraSpeedySpirits); }
 bool pinkMiceOn() { return us() && (envFlag("LM_PINK_MICE") || port::settings().unused2.pinkMice); }
@@ -338,6 +340,30 @@ Bytes buildMapArchive2() {
                 t.setStr(r, "name", s.name);
                 t.setStr(r, "create_name", create);
                 t.setStr(r, "access_name", create);
+                t.setFloat(r, "pos_x", s.x);
+                t.setFloat(r, "pos_y", s.y);
+                t.setFloat(r, "pos_z", s.z);
+                t.setInt(r, "room_no", s.room);
+                t.rows.push_back(r);
+            }
+        });
+        // A Speedy Spirit row is created through its group (create_name "<room>_99"), which the
+        // room's observer with string_arg0 "<room>_99" (cond_type 15, do_type 10) creates. Every
+        // retail Speedy Spirit room has one; the extra rooms get a copy of room 14's.
+        editTable(a, "jmp/observerinfo", [&](Jmp& t) {
+            const Bytes* tmpl = nullptr;
+            for (const Bytes& r : t.rows)
+                if (t.str(r, "string_arg0") == "14_99") tmpl = &r;
+            if (!tmpl) {
+                log("[placements] observerinfo: no Speedy Spirit observer to copy");
+                return;
+            }
+            const Bytes obs = *tmpl;
+            for (const Spirit& s : kSpirits) {
+                Bytes r = obs;
+                char group[16];
+                std::snprintf(group, sizeof group, "%d_99", s.room);
+                t.setStr(r, "string_arg0", group);
                 t.setFloat(r, "pos_x", s.x);
                 t.setFloat(r, "pos_y", s.y);
                 t.setFloat(r, "pos_z", s.z);

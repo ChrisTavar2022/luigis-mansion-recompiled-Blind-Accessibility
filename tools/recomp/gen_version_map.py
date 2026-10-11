@@ -212,8 +212,23 @@ def _align(a, b, i):
     return None
 
 
+# Data the matcher cannot place (every reference is an r13 access among several alike in the
+# function), identified by hand with tools/pal_diff.py show. USA address -> (PAL address, note).
+DATA_OVERRIDES = {
+    # The health meter's argument: fn_8003E900 (identical) loads it for fn_800417F8,
+    # lwz r3, 0x56c(r13) / lwz r3, 0x578(r13).
+    0x804D84CC: (0x804C5B98, "lbl_804D84CC: health meter object, by hand (fn_8003E900)"),
+    # Health shown by the meter and its damage-flash value, s16 pairs in fn_800417F8:
+    # lha 0x530/0x532(r13) / lha 0x540/0x542(r13) (the matcher picked a neighbour for both).
+    0x804D8490: (0x804C5B60, "lbl_804D8490: health meter value, by hand (fn_800417F8)"),
+    0x804D8492: (0x804C5B62, "lbl_804D8492: health meter flash value, by hand (fn_800417F8)"),
+}
+
+
 def map_address(us, pal, u2p, dmap, addr, depth=0):
     """USA address -> (PAL address, how), or (None, why not)."""
+    if addr in DATA_OVERRIDES:
+        return DATA_OVERRIDES[addr]
     f = us.func_at(addr)
     if f is not None or addr in us.fat:  # code: same instruction in the matched function
         f = f or us.fat[addr]

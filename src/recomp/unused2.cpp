@@ -8,6 +8,7 @@
 #include "port/settings.h"
 #include "recomp/coop.h"
 #include "recomp/dev_tools.h"
+#include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
@@ -62,7 +63,7 @@ struct Served {
 };
 u32 labEvent26Wanted() {
     static const bool e = std::getenv("LM_LAB_EVENT26") != nullptr;
-    return (e || port::settings().unused2.labEvent26) && port::usCodeFeature() == port::Avail::Yes ? 1 : 0;
+    return e || port::settings().unused2.labEvent26 ? 1 : 0;
 }
 Served sServed[] = {
     {"/Event/event08.szp", buildLabEvent26, labEvent26Wanted},
@@ -77,6 +78,9 @@ s32 overlayEntry(const char* guestPath) {
     for (size_t i = 0; i < std::size(sServed); i++) {
         Served& s = sServed[i];
         if (std::strcmp(guestPath, s.path)) continue;
+        // A map the Hidden Mansion overlay serves (the other release's hidden mansion) wins: the
+        // rebuilt copy is made from this disc's normal mansion.
+        if (!std::strncmp(guestPath, "/Map/", 5) && hm::redirect(guestPath)) return -1;
         const u32 key = s.wanted();
         if (!key) continue;
         if (s.builtKey != key) {
@@ -111,8 +115,8 @@ void onMapSetup(Ctx& c) {
 }
 
 void onFrame(Ctx& c) {
-    static int sBorder = -1;  // patch 50: the bordered 3D view (USA code)
-    const int border = port::settings().unused2.borderedView && port::usCodeFeature() == port::Avail::Yes;
+    static int sBorder = -1;  // patch 50: the bordered 3D view (a USA and a European line)
+    const int border = port::settings().unused2.borderedView;
     if (border != sBorder) {
         sBorder = border;
         setPatch(50, border != 0);
@@ -129,7 +133,6 @@ void onModelLoaded(Ctx& c, u32 entry) { marioModelLoaded(c, entry); }
 
 void unusedSection() {
     auto& u = port::settings().unused2;
-    const bool us = port::usCodeFeature() == port::Avail::Yes;
     ImGui::SeparatorText("Second batch");
     sDirty |= ImGui::Checkbox("Play as Mario", &u.playAsMario);
     tip("The player uses the unused Mario model left in the game (bmario: the character table has a\n"
@@ -139,7 +142,6 @@ void unusedSection() {
         "voice clips for these actions). Also used by the cutscene Luigis.");
     note("next map load");
     {
-        ImGui::BeginDisabled(!us);
         sDirty |= ImGui::Checkbox("Bordered view", &u.borderedView);
         tip("The game's view setup has a third, unused layout: a fixed 560x400 3D view (40,30 to\n"
             "560,430) with a black border, like a TV-safe window. The HUD stays where it is.");
@@ -151,7 +153,8 @@ void unusedSection() {
             "script (the Professor is still \"Oya-Mar\"), with its own dialogue in the game's kana\n"
             "font. Its menu always offers the Hidden Mansion, as the early script did. Its debug\n"
             "flag block and its sound effects (an older numbering) are left out.\n"
-            "Translation: Debug > Text archive.");
+            "Translation: Debug > Text archive. The European version's text font has no kana, so\n"
+            "there the port's English translation is shown instead of the Japanese.");
         note("next lab visit");
         sDirty |= ImGui::Checkbox("Unused ghost placements", &u.ghostPlacements);
         tip("Places ghosts on paths the mansion's map data has but no ghost uses: Slim Bankshot in the\n"
@@ -172,8 +175,6 @@ void unusedSection() {
         sDirty |= ImGui::Checkbox("Mario as player 2", &u.marioP2);
         tip("In the 2-player mode (below), player 2 is Mario (the unused bmario model) instead of a\n"
             "second Luigi. Needs \"2-player mode (unfinished)\".");
-        ImGui::EndDisabled();
-        if (!us) note(port::availNote(port::usCodeFeature()));
     }
     if (sDirty) {
         port::saveSettings();
@@ -183,10 +184,8 @@ void unusedSection() {
 
 void gameplaySection() {
     auto& u = port::settings().unused2;
-    const bool us = port::usCodeFeature() == port::Avail::Yes;
     ImGui::SeparatorText("Unfinished Luigi states");
     ImGui::TextDisabled("Restored from code left in the game. All off by default.");
-    ImGui::BeginDisabled(!us);
     sDirty |= ImGui::Checkbox("Poison mushrooms poison Luigi", &u.poisonState);
     tip("Touching a poison mushroom no longer shrinks Luigi. Instead he plays the unused poisoned\n"
         "animation (doku_lp, with the dark \"poisoned\" eyes), stands still and loses health slowly.\n"
@@ -216,8 +215,6 @@ void gameplaySection() {
         sDirty |= ImGui::SliderInt("Burn damage", &u.overheatDamage, 0, 50);
         ImGui::Unindent();
     }
-    ImGui::EndDisabled();
-    if (!us) note(port::availNote(port::usCodeFeature()));
     if (sDirty) {
         port::saveSettings();
         sDirty = false;

@@ -516,6 +516,64 @@ void textArchiveWindow() {
 }
 
 // ---- the early script in the lab ------------------------------------------------------------
+namespace {
+// event26's message file with the port's English translation (kEvent26English) in place of the
+// Japanese, for a game whose message font has no kana (the European release). Message format:
+// entries separated by CR LF, line breaks inside an entry LF. Each translation is reflowed to
+// the retail English text box (at most 32 characters per line; retail English uses up to 33),
+// "Luigi" in the game's highlight colour as in the retail script. Untranslated entries (fillers
+// such as "dummy") are kept.
+rarc::Bytes event26EnglishMessages(const rarc::Bytes& japanese) {
+    std::vector<std::string> entries;
+    {
+        const std::string all(japanese.begin(), japanese.end());
+        size_t p = 0;
+        for (;;) {
+            const size_t q = all.find("\r\n", p);
+            entries.push_back(all.substr(p, q == std::string::npos ? std::string::npos : q - p));
+            if (q == std::string::npos) break;
+            p = q + 2;
+        }
+    }
+    constexpr size_t kWidth = 32;
+    for (size_t i = 0; i < entries.size() && i < std::size(kEvent26English); i++) {
+        const char* en = kEvent26English[i];
+        if (!en) continue;
+        std::string words(en);
+        for (char& ch : words)
+            if (ch == '\n') ch = ' ';
+        std::string out, line;
+        size_t p = 0;
+        while (p < words.size()) {
+            size_t q = words.find(' ', p);
+            if (q == std::string::npos) q = words.size();
+            const std::string w = words.substr(p, q - p);
+            p = q + 1;
+            if (w.empty()) continue;
+            if (!line.empty() && line.size() + 1 + w.size() > kWidth) {
+                out += line + "\n";
+                line.clear();
+            }
+            line += (line.empty() ? "" : " ") + w;
+        }
+        out += line;
+        std::string coloured;
+        for (size_t k = 0; k < out.size();) {
+            if (out.compare(k, 5, "Luigi") == 0) {
+                coloured += "<COLOR>(3)Luigi<COLOR>(0)";
+                k += 5;
+            } else {
+                coloured += out[k++];
+            }
+        }
+        entries[i] = coloured;
+    }
+    std::string joined;
+    for (size_t i = 0; i < entries.size(); i++) joined += (i ? "\r\n" : "") + entries[i];
+    return rarc::Bytes(joined.begin(), joined.end());
+}
+}  // namespace
+
 // With the option on, /Event/event08.szp (the lab's talk event, map 1 eventinfo) is served
 // rebuilt from the retail archive with event26's script and messages. Two changes: the debug
 // block at the top of event26 (four <FLAGON>s that mark the Boos released, the explanation
@@ -527,8 +585,29 @@ std::vector<u8> buildLabEvent26() {
     if (!retail.parse(rarc::decompress(rarc::readDisc("/Event/event08.szp")))) return {};
     if (!early.parse(rarc::decompress(rarc::readDisc("/Event/event26.szp")))) return {};
     const rarc::Item* txt = early.find("text/event26.txt");
-    const rarc::Item* csv = early.find("message/message26.csv");
-    if (!txt || !csv || !retail.find("text/event08.txt") || !retail.find("message/message8.csv")) return {};
+    if (!txt || !retail.find("text/event08.txt")) return {};
+    // Messages: the USA archives have one message/message<N>.csv; the European ones one file per
+    // language directory (event26: message/<language>/message26.csv, all six the same Japanese
+    // text; event08: message/<language>/book1.txt). The early messages take the retail file's
+    // place under the retail name.
+    static const char* const kLangs[] = {"english", "french", "german", "italian", "japanese", "spanish"};
+    std::vector<std::pair<std::string, rarc::Bytes>> messages;
+    if (const rarc::Item* csv = early.find("message/message26.csv"); csv && retail.find("message/message8.csv")) {
+        messages.emplace_back("message/message8.csv", csv->data);
+    } else {
+        // The European game draws messages with a Latin font (one byte per character), so the
+        // Japanese text would come out as garbage: every language gets the port's English
+        // translation instead (event26EnglishMessages), with the Japanese file's filler entries.
+        for (const char* l : kLangs) {
+            const rarc::Item* csvL = early.find(std::string("message/") + l + "/message26.csv");
+            const std::string dst = std::string("message/") + l + "/book1.txt";
+            if (csvL && retail.find(dst)) messages.emplace_back(dst, event26EnglishMessages(csvL->data));
+        }
+    }
+    if (messages.empty()) {
+        log("[text] early lab script: message files not found");
+        return {};
+    }
     std::string s(txt->data.begin(), txt->data.end());
     // Drop the debug flag block (first lines up to the "!!!!" separator).
     const size_t bang = s.find("!!!!!!!!!!");
@@ -541,7 +620,7 @@ std::vector<u8> buildLabEvent26() {
         s.erase(p, (q == std::string::npos ? s.size() : q + 1) - p);
     }
     retail.put("text/event08.txt", rarc::Bytes(s.begin(), s.end()));
-    retail.put("message/message8.csv", csv->data);
+    for (auto& [path, data] : messages) retail.put(path, std::move(data));
     log("[text] early lab script served as event08 (%zu bytes of script)", s.size());
     return rarc::yay0Store(retail.build());
 }
