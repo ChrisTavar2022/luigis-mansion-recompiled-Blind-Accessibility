@@ -7,6 +7,7 @@
 #include <dolphin/gx/GXAurora.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <chrono>
@@ -84,12 +85,22 @@ struct Patch {
     u32 source, slot;
     u16 stride = 0, posOffset = 0;  // Verts
     u32 bundle = ~0u;  // the draw it belongs to (index into Tape::bundleIds)
+    u16 view = 0xFFFF;  // index into Tape::views: the camera it was noted under
+    u8 role = 0;        // 1: a shadow receiver's texture matrix (noteShadowLight)
+};
+
+using M34 = std::array<f32, 12>;
+struct ShadowLight {
+    bool valid = false;
+    M34 lv{}, kp{}, kr{};
 };
 
 struct Tape {
     std::vector<u8> bytes;
     std::vector<Patch> patches;
     std::vector<u64> bundleIds;  // per draw: what is drawn (display list, vertex layout)
+    std::vector<M34> views;      // camera view matrices the values were noted under
+    ShadowLight shadow;
     std::vector<std::vector<u8>> arrays;  // vertex-array copies the tape's array loads point at
     u64 arrayBytes = 0;
     std::vector<std::shared_ptr<const std::vector<u8>>> textures;  // texture/TLUT copies its loads point at
@@ -128,6 +139,23 @@ u32 sBase = 0;            // start of the current capture segment in sScratch
 std::vector<Patch> sPatches;
 u32 sUngrouped = 0;  // patches from here on wait for their draw
 std::vector<u64> sBundleIds;
+std::vector<M34> sViews;
+ShadowLight sShadow;
+int sShadowRecv = 0;
+
+// The camera the game is drawing with now (see viewMatrixSource), as an index into sViews.
+u16 sampleView() {
+    const u32 src = viewMatrixSource();
+    if (!src) return 0xFFFF;
+    M34 m;
+    for (int i = 0; i < 12; i++) m[i] = std::bit_cast<f32>(rd32(src + 4 * i));
+    if (!sViews.empty() && sViews.back() == m) return u16(sViews.size() - 1);
+    for (size_t i = sViews.size() > 8 ? sViews.size() - 8 : 0; i < sViews.size(); i++)
+        if (sViews[i] == m) return u16(i);
+    if (sViews.size() >= 0xFFF0) return 0xFFFF;
+    sViews.push_back(m);
+    return u16(sViews.size() - 1);
+}
 std::vector<std::pair<u32, u32>> sLights;  // extra-light commands of the tape being captured
 bool sOverflowLogged = false;
 u32 sDumpAt = ~0u, sDumpFrame = 0;
@@ -814,6 +842,8 @@ void beginTape() {
     sBase = 0;
     sPatches.clear();
     sBundleIds.clear();
+    sViews.clear();
+    sShadow = {};
     sLights.clear();
     sUngrouped = 0;
     AuroraCaptureBegin(sScratch.data(), kCaptureSize);
@@ -848,6 +878,9 @@ void endTape(u32 retraceCount) {
     sPatches = {};
     tape->bundleIds = std::move(sBundleIds);
     sBundleIds = {};
+    tape->views = std::move(sViews);
+    sViews = {};
+    tape->shadow = sShadow;
     tape->lights = std::move(sLights);
     sLights = {};
     tape->arrays = std::move(arrays);
@@ -931,6 +964,8 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     if (at + 5 + 4 * u32(first + nFloats) > sBase + AuroraCapturePos() || sScratch[at] != 0x10) return;
     Patch p{at + 5 + 4 * u32(first), u16(nFloats), kind, 0, 0, source, slot};
     p.origin = mix(u64(kind) << 56 ^ source);
+    if (kind == Kind::TexMtx && sShadowRecv > 0) p.role = 1;
+    if (kind == Kind::PosMtx || kind == Kind::NrmMtx || kind == Kind::Light || p.role) p.view = sampleView();
     detail::drawLog("  #%u kind %u slot %u src %08X first %.2f %.2f %.2f %.2f", u32(sPatches.size()), u32(kind), slot,
                     source, loadBE(&sScratch[p.offset]), nFloats > 1 ? loadBE(&sScratch[p.offset + 4]) : 0.0f,
                     nFloats > 2 ? loadBE(&sScratch[p.offset + 8]) : 0.0f, nFloats > 3 ? loadBE(&sScratch[p.offset + 12]) : 0.0f);
@@ -969,6 +1004,16 @@ void noteColors(u32 at) {
         }
     }
 }
+
+void noteShadowLight(const float lightView[12], const float kProj[12], const float kRamp[12]) {
+    if (!capturing()) return;
+    sShadow.valid = true;
+    std::copy(lightView, lightView + 12, sShadow.lv.begin());
+    std::copy(kProj, kProj + 12, sShadow.kp.begin());
+    std::copy(kRamp, kRamp + 12, sShadow.kr.begin());
+}
+void pushShadowReceivers() { sShadowRecv++; }
+void popShadowReceivers() { sShadowRecv = sShadowRecv > 0 ? sShadowRecv - 1 : 0; }
 
 void detail::noteDrawColor(u32 at, u32 reg, u8 fmt) {
     if (!capturing() || sNoBlend > 0 || sBundleIds.empty()) return;
@@ -1022,6 +1067,194 @@ namespace {
 
 u64 sEndSeq[4] = {};  // per replay state slot: the tape whose end state it holds (host side)
 
+// --- camera factoring (3x4 row-major matrices as the affine 4x4 [M; 0 0 0 1]) ---
+// out = a x b (a may be any 3x4, e.g. a projective texture matrix's rows).
+void compose(const f32* a, const f32* b, f32* out) {
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 4; c++)
+            out[4 * r + c] = a[4 * r] * b[c] + a[4 * r + 1] * b[4 + c] + a[4 * r + 2] * b[8 + c] + (c == 3 ? a[4 * r + 3] : 0.0f);
+}
+// Inverse of the 3x3 part (adjugate); false if singular.
+bool invert33(const f32* m, int cols, f32 out[9]) {
+    const f32 a = m[0], b = m[1], c = m[2], d = m[cols], e = m[cols + 1], f = m[cols + 2], g = m[2 * cols],
+              h = m[2 * cols + 1], i = m[2 * cols + 2];
+    const f32 A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+    const f32 det = a * A + b * B + c * C;
+    if (!(std::fabs(det) > 1e-12f) || !std::isfinite(det)) return false;
+    const f32 k = 1.0f / det;
+    out[0] = A * k, out[1] = -(b * i - c * h) * k, out[2] = (b * f - c * e) * k;
+    out[3] = B * k, out[4] = (a * i - c * g) * k, out[5] = -(a * f - c * d) * k;
+    out[6] = C * k, out[7] = -(a * h - b * g) * k, out[8] = (a * e - b * d) * k;
+    return true;
+}
+// out = K^-1 x T for affine-like 3x4 K (solves T = K x W for W).
+bool solveAffine(const f32* k, const f32* t, f32* out) {
+    f32 inv[9];
+    if (!invert33(k, 4, inv)) return false;
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 4; c++) {
+            f32 s = 0;
+            for (int j = 0; j < 3; j++) s += inv[3 * r + j] * (t[4 * j + c] - (c == 3 ? k[4 * j + 3] : 0.0f));
+            out[4 * r + c] = s;
+        }
+    return true;
+}
+bool invertAffine(const f32* m, f32* out) {
+    static const f32 kId[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    return solveAffine(m, kId, out);
+}
+// A camera view matrix: rotation (orthonormal rows) and translation.
+bool rigidView(const f32* v) {
+    for (int r = 0; r < 3; r++)
+        for (int s = r; s < 3; s++) {
+            const f32 d = v[4 * r] * v[4 * s] + v[4 * r + 1] * v[4 * s + 1] + v[4 * r + 2] * v[4 * s + 2];
+            if (!(std::fabs(d - (r == s ? 1.0f : 0.0f)) < 2e-3f)) return false;
+        }
+    return true;
+}
+// Blended camera for a pair of views (cached per replay: a tape has few views).
+struct ViewPair {
+    u32 key;
+    bool ok;
+    M34 va, vb, vt;  // views and blended view
+    M34 ia, ib, it;  // inverses
+};
+std::vector<ViewPair> sViewPairs;
+const ViewPair* viewPair(const Tape& a, u16 qa, const Tape& b, u16 qb, float alpha) {
+    if (qa >= a.views.size() || qb >= b.views.size()) return nullptr;
+    const u32 key = u32(qa) << 16 | qb;
+    for (const ViewPair& vp : sViewPairs)
+        if (vp.key == key) return vp.ok ? &vp : nullptr;
+    ViewPair vp{key, false};
+    vp.va = a.views[qa], vp.vb = b.views[qb];
+    vp.ok = rigidView(vp.va.data()) && rigidView(vp.vb.data()) && blendRigid(vp.va.data(), vp.vb.data(), 4, alpha, vp.vt.data()) &&
+            invertAffine(vp.va.data(), vp.ia.data()) && invertAffine(vp.vb.data(), vp.ib.data()) &&
+            invertAffine(vp.vt.data(), vp.it.data());
+    sViewPairs.push_back(vp);
+    return sViewPairs.back().ok ? &sViewPairs.back() : nullptr;
+}
+// The blended light of a pair of tapes with shadow maps: LV(t) and P(t) for both K matrices.
+struct LightPair {
+    bool ok = false;
+    M34 lvt, kpt, krt;  // K(t) = P(t) x LV(t)
+};
+LightPair sLightPair;
+void makeLightPair(const Tape& a, const Tape& b, float alpha) {
+    sLightPair = {};
+    if (!a.shadow.valid || !b.shadow.valid) return;
+    M34 ia, ib;
+    if (!rigidView(a.shadow.lv.data()) || !rigidView(b.shadow.lv.data()) || !invertAffine(a.shadow.lv.data(), ia.data()) ||
+        !invertAffine(b.shadow.lv.data(), ib.data()) ||
+        !blendRigid(a.shadow.lv.data(), b.shadow.lv.data(), 4, alpha, sLightPair.lvt.data()))
+        return;
+    for (int which = 0; which < 2; which++) {
+        const M34& ka = which ? a.shadow.kr : a.shadow.kp;
+        const M34& kb = which ? b.shadow.kr : b.shadow.kp;
+        M34 pa, pb, pt;
+        compose(ka.data(), ia.data(), pa.data());
+        compose(kb.data(), ib.data(), pb.data());
+        for (int k = 0; k < 12; k++) pt[k] = pa[k] + (pb[k] - pa[k]) * alpha;
+        compose(pt.data(), sLightPair.lvt.data(), (which ? sLightPair.krt : sLightPair.kpt).data());
+    }
+    sLightPair.ok = true;
+}
+float diff12(const f32* x, const f32* y) {
+    float d = 0;
+    for (int k = 0; k < 12; k++) d += std::fabs(x[k] - y[k]) / (1.0f + std::fabs(y[k]));
+    return d;
+}
+// A shadow receiver's texture matrix rebuilt from the blended light (see noteShadowLight).
+bool blendShadowReceiver(const Tape& a, const Patch& q, const f32* ta, const Tape& b, const Patch& p, const f32* tb,
+                         float alpha, f32* out) {
+    if (!sLightPair.ok || p.count != 12) return false;
+    if (p.slot >= 64) {  // post-transform matrix: K x V^-1 (input is view space)
+        const ViewPair* vp = viewPair(a, q.view, b, p.view, alpha);
+        if (!vp) return false;
+        M34 kb;
+        compose(tb, vp->vb.data(), kb.data());
+        const bool ramp = diff12(kb.data(), b.shadow.kr.data()) < diff12(kb.data(), b.shadow.kp.data());
+        compose((ramp ? sLightPair.krt : sLightPair.kpt).data(), vp->it.data(), out);
+        return true;
+    }
+    // TEXMTX: K x W (input is model space): the receiver's own W blended rigidly.
+    M34 wa, wb, wt;
+    const bool ramp = [&] {
+        M34 w1, w2;
+        const bool r1 = solveAffine(b.shadow.kr.data(), tb, w1.data()), r2 = solveAffine(b.shadow.kp.data(), tb, w2.data());
+        if (r1 != r2) return r1;
+        // The right K leaves a world matrix with orthogonal columns.
+        auto skew = [](const M34& w) {
+            float s = 0;
+            for (int i = 0; i < 3; i++)
+                for (int j = i + 1; j < 3; j++) s += std::fabs(w[i] * w[j] + w[4 + i] * w[4 + j] + w[8 + i] * w[8 + j]);
+            return s;
+        };
+        return skew(w1) < skew(w2);
+    }();
+    if (!solveAffine((ramp ? a.shadow.kr : a.shadow.kp).data(), ta, wa.data()) ||
+        !solveAffine((ramp ? b.shadow.kr : b.shadow.kp).data(), tb, wb.data()))
+        return false;
+    if (!blendRigid(wa.data(), wb.data(), 4, alpha, wt.data()))
+        for (int k = 0; k < 12; k++) wt[k] = wa[k] + (wb[k] - wa[k]) * alpha;
+    compose((ramp ? sLightPair.krt : sLightPair.kpt).data(), wt.data(), out);
+    return true;
+}
+// view x world values blended as blended view x blended world.
+bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, const Patch& p, const f32* vb, float alpha,
+                   f32* out) {
+    if (p.view == 0xFFFF || q.view == 0xFFFF) return false;
+    const ViewPair* vp = viewPair(a, q.view, b, p.view, alpha);
+    if (!vp) return false;
+    if (p.kind == Kind::PosMtx && p.count == 12) {
+        M34 wa, wb, wt;
+        compose(vp->ia.data(), va, wa.data());
+        compose(vp->ib.data(), vb, wb.data());
+        if (!blendRigid(wa.data(), wb.data(), 4, alpha, wt.data())) return false;
+        compose(vp->vt.data(), wt.data(), out);
+        return true;
+    }
+    // Rotation parts (rows of a rigid view): R^T x n (world), R(t) x n (view).
+    const auto rotT = [](const M34& v, const f32* n, f32* o) {
+        for (int r = 0; r < 3; r++) o[r] = v[r] * n[0] + v[4 + r] * n[1] + v[8 + r] * n[2];
+    };
+    const auto rot = [](const M34& v, const f32* n, f32* o) {
+        for (int r = 0; r < 3; r++) o[r] = v[4 * r] * n[0] + v[4 * r + 1] * n[1] + v[4 * r + 2] * n[2];
+    };
+    if (p.kind == Kind::NrmMtx && p.count == 9) {
+        f32 na[9], nb[9], nt[9];
+        for (int c = 0; c < 3; c++) {  // columns: n_world = R^T n_view
+            const f32 ca[3] = {va[c], va[3 + c], va[6 + c]}, cb[3] = {vb[c], vb[3 + c], vb[6 + c]};
+            f32 wa[3], wb[3];
+            rotT(vp->va, ca, wa);
+            rotT(vp->vb, cb, wb);
+            for (int r = 0; r < 3; r++) na[3 * r + c] = wa[r], nb[3 * r + c] = wb[r];
+        }
+        if (!blendRigid(na, nb, 3, alpha, nt)) return false;
+        for (int c = 0; c < 3; c++) {
+            const f32 cw[3] = {nt[c], nt[3 + c], nt[6 + c]};
+            f32 cv[3];
+            rot(vp->vt, cw, cv);
+            for (int r = 0; r < 3; r++) out[3 * r + c] = cv[r];
+        }
+        return true;
+    }
+    if (p.kind == Kind::Light && p.count == 6) {
+        f32 pa[3], pb[3], da[3], db[3], ra[3], rb[3];
+        for (int k = 0; k < 3; k++) ra[k] = va[k] - vp->va[4 * k + 3], rb[k] = vb[k] - vp->vb[4 * k + 3];
+        rotT(vp->va, ra, pa);
+        rotT(vp->vb, rb, pb);
+        rotT(vp->va, va + 3, da);
+        rotT(vp->vb, vb + 3, db);
+        f32 pw[3], dw[3];
+        for (int k = 0; k < 3; k++) pw[k] = pa[k] + (pb[k] - pa[k]) * alpha, dw[k] = da[k] + (db[k] - da[k]) * alpha;
+        rot(vp->vt, pw, out);
+        for (int k = 0; k < 3; k++) out[k] += vp->vt[4 * k + 3];
+        rot(vp->vt, dw, out + 3);
+        return true;
+    }
+    return false;
+}
+
 // Builds tape b with its values blended from a toward b (alpha 1 = b as captured) into
 // sReplay and submits it. `dump` redirects the LM_FRAME_DUMP copy (LM_INTERP_TEST).
 void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
@@ -1032,6 +1265,8 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
         a = nullptr;
     }
     if (a && alpha < 1.0f) {
+        sViewPairs.clear();
+        makeLightPair(*a, b, alpha);
         for (u32 i = 0; i < b.patches.size(); i++) {
             const s32 j = b.partner[i];
             if (j < 0) continue;
@@ -1106,7 +1341,10 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 }
                 continue;
             }
-            if (!((p.kind == Kind::PosMtx && p.count == 12 && blendRigid(va, vb, 4, alpha, out)) ||
+            if (p.role == 1) {  // a shadow receiver: rebuilt from the blended light, or as captured
+                if (!blendShadowReceiver(*a, q, va, b, p, vb, alpha, out)) std::copy(vb, vb + p.count, out);
+            } else if (!(blendFactored(*a, q, va, b, p, vb, alpha, out) ||
+                  (p.kind == Kind::PosMtx && p.count == 12 && blendRigid(va, vb, 4, alpha, out)) ||
                   (p.kind == Kind::NrmMtx && p.count == 9 && blendRigid(va, vb, 3, alpha, out)) ||
                   (p.kind == Kind::TexMtx && p.count == 8 && blendSpin(va, vb, alpha, out))))
                 for (int k = 0; k < p.count; k++)

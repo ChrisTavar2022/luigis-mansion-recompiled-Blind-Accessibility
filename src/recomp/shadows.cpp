@@ -175,8 +175,11 @@ bool fitFrustum(u32 cam, float lightAspect, float viewAspect, Fit& fit) {
 
 bool sCasterSnap = false;
 // LM_SHADOW_SNAP=0 (test aid): blend the shadow pass and the receivers' shadow matrices as before.
-int shadowInterpMode() {  // LM_SHADOW_SNAP: 0 blend as before, 1 snap (default), 2 linear caster pass
-    static const int v = [] { const char* e = std::getenv("LM_SHADOW_SNAP"); return e ? std::atoi(e) : 1; }();
+// LM_SHADOW_SNAP: 3 (default) consistent blend: the caster pass factored by the light's camera and
+// the receivers' shadow matrices rebuilt from the same blended light (interp::noteShadowLight);
+// 1 snap (shadows at 30 Hz); 0 blend each matrix on its own (inconsistent); 2 linear caster pass.
+int shadowInterpMode() {
+    static const int v = [] { const char* e = std::getenv("LM_SHADOW_SNAP"); return e ? std::atoi(e) : 3; }();
     return v;
 }
 bool shadowSnap() { return shadowInterpMode() == 1; }
@@ -279,7 +282,7 @@ HLE(fn_8005D984) {
     // matrices, element-wise projection) and the receivers' projection matrices (row-wise) gave
     // two different in-between light positions, so the shadows slid back and forth at
     // 60/120 fps while the flashlight moved.
-    if (active && shadowInterpMode() != 0 && !sCasterSnap) {
+    if (active && (shadowInterpMode() == 1 || shadowInterpMode() == 2) && !sCasterSnap) {
         if (shadowSnap()) interp::pushNoBlend();
         else interp::pushLinearPosMtx();
         sCasterSnap = true;
@@ -305,6 +308,16 @@ HLE(fn_8005D984) {
         wrf32(cam + kCamAspect, wideAspect);
     }
     callOriginal(c, "fn_8005D984");
+    if (active && shadowInterpMode() == 3) {
+        // Frame interpolation: the light pass's camera and the receivers' K matrices of this frame.
+        float lv[12], kp[12], kr[12];
+        for (int k = 0; k < 12; k++) {
+            lv[k] = rdf32(cam + VOFF(0x18C, 0x198) + 4 * k);
+            kp[k] = rdf32(VA(0x803CFC0C) + 0xB0 + 4 * k);
+            kr[k] = rdf32(VA(0x803CFC0C) + 0xE0 + 4 * k);
+        }
+        interp::noteShadowLight(lv, kp, kr);
+    }
     wrf32(cam + kCamLightFov, fov);
     wrf32(cam + kCamAspect, aspect);
     wrf32(cam + kCamLightNear, zNear);
@@ -331,16 +344,23 @@ HLE(fn_8005D8CC) {
 // TEXMTX1 = light projection x model) and actors (fn_8005DD50: post-transform matrices
 // PT18/PT19 = ramp / light projection x inverse view). Snapped like the caster pass.
 HLE(fn_8005DCA0) {
-    if (!shadowSnap()) return callOriginal(c, "fn_8005DCA0");
-    interp::pushNoBlend();
+    const int mode = shadowInterpMode();
+    if (mode == 1) interp::pushNoBlend();
+    if (mode == 3) interp::pushShadowReceivers();
     callOriginal(c, "fn_8005DCA0");
-    interp::popNoBlend();
+    if (mode == 1) interp::popNoBlend();
+    if (mode == 3) interp::popShadowReceivers();
 }
 HLE(fn_8005DD50) {
-    if (!shadowSnap()) return callOriginal(c, "fn_8005DD50");
-    interp::pushNoBlend();
+    const int mode = shadowInterpMode();
+    if (mode == 1) interp::pushNoBlend();
+    if (mode == 3) interp::pushShadowReceivers();
     callOriginal(c, "fn_8005DD50");
-    interp::popNoBlend();
+    if (mode == 1) interp::popNoBlend();
+    if (mode == 3) interp::popShadowReceivers();
 }
+
+// Frame interpolation camera factoring (interp.h): the game camera's GX view matrix.
+u32 interp::viewMatrixSource() { return VA(0x803A3820) + VOFF(0x18C, 0x198); }
 
 }  // namespace recomp

@@ -49,6 +49,23 @@ void noteExtraLights(u32 at, u32 count);
 // after an Aurora call that wrote them, marked at `at`. They belong to the next draw.
 void noteColors(u32 at);
 
+// Camera factoring: position/normal matrices and lights are view x world; they are blended as
+// a blended camera times a blended world transform (objects move with the scene as one rigid
+// whole instead of each product on its own path). The game's current view matrix (3x4) is read
+// from guest memory at viewMatrixSource() (game-specific, e.g. shadows.cpp for LM; 0 = none)
+// whenever a value is noted, so a pass drawn from another camera (the shadow light) factors by
+// that camera.
+u32 viewMatrixSource();
+
+// Shadow maps (LM, shadows.cpp): the light pass's view LV and the receivers' projection K = P x LV
+// and depth-ramp R x LV matrices of this frame. Receivers' shadow texture matrices noted between
+// push/popShadowReceivers are K x W (TEXMTX: world W) or K x V^-1 (post-transform: view V); they
+// are rebuilt from the blended light (P, LV) and the blended W or V, the same blend the caster
+// pass is rendered with, so the shadow map and its lookup always agree.
+void noteShadowLight(const float lightView[12], const float kProj[12], const float kRamp[12]);
+void pushShadowReceivers();
+void popShadowReceivers();
+
 // LM_FRAME_DUMP's EFB copy (hle_gx GXCopyDisp), marked at `at`: LM_INTERP_TEST
 // redirects it per replay.
 void noteDump(u32 at, const void* target, u32 frameNo);
