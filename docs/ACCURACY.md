@@ -462,3 +462,32 @@ changes were isolated with the switches and with the frames that are determinist
   scale of the run-to-run noise plus the snap's edge shifts.
 
 Evidence images (agent scratch, not in the repo): `scratchpad/hw/report/`.
+
+## 10. Implemented fixes (branch `accuracy-fixes`, 2026-10-11)
+
+Aurora patches (same file names as SMS; `0176` and `0179` are LM adaptations):
+
+| Patch | What | LM effect / verification |
+|---|---|---|
+| 0123 | per-draw debug log (`AURORA_DRAW_LOG`, `_FRAMES`, `AURORA_DRAW_SKIP(_MATCH)`); frames are Aurora's recorded frames (about the present count, not the `LM_FRAME_DUMP` number: SMS's 0201 mapping did not apply cleanly and was not taken) | debug only |
+| 0170 + 0179 | early Z + failing alpha test writes Z (candidate 2): such draws are split into a depth-only and a colour pass. **0179**: F1 > Visuals > Rendering "Early depth for cut-out textures" (`early_z_alpha_depth`, `GX_AURORA_ACCURACY_EARLY_Z`, on; `AURORA_EARLY_Z_SPLIT=0/1/ab` overrides), and a fix: `draw_prim` merges the next draw into the last draw command, so geometry following a split draw got only the colour pass without a depth write (Game Boy Horror hand model drawn through, parts missing). No draw merges into a split one now | with the fix, nursery dumps (GBH open, flashlight, rooms) are identical to the split off (max 3-4 levels = 6-bit blending dither): the game's early-Z cut-out depth makes no visible difference in the scenes tested |
+| 0172 | direct texture lookups honour the texcoord's SU scale | no change in LM frames (boss map byte-identical with only 0172/0173/0178 active) |
+| 0173 | GX lines widen along the minor axis | LM draws 1-pixel lines only |
+| 0174 | `AURORA_FIFO_INLINE=1` (debug) | for the mouth flicker test |
+| 0175 | Dawn implicit device synchronization (`AURORA_NO_DEVICE_SYNC=1` for A/B) | crash fix, no image change |
+| 0176 | 6-bit blending (candidate 4): F1 > Visuals > Rendering "6-bit blending" (`efb_blend_6bit`, on). LM chain has no 0113, so replace blends (ONE/ZERO, logic COPY) keep their in-shader quantization and only real blends are resolved after the pass; the precache rebuild maps listed blended RGBA6 configs to the 0176 variant (no re-sweep needed) | GBH / HUD edges change by at most 3-4 levels |
+| 0177 | frame submitted before the swap-chain acquire (`AURORA_LATE_SUBMIT=1` for A/B) | readbacks land earlier |
+| 0178 | SDK light init: `GXInitLightSpot` SHARP `a0` over `(1-cr)^2`, RING1 `a0` negative, `GXInitLightDistAttn` `ref_br <= 0` = off (A5, A6), as LM's own SDK (`decomp/libs/dolphin/src/gx/GXLight.c`) | LM uses none of these cases: no change |
+
+Verification: 30 fps, 4:3, render scale 1 in the nursery, foyer, lit ballroom (`LM_ROOMS_LIT`) and
+the Boolossus map (11); enhanced lighting fully on (per-pixel, light shadow maps, AO, ghost and
+world lights) in the nursery and ballroom; 120 fps + 16:9 + render scale 2 with `LM_INTERP_TEST=3`
+(0 stale pixels, 0 snapped/unpaired values); shipped exe fresh setup (`--setup-auto`) to the foyer.
+"Before" = the same build with `LM_ACCURACY=0x07 AURORA_LATE_SUBMIT=1 AURORA_NO_DEVICE_SYNC=1`.
+These scenes are not frame-deterministic between runs (ghost/boss positions, lightning timing);
+only the Game Boy Horror frames are, and there the runs differ by at most 4 levels.
+
+Not done: the mouth/hose flicker fix (candidate 1). `AURORA_FIFO_INLINE=1` is available for the
+test; at 30 fps draws still read guest arrays from Aurora's FIFO thread, while above 30 fps the
+interpolation tape already copies the arrays at draw time. The 0170 depth-only pipeline variants
+are not in `data/pipelines.bin` (built on first use).
