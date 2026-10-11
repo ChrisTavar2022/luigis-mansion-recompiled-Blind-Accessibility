@@ -630,18 +630,28 @@ static void indEndFrame() {
     sIndFrame.clear();
 }
 
+static u32 sDlFrame = 0;
+// LM_DL_TRACE_FRAMES=<first>,<last>: only those frames (by the trace's own frame count).
+static bool dlTraceFrameOn() {
+    static const std::pair<u32, u32> range = [] {
+        u32 a = 0, b = ~0u;
+        if (const char* e = std::getenv("LM_DL_TRACE_FRAMES")) std::sscanf(e, "%u,%u", &a, &b);
+        return std::pair<u32, u32>{a, b};
+    }();
+    return sDlFrame >= range.first && sDlFrame <= range.second;
+}
 static FILE* dlTraceFile() {
     static FILE* f = [] { const char* p = std::getenv("LM_DL_TRACE"); return p ? std::fopen(p, "w") : nullptr; }();
-    return f;
+    return f && dlTraceFrameOn() ? f : nullptr;
 }
-static u32 sDlFrame = 0;
 
 u32 copyDispCount();
 void gx::endFrame() {
     endPendingDraw();
     efbcopy::onFrame(copyDispCount());
     indEndFrame();
-    if (FILE* f = dlTraceFile()) std::fprintf(f, "\nF%u", sDlFrame++), std::fflush(f);
+    if (FILE* f = dlTraceFile()) std::fprintf(f, "\nF%u", sDlFrame), std::fflush(f);
+    sDlFrame++;
     if (!sTrace) return;
     static u32 frameNo = 0;
     if (sTraceFrame != sTraceLast) {
@@ -1193,7 +1203,10 @@ GXHLE(GXSetDither) {
 GXHLE(GXSetZCompLoc) {
     gxAudit("GXSetZCompLoc %u", c.r[3]); GXSetZCompLoc(GXBool(c.r[3])); }
 GXHLE(GXSetBlendMode) {
-    gxAudit("GXSetBlendMode %u %u %u %u", c.r[3], c.r[4], c.r[5], c.r[6]);
+    if (c.r[3] == GX_BM_LOGIC)  // logic ops: where the game uses them (Aurora 0026)
+        gxAudit("GXSetBlendMode %u %u %u %u from %s", c.r[3], c.r[4], c.r[5], c.r[6], guestChain(c).c_str());
+    else
+        gxAudit("GXSetBlendMode %u %u %u %u", c.r[3], c.r[4], c.r[5], c.r[6]);
     GXSetBlendMode(GXBlendMode(c.r[3]), GXBlendFactor(c.r[4]), GXBlendFactor(c.r[5]), GXLogicOp(c.r[6]));
 }
 GXHLE(GXSetDstAlpha) { GXSetDstAlpha(GXBool(c.r[3]), u8(c.r[4])); }

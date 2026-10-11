@@ -150,7 +150,8 @@ frames where the clipped doorway is genuinely off screen.
 
 **Debug aid.** `LM_DL_TRACE=<file>` writes one line per frame (`F<n>`) listing every
 `GXCallDisplayList` as `addr:size@caller<caller...` (guest stack back chain). Diffing the sets
-of consecutive frames finds draws that drop out for a few frames.
+of consecutive frames finds draws that drop out for a few frames. `LM_DL_TRACE_FRAMES=<first>,<last>`
+limits the trace to a window of its own frame numbers.
 
 **Side observation (not the cause, not changed).** Patch 0002 shares dynamically sized array
 uploads per frame by pointer (`sDynamicUploads`); `GXInvalidateVtxCache` clears each array's
@@ -287,7 +288,7 @@ configured/all-off every s seconds and log fps per phase, for A/B screenshots of
 | Lighting | spot (clamp diffuse), specular (shininess form), dist-attn fns, SRTG from COLOR0 | per-vertex, same formulas | **Reviewed, no change** (SRTG lit-color fix is in 0008). Open: Aurora normalizes transformed normals; hardware may not |
 | Indirect | Only the Mario painting at the Secret Altar (`fn_8005FDD4`, event 6) and an invisible copy of it in event 5; J3D materials on the disc have no indirect stages | float offsets | **Fixed** (patch 0014, see "Indirect effects"): integer offsets (s1.10 x s8 >> 3, scale shift, 1/128-texel fixed-point coordinates) in integer TEV mode; ITF_5/4/3 low-bit offsets and positive-modulo wraps always. Offsets are in logical texels, so they scale with resolution |
 | Lines/points | width 6 (1 px), viewport jitter field=1 only | width/6, perpendicular expansion | No change needed for LM (hardware widens along x/y; noted) |
-| Logic ops, dst alpha | no logic op; dst alpha used | fine | No change |
+| Logic ops, dst alpha | no logic op (`LM_GX_AUDIT` boot to foyer: blend modes NONE/BLEND only; logic-mode calls log their guest call chain); dst alpha used | only CLEAR/COPY/NOOP, any other logic op was a fatal error | **Robustness** (patch 0026, from SMS 0140): all 16 ops; exact where a blend can express them (CLEAR, COPY, NOOP, SET, INV, INVCOPY via a white/inverted shader source in the free high bits of `ShaderConfig::fogType`, so existing pipeline configs and the shipped precache list stay valid), mask-exact for AND/OR/REVAND/INVAND/NOR/INVOR, XOR/EQUIV/REVOR/NAND approximated |
 
 ### Toggles (F1 > Visuals > Rendering, all on by default, persisted in settings.ini `[rendering]`)
 
