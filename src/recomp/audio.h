@@ -4,6 +4,8 @@
 // (host output through SDL3, WAV capture). See docs/AUDIO.md.
 #include "recomp/ctx.h"
 
+#include <chrono>
+
 namespace recomp::audio {
 
 // The console's real AI sample rates: the "48 kHz" clock is 54 MHz / 1124 and the
@@ -17,6 +19,10 @@ void dspCommand(const u32* words, u32 count);
 // DSPReleaseHalt: the CPU finished its per-subframe channel updates; mix the next
 // subframe. Returns true when a subframe was mixed (the DSP interrupt is due).
 bool dspRunSubframe();
+// Host thread safe: a DSP frame is being mixed (from its sync-frame command to its last
+// subframe), and the steady_clock time its last frame finished.
+bool dspFrameBusy();
+std::chrono::steady_clock::time_point dspFrameEnd();
 
 // Per output sample of the DSP's stereo mix, the parts that did not come from the
 // front buses, at the output level: lExtra / rExtra are what the centre, surround and

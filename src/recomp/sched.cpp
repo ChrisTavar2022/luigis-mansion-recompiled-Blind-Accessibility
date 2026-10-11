@@ -64,6 +64,7 @@ constexpr u32 kQueueJoin = 0x2E8;
 constexpr u32 kStackBase = 0x304;
 constexpr u32 kStackEnd = 0x308;
 constexpr u16 kStateReady = 1, kStateRunning = 2, kStateWaiting = 4, kStateMoribund = 8;
+constexpr u32 kHostWaitQueue = 0xFFFFFFFC;  // releaseForHost(): not a guest address
 
 std::mutex sM;
 std::vector<GuestThread*> sThreads;  // creation order breaks priority ties
@@ -76,6 +77,7 @@ thread_local bool tInIrq = false;
 
 std::mutex sIrqM;
 std::deque<std::function<void(Ctx&)>> sIrqs;
+std::atomic<s64> sPendingSince{0};  // LM_IRQ_STALL: when the oldest queued interrupt was posted
 Ctx sIrqCtx;
 u32 sIrqStackTop = 0;
 
@@ -142,6 +144,7 @@ void runIrqs() {
             }
             fn = std::move(sIrqs.front());
             sIrqs.pop_front();
+            if (sIrqs.empty()) sPendingSince = 0;
         }
         Ctx& c = sIrqCtx;
         c.r[1] = sIrqStackTop;
@@ -214,6 +217,7 @@ GuestThread* current() { return tSelf; }
 u32 currentGuest() { return tSelf ? tSelf->guest : 0; }
 Ctx& ctxOf(GuestThread* t) { return t->ctx; }
 bool inIrq() { return tInIrq; }
+bool interruptsEnabled() { return tSelf && !tInIrq && (tSelf->ctx.msr & 0x8000) != 0; }
 
 bool create(u32 guest, u32 entry, u32 arg, u32 stackTop, u32 stackSize, s32 prio, u32 attr) {
     if (prio < 0 || prio > 31) return false;
@@ -332,6 +336,50 @@ void sleepOn(u32 queue) {
     waitForCpu(lk, self);
 }
 
+// The current thread waits for the host (frame handoff): it gives up the CPU like a
+// blocking OS call, so interrupts are taken and other threads run meanwhile.
+void releaseForHost() {
+    GuestThread* self = tSelf;
+    if (!self || tInIrq) return;
+    std::unique_lock lk(sM);
+    if (sRunning != self) return;
+    self->st = GuestThread::St::Waiting;
+    self->waitQueue = kHostWaitQueue;
+    writeState(self, kStateWaiting);
+    GuestThread* next = pick(nullptr);
+    if (!next && irqPending().load()) {
+        sRunning = &sIrqMarker;
+        for (;;) {
+            lk.unlock();
+            runIrqs();
+            lk.lock();
+            std::lock_guard ilk(sIrqM);
+            if (sIrqs.empty()) break;
+        }
+        next = pick(nullptr);
+    }
+    handOff(next);
+}
+
+// After releaseForHost(): ready again; returns once this thread owns the CPU.
+void reacquireAfterHost() {
+    GuestThread* self = tSelf;
+    if (!self || tInIrq) return;
+    std::unique_lock lk(sM);
+    if (self->st != GuestThread::St::Waiting || self->waitQueue != kHostWaitQueue) return;
+    self->st = GuestThread::St::Ready;
+    self->waitQueue = 0;
+    writeState(self, kStateReady);
+    if (sRunning == nullptr) {
+        handOff(pick(self));
+    } else if (sRunning != &sIrqMarker) {
+        // The running thread only switches at a scheduling point: an empty interrupt makes
+        // its next safe point reschedule (we win if our priority is higher).
+        irqPending().store(true);
+    }  // (an idle-CPU interrupt service hands the CPU to the best thread when it is done)
+    waitForCpu(lk, self);
+}
+
 void wakeup(u32 queue) {
     std::unique_lock lk(sM);
     for (auto* t : sThreads) {
@@ -344,9 +392,45 @@ void wakeup(u32 queue) {
     if (tSelf && !tInIrq && sRunning == tSelf) reschedule(lk, tSelf);
 }
 
+// LM_IRQ_STALL=1 (debugging): logs the running thread whenever an interrupt has waited more
+// than 10 ms, i.e. something held the guest CPU without reaching a safe point (a long host
+// call in an HLE...). With LM_TRACE=ring the thread's recent functions are included.
+void stallSampler() {
+    using clk = std::chrono::steady_clock;
+    s64 reported = 0;
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        const s64 since = sPendingSince.load();
+        if (!since) continue;
+        const s64 now = clk::now().time_since_epoch().count();
+        const double ms = double(now - since) / 1e6;
+        if (ms < 10 || since == reported) continue;
+        reported = since;
+        GuestThread* r = sRunning;
+        if (r && r != &sIrqMarker) {
+            std::string s;
+            for (u32 i = r->ctx.ringPos > 12 ? r->ctx.ringPos - 12 : 0; i < r->ctx.ringPos; i++) {
+                char b[12];
+                std::snprintf(b, sizeof b, " %08X", r->ctx.ring[i & 31]);
+                s += b;
+            }
+            log("[stall] irq pending %.1f ms: running %08X prio %d lr %08X fn %08X msr %04X recent%s", ms, r->guest,
+                r->priority, r->ctx.lr, r->ctx.lastFn, r->ctx.msr, s.c_str());
+        } else {
+            log("[stall] irq pending %.1f ms: running %s", ms, r ? "irq" : "none");
+        }
+    }
+}
+
 void postIrq(std::function<void(Ctx&)> fn) {
     {
         std::lock_guard lk(sIrqM);
+        static const bool sStall = [] {
+            if (!std::getenv("LM_IRQ_STALL")) return false;
+            std::thread(stallSampler).detach();
+            return true;
+        }();
+        if (sStall && sIrqs.empty()) sPendingSince = std::chrono::steady_clock::now().time_since_epoch().count();
         sIrqs.push_back(std::move(fn));
         irqPending().store(true);
     }
@@ -371,8 +455,8 @@ void dumpThreads() {
     log("[sched] running=%08X irqPending=%d", sRunning == &sIrqMarker ? 0xFFFFFFFF : sRunning ? sRunning->guest : 0,
         int(irqPending().load()));
     for (auto* t : sThreads) {
-        log("[sched]   %08X prio %d suspend %d state %d wait %08X lr %08X fn %08X", t->guest, t->priority,
-            t->suspendCount, int(t->st), t->waitQueue, t->ctx.lr, t->ctx.lastFn);
+        log("[sched]   %08X prio %d suspend %d state %d wait %08X lr %08X fn %08X msr %04X", t->guest, t->priority,
+            t->suspendCount, int(t->st), t->waitQueue, t->ctx.lr, t->ctx.lastFn, t->ctx.msr);
         if (t->st == GuestThread::St::Ready && t->ctx.ringPos) {
             std::string line = "[sched]     recent:";
             for (u32 i = t->ctx.ringPos > 32 ? t->ctx.ringPos - 32 : 0; i < t->ctx.ringPos; i++) {

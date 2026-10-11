@@ -136,9 +136,14 @@ HLE(DVDReadPrio) {
     DVDFileInfo* fi = hostFile(c.r[3]);
     watchRange(c.r[4], c.r[5], "DVDReadPrio");
     const s32 ov = overlayOf(c.r[3]);
-    const s32 result = ov >= 0 ? ovRead(ov, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]))
-                       : fi    ? DVDReadPrio(fi, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]), s32(c.r[7]))
-                               : -1;
+    // The host read (disc image, RVZ decompression) can take several milliseconds for a big
+    // read: give up the CPU meanwhile, as the console's thread sleeps while the drive works.
+    s32 result = -1;
+    sched::withCpuReleased([&] {
+        result = ov >= 0 ? ovRead(ov, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]))
+                 : fi    ? DVDReadPrio(fi, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]), s32(c.r[7]))
+                         : -1;
+    });
     // Block this thread until the "drive" finishes.
     static std::atomic<u32> sWaitKey{0xF0000000};  // sleep-queue keys need not be real memory
     const u32 done = sWaitKey.fetch_add(8);
@@ -161,8 +166,16 @@ HLE(DVDReadAsyncPrio) {
         return;
     }
     watchRange(c.r[4], c.r[5], "DVDReadAsyncPrio");
-    const s32 result = ov >= 0 ? ovRead(ov, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]))
-                               : DVDReadPrio(fi, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]), s32(c.r[8]));
+    s32 result = -1;
+    const auto read = [&] {
+        result = ov >= 0 ? ovRead(ov, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]))
+                         : DVDReadPrio(fi, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]), s32(c.r[8]));
+    };
+    // As in DVDReadPrio, a slow host read must not hold off interrupts. On the console this call
+    // returns at once, so with interrupts off (a caller's critical section) no other thread may
+    // run in it: then the read just happens in place.
+    if (c.msr & 0x8000) sched::withCpuReleased(read);
+    else read();
     wr32(guest + 0x0C, 1);  // busy until the completion interrupt
     wr32(guest + 0x38, cb);
     wr32(guest + 0x20, u32(result));

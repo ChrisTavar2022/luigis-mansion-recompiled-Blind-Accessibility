@@ -692,6 +692,7 @@ void gx::endPendingDraw() {
 }
 
 void hw::fifoWrite(u32 v, int size) {
+    frame::gxWaitForGuestTurn();
     if (dropDraw()) [[unlikely]] return;
     if (interp::capturing()) interp::vtxBytes(v, size);
     if (sHeld.active) [[unlikely]] {
@@ -710,6 +711,7 @@ void hw::fifoWrite(u32 v, int size) {
 #define GXHLE(name)                                       \
     static void gxImpl_##name(::recomp::Ctx& c);          \
     HLE(name) {                                           \
+        frame::gxWaitForGuestTurn();                      \
         gx::endPendingDraw();                             \
         gxImpl_##name(c);                                 \
     }                                                     \
@@ -744,7 +746,9 @@ GXHLE(GXInit) {
     c.r[3] = fifoObj;
 }
 GXHLE(GXFlush) { GXFlush(); }
-GXHLE(GXDrawDone) { GXDrawDone(); }
+// The console's GXDrawDone sleeps until the draw-done interrupt, so interrupts and other
+// threads run meanwhile; draining Aurora's FIFO here can take a good part of a frame.
+GXHLE(GXDrawDone) { frame::gxBlockingWait([] { GXDrawDone(); }); }
 GXHLE(GXSetDrawDone) {}
 GXHLE(GXWaitDrawDone) {}
 GXHLE(GXPixModeSync) { GXPixModeSync(); }

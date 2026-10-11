@@ -41,11 +41,27 @@ void sleepOn(u32 queue);
 // Readies every thread blocked on `queue`; may switch to a higher-priority one.
 void wakeup(u32 queue);
 
+// The current thread is about to wait for the host (frame handoff, frame.cpp): like a
+// blocking OS call it gives up the CPU, so interrupts are taken and other threads run
+// meanwhile. reacquireAfterHost() makes it ready again and returns once it owns the CPU.
+void releaseForHost();
+void reacquireAfterHost();
+// Runs host work that does not touch other threads' state (disc reads...) with the CPU
+// given up, so a slow host operation does not hold off interrupts and other threads.
+template <class F>
+void withCpuReleased(F&& work) {
+    releaseForHost();
+    work();
+    reacquireAfterHost();
+}
+
 // Queues an interrupt handler (runs with the interrupt context).
 void postIrq(std::function<void(Ctx&)> fn);
 // Raises the interrupt after `seconds` of host time (models hardware latency).
 void postIrqAfter(double seconds, std::function<void(Ctx&)> fn);
 bool inIrq();
+// The current guest thread runs with interrupts on (MSR[EE]), i.e. not in a critical section.
+bool interruptsEnabled();
 
 // Ends every guest thread: each one leaves at its next scheduling point (throws ThreadExit).
 void shutdown();

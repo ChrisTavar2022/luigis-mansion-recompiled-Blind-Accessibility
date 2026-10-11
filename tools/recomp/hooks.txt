@@ -30,6 +30,13 @@ fn_80191A1C
 fn_8019754C us pal
 fn_80197810 us pal
 fn_80197B30 us pal
+# HVQM4 movie (options menu "View a Pikmin(TM) Movie"): the audio stream is not reported
+# ready before the scene's first picture, or the player deadlocks waiting for its first
+# picture buffer (src/recomp/hvqm.cpp).
+Jac_HVQM_Init us pal
+Jac_GetPicture us pal
+Jac_HVQM_ForceStop us pal
+StreamSyncCheckReady us pal
 
 # Camera culling planes: widened for the Hor+ widescreen projection (src/recomp/widescreen.cpp).
 fn_80008D58 us pal

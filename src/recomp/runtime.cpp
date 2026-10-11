@@ -143,6 +143,12 @@ void dumpTraceRing() {
 }
 
 void log(const char* fmt, ...) {
+    // LM_LOG_TIME=1: prefix each line with the host time since start (ms), for timing races.
+    static const bool sTime = std::getenv("LM_LOG_TIME") != nullptr;
+    if (sTime) {
+        static const auto t0 = std::chrono::steady_clock::now();
+        std::fprintf(stdout, "%9.2f ", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+    }
     va_list ap;
     va_start(ap, fmt);
     std::vfprintf(stdout, fmt, ap);

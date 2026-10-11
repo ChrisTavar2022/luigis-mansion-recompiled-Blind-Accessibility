@@ -25,6 +25,14 @@ bool gamePaused();
 void setHostPaused(bool paused);  // host: window paused (no frames)
 
 void present(Ctx& c, u32 xfb, bool black);  // guest side
+// Guest side, before any GX work: while the presenting thread waits for the host to finish
+// the frame, other guest threads keep running (present() gives up the guest CPU); one that
+// reaches GX waits here until the guest's turn, since the host owns the Aurora frame.
+void gxWaitForGuestTurn();
+// Guest side: runs `wait` (host work that blocks on GX, e.g. draining the FIFO for
+// GXDrawDone) with the guest CPU given up, like the console's GXDrawDone sleeping on its
+// interrupt; other threads' GX calls wait until it is done.
+void gxBlockingWait(void (*wait)());
 
 // The US game hands each finished frame to VISetNextFrameBuffer. The PAL release
 // re-submits the framebuffer from its post-retrace callback every retrace and paces its
