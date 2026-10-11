@@ -248,10 +248,10 @@ frame, see below), `LM_INTERP_TRACE=1` and its deterministic `--input`, and prin
 
 | Scenario | What happens | Frames |
 |----------|--------------|--------|
-| A nursery (`LM_START_MAP=2 LM_START_APPEAR=1`, `LM_LIGHTNING=0,90,1`) | walking, fast turns (stick reversals), nozzle aiming (C stick), flashlight, lightning strikes with shadows, GBH open/close (Y), dust, spiderwebs, door to the next room | 2580-2960 |
-| B gold ghosts (`LM_TELEPORT=0,550,-3300,100`, `LM_GHOST_HUNT=9 ...`, see RENDERING.md) | ghosts appear, hover, attack, vanish; stun, vacuum, capture | 3280-3600 |
-| C opening (title, `--input "600:START*10,1000:A*6"`, nothing skipped) | the attract/opening cutscene: crows, camera cuts, gate, foyer entrance | 1880-2120 |
-| D nursery, fire element (`LM_TEST_STATE=poltergust+fire`) | fire blown (L), vacuum (R) with its air stream and dust, turns | 2580-2920 |
+| nursery (`LM_START_MAP=2 LM_START_APPEAR=1`, `LM_LIGHTNING=0,90,1`) | walking, fast turns (stick reversals), nozzle aiming (C stick), flashlight, lightning strikes with shadows, GBH open/close (Y), dust, spiderwebs, door to the next room | 2580-2960 |
+| ghosts: gold ghosts room (`LM_TELEPORT=0,550,-3300,100`, `LM_GHOST_HUNT=9 ...`, see RENDERING.md) | ghosts appear, hover, attack, vanish; stun, vacuum, capture | 3280-3600 |
+| opening (title, `--input "600:START*10,1000:A*6"`, nothing skipped) | the attract/opening cutscene: crows, camera cuts, gate, foyer entrance | 1880-2120 |
+| fire: nursery, fire element (`LM_TEST_STATE=poltergust+fire`) | fire blown (L), vacuum (R) with its air stream and dust, turns | 2580-2920 |
 | water | as D with the water element | 2580-2920 |
 | ballroom (`LM_TELEPORT=1800,0,-1400,100`) | ballroom, quick left/right turns, nozzle aiming, walking | 2580-2900 |
 
