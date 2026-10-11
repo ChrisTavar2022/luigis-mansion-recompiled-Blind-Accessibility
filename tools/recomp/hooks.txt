@@ -23,6 +23,13 @@ Jac_imixcopy__FPsPsPsl us pal
 fn_8018A70C us pal
 fn_8005582C us pal
 fn_800558C8 us pal
+# JAI SE frame update: LM_JAI_CHECK=1 reports an SE list that loops (diagnostic, src/recomp/hle_audio.cpp).
+fn_80191A1C
+# JAI SE starts run with interrupts off: a start from the scene-loading thread interrupted
+# halfway corrupted the SE lists (game hang after the opening skip; src/recomp/hle_audio.cpp).
+fn_8019754C us pal
+fn_80197810 us pal
+fn_80197B30 us pal
 
 # Camera culling planes: widened for the Hor+ widescreen projection (src/recomp/widescreen.cpp).
 fn_80008D58 us pal
