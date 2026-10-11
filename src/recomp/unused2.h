@@ -9,6 +9,8 @@
 // the guest is parked at its present (as dev_tools.h).
 #include "recomp/ctx.h"
 
+#include <vector>
+
 namespace recomp::unused2 {
 
 // Guest memory for host-built data (model copies, textures, strings): host-backed, above the 24
@@ -36,7 +38,19 @@ void spawnFrame(Ctx& c);
 void endingFrame(Ctx& c);
 void galleryButton();   // host
 void galleryWindow();   // host
+// text_archive.cpp
+void textArchiveButton();  // host
+void textArchiveWindow();  // host
+std::vector<u8> buildLabEvent26();
+// Disc overlay (hle_dvd.cpp): files served rebuilt while an option needs them (virtual FST
+// entries 0x50000000+).
+s32 overlayEntry(const char* guestPath);  // -1 when not redirected
+bool isOverlayEntry(s32 entry);
+u32 overlayLength(s32 entry);
+s32 overlayRead(s32 entry, void* dst, s32 length, s32 offset);
 // placements.cpp
+std::vector<u8> buildMapArchive2();  // /Map/map2.szp with the enabled placements / variants
+u32 mapArchive2Key();                // 0 when no option needs a rebuilt map 2
 void placementsMapSetup(Ctx& c);
 void placementsFrame(Ctx& c);
 

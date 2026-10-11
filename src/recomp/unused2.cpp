@@ -13,6 +13,9 @@
 
 #include <imgui.h>
 
+#include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <mutex>
 
 namespace recomp::unused2 {
@@ -42,6 +45,62 @@ u32 extraAlloc(u32 size, u32 align) {
     sExtraNext = p + size;
     std::memset(hostp(p), 0, size);
     return p;
+}
+
+// ---- disc overlay ----------------------------------------------------------------------------
+// Files served rebuilt while an option asks for them. The decision is made when the game opens
+// the file, so turning an option on or off applies the next time the file is loaded.
+namespace {
+constexpr s32 kOverlayBase = 0x50000000;  // virtual FST entries (HM 0x40000000, rooms 0x48000000, maps 0x4C000000)
+struct Served {
+    const char* path;
+    std::vector<u8> (*build)();
+    u32 (*wanted)();  // 0: serve the disc file; otherwise a key of the options the copy depends on
+    std::vector<u8> bytes;
+    u32 builtKey = 0;
+};
+u32 labEvent26Wanted() {
+    static const bool e = std::getenv("LM_LAB_EVENT26") != nullptr;
+    return (e || port::settings().unused2.labEvent26) && port::usCodeFeature() == port::Avail::Yes ? 1 : 0;
+}
+Served sServed[] = {
+    {"/Event/event08.szp", buildLabEvent26, labEvent26Wanted},
+    {"/Map/map2.szp", buildMapArchive2, mapArchive2Key},
+};
+std::mutex sServedM;
+}  // namespace
+
+s32 overlayEntry(const char* guestPath) {
+    std::lock_guard lk(sServedM);
+    for (size_t i = 0; i < std::size(sServed); i++) {
+        Served& s = sServed[i];
+        if (std::strcmp(guestPath, s.path)) continue;
+        const u32 key = s.wanted();
+        if (!key) continue;
+        if (s.builtKey != key) {
+            s.builtKey = key;
+            s.bytes = s.build();
+        }
+        if (s.bytes.empty()) return -1;
+        log("[unused2] serving rebuilt %s", s.path);
+        return kOverlayBase + s32(i);
+    }
+    return -1;
+}
+bool isOverlayEntry(s32 entry) { return entry >= kOverlayBase && entry < kOverlayBase + s32(std::size(sServed)); }
+u32 overlayLength(s32 entry) {
+    std::lock_guard lk(sServedM);
+    return isOverlayEntry(entry) ? u32(sServed[entry - kOverlayBase].bytes.size()) : 0;
+}
+s32 overlayRead(s32 entry, void* dst, s32 length, s32 offset) {
+    std::lock_guard lk(sServedM);
+    if (!isOverlayEntry(entry)) return -1;
+    const std::vector<u8>& b = sServed[entry - kOverlayBase].bytes;
+    if (offset < 0 || length < 0 || size_t(offset) > b.size()) return -1;
+    const size_t n = std::min(size_t(length), b.size() - size_t(offset));
+    std::memcpy(dst, b.data() + offset, n);
+    if (n < size_t(length)) std::memset(static_cast<u8*>(dst) + n, 0, size_t(length) - n);
+    return s32(n);
 }
 
 void onMapSetup(Ctx& c) {
@@ -85,6 +144,13 @@ void unusedSection() {
         sDirty |= ImGui::Checkbox("Ending pictures of Luigi", &u.endingPictures);
         tip("The ending's rank screen shows one of three unused pictures of Luigi next to its\n"
             "message: two V signs (best rank), one V sign (middle ranks) or sitting with a flower (worst).");
+        sDirty |= ImGui::Checkbox("Early E. Gadd lab script (Japanese)", &u.labEvent26);
+        tip("Talking to E. Gadd in his lab plays event26, an early Japanese version of the lab\n"
+            "script (the Professor is still \"Oya-Mar\"), with its own dialogue in the game's kana\n"
+            "font. Its menu always offers the Hidden Mansion, as the early script did. Its debug\n"
+            "flag block and its sound effects (an older numbering) are left out.\n"
+            "Translation: Debug > Text archive.");
+        note("next lab visit");
         sDirty |= ImGui::Checkbox("Mario as player 2", &u.marioP2);
         tip("In the 2-player mode (below), player 2 is Mario (the unused bmario model) instead of a\n"
             "second Luigi. Needs \"2-player mode (unfinished)\".");
@@ -142,7 +208,12 @@ void gameplaySection() {
 void debugSection() {
     ImGui::SeparatorText("Unused content viewers");
     galleryButton();
+    ImGui::SameLine();
+    textArchiveButton();
 }
-void drawOverlays() { galleryWindow(); }
+void drawOverlays() {
+    galleryWindow();
+    textArchiveWindow();
+}
 
 }  // namespace recomp::unused2
