@@ -31,6 +31,10 @@
 #include <cstdlib>
 #include <string>
 
+namespace recomp {
+u32 copyDispCount();  // hle_gx.cpp
+}
+
 namespace recomp::menu {
 namespace {
 
@@ -440,7 +444,9 @@ void enhancedLightingTab() {
     sDirty |= ImGui::Checkbox("Ambient occlusion (experimental)", &l.ssao);
     ImGui::SetItemTooltip(
         "Darkens corners, creases and the floor under furniture (screen-space, from the depth\n"
-        "buffer). One half-resolution pass plus a blur. Experimental: can darken large areas.");
+        "buffer). Applied only to solid surfaces, so ghosts, the flashlight beam, glows, particles\n"
+        "and glass in front of a corner keep their brightness. One half-resolution pass.\n"
+        "Experimental: can darken large areas. Switching it rebuilds some shaders once.");
     ImGui::BeginDisabled(!l.ssao);
     sDirty |= ImGui::SliderFloat("Occlusion intensity", &l.ssaoIntensity, 0.0f, 2.0f, "%.2f");
     sDirty |= ImGui::SliderFloat("Occlusion radius", &l.ssaoRadius, 10.0f, 200.0f, "%.0f");
@@ -852,7 +858,59 @@ void handleEvent(const SDL_Event& ev) {
     }
 }
 
+// Test aid LM_SETTINGS_AT=<frame>:<section>.<key>=<value>[,...][;<frame>:...]: changes settings
+// (ini names) live once the game reaches that frame (copyDispCount, the LM_FRAME_DUMP number),
+// through the same path as the F1 menu (the settings struct, then the per-frame apply calls
+// below). Not saved. E.g. LM_SETTINGS_AT="400:enhanced_lighting.shadow_darkness=0.2".
+void scriptedSettings() {
+    struct Change {
+        u32 frame;
+        std::string section, key, value;
+    };
+    static std::vector<Change> sChanges = [] {
+        std::vector<Change> out;
+        const char* v = std::getenv("LM_SETTINGS_AT");
+        if (!v) return out;
+        std::string s = v;
+        size_t pos = 0;
+        while (pos < s.size()) {
+            size_t end = s.find(';', pos);
+            if (end == std::string::npos) end = s.size();
+            const std::string group = s.substr(pos, end - pos);
+            pos = end + 1;
+            const size_t colon = group.find(':');
+            if (colon == std::string::npos) continue;
+            const u32 frame = u32(std::strtoul(group.c_str(), nullptr, 10));
+            size_t p = colon + 1;
+            while (p < group.size()) {
+                size_t e = group.find(',', p);
+                if (e == std::string::npos) e = group.size();
+                const std::string item = group.substr(p, e - p);
+                p = e + 1;
+                const size_t dot = item.find('.'), eq = item.find('=');
+                if (dot == std::string::npos || eq == std::string::npos || eq < dot) continue;
+                out.push_back({frame, item.substr(0, dot), item.substr(dot + 1, eq - dot - 1), item.substr(eq + 1)});
+            }
+        }
+        return out;
+    }();
+    if (sChanges.empty()) return;
+    const u32 now = copyDispCount();
+    for (auto it = sChanges.begin(); it != sChanges.end();) {
+        if (now >= it->frame) {
+            const bool ok = port::setSetting(it->section, it->key, it->value);
+            std::printf("[settings] frame %u: %s.%s=%s%s\n", now, it->section.c_str(), it->key.c_str(),
+                        it->value.c_str(), ok ? "" : " (unknown key)");
+            std::fflush(stdout);
+            it = sChanges.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void draw() {
+    scriptedSettings();
     skip::drawOverlay();
     recomp::gx::applyAccuracySettings();
     recomp::enh::applySettings();

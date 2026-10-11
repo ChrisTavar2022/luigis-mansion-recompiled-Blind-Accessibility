@@ -280,6 +280,9 @@ Settings& settings();
 void loadSettings();
 void saveSettings();
 std::string settingsPath();
+// Sets one ini key of the table (as if read from settings.ini, then sanitized); false when the
+// key is unknown. Not saved. Used by the LM_SETTINGS_AT test aid (menu.cpp).
+bool setSetting(const std::string& section, const std::string& key, const std::string& value);
 
 // Ini sections owned by another module (e.g. controller bindings, src/recomp/controls.cpp).
 // reset() runs before every load, load() gets each key the table above does not know,
