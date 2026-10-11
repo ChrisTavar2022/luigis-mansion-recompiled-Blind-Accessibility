@@ -55,6 +55,7 @@ std::vector<Field> fields() {
     auto& g = sSettings.gameplay;
     auto& r = sSettings.rendering;
     auto& l = sSettings.enhancedLighting;
+    auto& u = sSettings.unused2;
     return {
         num("video", "target_fps", v.targetFps),
         flag("video", "match_display_refresh", v.matchDisplay),
@@ -210,6 +211,24 @@ std::vector<Field> fields() {
         flag("debug", "font_test", e.dbgFontTest),
         flag("debug", "font_test_latin", e.dbgFontTestLatin),
         flag("debug", "warp_skip_events", e.dbgWarpSkipEvents),
+        flag("unused2", "play_as_mario", u.playAsMario),
+        flag("unused2", "mario_p2", u.marioP2),
+        flag("unused2", "bordered_view", u.borderedView),
+        flag("unused2", "poison_state", u.poisonState),
+        num("unused2", "poison_damage", u.poisonDamage),
+        num("unused2", "poison_seconds", u.poisonSeconds),
+        flag("unused2", "crawl_fear", u.crawlFear),
+        flag("unused2", "overheat", u.overheat),
+        num("unused2", "overheat_fill_seconds", u.overheatFillSeconds),
+        num("unused2", "overheat_cool_seconds", u.overheatCoolSeconds),
+        num("unused2", "overheat_blow_cool", u.overheatBlowCool),
+        num("unused2", "overheat_damage", u.overheatDamage),
+        flag("unused2", "ending_pictures", u.endingPictures),
+        flag("unused2", "lab_event26", u.labEvent26),
+        flag("unused2", "ghost_placements", u.ghostPlacements),
+        flag("unused2", "pink_mice", u.pinkMice),
+        flag("unused2", "blue_ghost_guys", u.blueGhostGuys),
+        flag("unused2", "extra_speedy_spirits", u.extraSpeedySpirits),
     };
 }
 
@@ -260,6 +279,13 @@ void sanitize() {
     clampTo(g.healthScale, 0.25f, 5.0f);
     clampTo(g.ghostHealthScale, 0.25f, 5.0f);
     clampTo(g.vacuumStrength, 0.25f, 4.0f);
+    auto& u = sSettings.unused2;
+    clampTo(u.poisonDamage, 1.0f, 100.0f);
+    clampTo(u.poisonSeconds, 1.0f, 20.0f);
+    clampTo(u.overheatFillSeconds, 5.0f, 120.0f);
+    clampTo(u.overheatCoolSeconds, 5.0f, 120.0f);
+    clampTo(u.overheatBlowCool, 1.0f, 10.0f);
+    clampTo(u.overheatDamage, 0, 50);
 }
 
 }  // namespace

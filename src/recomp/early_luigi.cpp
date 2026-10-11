@@ -61,6 +61,8 @@ bool enabled() {
 }
 
 bool inMem1(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
+// MEM1 or the host-backed area above it where model copies live (early/Mario copies).
+bool inGuest(u32 a) { return a >= 0x80000000u && a < 0x81FF0000u; }
 
 u16 be16(const u8* p) { return u16(p[0] << 8 | p[1]); }
 u32 be32(const u8* p) { return u32(p[0]) << 24 | u32(p[1]) << 16 | u32(p[2]) << 8 | p[3]; }
@@ -107,12 +109,12 @@ const std::vector<u8>& earlyMdl() {
 // cutscene archive's db_luigi) are bound in another space and are left alone.
 bool luigiSkeleton(u32 target) {
     const std::vector<u8>& early = earlyMdl();
-    if (early.empty() || !inMem1(target)) return false;
+    if (early.empty() || !inGuest(target)) return false;
     if (rd32(target) != 0x04B40000u || !(rd32(target + 0x48) & 0x80000000u)) return false;  // relocated .mdl only
     const u32 joints = be16(&early[0x08]);
     if (rd16(target + 0x08) != joints || rd16(target + 0x0C) != be16(&early[0x0C])) return false;
     const u32 tn = rd32(target + 0x30), ti = rd32(target + 0x38);
-    if (!inMem1(tn) || !inMem1(ti)) return false;
+    if (!inGuest(tn) || !inGuest(ti)) return false;
     return !std::memcmp(hostp(tn), &early[be32(&early[0x30])], 0x10 * joints) &&
            !std::memcmp(hostp(ti), &early[be32(&early[0x38])], 0x30 * joints);
 }
@@ -264,6 +266,9 @@ u32 earlyFor(Ctx& c, u32 mdl, const char* what) {
 }
 
 }  // namespace
+
+// A relocated .mdl with Luigi's skeleton (gameplay Luigi, dluige01/03, or an early copy of one).
+bool isLuigiSkeletonMdl(u32 mdl) { return luigiSkeleton(mdl); }
 
 // After fn_80061C94 (model registry setup from a loaded archive: map setup / async model
 // loads, including the gameplay Luigi and the dluige cutscene Luigis) has filled `entry`.

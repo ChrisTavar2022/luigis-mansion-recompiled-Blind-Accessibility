@@ -236,6 +236,29 @@ struct EnhancedLightingSettings {
     float ssaoRadius = 60.0f;          // world units
 };
 
+// Second batch of restored unused content (src/recomp/unused2.*, docs/UNUSED_CONTENT.md
+// "Second batch"). Everything OFF by default: retail is unchanged until an option is turned on.
+struct Unused2Settings {
+    bool playAsMario = false;      // the player uses the unused bmario model (play_as_mario.cpp)
+    bool marioP2 = false;          // 2-player mode: player 2 is Mario
+    bool borderedView = false;     // fixed 560x430 bordered 3D view (hidden code at 0x80010FD4)
+    bool poisonState = false;      // poison mushroom poisons (doku_* animations, slow health loss) instead of shrinking
+    float poisonDamage = 25.0f;    // total health lost, 1..100
+    float poisonSeconds = 5.0f;    // over this many seconds, 1..20
+    bool crawlFear = false;        // scared from behind -> the unused crawling-fear state
+    bool overheat = false;         // vacuum overheat meter (cut feature)
+    float overheatFillSeconds = 20.0f;  // continuous vacuuming until the Poltergust overheats, 5..120
+    float overheatCoolSeconds = 30.0f;  // full meter back to empty while idle, 5..120
+    float overheatBlowCool = 3.0f;      // cooling speed multiplier while blowing air (L), 1..10
+    int overheatDamage = 10;            // health lost when it catches fire, 0..50
+    bool endingPictures = false;   // unused Luigi pictures (luigi_V/g/b) on the ending rank screen
+    bool labEvent26 = false;       // E. Gadd's lab plays the unused early (Japanese) script event26
+    bool ghostPlacements = false;  // unused ghost placements (Slim in the Hidden Room, Mr. Bones in the Courtyard, ...)
+    bool pinkMice = false;         // mice use the unused pink variant (rat2)
+    bool blueGhostGuys = false;    // Ghost Guys use the unused blue/cyan colour sets (heypo9/heypo10 .prm)
+    bool extraSpeedySpirits = false;  // Speedy Spirits 16-20 at invented spots (NOT original placements)
+};
+
 struct Settings {
     VideoSettings video;
     RenderingSettings rendering;
@@ -246,6 +269,7 @@ struct Settings {
     AudioSettings audio;
     EnhancementSettings enhancements;
     GameplaySettings gameplay;
+    Unused2Settings unused2;
 };
 
 Settings& settings();
