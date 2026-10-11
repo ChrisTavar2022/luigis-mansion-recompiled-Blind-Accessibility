@@ -213,6 +213,7 @@ void debugSection() {
     ImGui::SameLine();
     textArchiveButton();
     spawnSection(recomp::dev::inGameScene());
+    particleSection(recomp::dev::inGameScene());
 }
 void drawOverlays() {
     galleryWindow();

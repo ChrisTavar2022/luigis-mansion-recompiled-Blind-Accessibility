@@ -34,7 +34,8 @@ bool playerHeld();  // player 1's pad is neutralised (poisoned); any thread
 void jukeboxFrame(Ctx& c);
 // spawn.cpp
 void spawnFrame(Ctx& c);
-void spawnSection(bool inGame);  // host
+void spawnSection(bool inGame);     // host
+void particleSection(bool inGame);  // host
 // gallery.cpp
 void endingFrame(Ctx& c);
 void galleryButton();   // host
