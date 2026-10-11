@@ -34,6 +34,12 @@ std::condition_variable sCv;
 Turn sTurn = Turn::Host;
 bool sFinished = false;
 bool sStopping = false;
+// Set while the guest waits in present() for the host to finish the frame (lockstep). The
+// waiting thread gives up the guest CPU meanwhile (sched::releaseForHost), so interrupts and
+// other guest threads keep running as on the console; GX calls wait for the guest's turn
+// (gxWaitForGuestTurn), since the host is using the Aurora frame.
+std::atomic<bool> sHostOwnsFrame{false};
+std::atomic<bool> sGxBusy{false};  // gxBlockingWait(): a guest thread waits for GX work (e.g. GXDrawDone)
 std::thread sBoot;
 
 // Interpolated presentation (interp.h). The guest is "decoupled": it no longer
@@ -73,6 +79,7 @@ bool runUntilPresent() {
     std::unique_lock lk(sM);
     if (sFinished) return false;
     sTurn = Turn::Guest;
+    sHostOwnsFrame = false;
     sCv.notify_all();
     sCv.wait(lk, [] { return sTurn == Turn::Host; });
     return !sFinished;
@@ -89,6 +96,7 @@ bool hostFrame() {
             sStayDecoupled = true;
             sEnterDecoupled = true;
             sTurn = Turn::Guest;
+            sHostOwnsFrame = false;
             sCv.notify_all();
             sHostDecoupled = true;
         }
@@ -204,18 +212,69 @@ void present(Ctx& c, u32, bool) {
     }
     std::unique_lock lk(sM);
     sTurn = Turn::Host;
+    sHostOwnsFrame = true;
     sCv.notify_all();
+    // On the console VISetNextFrameBuffer returns at once; here the guest waits for the host
+    // frame (up to a display refresh). Holding the guest CPU through that wait delayed every
+    // interrupt by as much: AI DMA interrupts then arrived in pairs, JAudio's DSP frames ran
+    // back to back, its overload check (UpdateDSPchannelAll) stopped a voice each time, and
+    // threads like the movie player's decoder starved.
+    lk.unlock();
+    sched::releaseForHost();
+    lk.lock();
     sCv.wait(lk, [] { return sTurn == Turn::Guest || sStopping; });
     if (sStopping) {
         lk.unlock();
         throw sched::ThreadExit{};
     }
+    const bool enterDecoupled = sEnterDecoupled;
     if (sEnterDecoupled) {
         sEnterDecoupled = false;
         sGuestDecoupled = true;
-        lk.unlock();
-        interp::beginTape();
     }
+    lk.unlock();
+    sched::reacquireAfterHost();
+    if (enterDecoupled) interp::beginTape();
+}
+
+void gxWaitForGuestTurn() {
+    if (!sHostOwnsFrame.load(std::memory_order_acquire) && !sGxBusy.load(std::memory_order_acquire)) return;
+    const auto ready = [] { return (sTurn == Turn::Guest && !sGxBusy) || sStopping; };
+    {
+        std::lock_guard lk(sM);
+        if (ready()) return;
+    }
+    // Wait like a blocked thread (the CPU goes to others meanwhile), unless the caller is in a
+    // critical section (interrupts off), where no other thread may run.
+    const bool release = sched::interruptsEnabled();
+    if (release) sched::releaseForHost();
+    {
+        std::unique_lock lk(sM);
+        sCv.wait(lk, ready);
+        if (sStopping) {
+            lk.unlock();
+            throw sched::ThreadExit{};
+        }
+    }
+    if (!release) return;
+    sched::reacquireAfterHost();
+    // Another thread may have taken GX again before this one got the CPU back.
+    gxWaitForGuestTurn();
+}
+
+void gxBlockingWait(void (*wait)()) {
+    {
+        std::lock_guard lk(sM);
+        sGxBusy = true;
+    }
+    sched::releaseForHost();
+    wait();
+    {
+        std::lock_guard lk(sM);
+        sGxBusy = false;
+        sCv.notify_all();
+    }
+    sched::reacquireAfterHost();
 }
 
 }  // namespace recomp::frame

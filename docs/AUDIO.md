@@ -90,12 +90,28 @@ left speaker.
 
 ## AI output and pacing
 
-`AIInitDMA` records the block (560 stereo frames). A host thread waits until
-fewer than about three blocks (at least 40 ms) are queued on the SDL3 audio
-stream. It then pushes the current block and raises the AI DMA interrupt. The
-sound card's clock therefore paces JAudio, and nothing drifts. If there is no
-audio device (or `LM_AUDIO=0`), the interrupt runs off a timer at the console
-rate.
+`AIInitDMA` records the block (560 stereo frames). A host thread raises the AI
+DMA interrupt once per block length and pushes the current block to the SDL3
+audio stream, keeping about three blocks (at least 40 ms) queued: the spacing is
+stretched or shortened by at most 5% from the smoothed queue level (half a block
+when the queue is about to run dry), so the sound card's clock paces JAudio and
+nothing drifts. If there is no audio device (or `LM_AUDIO=0`), the interrupt
+runs off a timer at the console rate.
+
+**Evenly spaced interrupts.** JAudio's DSP overload check (`UpdateDSPchannelAll`)
+times its per-subframe DSP updates with `OSGetTime`: when a subframe takes at
+least 1/1.1 of the gap before the frame's first update, it decides the DSP cannot
+keep up and force-stops the lowest voice (`BreakLowerActiveDSPchannel(0xFF)`,
+any priority, the movie's stream included). On the console a DSP frame starts at
+an AI interrupt and is mixed well before the next one. Here it is mixed in well
+under a millisecond, so two interrupts reaching the game together (a host stall,
+or, with the old pacing, pushing whenever the device's queue had drained, which
+it does in ~10 ms chunks) started the second frame right after the first and a
+voice was stopped: in the menus several times a second. The interrupt is now
+raised only after the game has mixed for the previous one (`Jac_imixcopy`) and
+the DSP frame that started is done (`audio::dspFrameBusy`, plus 2 ms), and guest
+threads no longer hold interrupts off during host waits (docs/RECOMPILER.md,
+runtime lessons). `LM_TRACE=801A13C0` (US) logs every such voice stop.
 
 **Output rate.** The AI's rates are derived from a 54 MHz clock: "48 kHz" is
 54 MHz / 1124 = 48042.7 Hz and "32 kHz" (what `AISetDSPSampleRate` selects in
@@ -362,6 +378,30 @@ output level). The layout needs a device with 6 / 8 channels (F1 shows the
 device's channel count); 7.1 falls back to 5.1 on a 6-channel device and both
 fall back to the matrix-encoded stereo on a stereo device. Without a device
 (`LM_AUDIO=0`, WAV captures) the chosen layout is used as is.
+
+## The Pikmin movie (HVQM4)
+
+Options > "View a Pikmin(TM) Movie" plays `movie/pikminS.h4m` (HVQM4 1.3, 640x480,
+29.97 fps, 3669 pictures, 122 s, ADPCM audio) with JAudio's player (hvqm_play:
+`Jac_HVQM_Init`/`Jac_HVQM_Update`/`Jac_GetPicture`) and Hudson's HVQM4 decoder, all
+recompiled. The scene (`fn_8000EF58` init on the loader thread, `fn_80067420` draw)
+starts a priority-18 thread that loops on `Jac_HVQM_Update`: it streams the file
+through three 512 KB buffers (JAudio's DVD thread), sends the audio records to the
+synchronised stream (stream 0, a pair of 0x21 ring voices) and decodes pictures into
+17 buffers. The draw shows the picture for the audio position
+(`StreamGetCurrentFrame`), converting YUV to textures on the CPU. The scene ends when
+the player runs out of pictures or the stream stops.
+
+Two things stopped it here (the picture stayed on the first frame, the sound stopped
+after a few seconds, the menu came back after a while): JAudio's overload check
+stopping the stream's voices (above), and a start-up race. When the decoder reaches
+picture 17 it starts the stream (`StreamSyncCheckReady` / `StreamSyncPlayAudio`) and
+then needs picture buffer 0 back, which only `Jac_GetPicture` frees; it asks
+"ready?" again on every retry, and once the stream has started the answer is no for
+good. On the console decoding takes long enough that the scene has drawn (and freed
+buffer 0) by then; recompiled, all 17 pictures are decoded ~0.3 s before the scene's
+first draw (the options menu fades out first). `src/recomp/hvqm.cpp` reports the
+stream not ready until the scene has taken its first picture.
 
 ## DVD audio streaming
 

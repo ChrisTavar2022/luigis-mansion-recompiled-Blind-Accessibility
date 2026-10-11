@@ -41,6 +41,17 @@ Runtime lessons:
 - Console timing assumptions matter: disc reads must take time (BootScene's heap
   switch races its async open callback), the AI DMA interrupt must tick for
   JAudio's frame work, and interrupts must never be stranded while the CPU idles.
+- A guest thread must not hold the guest CPU through a long host wait: interrupts are
+  only taken at its safe points, so everything else stalls with it. Waits that block on
+  the console too give the CPU up (`sched::releaseForHost` / `reacquireAfterHost`,
+  `withCpuReleased`): the lockstep frame handoff in `VISetNextFrameBuffer` (up to a
+  display refresh), `GXDrawDone` (draining Aurora's FIFO), and the host side of disc
+  reads. GX calls from other threads meanwhile wait for the guest's turn
+  (`frame::gxWaitForGuestTurn`, in every GX HLE and the write-gather pipe). Before this,
+  AI interrupts arrived in pairs after each frame handoff and JAudio's DSP overload check
+  stopped a voice several times a second (cut sound effects, the Pikmin movie's stream;
+  docs/AUDIO.md). `LM_IRQ_STALL=1` logs the running thread whenever an interrupt waited
+  over 10 ms (with `LM_TRACE=ring`, its recent functions).
 - Indirect calls reach code the symbol map merged into neighbours; the recompiler
   adds entry points for every address-taken code location and every branch target
   inside another function.

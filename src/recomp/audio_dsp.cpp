@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -166,6 +167,9 @@ struct State {
     u16 chWrite = 0, chRead = 0x96, chFrac = 0, chSpeed = 0x7F00;
     s16 chDir = -1;
 } S;
+// Read by the AI pacing thread (hle_audio.cpp): a frame is being mixed / when the last one ended.
+std::atomic<bool> sFrameBusy{false};
+std::atomic<std::chrono::steady_clock::rep> sFrameEnd{0};
 
 inline u16 bu16(u32 a) { return u16(rd16(a)); }
 inline s16 bs16(u32 a) { return s16(rd16(a)); }
@@ -785,6 +789,7 @@ void dspCommand(const u32* w, u32 count) {
             S.bufR = w[2];
             S.sub = 0;
             S.frameActive = S.subframes != 0;
+            sFrameBusy.store(S.frameActive, std::memory_order_release);
             beginSide(S.bufL, S.subframes);
             loadFx();
         }
@@ -809,13 +814,22 @@ bool dspSideData(u32 bufL, SideSample* out, u32 n) {
     return false;
 }
 
+bool dspFrameBusy() { return sFrameBusy.load(std::memory_order_acquire); }
+std::chrono::steady_clock::time_point dspFrameEnd() {
+    return std::chrono::steady_clock::time_point(std::chrono::steady_clock::duration(sFrameEnd.load(std::memory_order_acquire)));
+}
+
 bool dspRunSubframe() {
     if (!S.frameActive) return false;
     static double busy = 0;  // LM_AUDIO_LOG: host time spent mixing
     const auto t0 = std::chrono::steady_clock::now();
     runSubframe();
     busy += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    if (++S.sub >= S.subframes) S.frameActive = false;
+    if (++S.sub >= S.subframes) {
+        S.frameActive = false;
+        sFrameEnd.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_release);
+        sFrameBusy.store(false, std::memory_order_release);
+    }
     if (g_log) {
         static u32 frames = 0;
         if (!S.frameActive && ++frames % 114 == 0) {

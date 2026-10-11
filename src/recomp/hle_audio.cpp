@@ -37,9 +37,31 @@ std::thread sDmaThread;
 // tempo and pitch match the console (0.09% above the nominal 32000 Hz).
 double rateHz() { return sDspRate.load() ? audio::kConsoleRate48 : audio::kConsoleRate32; }
 
+// Set when the AI interrupt is raised, cleared once JAudio has mixed for it (Jac_imixcopy).
+std::atomic<bool> sAwaitingMix{false};
+
+// JAudio's DSP overload check (UpdateDSPchannelAll) times its DSP updates: when a subframe
+// takes nearly as long as the gap before the frame's first one, it decides the DSP cannot
+// keep up and force-stops a voice, whatever its priority. On the console a frame starts at
+// an AI interrupt, ~17 ms after the previous one, and is mixed long before the next. Here
+// two interrupts could reach the game together (a host stall, or the device draining its
+// queue in big chunks) and the second frame then started right after the first: every
+// subframe looked "slow" and a voice was killed (sound effects cut short; the movie
+// player's audio stream stopped, which ended the movie). So the next interrupt waits until
+// the game has mixed for the previous one and the DSP frame it started is done.
+void waitForGuestMix() {
+    using clock = std::chrono::steady_clock;
+    const auto deadline = clock::now() + std::chrono::milliseconds(100);  // the game may be stalled
+    while ((sAwaitingMix.load() || audio::dspFrameBusy()) && clock::now() < deadline && !audio::outPaused())
+        std::this_thread::sleep_for(std::chrono::microseconds(250));
+    const auto quiet = audio::dspFrameEnd() + std::chrono::milliseconds(2);
+    if (clock::now() < quiet) std::this_thread::sleep_until(quiet);
+}
+
 void dmaThread() {
     using clock = std::chrono::steady_clock;
     auto next = clock::now();
+    double smoothed = -1;
     for (;;) {
         if (audio::outPaused()) {  // game paused by the host: no audio interrupts
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -49,10 +71,21 @@ void dmaThread() {
         const u32 len = sDmaLength.load();
         const double secs = len ? (len / 4.0) / rateHz() : 0.005;  // 16-bit stereo frames
         if (audio::outHasDevice()) {
-            // Keep about three blocks queued on the device: its clock paces the game.
+            // Keep about three blocks queued on the device so its clock paces the game, with
+            // the interrupts evenly spaced like the console's AI (see waitForGuestMix): one
+            // block length apart, stretched or shortened by at most 5% from the smoothed queue
+            // level to follow the device clock. (Pushing whenever the queue dropped below the
+            // target raised two interrupts back to back now and then: the device drains its
+            // queue in whole periods of ~10 ms.)
             const double target = std::max(3 * secs, 0.040);
-            while (audio::outQueuedSeconds() > target) std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            next = clock::now();
+            const double queued = audio::outQueuedSeconds();
+            smoothed = smoothed < 0 ? queued : smoothed + (queued - smoothed) * 0.05;
+            double scale = std::clamp(1.0 + (smoothed - target) * 2.0, 0.95, 1.05);
+            if (queued < secs) scale = 0.5;  // about to run dry (start, or after a stall): refill quickly
+            const auto now = clock::now();
+            next += std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(secs * scale));
+            if (next < now) next = now;  // late (host stall): never catch up with interrupts back to back
+            std::this_thread::sleep_until(next);
         } else {
             next += std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(secs));
             if (clock::now() > next + std::chrono::milliseconds(100)) next = clock::now();
@@ -63,10 +96,14 @@ void dmaThread() {
             if (audio::outHasDevice()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
+        if (cb) waitForGuestMix();
         // The block programmed by the last AIInitDMA starts playing now (the AI repeats
         // the previous block if the game did not supply a new one in time).
         if (const u32 addr = sDmaAddr.load(); addr && len) audio::outPushGuestBlock(addr, len);
-        if (cb) sched::postIrq([cb](Ctx& ic) { guestCall(ic, cb); });
+        if (cb) {
+            sAwaitingMix = true;
+            sched::postIrq([cb](Ctx& ic) { guestCall(ic, cb); });
+        }
     }
 }
 }  // namespace
@@ -214,6 +251,7 @@ HLE(Jac_imixcopy__FPsPsPsl) {
     const u32 bufL = c.r[4], dac = c.r[5], frames = c.r[6];
     callOriginal(c, "Jac_imixcopy__FPsPsPsl");
     audio::outTagBlock(dac, bufL, frames);
+    sAwaitingMix = false;  // the game has mixed for the last AI interrupt (waitForGuestMix)
 }
 
 // JAudio DSP driver hooks (tools/recomp/hooks.txt).
