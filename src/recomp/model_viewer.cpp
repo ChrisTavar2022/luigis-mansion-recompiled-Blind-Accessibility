@@ -2500,7 +2500,11 @@ void window() {
     if (ImGui::Button("Screenshot")) requestScreenshot();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Save the picture (the game's 640x480 frame, without this window) as a PNG\n"
+#ifdef _WIN32
                           "in %%APPDATA%%\\Luigi's Mansion PC\\screenshots.");
+#else
+                          "in ~/.local/share/Luigi's Mansion PC/screenshots.");
+#endif
     if (!sShotStatus.empty()) ImGui::TextDisabled("%s", sShotStatus.c_str());
     if (!sCam.fly) {
         ImGui::Checkbox("Spin", &sCam.spin);

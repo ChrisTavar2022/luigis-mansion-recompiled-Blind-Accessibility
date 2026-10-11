@@ -17,6 +17,7 @@
 #include "recomp/widescreen.h"
 #include "port/settings.h"
 
+#include <cstring>
 #include <dolphin/gx.h>
 #include <dolphin/gx/GXAurora.h>
 #include <aurora/enhanced.h>

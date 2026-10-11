@@ -2,6 +2,7 @@
 
 #include "recomp/hle.h"
 
+#include <cstring>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
