@@ -343,12 +343,15 @@ HLE(fn_8000E050) {
     if (!alpha || s32(rd32(kEndFrame)) >= 0x7BC) return;  // 0x7BC: the scene's own fade-out starts
     if (!sColor) sColor = extraAlloc(8, 4);
     const int w = rd16(p.bti + 2), h = rd16(p.bti + 4);
-    // Bottom-right corner of the actual screen, bottom edge flush with the screen's bottom (the
-    // pictures end at Luigi's knees; the screen edge hides the cut), right-aligned with a small
-    // margin. The game's 2D is a 640x480 frame kept at 4:3 and centered in widescreen
-    // (widescreen.h), so the screen's right edge is at 320 + 320 / factor() in its coordinates.
+    // Bottom-right corner of the ending's background picture, bottom edge flush with the screen's
+    // bottom (the pictures end at Luigi's knees; the edge hides the cut), right-aligned with a
+    // small margin. The game's 2D is a 640x480 frame kept at 4:3 and centered in widescreen
+    // (widescreen.h); full-screen pictures follow backgroundMode(): pillarboxed they keep that
+    // frame (right edge 640), stretched or zoomed they reach the screen's right edge, at
+    // 320 + 320 / factor() in the game's coordinates.
     constexpr int kMargin = 16;
-    const int right = 320 + int(320.0f / ws::factor() + 0.5f);
+    const bool wide = ws::active() && ws::backgroundMode() != ws::Background::Pillarbox;
+    const int right = wide ? 320 + int(320.0f / ws::factor() + 0.5f) : 640;
     const int x = right - kMargin - w, y = 480 - h;
     wr32(sColor, rd32(VA(0x804CFF88)));  // the scene's shadow colour
     gu::call(c, GU_SYM("fn_80057ACC"), {sColor});
