@@ -4,7 +4,7 @@ Code: `src/recomp/interp.cpp` (tapes, pairing, blending, test mode), `src/recomp
 (draw identities, vertex-array copies, CPU-built vertices), `src/recomp/interp_tex.cpp` (texture and
 TLUT copies), `src/recomp/shadows.cpp` (LM: camera source, shadow light), `src/recomp/frame.cpp` (decoupled
 guest, target frame rate, pacing), hooks in `src/recomp/hle_gx.cpp`, Aurora patches
-`0005-capture-and-replay`, `0021-replay-state-slots`, `0025-replay-copy-generations`. Background and the original design: docs/ENHANCEMENTS.md section 3.
+`0005-capture-and-replay`, `0021-replay-state-slots`, `0028-replay-copy-generations`. Background and the original design: docs/ENHANCEMENTS.md section 3.
 
 ## Setting
 
@@ -270,7 +270,7 @@ edges that legitimately move one pixel per in-between are not counted):
    texel data by pointer when it first needed a texture; a late replay could find the memory
    already reused. Every `GXLoadTexObj`/`GXLoadTlut` in a tape now points at a capture-time copy
    (shared by texture object + data version, else by content hash, so a texture is copied once).
-   Textures go through Aurora patch 0025's new *content* pointer, so they keep their address for
+   Textures go through Aurora patch 0028's new *content* pointer, so they keep their address for
    EFB-copy lookups. A texture over memory an EFB copy wrote is left to Aurora's copy paths only
    while that memory still holds what it held at the copy (hashed at the copy and at the load;
    copy-to-RAM writebacks update the hash); the GBH, for one, later loads ordinary textures into a
@@ -279,7 +279,7 @@ edges that legitimately move one pixel per in-between are not counted):
    computed from the attribute number, 25), so bump-mapped models (the GBH body, ...) were drawn
    from live memory. Found by poisoning guest memory during a replay and bisecting the range
    (`LM_INTERP_POISON`). Generic.
-3. **EFB copies per replay** (Aurora 0025 `GX_AURORA_COPY_GENERATION`, generic). A replayed tape
+3. **EFB copies per replay** (Aurora 0028 `GX_AURORA_COPY_GENERATION`, generic). A replayed tape
    re-runs its EFB copies; they used to overwrite the same copy textures the tape's own early draws
    read (copies made in the previous frame), so every replay after the first showed the frame's
    own copies where the previous frame's belonged. Copies now go into one of four generations
@@ -289,7 +289,7 @@ edges that legitimately move one pixel per in-between are not counted):
 4. **Copy-to-RAM readbacks only from the first replay of a tape.** Every replay wrote the frame's
    copies back into guest memory again, up to a frame later, over memory the game may have reused
    meanwhile (the GBH's screen-capture buffer holds GBH model data once it closes): guest memory
-   corruption, visible as the GBH vanishing while it closes. Generic (Aurora 0025, bit 6).
+   corruption, visible as the GBH vanishing while it closes. Generic (Aurora 0028, bit 6).
 5. **Colors blend** (generic): channel ambient/material colors, light colors, TEV color and
    konst registers (also when a display list sets them), fog color. They belong to their draw and
    are paired through the draw pairing (the n-th write of a register for that draw). Lightning

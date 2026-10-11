@@ -1616,7 +1616,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
     // drawn directly since reset()) starts from the current state.
     if (b.seq > 1 && sEndSeq[(b.seq - 1) & 3] == b.seq - 1) GXRestoreStateAurora(u8((b.seq - 1) & 3));
     // EFB copies made by this replay go into this tape's copy generation, so they don't replace the
-    // previous frame's copies that this frame's early draws may still read (Aurora patch 0023).
+    // previous frame's copies that this frame's early draws may still read (Aurora patch 0028).
     // Only the first replay of a tape reads its copies back into memory (bit 6 on the others).
     GXSetCopyGenerationAurora(u8((b.seq & 3) | 0x80 | (b.replayed.exchange(true) ? 0x40 : 0)));
     AuroraReplay(sReplay.data(), u32(sReplay.size()));

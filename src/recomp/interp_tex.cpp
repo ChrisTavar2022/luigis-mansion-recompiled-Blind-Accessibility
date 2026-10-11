@@ -6,7 +6,7 @@
 // object's cache entry may already hold a newer version) while the game has already reused the
 // memory: a closing Game Boy Horror, a cutscene shot loading its models. So the data each
 // texture/TLUT load reads is copied at capture time and the tape's load points at the copy
-// (textures: Aurora patch 0023's content pointer, so the texture keeps its address for EFB-copy
+// (textures: Aurora patch 0028's content pointer, so the texture keeps its address for EFB-copy
 // lookups; TLUTs: the data pointer).
 //
 // EFB copies: a texture over memory an EFB copy wrote is the copy (Aurora's GPU copy texture or
