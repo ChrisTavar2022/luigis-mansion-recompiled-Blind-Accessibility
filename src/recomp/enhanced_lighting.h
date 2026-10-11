@@ -33,6 +33,11 @@ void applySettings();
 // Ghost actor pass (fn_80060E70 pass 0x30): draws in it are class GHOST.
 void setGhostPass(bool on);
 bool ghostPass();
+// Actor draw pass (fn_80060E70 other than the ghost layer): Luigi, NPCs and other characters get
+// the matte character material (GX_AURORA_SET_MATERIAL_HINT): the game's own vertex lighting, no
+// glossy highlights, soft wrap-around response to the colored lights.
+void setCharacterPass(bool on);
+bool characterPass();
 // Shadow-map caster pass (shadows.cpp: fn_8005D984 .. fn_8005D8CC): draws in it are class OTHER.
 void setCasterPass(bool on);
 // Main view bracket (fn_8000BB98 hook): sends the frame's extra lights / the scene-end marker.

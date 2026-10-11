@@ -5,6 +5,7 @@
 #include <aurora/event.h>
 #include <aurora/main.h>
 #include <dolphin/dvd.h>
+#include <SDL3/SDL_messagebox.h>
 
 #include "port/crash_handler.h"
 #include "port/dol.h"
@@ -86,12 +87,31 @@ void boot() {
     log("[boot] main returned %d", s32(c.r[3]));
 }
 
+bool sNoGpuAdapter = false;  // Aurora found no usable graphics adapter (no Vulkan/D3D driver)
+
 void logCallback(AuroraLogLevel level, const char* module, const char* message, unsigned int) {
     static const char* names[] = {"DEBUG", "INFO", "WARNING", "ERROR", "FATAL"};
     std::fprintf(level >= LOG_ERROR ? stderr : stdout, "[%s: %s] %s\n", names[level], module, message);
     std::fflush(stdout);
+    if (level == LOG_ERROR && std::strstr(message, "Failed to create adapter")) sNoGpuAdapter = true;
     if (level == LOG_FATAL) {
         std::fflush(stderr);
+        // Without any usable GPU Aurora falls back to its null device and stops on the first
+        // allocation; tell the player what is missing instead of only crashing.
+        std::string text = std::string("The game stopped with an error:\n\n") + message;
+        if (sNoGpuAdapter) {
+#ifdef _WIN32
+            text = "No usable graphics adapter was found (Direct3D 12, Direct3D 11 or Vulkan).\n\n"
+                   "Update your graphics driver.";
+#else
+            text = "No usable Vulkan graphics driver was found.\n\n"
+                   "Install the Vulkan driver for your GPU (AMD/Intel: Mesa's Vulkan drivers, e.g. the "
+                   "mesa-vulkan-drivers package; NVIDIA: the proprietary driver) and check it with "
+                   "'vulkaninfo --summary'. See README.txt.";
+#endif
+        }
+        if (!std::getenv("LM_BACKGROUND"))  // automated runs must not block on a dialog
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Luigi's Mansion PC", text.c_str(), nullptr);
         std::abort();
     }
 }
@@ -125,6 +145,7 @@ std::string argValue(int argc, char** argv, const char* name) {
 int main(int argc, char* argv[]) {
     using namespace recomp;
     port::installCrashHandler();
+    port::startHangWatchdog();
     port::parseOptions(argc, argv);
     port::setLaunchArgs(argc, argv);
 
@@ -137,13 +158,28 @@ int main(int argc, char* argv[]) {
     // LM_BACKEND=d3d12|d3d11|vulkan (testing): graphics backend instead of Aurora's choice.
     if (const char* b = std::getenv("LM_BACKEND")) {
         const std::string s = b;
-        config.desiredBackend = s == "d3d12" ? BACKEND_D3D12 : s == "d3d11" ? BACKEND_D3D11 : s == "vulkan" ? BACKEND_VULKAN : BACKEND_AUTO;
+        config.desiredBackend = s == "d3d12"    ? BACKEND_D3D12
+                                : s == "d3d11"  ? BACKEND_D3D11
+                                : s == "vulkan" ? BACKEND_VULKAN
+                                : s == "opengl" ? BACKEND_OPENGL
+                                : s == "gles"   ? BACKEND_OPENGLES
+                                                : BACKEND_AUTO;
     }
+    // LM_ALLOW_CPU_GPU=1: accept a software renderer (e.g. Mesa llvmpipe for Vulkan in WSL or a
+    // VM without GPU passthrough; docs/LINUX.md). Slow, for testing only.
+    if (const char* c = std::getenv("LM_ALLOW_CPU_GPU"); c && *c == '1') config.allowCpuAdapter = true;
     // LM_CACHE_DIR: separate shader/pipeline cache, e.g. for test runs of different builds side by side.
     // Default: next to settings.ini, so a scratch APPDATA (test runs) also gets its own cache
     // (Aurora's default, SDL_GetPrefPath, ignores the APPDATA variable).
-    static const std::string sCacheDir = std::filesystem::path(port::settingsPath()).parent_path().string();
+    // Linux: $XDG_CACHE_HOME/Luigi's Mansion PC (port::cacheDir; docs/LINUX.md).
+    static const std::string sCacheDir = port::cacheDir().string();
     config.cachePath = sCacheDir.c_str();
+#ifndef _WIN32
+    // Memory cards (Aurora's userPath) in dataDir, which honours XDG_DATA_HOME like the rest
+    // (SDL_GetPrefPath does too, but this keeps every location defined in one place).
+    static const std::string sUserDir = port::dataDir().string() + "/";
+    config.userPath = sUserDir.c_str();
+#endif
     if (const char* dir = std::getenv("LM_CACHE_DIR")) config.cachePath = dir;
     const port::Options& opts = port::options();
     config.startFullscreen = opts.fullscreen || port::settings().video.fullscreen;
@@ -250,6 +286,7 @@ int main(int argc, char* argv[]) {
     bool exiting = false;
     bool paused = false;
     while (!exiting) {
+        port::heartbeat();
         for (const AuroraEvent* ev = aurora_update(); ev && ev->type != AURORA_NONE; ++ev) {
             if (ev->type == AURORA_SDL_EVENT) menu::handleEvent(ev->sdl);
             if (ev->type == AURORA_EXIT) exiting = true;
@@ -272,8 +309,10 @@ int main(int argc, char* argv[]) {
         if (!running || menu::quitRequested()) break;
     }
 
+    menu::shutdown();
     vi::stopTimer();
     frame::stop();
+    audio::outShutdown();
     aurora_shutdown();
     std::_Exit(0);
 }

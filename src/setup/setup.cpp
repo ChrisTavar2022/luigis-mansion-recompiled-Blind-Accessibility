@@ -54,6 +54,7 @@ struct Job {
 // Results of the file dialogs (SDL may call back on another thread).
 std::mutex sPickM;
 std::optional<std::string> sPicked[2];
+std::string sDialogError;  // the file dialog could not open (Linux: no xdg-desktop-portal/zenity)
 
 std::string readText(const std::filesystem::path& p) {
     std::ifstream in(p, std::ios::binary);
@@ -159,8 +160,14 @@ void startJob(Job& job, const Slot slots[2], const Plan& plan) {
 
 void SDLCALL onPicked(void* userdata, const char* const* files, int) {
     const int slot = int(reinterpret_cast<intptr_t>(userdata));
-    if (!files || !files[0]) return;  // error or cancelled
     std::lock_guard lk(sPickM);
+    if (!files) {  // error (cancel is an empty list)
+        const char* e = SDL_GetError();
+        sDialogError = std::string("The file dialog could not be opened") + (e && *e ? std::string(": ") + e : "") +
+                       ". Type or paste the path of the disc image instead.";
+        return;
+    }
+    if (!files[0]) return;  // cancelled
     sPicked[slot] = files[0];
 }
 
@@ -275,6 +282,29 @@ bool run(const Options& opts, LaunchInfo& launch) {
                 if (*notes[i]) ImGui::TextDisabled("%s", notes[i]);
                 ImGui::TextWrapped("%s", slots[i].path.empty() ? "(none)" : slots[i].path.c_str());
                 if (ImGui::Button("Browse...")) browse(i, slots[i].path);
+#ifndef _WIN32
+                // Linux: the file dialog needs xdg-desktop-portal (or zenity/kdialog); a typed or
+                // pasted path always works (docs/LINUX.md).
+                {
+                    static char typed[2][1024];
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.6f);
+                    const bool enter = ImGui::InputTextWithHint("##path", "or type / paste the path here",
+                                                                typed[i], sizeof(typed[i]),
+                                                                ImGuiInputTextFlags_EnterReturnsTrue);
+                    ImGui::SameLine();
+                    if ((ImGui::Button("Use") || enter) && typed[i][0]) {
+                        std::string p = typed[i];
+                        while (!p.empty() && (p.back() == ' ' || p.back() == '\n')) p.pop_back();
+                        if (p.size() >= 2 && (p.front() == '\'' || p.front() == '"') && p.back() == p.front())
+                            p = p.substr(1, p.size() - 2);  // pasted from a file manager / shell
+                        if (p.rfind("file://", 0) == 0) p = p.substr(7);
+                        std::lock_guard lk(sPickM);
+                        sPicked[i] = p;
+                        typed[i][0] = 0;
+                    }
+                }
+#endif
                 if (!slots[i].path.empty()) {
                     ImGui::SameLine();
                     if (ImGui::Button("Remove")) {
@@ -287,6 +317,14 @@ bool run(const Options& opts, LaunchInfo& launch) {
                 }
                 ImGui::Dummy(ImVec2(0, 8 * scale));
                 ImGui::PopID();
+            }
+            {
+                std::lock_guard lk(sPickM);
+                if (!sDialogError.empty()) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.4f, 1));
+                    ImGui::TextWrapped("%s", sDialogError.c_str());
+                    ImGui::PopStyleColor();
+                }
             }
             if (slots[0].valid && slots[1].valid) {
                 ImGui::Text("Version to play:");

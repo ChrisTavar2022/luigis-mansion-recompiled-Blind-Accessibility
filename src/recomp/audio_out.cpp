@@ -394,6 +394,13 @@ double outQueuedSeconds() {
     return SDL_GetAudioStreamQueued(sStream) / (double(sizeof(float)) * sInChannels * sInRate);
 }
 
+void outShutdown() {
+    std::lock_guard lk(sM);
+    if (sStream) SDL_DestroyAudioStream(sStream);
+    sStream = nullptr;
+    sTried = true;  // no reopening while shutting down
+}
+
 bool outHasDevice() {
     std::lock_guard lk(sM);
     return sStream != nullptr;

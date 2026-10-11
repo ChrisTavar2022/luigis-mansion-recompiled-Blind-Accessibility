@@ -97,11 +97,11 @@ void trace_enter(u32 addr, Ctx& c) {
         log("[trace] %08X lr %08X r3 %08X r4 %08X r5 %08X", addr, c.lr, c.r[3], c.r[4], c.r[5]);
 }
 
-// LM_WATCH=<hex addr>[,<hex len>]: report every guest store into the range, with
+// LM_WATCH=<hex addr>[,<hex len>[,<hex stride>,<hex offset>]]: report every guest store into the range, with
 // the function that made it (needs LM_TRACE, e.g. LM_TRACE=ring, for the name).
 bool g_watchOn = false;
 namespace {
-u32 sWatchLo = 0, sWatchHi = 0;
+u32 sWatchLo = 0, sWatchHi = 0, sWatchStride = 0, sWatchOffset = 0;
 }  // namespace
 
 void initWatch() {
@@ -109,15 +109,22 @@ void initWatch() {
     if (!env || !*env) return;
     char* end = nullptr;
     sWatchLo = u32(std::strtoul(env, &end, 16));
-    sWatchHi = sWatchLo + (end && *end == ',' ? u32(std::strtoul(end + 1, nullptr, 16)) : 4);
+    sWatchHi = sWatchLo + (end && *end == ',' ? u32(std::strtoul(end + 1, &end, 16)) : 4);
+    // Optional ",<stride>,<offset>" (hex): only stores to that field of an array of structs.
+    if (end && *end == ',') {
+        sWatchStride = u32(std::strtoul(end + 1, &end, 16));
+        if (end && *end == ',') sWatchOffset = u32(std::strtoul(end + 1, nullptr, 16));
+    }
     g_watchOn = true;
 }
 
 void watch_store(u32 a, u32 v, int size) {
     const u32 phys = a & kHostMemMask;
     if (phys + size <= (sWatchLo & kHostMemMask) || phys >= (sWatchHi & kHostMemMask)) return;
+    if (sWatchStride && (phys - (sWatchLo & kHostMemMask)) % sWatchStride != sWatchOffset) return;
     const u32 fn = tRingPos ? tRing[(tRingPos - 1) % kRingSize] : 0;
-    log("[watch] store%d %08X = %08X in %08X", size * 8, a, v, fn);
+    log("[watch] store%d %08X = %08X in %08X (thread %08X%s)", size * 8, a, v, fn, sched::currentGuest(),
+        sched::inIrq() ? ", interrupt" : "");
 }
 
 void watchRange(u32 a, u32 len, const char* what) {

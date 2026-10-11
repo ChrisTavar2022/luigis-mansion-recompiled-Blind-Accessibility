@@ -280,7 +280,7 @@ u32 aiState(u32 thought) {
 
 bool enabled() {
     const auto& st = port::settings();
-    return sForce || (st.ghostLights.enabled && st.enhancedLighting.enabled && st.enhancedLighting.extraLights);
+    return sForce || (st.ghostLights.enabled && enh::masterOn() && st.enhancedLighting.extraLights);
 }
 
 // LM_GHOST_LIGHT_LOG: once the enemy parameters are loaded, every ghost type's glow colour.
@@ -463,7 +463,10 @@ void update(Ctx& c) {
         if (vis <= 0.01f) vis = capturing && dramatic ? 1.0f : hint;  // the capture burst shows even as it shrinks away
         if (!drawn || tr.captureEnd) vis = 0.0f;
 
-        const float rawI = intensity * kBase * k * vis;
+        // Small ghosts (bats, mice, Boos) glow less: hallways have several of them hanging right
+        // under the ceiling, where a full-strength light burns a hot spot into the plaster.
+        const float sizeK = tr.cls == 1 ? 0.55f : 1.0f;
+        const float rawI = intensity * kBase * k * vis * sizeK;
         // Smoothed: ghosts fade, hide and flare from one game frame to the next (the dance
         // switches visibility often); a light that jumps makes its pool, its shadows and the
         // bloom pop. Fast attack, slower release (about 3 / 5 frames).

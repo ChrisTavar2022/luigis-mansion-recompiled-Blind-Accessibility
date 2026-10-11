@@ -5,6 +5,7 @@
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
 
+#include <cstring>
 #include <vector>
 
 namespace recomp {

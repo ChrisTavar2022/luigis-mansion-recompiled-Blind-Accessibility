@@ -4,6 +4,16 @@
 // may reference. FREESTANDING: no system headers.
 #include "recomp/module_abi.h"
 
+#ifdef _WIN32
+#define LM_MODULE_EXPORT __declspec(dllexport)
+#else
+// Linux (.so): the module is compiled with -fvisibility=hidden and linked -Bsymbolic, so
+// only this entry point is exported and nothing in the module can be interposed by a
+// same-named symbol of the executable or a library (g_mem, memcpy, ...).
+#define LM_MODULE_EXPORT __attribute__((visibility("default")))
+#endif
+
+#ifdef _WIN32
 // Stack probe for frames larger than a page (Windows x64: frame size in rax; only flags may
 // change). Windows grows thread stacks through a guard page, so a function whose frame is
 // bigger than 4 KiB must touch each page in order or it faults past the guard page. The
@@ -29,6 +39,7 @@ extern "C" __attribute__((naked)) void __chkstk() {
         "popq %rcx\n\t"
         "retq");
 }
+#endif  // _WIN32 (Linux thread stacks are fully mapped; the compiler emits no probes there)
 
 namespace recomp {
 
@@ -90,8 +101,10 @@ using namespace recomp;
 
 extern "C" {
 
+#ifdef _WIN32
 // Referenced by MSVC-ABI object files that use floating point.
 int _fltused = 0;
+#endif
 
 // The compiler may lower struct copies, __builtin_mem* and math builtins to calls.
 void* memcpy(void* dst, const void* src, decltype(sizeof(0)) n) {
@@ -127,7 +140,7 @@ double trunc(double v) { return sApi->trunc(v); }
 double nearbyint(double v) { return sApi->nearbyint(v); }
 double sqrt(double v) { return sApi->sqrt(v); }
 
-__declspec(dllexport) const GameModule* lm_module_init(const RuntimeApi* api) {
+LM_MODULE_EXPORT const GameModule* lm_module_init(const RuntimeApi* api) {
     if (!api || api->abiVersion != kModuleAbiVersion || api->size != sizeof(RuntimeApi) ||
         kGameModule.abiVersion != kModuleAbiVersion)
         return nullptr;
@@ -140,7 +153,9 @@ __declspec(dllexport) const GameModule* lm_module_init(const RuntimeApi* api) {
     return &kGameModule;
 }
 
+#ifdef _WIN32
 // No C runtime: the loader calls this directly (lld-link /entry).
 int __stdcall lm_module_entry(void*, unsigned, void*) { return 1; }
+#endif
 
 }  // extern "C"

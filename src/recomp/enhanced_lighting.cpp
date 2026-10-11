@@ -1,6 +1,7 @@
 // Enhanced lighting, port side (enhanced_lighting.h, docs/RENDERING.md "Enhanced lighting").
 #include "recomp/enhanced_lighting.h"
 #include "recomp/ghost_lights.h"
+#include "recomp/world_lights.h"
 
 #include "port/settings.h"
 #include "recomp/hle.h"
@@ -22,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <vector>
 
 namespace recomp {
 u32 copyDispCount();  // hle_gx.cpp
@@ -37,9 +39,14 @@ u8 sClass = 0xFF;                          // last draw class sent
 int sPerfPhase = -1;       // LM_ENH_PERF_AB phase (host thread)
 bool sPerfNoMap = false;
 bool sGhostPass = false;
+bool sCharPass = false;
+u8 sMaterial = 0xFF;  // last material hint sent
 
-// Extra lights submitted for the coming main view (guest thread only).
-std::array<aurora::gfx::ExtraLight, aurora::gfx::MaxExtraLights> sPending{};
+// Extra lights submitted for the coming main view (guest thread only). Providers (ghost lights,
+// world lights, test lights) append; beginScene culls what cannot reach the view and keeps the
+// MaxExtraLights strongest.
+constexpr uint32_t kMaxCandidates = 512;
+std::array<aurora::gfx::ExtraLight, kMaxCandidates> sPending{};
 uint32_t sPendingCount = 0;
 
 // Camera (lbl_803A3820): the player's view eye/target in world space.
@@ -74,7 +81,7 @@ void addTestLights() {
     const float luigi[3] = {rdf32(actor + 0x44), rdf32(actor + 0x48), rdf32(actor + 0x4C)};
     static u32 sFrame = 0;
     const float t = float(sFrame++) / 30.0f;
-    for (int i = 0; i < sTest.count && sPendingCount < aurora::gfx::MaxExtraLights; i++) {
+    for (int i = 0; i < sTest.count && sPendingCount < kMaxCandidates; i++) {
         const float a = t * 0.9f + 6.2831853f * float(i) / float(sTest.count);
         const float world[3] = {luigi[0] + 220.0f * std::cos(a), luigi[1] + 110.0f + 40.0f * std::sin(t * 1.7f + float(i)),
                                 luigi[2] + 220.0f * std::sin(a)};
@@ -93,10 +100,44 @@ void addTestLights() {
 }  // namespace
 
 void submitExtraLights(const aurora::gfx::ExtraLight* lights, uint32_t count) {
-    count = std::min<uint32_t>(count, aurora::gfx::MaxExtraLights);
-    std::memcpy(sPending.data(), lights, count * sizeof(aurora::gfx::ExtraLight));
-    sPendingCount = count;
+    count = std::min<uint32_t>(count, kMaxCandidates - sPendingCount);
+    std::memcpy(sPending.data() + sPendingCount, lights, count * sizeof(aurora::gfx::ExtraLight));
+    sPendingCount += count;
 }
+
+namespace {
+// Lights whose sphere cannot touch the view frustum are dropped (generous side margins: the
+// widescreen/FOV options widen the view); the rest are ranked by intensity x reach over distance
+// and the strongest MaxExtraLights kept, in that order (Aurora gives shadow slots to the first
+// flagged lights).
+uint32_t selectLights(aurora::gfx::ExtraLight* l, uint32_t n) {
+    struct Ranked {
+        float score;
+        uint32_t i;
+    };
+    static std::vector<Ranked> rank;
+    rank.clear();
+    for (uint32_t i = 0; i < n; i++) {
+        const auto& x = l[i];
+        if (!(x.intensity > 0.0f) || !(x.radius > 0.0f)) continue;
+        const float z = -x.pos[2];  // distance in front of the camera
+        if (z < -x.radius) continue;  // entirely behind the camera
+        const float side = std::max(z, 0.0f) * 2.5f + x.radius;  // ~136 degrees wide, 2.5:1
+        if (std::fabs(x.pos[0]) > side || std::fabs(x.pos[1]) > side) continue;
+        const float d = std::sqrt(x.pos[0] * x.pos[0] + x.pos[1] * x.pos[1] + x.pos[2] * x.pos[2]);
+        rank.push_back({x.intensity * x.radius / (1.0f + std::max(d - x.radius, 0.0f) / 800.0f), i});
+    }
+    std::stable_sort(rank.begin(), rank.end(), [](const Ranked& a, const Ranked& b) { return a.score > b.score; });
+    static std::array<aurora::gfx::ExtraLight, aurora::gfx::MaxExtraLights> out;
+    uint32_t m = 0;
+    for (const auto& r : rank) {
+        if (m == aurora::gfx::MaxExtraLights) break;
+        out[m++] = l[r.i];
+    }
+    std::memcpy(l, out.data(), m * sizeof(aurora::gfx::ExtraLight));
+    return m;
+}
+}  // namespace
 
 namespace enh {
 
@@ -209,6 +250,7 @@ void applySettings() {
 // game's own GX commands: WORLD inside the main 3D view (fn_8000BB98), GHOST inside its ghost
 // pass, OTHER in the shadow-map caster pass and everywhere else (HUD/2D, GBH, copies). Aurora
 // additionally ignores non-perspective draws for its re-rendered passes.
+void emitMaterial();
 void emitClass() {
     if (!masterOn()) return;
     u8 cls = AURORA_DRAW_CLASS_OTHER;
@@ -222,22 +264,49 @@ void setGhostPass(bool on) {
     if (sGhostPass == on) return;
     sGhostPass = on;
     emitClass();
+    emitMaterial();
 }
 bool ghostPass() { return sGhostPass; }
+
+u32 sSceneCount = 0;
+void emitMaterial() {
+    if (!masterOn()) return;
+    // Test aid LM_CHAR_MATERIAL=0 (off: characters lit like the world, as before) / 2 (only on
+    // even frames: consecutive frame dumps compare both).
+    static const int sMode = [] {
+        const char* v = std::getenv("LM_CHAR_MATERIAL");
+        return v ? std::atoi(v) : 1;
+    }();
+    const bool allowed = sMode == 1 || (sMode == 2 && (sSceneCount & 1) == 0);
+    const u8 m = allowed && sInScene && sCharPass && !sGhostPass && !sInCaster ? AURORA_MATERIAL_CHARACTER : AURORA_MATERIAL_WORLD;
+    if (m == sMaterial) return;
+    GXSetMaterialHintAurora(m);
+    sMaterial = m;
+}
+void setCharacterPass(bool on) {
+    if (sCharPass == on) return;
+    sCharPass = on;
+    emitMaterial();
+}
+bool characterPass() { return sCharPass; }
 
 void setCasterPass(bool on) {
     if (sInCaster == on) return;
     sInCaster = on;
     emitClass();
+    emitMaterial();
 }
 
 void beginScene() {
     addTestLights();
-    const uint32_t count = sPendingCount;
+    const uint32_t count = selectLights(sPending.data(), sPendingCount);
     sPendingCount = 0;  // a frame in which nobody submits has no extra lights
     sClass = 0xFF;      // every frame (and interpolation tape) sets its class again
+    sMaterial = 0xFF;
+    sSceneCount++;
     sInScene = true;
     emitClass();
+    emitMaterial();
     if (!active()) return;
     const u32 at = interp::mark();
     aurora::gfx::set_extra_lights(sPending.data(), count);
@@ -247,6 +316,7 @@ void beginScene() {
 void endScene() {
     sInScene = false;
     emitClass();
+    emitMaterial();
     if (active()) GXSceneEndAurora();
 }
 
@@ -291,6 +361,7 @@ bool worldToView(const float world[3], float view[3]) {
 HLE(fn_8000BB98) {
     const bool main = c.r[3] == 0;
     if (main) ghostlights::onMainView(c);  // ghost_lights.cpp: this frame's ghost lights
+    if (main) worldlights::onMainView(c);  // world_lights.cpp: candles, fires, lamps, sprays
     if (main) enh::beginScene();
     callOriginal(c, "fn_8000BB98");
     if (main) enh::endScene();

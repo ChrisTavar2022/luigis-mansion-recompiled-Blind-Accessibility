@@ -46,8 +46,15 @@ const char* availNote(Avail a);  // short explanation, nullptr for Yes
 
 InstallState& install();
 
-// %APPDATA%\Luigi's Mansion PC (created on demand). Everything the port writes lives here.
+// Where the port writes (created on demand; docs/SETUP.md, docs/LINUX.md):
+//   Windows: all three are %APPDATA%\Luigi's Mansion PC.
+//   Linux:   configDir  $XDG_CONFIG_HOME/Luigi's Mansion PC (~/.config/...): settings.ini, install.ini
+//            dataDir    $XDG_DATA_HOME/Luigi's Mansion PC (~/.local/share/...): game modules, Hidden
+//                       Mansion overlays, memory cards, screenshots
+//            cacheDir   $XDG_CACHE_HOME/Luigi's Mansion PC (~/.cache/...): GPU pipeline/shader caches
+std::filesystem::path configDir();
 std::filesystem::path dataDir();
+std::filesystem::path cacheDir();
 
 // PAL Hidden Mansion overlay built by setup for the US base: <dataDir>/hidden_mansion
 std::filesystem::path hiddenMansionOverlayDir();

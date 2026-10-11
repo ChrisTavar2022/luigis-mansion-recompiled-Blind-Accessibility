@@ -2,6 +2,7 @@
 
 #include "recomp/hle.h"
 
+#include <cstring>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -434,7 +435,12 @@ void postIrqAfter(double seconds, std::function<void(Ctx&)> fn) {
     const auto when = std::chrono::steady_clock::now() +
                       std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds));
     std::lock_guard lk(sTimerM);
-    if (!sTimerThread.joinable()) {
+    // One timer thread for the whole run. (A detached std::thread is never joinable, so
+    // testing joinable() started a new thread on every call: the European game's per-frame
+    // alarms leaked ~30 threads a second until thread creation failed and the game aborted.)
+    static bool sStarted = false;
+    if (!sStarted) {
+        sStarted = true;
         sTimerThread = std::thread(timerMain);
         sTimerThread.detach();
     }
