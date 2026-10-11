@@ -43,6 +43,47 @@ now; **gated** = greyed out in F1 with the reason.
 | Shader precache | works | **fixed** | full `tools/pipelines/sweep.py` run on the European build merged into `data/pipelines.bin` (1999 -> 2148 configs) |
 | Hidden Mansion, USA rules on the European game | n/a | works | foyer (not mirrored, USA lighting), Chauncey / Boolossus / Bowser maps run; Boolossus fight played to a game over |
 | Hidden Mansion, European rules | works (overlay) | works (native) | mirrored, darker; Boolossus fight with the European mechanics |
+| Log flood "GXLoadTexObj: unknown texture object 803BD214/803BD234" | n/a | **fixed** | the European file select and opening set up the shadow receivers (`fn_8005DD50`) before the shadow object's constructor (`fn_8005D41C`) runs (the USA game constructs it earlier, in `fn_8000CE58`), so two zeroed GXTexObjs were loaded every frame. A zero object is now loaded as its registers read on hardware (1x1 I4 at physical 0, clamp, nearest); other unknown objects are logged 16 times. 0 lines in a 100 s run |
+
+## Second unused batch and 2-player mode (October 2026)
+
+Previously USA-only and greyed on the European game; all now run on both (docs/UNUSED_CONTENT.md
+"Second batch"). Checked on the European dev build with scratch `APPDATA`/`LM_CARD_DIR`;
+evidence in `build/pal_parity2/` (not committed).
+
+| Feature | USA | PAL | Notes |
+|---|---|---|---|
+| Play as Mario | works | **fixed** (ungated) | model swap was already `VA()`-based; nursery checked |
+| Mario as player 2 | works | **fixed** | with the 2-player mode below |
+| 2-player mode + co-op improvements | works | **fixed** | European lines for AR patches 40-47 (same instructions; `sGamePad` is r13+0x118 on both); `fn_800112F8`/`fn_800850B4`/`fn_8003E7B0` tagged; HUD meter values `lbl_804D8490/92` and the meter object `lbl_804D84CC` mapped by hand (`gen_version_map.py` `DATA_OVERRIDES`; the matcher picked neighbours); the European heart-sprite object starts 0x30 later (`VOFF(0x30, 0)`). Shared view, both meters, port-2 movement |
+| Bordered view (patch 50) | works | **fixed** | `patch 50 80011BB4 480000D8 pal` |
+| Poison state | works | **fixed** | `fn_800AEEA8` is a `layout` pair only for Luigi fields >= +0x134C, which the handler does not use |
+| Crawling fear (patch 51) | works | **fixed** | `patch 51 800BA7B8 2C00007F pal`; fear table reached through `lbl_804D2428` (the table itself has no code reference) |
+| Vacuum overheat | works | **fixed** | meter hooks `fn_80045F58`/`fn_80046120` tagged; burned at full heat |
+| Ending pictures | works | **fixed** | `fn_8000E050` tagged (European version only centres the caption; layer block and colours identical); rank 8 checked |
+| Early lab script | works | **fixed** | European archives: per-language messages, Latin font: the port's English translation is served (see UNUSED_CONTENT.md) |
+| Unused ghost placements | works | **fixed** | European JMP tables have other byte layouts, same rows; fields found by name. Roof Ghost Guys and Courtyard `skul` checked |
+| Pink mice / Blue Ghost Guys | works | **fixed** | type table identical; European `game_<l>.szp` have `rat2.prm`, `heypo9/10.prm`. Pink mice seen on both |
+| Extra Speedy Spirits | **fixed** | **fixed** | were never created on either release (no group observer); observers added, `iyapoo16` created in room 4 on both |
+| Spawn list, particle test | works | **fixed** (ungated) | type and effect tables identical; Boo ball, toy car, Bowser with a Boo, rice/fire/element-test effects |
+| Shipped program, PAL disc only | | works | fresh `APPDATA`, module built (52 s), Mario + 2-player + crawling fear in the nursery |
+
+Not available: nothing in the batch stays greyed on the European game.
+
+## Re-check after the later merges (October 2026)
+
+Quick smoke on the European dev build after enhanced lighting, world/ghost lights,
+interpolation, shadows, co-op, the Pikmin fix and the audio pacing merges:
+
+| Feature | PAL | Notes |
+|---|---|---|
+| Enhanced lighting + world lights + ghost lights | works | nursery at 16:9 with lightning, no errors in the log |
+| Lightning / flashlight shadows | works | `[shadow]` refits logged; shadows in the lightning frames |
+| Widescreen HUD anchoring (16:9, 21:9, "Keep HUD at 4:3" off) | works | health at the left edge, GBH at the right |
+| Interpolation (`LM_INTERP_TEST=2`, 120 fps, nursery walk, 61 frames) | works | same as USA in the same run: 463 vs 498 unpaired positions, 3398 vs 3417 jerky matrices of ~55,400 |
+| Pikmin movie (HVQM4) | works | plays to the end card; 0 voice stops (`BreakLowerActiveDSPchannel`, European `fn_801A4980`) |
+| Audio pacing | works | no voice stops in the menus or the movie |
+| 2-player mode | works | see above |
 
 ## Notes for later work
 
