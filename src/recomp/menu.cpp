@@ -539,7 +539,9 @@ void generalEnhancementsTab() {
         sDirty = true;
         applyWindowSettings();
     }
-    sDirty |= ImGui::Checkbox("Skip intro logos", &e.skipIntroLogos);
+    ImGui::BeginDisabled();  // not implemented yet: greyed out so it is not mistaken for a working option
+    ImGui::Checkbox("Skip intro logos", &e.skipIntroLogos);
+    ImGui::EndDisabled();
     pending("planned");
     {
         sDirty |= ImGui::Checkbox("Skippable cutscenes", &e.skipCutscenes);
