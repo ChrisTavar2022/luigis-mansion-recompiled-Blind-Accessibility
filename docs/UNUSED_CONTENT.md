@@ -781,6 +781,205 @@ breaker (`build/warps/breaker_old_vs_retail.png`); the hallway duplicates are ne
 as the file sizes suggest. Test aids: `LM_DEV_ROOM=<index>@<frame>,...`,
 `LM_DEV_ROOM_RETAIL=1` (place Luigi without swapping the model).
 
+## Second batch (`src/recomp/unused2.*` and friends)
+
+Every option is off by default and leaves retail unchanged; settings live in
+`port::Unused2Settings` (ini section `[unused2]`). Wiring: `unused2.cpp` is called from the
+existing map-setup / end-of-frame hooks (`dev_tools.cpp`) and the model setup hook
+(`unused_models.cpp`), draws the menu sections (Enhancements > Unused content / Gameplay /
+Debug, Sound > Jukebox), and owns a disc overlay (`hle_dvd.cpp`, virtual FST entries
+`0x50000000+`) that serves rebuilt files while an option needs them (keyed by the options, so a
+change applies the next time the game opens the file). Host-built guest data (model copies,
+textures, strings) lives in `unused2::extraAlloc` memory (0x81820000-0x81F00000, host-backed,
+above MEM1). Unless noted, the features run on the USA game only (`port::usCodeFeature()`;
+greyed out otherwise). Evidence images: `build/unused2/` (not committed).
+
+### Play as Mario / Mario as player 2 (`play_as_mario.cpp`)
+
+The character table has a complete unused Mario player set: type 0xB3 `bmario`
+(`/model/bmario.szp`) and its equipment types 0xB5-0xB9 (`bvbody`, `bvhead`, `bwplight`,
+`bwpwater`, `bwpair`). Luigi's code has branches for a type-0xB3 player (init at 0x800AB84C,
+`fn_800B36B8` re-types the nozzle to 0xB6/0xB7, attach tables in `fn_80078008`, a motion-slot
+table `lbl_80352B9C` in `fn_80076D3C`), but the b-equipment types point at the same model files
+as Luigi's own, so the body model is the only Mario-specific asset. `bmario.mdl` has Luigi's
+65-joint graph (bind pose slightly stockier, 13 envelopes instead of 55, 40 materials, no
+`.txp` of its own), so the retail keys drive it.
+
+- Play as Mario: after `fn_80061C94` fills a model-registry entry whose `.mdl` has Luigi's
+  skeleton (gameplay Luigi and the `dluige01/03` cutscene Luigis; checked with
+  `early_luigi.cpp`'s skeleton test), +8 is pointed at a relocated Mario copy.
+- Eyes: Luigi's `.txp` patterns write sampler indices into material 4 and 6 stage 0 of
+  whatever model is drawn (`fn_8005CBBC` writes into the `.mdl`'s material table). Mario's
+  materials 4/6 are body parts on sampler 5, so the copy's sampler table starts with N copies of
+  Mario's sampler 5 (N = the Luigi model's sampler count, every value a pattern can write),
+  followed by Mario's own samplers, and every Mario material is re-pointed into the second part.
+  The patterns then leave Mario unchanged (he does not blink; his model has no patterns).
+- Voice: stays Luigi's. The sequence table has `Mario.com`/`Mario02.com` (music), but no Mario
+  voice clips for player actions.
+- Mario as player 2: the 2-player mode's player 2 S3DModel (+4 of the actor, model at +4) is
+  pointed at the Mario copy each frame (the S3DModel arrays are sized from Luigi's larger
+  joint+envelope count, so the swap is safe).
+- Verified: `mario_nursery_back.png`, `mario_nursery_front.png` (Poltergust, flashlight, hose and
+  Game Boy Horror line up), `mario_player2.png` (`LM_COOP=1 LM_MARIO_P2=1`). Test aids:
+  `LM_PLAY_AS_MARIO=1`, `LM_MARIO_P2=1`.
+
+### Bordered view (patch 50)
+
+`fn_80010F20` (game-scene viewport setup) chooses the main view rectangle from a mode that is
+always 1 or 2; its third case, a fixed 40,30-560,430 view with a black border, is never reached.
+`patch 50 80010FD4 480000D8` turns the `beq` (original `41820064`) into a branch to that case.
+Verified: `bordered_view.png`. USA only (no PAL patch line yet).
+
+### Luigi states (`luigi_states.cpp`, Enhancements > Gameplay)
+
+Luigi's action controller (`[Luigi+0x7E4]`: +0x310 state, +0x314 sub-state, +0x68 motion-slot
+table) has a motion-slot override at +0x360 that only its reset code writes: `fn_80073AF8`
+returns slot +0x360's motion when it is not 0. The motion table (type 0: `lbl_8033E39C`, 160
+motions) maps motions to keys; the slot table `lbl_803523A4` maps slots to motions.
+
+- **Poison** (user design). Message 0x38 of Luigi's handler `fn_800AEEA8` is the size mushroom
+  (+0xFC target scale, +0x100 duration; then message 0x25 drops 10 coins). With the option on, a
+  scale below 1 (the poison mushroom) starts a poison instead: slot 0x41 (motion 42, key
+  `doku_lp`, never selected in retail) through the override, the key's own `doku_lp.txp` gives
+  the dark poisoned eyes, player 1's pad is held (`hle_pad.cpp`), and the health drops by the set
+  total over the set time (default 25 over 5 s, written directly: the setter `fn_800B9488` would
+  burst hearts and drop coins per point; poison alone never takes the last point). The coin loss
+  is kept. Verified with `LM_POISON=1 LM_TEST_POISON=0@<frame>` (sends message 0x38 like the
+  mushroom): `poison_crawl.png` (left two).
+- **Crawling fear**. Luigi's fear state (`[Luigi+0x7E8]`, modes 1 calm, 2/3 scared, 4 panic;
+  table `lbl_80354B9C`) is advanced by `fn_8007CE04(obj, 0, event)`, which nothing calls (only
+  the reset, arg 1). Mode 4 (300 frames) makes the controller pick the unused cowering motions
+  (slot 0x0D `cow1wait`, 0x0E `cow1move`: sitting and scooting along the floor), blocks the
+  Poltergust (`fn_800B36B8`, `fn_800B4CA8`) and on timeout sends the get-up request (10).
+  With the option on, a retail startle (message 2, the `biku` reaction) whose source is behind
+  Luigi (dot product with his facing +0xF48 < 0) sends event 2 (every mode -> 4). Two problems of
+  the cut code are fixed: `fn_800B61C8` multiplies the maximum health by the mode's factor
+  (mode 4: 0.5) every frame, so the health halved each frame and Luigi died within 8 frames: the
+  factor is set to 1.0 while the option is on (`0x80354C40`, written only over the retail value);
+  and mode 4's effect 0xE (`fn_800B7090`) is started every frame and floods the view with heart
+  particles: `patch 51 800B742C 2C00007F` (original `2C000004`) skips it. Verified with
+  `LM_CRAWL_FEAR=1 LM_TEST_STARTLE=1@<frame>`: `poison_crawl.png` (right four).
+- **Vacuum overheat** (user design). The cut overheat still has pieces: Luigi +0x1008 is a lock
+  that `fn_800B36B8` honours (no vacuum while > 0) and `fn_800B3BAC` counts down, but the same
+  function resets the heat +0x1004 to its maximum (300) every frame (0x800B3FB4), and the status
+  block still exports the heat as the element meter value when no element is equipped
+  (0x800B8648) plus an unread "full" flag (+0x54, 0x800B8678). Host logic: heat rises while the
+  vacuum is on (mode 1) and falls otherwise (times the "blowing" multiplier while L sprays);
+  full heat sets the game's lock, burns Luigi through the game's own element-hit message 0x2A
+  kind 0 (on fire: `burn_lop`/`burn_end`, the fire effect on his head; kind 1 is water, 2 ice)
+  and keeps the vacuum locked until the heat is back to half. The element meter
+  (`fn_80045F58`, hooked) is presented the heat (0..10) with the fire element's colours while it
+  is above zero, and shakes (`fn_80046120`, meter position jittered) while overheated. Tunables:
+  time to overheat (20 s), cool-down (30 s full to empty), blowing multiplier (3x), burn damage
+  (10). Verified: `overheat_meter.png` (meter filling, then burned), `element_hits.png`.
+  Test aid: `LM_OVERHEAT=1`; generic: `LM_STATE_LOG=1` (controller state, motion, fear, health),
+  `LM_TEST_SLOT=<slot>@<from>-<to>`, `LM_TEST_DAMAGE`, `LM_TEST_ELEM=<kind>:<dmg>@<frame>`,
+  `LM_TEST_FEAR=<event>@<frame>`.
+
+### Jukebox (`jukebox.cpp`, Sound > Jukebox)
+
+`/AudioRes/JaiInit.aaf`'s BARC block lists 89 sequences (entry 0 is the sound-effect sequence).
+Music starts with `fn_80188760(0x80000000 | n)` (e.g. 0x12 GoodNight when Luigi's health runs
+out); event scripts use `<BGM>(n)` through the 54-entry table `lbl_8038EAB4` (`fn_8018A470`);
+`fn_8018A570` stops the music. Some entries share sequence data ("same as N"). "Not heard in
+retail" = no event script's `<BGM>`, no constant `0x80000000+n` in the code and no data table
+selects it, nor any entry sharing its data (USA analysis; computed ids could be missed):
+Mario.com (5/9), Demo_FirstMon/Demo_FirstDoc share data with heard entries, Total.com (17),
+Room_Space (32), Total_Score (35), select.com (40), TelesaDemo02 (48), Demo_Lion1_2 (70), and
+Ochi01-03 turned out to be the ending's rank jingles (heard). Verified: `LM_JUKEBOX=84@<frame>`
+switches the music player to sequence 0x54 (log). Works on both releases (the "not heard"
+labels are USA-only).
+
+### Ending pictures (`gallery.cpp`)
+
+Scene 6 (ENDING, `lbl_8021DEE8`: setup `fn_8000D1CC`, draw `fn_8000E050`) picks a caption by
+rank (`lbl_804D8100`, 1 worst .. 8 best: `mes_bE`, `mes_gE`, `mes_VE`). The disc has one picture
+of Luigi per caption that nothing loads: `luigi_b` (sitting with a flower), `luigi_g` (one V
+sign), `luigi_V` (two V signs). The draw hook loads the picture for the rank into guest memory
+and draws it with the scene's own quad helper (`fn_80057ACC` colour, `fn_80057AD8` quad, shadow
+and colour like the caption) with the caption's alpha (s16 at layer block +0x6C), until the
+scene's fade-out (frame 0x7BC). Verified: `ending_pictures.png` (ranks 1, 5, 8 via
+`LM_TEST_ENDING=<rank>@<frame>`, which requests scene 6).
+
+### Gallery and text archive (Debug tab)
+
+- **Gallery** (`gallery.cpp`): the ending pictures, the two unused Japanese ending captions
+  (`mes_b1`: "Hmm... Reality was harsh. Luigi's Mansion fades away like a dream.", `sosite`:
+  "And then... a present from the Professor!"), the unused room cards `e_kyukei` / `e_roof`,
+  the Game Boy Horror scan icons `gb_sight_ob_key` / `_teresa`, `hand1` (res_kwnx) and other
+  unreferenced textures, decoded on the host (all GX texture formats) and shown with
+  `aurora_imgui_add_texture`. Verified: `gallery.png`. Test aid `LM_GALLERY=1`.
+- **Text archive** (`text_archive.cpp`): reads every `/Event/eventNN.szp` (script + messages);
+  messages no `<SPEAK>(n)` / `<CHOICE>"..."(n)` refers to are listed (event01 0/1/8, event03 12
+  - the pianist's tune quiz -, event08 19/20/31, event77 51, event85 6), with the early lab
+  script event26 (port's own English translation of every message and of its developer notes)
+  and all scripts' developer notes. Text is drawn with the game's own font: the ResFONT embedded
+  in the DOL (`lbl_80306560`, `fn_8003EB44`), 359 32x32 I4 glyphs with Shift-JIS maps (full-width
+  Latin, kana, punctuation, 64 kanji); ASCII is drawn with the full-width glyphs as
+  JUTResFont does. Missing kanji stay blank. Verified: `text_archive_unused_lines.png`,
+  `text_archive_event26.png`. Test aid `LM_TEXT_ARCHIVE=lines|event26|notes`. Works on both
+  releases (font found by address or by scanning).
+
+### Early lab script in the lab (Unused content, "Early E. Gadd lab script")
+
+With the option on, `/Event/event08.szp` (the lab's talk event, map 1 `eventinfo`) is served
+rebuilt from the retail archive with event26's script and messages. Dropped: event26's debug
+block (four `<FLAGON>`s: Boos released, explanation given, first lab visit, Hidden Mansion
+unlocked - they would alter the save) and its `<SE>(n)` commands (an older sound numbering).
+Everything else is the early script; its menu always offers the Hidden Mansion. Verified: a new
+game started in the lab (`LM_START_MAP=1 LM_LAB_EVENT26=1`) plays the first-visit branch in
+Japanese ("Professor Oya-Mar's Ghost Research Center") up to the warp to training:
+`lab_event26_*.png`.
+
+### Unused placements, colour variants, extra Speedy Spirits (`placements.cpp`)
+
+- **Placements**: map 2's `path/` has files no table row uses; the enemy code reads a row's
+  `path_name` and loads `path/<name>` by name (`EnZako`, `getPathResource`), so a row is all
+  that is missing. Added (copies of a retail row of the same kind, moved to the path's first
+  point): Slim (`hustler`, characterinfo) on `hustler_01` in the Hidden Room (room 1), two
+  `skul` on `skul_23_1/2` in the Courtyard (23), `topoo1` on `topoo_8_1` (room 8), Ghost Guys on
+  `heypo_60_4..12` and `yapoo1` on `poo_60_1` on the roof (60); in map 3 three generators on
+  `mg_path` (copies of the three on `mg_path1`, same codes). `hustler_02` (a second route in
+  Slim's own billiards room) is not placed. Research correction: `skul_16_4` is used (enemy row
+  53). The archives are rebuilt from the user's disc (JMP rows appended, RARC repacked) and
+  Yay0-compressed by the port's own LZ compressor (map 2: 1006400 bytes vs 982080 retail; a
+  literal-only stream would add 1.3 MB to the game heap). Verified (`LM_GHOST_PLACEMENTS=1`,
+  `LM_ACTOR_DUMP=100`, teleports): the actors exist at the path starts (`skul` x2 in the
+  Courtyard, `hustler` + its cue in the Hidden Room, nine Ghost Guys + `yapoo1` on the roof,
+  `topoo1` in room 8; `placements_actor_log.txt`), and the roof Ghost Guys attack
+  (`roof_ghost_guys.png`). Not verified: that the training-room copies start (map 3 loads with
+  9 generator rows).
+- **Colour variants**: a type's +0x10 picks the model's `.txp` set, and `/param/ctp/<type>.prm`
+  its parameters (glow colour, speed...). Never used: `rat2` (rat set 1, pink, `rat2.prm`) and
+  the Ghost Guy sets 9 and 1 (`heypo9.txp`/`heypo10.txp`, `heypo9.prm`/`heypo10.prm`). "Pink
+  mice" gives the `rat1` type set 1 and `rat2.prm`; "Blue Ghost Guys" gives `heypo1` set 9 +
+  `heypo9.prm` and `heypo2` set 1 + `heypo10.prm`. The type table is written at map setup, live
+  actors' patterns every frame (disc models load late, as for the green Toad) and the `.prm`
+  name is redirected in `getResource` (`unused_assets.cpp`). Verified: spawned Ghost Guys glow
+  blue/white instead of green/red (`colour_variants_ghost_guys.png`); the mice were not seen.
+- **Extra Speedy Spirits** (not original): types `iyapoo16..20` are never placed and the reward
+  table `iyapootable` ends at 15. Rows are added in rooms 4, 10, 13, 27, 40 (rooms with ghosts
+  but no Speedy Spirit, at a retail ghost's spot) with create names `<room>_99` like the retail
+  ones, and five reward rows in the retail pattern. Not verified in play.
+
+### Debug: spawn list, particle test, viewer labels
+
+- **Spawn character** (`spawn.cpp`): 28 never-placed types (Boo ball, Bowser with a Boo, toy
+  car/plane/gun, masks, lance, cue, wind-up key, ice, icicle, ghost soul, treasure, item boxes,
+  balls, ...) created in front of Luigi by `fn_800E977C__Q24Koga9EnManagerFll(type, -1)` after the
+  model is loaded with `fn_800620F4`. All 28 were spawned in one run without a crash
+  (`spawn_list.png`); they have no map data, so some only stand there. Test aid
+  `LM_SPAWN=<type>@<frame>,...` (any type number).
+- **Particle test**: `fn_80164F5C` starts table effects (table `lbl_80381B58 + 0xA90`, 142
+  entries of .pcr + textures); `kome_A/B` and `ebi_A/B` (rice, shrimp: entries 8-11) are never
+  started. `elh_fire_a/b`, `elh_ice_a/b`, `element_test1a-c`, `candle_yure`, `smlp` are in no
+  table: they are created directly (`getResource('KH_E', name)`, `fn_8015FE9C(manager, pcr,
+  texture, 0)`) with the texture their retail siblings use (port's choice: a .pcr does not name
+  its texture). All 13 start (`particle_test.png`). Test aid `LM_PARTICLE=<index>@<frame>`.
+- **Model viewer**: Luigi's animations the game never selects are prefixed "[unused]" in the
+  animation picker (`ldr_cl_*`, `cow1*`, `cart*`, `elv_*`, `flip`, `kaiten`, `doku_*`):
+  `viewer_unused_anim_label.png`.
+
 ## Model viewer
 
 Debug tab "Model viewer" (F4), `src/recomp/model_viewer.cpp`. Everything is drawn by the game's

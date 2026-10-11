@@ -3,6 +3,7 @@
 // lookup; no game code is rewritten. Findings and addresses: docs/UNUSED_CONTENT.md.
 #include "port/settings.h"
 #include "recomp/hle.h"
+#include "recomp/unused2.h"
 #include "recomp/world_lights.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
@@ -272,6 +273,8 @@ HLE(getResource__10JKRArchiveFPCc) {
                 log("[unused] beta skybox: %s -> %s", path, gstr(alt));
             }
         }
+    } else if (const u32 alt = unused2::resourceRedirect(path)) {
+        c.r[4] = alt;  // colour variants: the unused .prm (placements.cpp)
     } else if (!std::strcmp(path, "/gide_lui.bin")) {
         static const bool sForce = envFlag("LM_BETA_MAP_LUIGI");
         if (sForce || opt().betaMapLuigi) {

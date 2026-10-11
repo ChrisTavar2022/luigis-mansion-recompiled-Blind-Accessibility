@@ -15,6 +15,7 @@
 #include "recomp/frame.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/skip.h"
+#include "recomp/unused2.h"
 
 #include <aurora/aurora.h>
 #include <imgui.h>
@@ -577,6 +578,7 @@ void soundTab() {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Per-voice FIR / IIR / distortion stages the game asks the DSP for (muffled or\n"
                           "distorted sounds). Off: those sounds play unfiltered, slightly cheaper.");
+    recomp::unused2::soundSection();
 }
 
 // Gameplay / difficulty (port::GameplaySettings, src/recomp/gameplay_hooks.cpp). All neutral by
@@ -604,6 +606,7 @@ void gameplaySection() {
         g = port::GameplaySettings{};
         sDirty = true;
     }
+    recomp::unused2::gameplaySection();
 }
 
 void generalEnhancementsTab() {
@@ -756,6 +759,8 @@ void unusedContentTab() {
         ImGui::EndDisabled();
     }
     ImGui::Separator();
+    recomp::unused2::unusedSection();
+    ImGui::Separator();
     recomp::dev::unusedSection();
 }
 
@@ -763,7 +768,10 @@ void unusedContentTab() {
 void gameplayTab() { gameplaySection(); }
 
 // Debug features left in the game, warps and viewers.
-void debugTab() { recomp::dev::debugSection(); }
+void debugTab() {
+    recomp::dev::debugSection();
+    recomp::unused2::debugSection();
+}
 
 void enhancementsTab() {
     if (ImGui::BeginTabBar("enhancements")) {

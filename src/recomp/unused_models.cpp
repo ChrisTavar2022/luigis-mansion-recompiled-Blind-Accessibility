@@ -12,6 +12,7 @@
 #include "recomp/hle.h"
 #include "recomp/rarc.h"
 #include "recomp/runtime.h"
+#include "recomp/unused2.h"
 #include "recomp/version.h"
 
 #include <cstdlib>
@@ -159,6 +160,7 @@ HLE(fn_80061C94) {
     const u32 entry = c.r[4];
     callOriginal(c, "fn_80061C94");
     earlyLuigiModelLoaded(c, entry);
+    unused2::onModelLoaded(c, entry);
     if (entry < kModelRegistry) return;
     if ((entry - kModelRegistry) % 0x34 || !rd32(entry + 8)) return;  // not a finished load
     const u32 model = (entry - kModelRegistry) / 0x34;

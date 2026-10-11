@@ -11,6 +11,7 @@
 #include "recomp/version.h"
 #include "recomp/room_swap.h"
 #include "recomp/coop.h"
+#include "recomp/unused2.h"
 
 #include <imgui.h>
 #include <SDL3/SDL.h>
@@ -186,6 +187,7 @@ HLE(fn_8000C188) {
     sArrivalPending = false;
     rooms::onMapSetup();
     coop::onMapSetup(c);  // unused 2-player mode: latched per map (coop.cpp)
+    unused2::onMapSetup(c);  // second unused-content batch (unused2.cpp)
     callOriginal(c, "fn_8000C188");
 }
 
@@ -358,6 +360,7 @@ HLE(LMChangeFrameBuffer__Fv) {
     sReportShown.swap(sReportBuild);
     sReportBuild.clear();
 
+    unused2::onFrame(c);
     viewer::guestFrame(c);
     callOriginal(c, "LMChangeFrameBuffer__Fv");
 }
@@ -410,6 +413,7 @@ void drawOverlays() {
         ImGui::End();
     }
     viewer::window();
+    unused2::drawOverlays();
 }
 
 namespace {

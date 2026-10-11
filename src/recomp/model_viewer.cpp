@@ -2088,12 +2088,27 @@ void requestScreenshot() {
     });
 }
 
+// Luigi's animations the retail game never plays (docs/UNUSED_CONTENT.md, "Second batch"): no
+// controller state selects their motion (ladder climbing, cart and elevator rides, flip, spin,
+// poisoned, the panic crawl). Labelled in the picker for Luigi's model archives.
+const char* unusedLuigiAnim(const std::string& path) {
+    if (path.find("luige") == std::string::npos && path.find("bmario") == std::string::npos) return nullptr;
+    static const char* const kUnused[] = {"ldr_cl_e", "ldr_cl_l", "ldr_cl_r", "ldr_cl_s", "cow1move", "cow1squ", "cow1wait",
+                                          "cart.", "cart_ed", "cart_kam", "cart_st", "elv_down", "elv_up", "flip.",
+                                          "kaiten", "doku_end", "doku_lp"};
+    for (const char* k : kUnused)
+        if (path.find(std::string("/") + k) != std::string::npos) return "[unused] ";
+    return nullptr;
+}
+
 // Animation pickers for the selected model (collectAnims lists what is available).
 void animationChoiceUi() {
     if (sMdlSel < 0) return;
     auto combo = [](const char* label, const std::vector<int>& list, int& sel, const char* none) {
         bool changed = false;
-        const std::string cur = sel >= 0 ? sMembers[list[sel]].path : none;
+        std::string cur = sel >= 0 ? sMembers[list[sel]].path : none;
+        if (sel >= 0)
+            if (const char* u = unusedLuigiAnim(cur)) cur = u + cur;
         if (ImGui::BeginCombo(label, cur.c_str(), ImGuiComboFlags_HeightLarge)) {
             if (ImGui::Selectable(none, sel < 0)) {
                 sel = -1;
@@ -2101,7 +2116,9 @@ void animationChoiceUi() {
             }
             for (int i = 0; i < int(list.size()); i++) {
                 ImGui::PushID(i);
-                if (ImGui::Selectable(sMembers[list[i]].path.c_str(), sel == i)) {
+                std::string name = sMembers[list[i]].path;
+                if (const char* u = unusedLuigiAnim(name)) name = u + name;
+                if (ImGui::Selectable(name.c_str(), sel == i)) {
                     sel = i;
                     changed = true;
                 }
