@@ -1371,3 +1371,46 @@ game frames, so consecutive frame dumps compare with and without):
 Test aids: `LM_WORLD_LIGHTS=1` (on regardless of the setting), `LM_WORLD_LIGHT_LOG=N` (every
 emitter with name/flags/position, the lights sent, spray and lightning state, Luigi/nozzle
 orientation), `LM_WORLD_LIGHT_AB=1`.
+
+
+### World lights, second pass
+
+**Fire color (Aurora patch 0025).** The fireplace/brazier read as saturated pure red. Cause: the
+shared "Light color vibrance" (`vivid()`, default 1.6) pushed each channel away from the
+luminance and clamped the ones that went negative; for orange (linear 1, 0.33, 0.05) blue and
+then most of green were clamped, a hue shift toward red. Now the boost stops where the weakest
+channel reaches 0 (hue-preserving), and flames carry `ExtraLightFire` (bit 3): in the shader
+green and blue fall off faster than red with distance (`col * (1, mix(1.2, 0.62, x), mix(1.5,
+0.35, x))`, x = distance / radius), so a fire is yellow-white near the flame and red-orange at
+the edge of its reach. Set on candles, fires, fire effects (warm colors only) and the fire spray.
+
+**Lit rooms: lamps and chandeliers.** A cleared room's light is on when its room object
+(`lbl_804D8178`, 0x14C per room) has +6 bit 0x80, the test `fn_80018D78` (used by the
+`CondLightOn` spawn condition). Test aid `LM_ROOM_LIGHTS_ON=1` sets it for the room Luigi is in
+(the game then draws the room lit, chandelier glow included). Light positions come from the map
+archive read from the disc (the game loads its jmp tables through the tool-data loader, not by
+name): `jmp/objinfo` "chandelier" objects (122 in map 2, 40 units below the object) and
+`jmp/furnitureinfo` light fittings by model (`syan*`, `o_syan*`, `osyan*`, `shan*`: chandeliers 60
+below; `a_lamp*`, `lamp*`, `a_ligh*`, `a_lump*`: lamps 90 above); each is assigned to the room
+containing it by the room table bounds and lights while that room is lit and visible, in the
+room's own color (`jmp/roominfo` LightColorR/G/B, e.g. ballroom FF8C6E), chandeliers 950 units
+reach, lamps 520. Map 2: 201 fittings, 72 room colors. In an already lit room the extra warmth is
+subtle (the room is bright), most visible on the floor under the chandeliers.
+
+**Game Boy Horror.** While Luigi holds it up (the GBH actor at Luigi +0x7AC, type 0x0A, drawn),
+a soft green screen glow (230 units). Mirrors are not light sources (they reflect; the game has
+no glow for them).
+
+**Cost of 64 lights** (after the thread-leak fix; RTX 3090 Ti, nursery, render scale 8 =
+5120x3840, uncapped, `LM_ENH_PERF_AB=6,xl` + `LM_FPS_LOG=1`, 12 two-second samples per phase,
+GPU shared with other agents): worst case, all lights overlapping Luigi on screen
+(`LM_TEST_LIGHTS=n,450,1.5`): 64 lights 56.0 fps vs 113.9 fps without colored lights (+9.1 ms per
+frame), 16 lights 102.5 vs 112.1 (+0.9 ms), 4 lights below noise. Cost scales with pixels x
+overlapping lights: at render scale 3 (2560x1440, 1/7 of the pixels) the 64-light worst case is
+~1.3 ms; real rooms have far fewer lights overlapping any pixel (a candle reaches 360 units). If
+it ever matters, per-tile light lists would cut the overlapping case.
+
+**Room tour** (lights from the log, `LM_WORLD_LIGHT_LOG`): flame objects per room from objinfo
+(`fire`/`sfire`/`chandelier`) show where candles are; e.g. the 2F room at x 1575..3125, z
+-3860..-2810 has 30 candles, the 1F room east of the foyer 12 table candles. Showcase captures
+below.
