@@ -672,8 +672,12 @@ void pairTapes(const Tape& a, Tape& b) {
                 const Patch& p = b.patches[pb[k]];
                 if (p.kind != Kind::PosMtx || p.count != 12) continue;
                 f32 va[12], vb[12];
-                for (int e = 0; e < 12; e++) va[e] = val(a, a.patches[pa[k]], e), vb[e] = val(b, p, e);
-                reorder = !blendable(Kind::PosMtx, va, vb, 12);
+                bool close = true;  // cheap test first: nearly the same matrix needs no decomposition
+                for (int e = 0; e < 12; e++) {
+                    va[e] = val(a, a.patches[pa[k]], e), vb[e] = val(b, p, e);
+                    close = close && std::fabs(va[e] - vb[e]) < ((e & 3) == 3 ? 100.0f : 0.25f);
+                }
+                reorder = !close && !blendable(Kind::PosMtx, va, vb, 12);
             }
             if (!reorder) {
                 for (size_t k = 0; k < pb.size(); k++) {
@@ -1199,22 +1203,34 @@ bool rigidView(const f32* v) {
 struct ViewPair {
     u32 key;
     bool ok;
+    bool cut;  // the camera jumped (another light took over the shadow pass, a cut): show b as is
     M34 va, vb, vt;  // views and blended view
     M34 ia, ib, it;  // inverses
 };
 std::vector<ViewPair> sViewPairs;
+std::vector<u64> sLightsBlended;  // (draw << 8 | light index) of the lights blended in this replay
 const ViewPair* viewPair(const Tape& a, u16 qa, const Tape& b, u16 qb, float alpha) {
     if (qa >= a.views.size() || qb >= b.views.size()) return nullptr;
     const u32 key = u32(qa) << 16 | qb;
     for (const ViewPair& vp : sViewPairs)
-        if (vp.key == key) return vp.ok ? &vp : nullptr;
-    ViewPair vp{key, false};
+        if (vp.key == key) return vp.ok || vp.cut ? &vp : nullptr;
+    ViewPair vp{key, false, false};
     vp.va = a.views[qa], vp.vb = b.views[qb];
+    {
+        float ea[3], eb[3], dot = 0, de = 0;
+        for (int c = 0; c < 3; c++) {
+            ea[c] = -(vp.va[c] * vp.va[3] + vp.va[4 + c] * vp.va[7] + vp.va[8 + c] * vp.va[11]);
+            eb[c] = -(vp.vb[c] * vp.vb[3] + vp.vb[4 + c] * vp.vb[7] + vp.vb[8 + c] * vp.vb[11]);
+            dot += vp.va[8 + c] * vp.vb[8 + c];
+            de += (ea[c] - eb[c]) * (ea[c] - eb[c]);
+        }
+        vp.cut = std::sqrt(de) > 250.0f || dot < 0.866f;
+    }
     vp.ok = rigidView(vp.va.data()) && rigidView(vp.vb.data()) && blendRigid(vp.va.data(), vp.vb.data(), 4, alpha, vp.vt.data()) &&
             invertAffine(vp.va.data(), vp.ia.data()) && invertAffine(vp.vb.data(), vp.ib.data()) &&
             invertAffine(vp.vt.data(), vp.it.data());
     sViewPairs.push_back(vp);
-    return sViewPairs.back().ok ? &sViewPairs.back() : nullptr;
+    return sViewPairs.back().ok || sViewPairs.back().cut ? &sViewPairs.back() : nullptr;
 }
 // The blended light of a pair of tapes with shadow maps: LV(t) and P(t) for both K matrices.
 struct LightPair {
@@ -1225,6 +1241,17 @@ LightPair sLightPair;
 void makeLightPair(const Tape& a, const Tape& b, float alpha) {
     sLightPair = {};
     if (!a.shadow.valid || !b.shadow.valid) return;
+    {  // another light took over (flashlight <-> room light, lightning): no blend
+        float ea[3], eb[3], dot = 0, de = 0;
+        const M34 &la = a.shadow.lv, &lb = b.shadow.lv;
+        for (int c = 0; c < 3; c++) {
+            ea[c] = -(la[c] * la[3] + la[4 + c] * la[7] + la[8 + c] * la[11]);
+            eb[c] = -(lb[c] * lb[3] + lb[4 + c] * lb[7] + lb[8 + c] * lb[11]);
+            dot += la[8 + c] * lb[8 + c];
+            de += (ea[c] - eb[c]) * (ea[c] - eb[c]);
+        }
+        if (std::sqrt(de) > 250.0f || dot < 0.866f) return;
+    }
     M34 ia, ib;
     if (!rigidView(a.shadow.lv.data()) || !rigidView(b.shadow.lv.data()) || !invertAffine(a.shadow.lv.data(), ia.data()) ||
         !invertAffine(b.shadow.lv.data(), ib.data()) ||
@@ -1293,6 +1320,10 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
     if (p.view == 0xFFFF || q.view == 0xFFFF) return false;
     const ViewPair* vp = viewPair(a, q.view, b, p.view, alpha);
     if (!vp) return false;
+    if (vp->cut) {  // drawn from a camera that jumped: as captured
+        std::copy(vb, vb + p.count, out);
+        return true;
+    }
     if (p.kind == Kind::PosMtx && p.count == 12) {
         M34 wa, wb, wt;
         compose(vp->ia.data(), va, wa.data());
@@ -1399,14 +1430,21 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
     }
     if (a && alpha < 1.0f) {
         sViewPairs.clear();
+        sLightsBlended.clear();
         makeLightPair(*a, b, alpha);
         receiverGs(*a, sRecvA);
         receiverGs(b, sRecvB);
+        // LM_INTERP_NOBLEND=<mask> (test aid): value kinds (bit = Kind) shown as captured.
+        static const u32 sNoBlendKinds = [] {
+            const char* v = std::getenv("LM_INTERP_NOBLEND");
+            return v ? u32(std::strtoul(v, nullptr, 0)) : 0u;
+        }();
         for (u32 i = 0; i < b.patches.size(); i++) {
             const s32 j = b.partner[i];
             if (j < 0) continue;
             const Patch& p = b.patches[i];
             const Patch& q = a->patches[j];
+            if (sNoBlendKinds & (1u << u32(p.kind))) continue;
             if (p.kind == Kind::Verts) {
                 // CPU-built geometry (particles, effects): positions move as a whole.
                 float jump = 0;
@@ -1428,6 +1466,19 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     }
                 sBlended++;
                 continue;
+            }
+            // A light's color goes with its position: if the light was not blended (another light in
+            // the slot, a jump), its color is not either (a's color at b's place is neither frame).
+            if (p.kind == Kind::Color && p.slot >= 0x600 && p.slot < 0x680) {
+                const u64 key = u64(p.bundle) << 8 | ((p.slot - 0x600) >> 4);
+                if (std::find(sLightsBlended.begin(), sLightsBlended.end(), key) == sLightsBlended.end()) continue;
+            }
+            static const u32 sDbgColor = [] { const char* v = std::getenv("LM_DBG_COLOR"); return v ? u32(std::strtoul(v, nullptr, 0)) : 0u; }();
+            if (p.kind == Kind::Color && sDbgColor) {
+                const bool xfAmbMat = p.posOffset == 0 && p.slot < 0x600, xfLight = p.posOffset == 0 && p.slot >= 0x600;
+                if (((sDbgColor & 1) && xfAmbMat) || ((sDbgColor & 2) && xfLight) || ((sDbgColor & 4) && p.posOffset == 1) ||
+                    ((sDbgColor & 8) && p.posOffset == 2) || ((sDbgColor & 16) && p.posOffset == 1 && p.stride == 1))
+                    continue;
             }
             if (p.kind == Kind::Color) {  // material/light/TEV/fog colors: per channel
                             const auto rd = [](const u8* s) { return u32(s[0]) << 24 | u32(s[1]) << 16 | u32(s[2]) << 8 | s[3]; };
@@ -1465,6 +1516,13 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             if (p.kind == Kind::Projection &&
                 std::memcmp(a->bytes.data() + q.offset + 24, b.bytes.data() + p.offset + 24, 4) != 0)
                 continue;
+            // A GX light slot holds whichever light the game put there for this draw: blend only the
+            // same light object (its colour and range differ otherwise).
+            if (p.kind == Kind::Light && p.source != q.source) {
+                sSnapped++;
+                sSnapKinds[u32(p.kind)]++;
+                continue;
+            }
             const bool jump2D = p.role == 2 && p.kind == Kind::PosMtx && p.count == 12 &&
                                 std::fabs(va[3] - vb[3]) + std::fabs(va[7] - vb[7]) + std::fabs(va[11] - vb[11]) > 96.0f;
             if (jump2D || !blendable(p.kind, va, vb, p.count)) {
@@ -1497,6 +1555,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 }
             }
             for (int k = 0; k < p.count; k++) storeBE(sReplay.data() + p.offset + 4 * k, out[k]);
+            if (p.kind == Kind::Light) sLightsBlended.push_back(u64(p.bundle) << 8 | (p.slot & 0xFF));
             sBlended++;
         }
     }
