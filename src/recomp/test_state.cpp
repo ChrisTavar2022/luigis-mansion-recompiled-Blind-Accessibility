@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace recomp {
 namespace {
@@ -55,6 +56,28 @@ State parse() {
 }  // namespace
 
 void testStateFrame(Ctx&) {
+    // LM_TEST_SAVE=<n>[,<n>...] (testing): request the save screen n gameplay frames in, the way
+    // the <SAVE> event command does (0x804D80C4 = 5, see skip.cpp), to test memory card saves.
+    static const std::vector<u32> sSaveAt = [] {
+        std::vector<u32> v;
+        if (const char* e = std::getenv("LM_TEST_SAVE"))
+            for (const char* p = e; *p;) {
+                v.push_back(u32(std::strtoul(p, nullptr, 10)));
+                const char* comma = std::strchr(p, ',');
+                if (!comma) break;
+                p = comma + 1;
+            }
+        return v;
+    }();
+    if (!sSaveAt.empty()) {
+        static u32 sGameplayFrames = 0;
+        sGameplayFrames++;
+        for (u32 at : sSaveAt)
+            if (at == sGameplayFrames) {
+                log("[test] LM_TEST_SAVE: requesting the save screen (gameplay frame %u)", at);
+                wr32(VA(0x804D80C4), 5);
+            }
+    }
     static const State s = parse();
     if (!s.poltergust && s.element < 0) return;
     const u32 l = rd32(kActorSlots);

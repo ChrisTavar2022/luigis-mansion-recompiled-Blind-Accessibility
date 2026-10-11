@@ -272,6 +272,7 @@ int main(int argc, char* argv[]) {
         if (!running || menu::quitRequested()) break;
     }
 
+    menu::shutdown();
     vi::stopTimer();
     frame::stop();
     aurora_shutdown();
