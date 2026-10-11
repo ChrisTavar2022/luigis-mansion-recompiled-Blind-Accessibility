@@ -1422,3 +1422,41 @@ bowl on the pillar and the violet candles), `foyer` (side-table candelabras), `d
 `fire_spray` (nursery, fire spray in the dark), `hallway_bats` (the bats' glow under the ceiling),
 `lit_ballroom_chandeliers` (`LM_ROOM_LIGHTS_ON=1`), `ballroom_ghosts` (the shy-guy ghosts' colored
 glow around Luigi).
+
+### World lights, third pass
+
+**Vibrance at full saturation (Aurora patch 0026).** 0025 stopped the boost where the weakest
+channel reached 0. That kept hues but left already saturated ghost colors (the shy guys' red,
+Chauncey's green, the gold ghost's orange) less punchy than before. `vivid()` now works on HSV
+saturation: the boost scales saturation by the vibrance and may push it up to 1 (fully
+saturated) while hue and value stay put, so strong colors get as vivid as the old look without
+the old clamp's shift toward red. Debug compare: `AURORA_VIVID_MODE=0` (old per-channel clamp),
+`1` (0025 early stop), `2` (default, full saturation). Side by side (old | 0025 | 0026):
+`build/worldlights/vibrance_{shyguys,chauncey,goldghost}_old_0025_0026.png`.
+
+**GBH glow only when raised.** The GBH actor hangs on Luigi's belt most of the time (67-89 units
+above his feet), which lit his legs green constantly. The glow now needs the GBH more than 105
+units above Luigi (held up to his face, E. Gadd's calls). Not captured yet: holding X/Y/Z/B in a
+hallway never raised it (log `gbh <n> above Luigi` stays below 90); only the call cutscenes do.
+
+**Room tour, rest of the mansion** (window grabs, same settings as below):
+- Parlor (room 1, lit): sconces and chandelier warm the walls; `showcase_parlor_lit`.
+- Fortune-Teller's room (1F, Madame Clairvoya's): her candles exist as emitters but without the
+  emitting flag (0x000C) until her event, so they give no light; the crystal-ball room is dark
+  apart from the flashlight before she appears (`showcase_fortune_teller`). Her own glow is a
+  ghost light. The 2F 30-candle room is the Astral Hall (room 43): candelabras unlit before its
+  event, no light.
+- Graveyard (map 2 outdoors): both torches (`danro_fire` emitters) light the steps and ground
+  orange; `showcase_graveyard_torches`.
+- Boneyard: Spooky's doghouse glow (ghost light, blue); `showcase_boneyard_spooky`.
+- Billiards room: the cyan ghost's light on the wall and table; `showcase_billiards_ghost`.
+- Kitchen, Conservatory, Twins' room: no colored source in the captured views (ghosts not yet
+  present), flashlight only.
+- Washroom with Toad: no colored source nearby; Toad goes through the character material path
+  like Luigi and is lit by the flashlight (`showcase_washroom_toad`). E. Gadd's lab, the portrait
+  ghosts' portraits and Mario's painting were not captured in this pass.
+
+**Hallway bats visible.** Standing near the west end of the 1F west hallway
+(`LM_TELEPORT=-2050,0,-900,100`) puts the hanging bats in frame: their yellow bodies (the game's
+own look, unchanged with lights off) and the glow on the ceiling corner, with a purple ghost
+passing in the same shot; `showcase_hallway_bats_visible`.
