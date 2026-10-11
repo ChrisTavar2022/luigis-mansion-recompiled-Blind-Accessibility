@@ -7,6 +7,7 @@
 #include "recomp/controls.h"
 #include "recomp/menu.h"
 #include "recomp/skip.h"
+#include "recomp/unused2.h"
 
 #include <dolphin/pad.h>
 
@@ -177,6 +178,11 @@ HLE(PADRead) {
             log("[pad] retrace %u frame %u: buttons %04X err %d", viRetraceCount(), skip::guestFrames(), st[0].button, st[0].err);
     }
     skip::filterPad(st, PAD_MAX_CONTROLLERS);
+    if (unused2::playerHeld()) {  // poisoned Luigi (luigi_states.cpp): no movement or actions
+        st[0].button &= PAD_BUTTON_START;
+        st[0].stickX = st[0].stickY = st[0].substickX = st[0].substickY = 0;
+        st[0].triggerLeft = st[0].triggerRight = st[0].analogA = st[0].analogB = 0;
+    }
     sLastButtons = st[0].err == PAD_ERR_NONE ? st[0].button : 0;
     for (int i = 0; i < PAD_MAX_CONTROLLERS; i++) {
         const u32 p = c.r[3] + 12 * i;

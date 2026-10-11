@@ -27,6 +27,7 @@ void marioFrame(Ctx& c);
 // luigi_states.cpp
 void statesFrame(Ctx& c);
 void statesMapSetup(Ctx& c);
+bool playerHeld();  // player 1's pad is neutralised (poisoned); any thread
 // jukebox.cpp
 void jukeboxFrame(Ctx& c);
 // spawn.cpp

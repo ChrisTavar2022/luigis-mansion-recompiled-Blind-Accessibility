@@ -215,3 +215,18 @@ fn_8005DD50 us pal
 getResource__10JKRArchiveFUlPCc us pal
 fn_8015FE9C us pal
 fn_80029250 us pal
+
+# Second unused-content batch (src/recomp/unused2.cpp and friends, docs/UNUSED_CONTENT.md
+# "Second batch"). Bordered view: fn_80010F20 (game-scene viewport setup) only reaches its third
+# case, a fixed 40,30-560,430 bordered view, for a view-mode value nothing sets; the patch turns
+# the `beq` at 0x80010FD4 (41820064) into a branch to that case (US).
+patch 50 80010FD4 480000D8
+# Luigi's message handler (poison mushroom, startle -> crawling fear) and the element-meter HUD
+# (overheat meter): luigi_states.cpp.
+fn_800AEEA8
+fn_80045F58
+fn_80046120
+# fn_800B7090: the cut panic mode (fear mode 4) starts effect 0xE every frame and floods the view
+# with heart particles; with the crawling-fear option the mode test at 0x800B742C (2C000004
+# cmpwi r0, 4) never matches, so the effect is not started (luigi_states.cpp).
+patch 51 800B742C 2C00007F
