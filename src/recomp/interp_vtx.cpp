@@ -57,6 +57,7 @@ std::vector<u8> sPending;
 u32 sPendingPos = 0;
 
 // Stats (LM_INTERP_TRACE).
+u32 sParseTapeBase = ~0u;  // tape offset of the display list being parsed (~0: raw stream)
 u32 sBadOp = 0;  // last unparseable opcode | 0x100 if in the raw stream | offset << 12
 u32 sUnparsed = 0, sDlCpWrites = 0, sAuroraInDl = 0, sStreamMtxLoads = 0, sStreamIndexedLoads = 0;
 
@@ -170,6 +171,12 @@ u32 parse(const u8* p, u32 size, bool partial) {
             len = 9;
         } else if (op == 0x61) {  // LOAD_BP_REG
             len = 5;
+            // TEV color/konst and fog color registers set by a display list: blended with its draw.
+            if (sParseTapeBase != ~0u && i + len <= size) {
+                const u32 reg = p[i + 1];
+                if (reg >= 0xE0 && reg <= 0xE7) detail::noteDrawColor(sParseTapeBase + i + 1, reg, 1);
+                else if (reg == 0xF2) detail::noteDrawColor(sParseTapeBase + i + 1, reg, 2);
+            }
         } else if (op >= 0x80 && op <= 0xBF) {  // draw
             if (i + 3 > size) {
                 if (partial) return i;
@@ -326,7 +333,10 @@ void vtxDisplayList(u32 guestAddr, const u8* data, u32 size) {
     flushPending();
     detail::noteDraw(detail::mix(u64(guestAddr) << 24 ^ size ^ 0xD15Bull << 48));
     detail::drawLog("dlist %08X size %u", guestAddr, size);
+    const u32 end = mark();
+    sParseTapeBase = end != ~0u && end >= size ? end - size : ~0u;
     parse(data, size, false);
+    sParseTapeBase = ~0u;
 }
 
 namespace detail {

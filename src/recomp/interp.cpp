@@ -284,13 +284,15 @@ Bundles bundlesOf(const Tape& t) {
     // Counting sort by draw (one allocation instead of one per draw; patches of a draw are
     // usually consecutive, and the order within a draw is kept).
     std::vector<u32> start(n + 1, 0);
+    // Colors are not part of a draw's identity (a material may set them only when they change);
+    // they are paired after the draws (pairTapes).
     for (const Patch& p : t.patches)
-        if (p.bundle < n) start[p.bundle + 1]++;
+        if (p.bundle < n && p.kind != Kind::Color) start[p.bundle + 1]++;
     for (size_t k = 0; k < n; k++) start[k + 1] += start[k];
     out.flat.resize(start[n]);
     std::vector<u32> fill(start.begin(), start.end() - 1);
     for (u32 i = 0; i < t.patches.size(); i++)
-        if (t.patches[i].bundle < n) out.flat[fill[t.patches[i].bundle]++] = i;
+        if (t.patches[i].bundle < n && t.patches[i].kind != Kind::Color) out.flat[fill[t.patches[i].bundle]++] = i;
     out.patches.resize(n);
     out.key.resize(n);
     for (size_t k = 0; k < n; k++) {
@@ -626,6 +628,30 @@ void pairTapes(const Tape& a, Tape& b) {
                 usedA[pa[k]] = 1;
             }
         }
+        // Colors follow their draw: the n-th write of a register before (or in) a draw pairs
+        // with the n-th write of that register for the draw it was paired with.
+        {
+            std::unordered_map<u64, u32> colA, occ;
+            colA.reserve(64);
+            for (u32 i = 0; i < a.patches.size(); i++) {
+                const Patch& p = a.patches[i];
+                if (p.kind != Kind::Color || p.bundle >= ba.key.size()) continue;
+                const u64 k0 = u64(p.bundle) << 32 | p.slot;
+                colA.emplace(mix(k0 ^ u64(occ[k0]++) << 56), i);
+            }
+            occ.clear();
+            for (u32 j = 0; j < b.patches.size(); j++) {
+                const Patch& p = b.patches[j];
+                if (p.kind != Kind::Color || p.bundle >= bb.key.size()) continue;
+                const u64 k0 = u64(p.bundle) << 32 | p.slot;
+                const u32 n = occ[k0]++;
+                if (drawPartner[p.bundle] < 0) continue;
+                const auto it = colA.find(mix((u64(u32(drawPartner[p.bundle])) << 32 | p.slot) ^ u64(n) << 56));
+                if (it == colA.end() || usedA[it->second] || a.patches[it->second].posOffset != p.posOffset) continue;
+                b.partner[j] = s32(it->second);
+                usedA[it->second] = 1;
+            }
+        }
     }
     b.phaseUs[2] = usSince(tp);
     // 2. What is left: by kind and source address, only where that is unambiguous (pool and
@@ -911,12 +937,54 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     sPatches.push_back(p);
 }
 
+namespace {
+void pushColor(u32 at, u32 slot, u8 fmt) {
+    Patch p{at, 1, Kind::Color, 0, 0, 0, slot};
+    p.posOffset = fmt;
+    p.origin = mix(u64(Kind::Color) << 56 ^ u64(slot) << 8 ^ fmt);
+    sPatches.push_back(p);
+}
+}  // namespace
+
+void noteColors(u32 at) {
+    if (at == ~0u || !capturing() || sNoBlend > 0) return;
+    const u32 end = sBase + AuroraCapturePos();
+    const u8* s = sScratch.data();
+    const auto rd = [&](u32 o) { return u32(s[o]) << 24 | u32(s[o + 1]) << 16 | u32(s[o + 2]) << 8 | s[o + 3]; };
+    for (u32 i = at; i < end;) {
+        if (s[i] == 0x61 && i + 5 <= end) {  // BP: TEV color/konst registers, fog color
+            const u32 reg = s[i + 1];
+            if (reg >= 0xE0 && reg <= 0xE7) pushColor(i + 1, reg, 1);
+            else if (reg == 0xF2) pushColor(i + 1, reg, 2);
+            i += 5;
+        } else if (s[i] == 0x10 && i + 5 <= end) {  // XF: channel colors, light blocks
+            const u32 hdr = rd(i + 1), n = ((hdr >> 16) & 0xFFFF) + 1, addr = hdr & 0xFFFF;
+            for (u32 k = 0; k < n && i + 5 + 4 * k + 4 <= end; k++) {
+                const u32 r = addr + k;
+                if ((r >= 0x100A && r <= 0x100D) || (r >= 0x600 && r < 0x680 && (r & 15) == 3)) pushColor(i + 5 + 4 * k, r, 0);
+            }
+            i += 5 + 4 * n;
+        } else {
+            i++;
+        }
+    }
+}
+
+void detail::noteDrawColor(u32 at, u32 reg, u8 fmt) {
+    if (!capturing() || sNoBlend > 0 || sBundleIds.empty()) return;
+    pushColor(at, reg, fmt);
+    sPatches.back().bundle = u32(sBundleIds.size() - 1);
+    sPatches.back().group = sBundleIds.back();
+    sPatches.back().stride = 1;  // bound to its draw already
+    if (sUngrouped == sPatches.size() - 1) sUngrouped = u32(sPatches.size());
+}
+
 void detail::noteDraw(u64 id) {
     const u32 bundle = u32(sBundleIds.size());
     sBundleIds.push_back(id);
     for (u32 i = sUngrouped; i < sPatches.size(); i++) {
         Patch& p = sPatches[i];
-        if (p.kind == Kind::Verts) continue;  // already belongs to its own draw
+        if (p.kind == Kind::Verts || (p.kind == Kind::Color && p.stride == 1)) continue;  // already belongs to its own draw
         p.group = id;
         p.bundle = bundle;
     }
@@ -988,6 +1056,36 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                         const f32 va = vtx(*a, q, v, c), vb = vtx(b, p, v, c);
                         storeBE(sReplay.data() + p.offset + v * p.stride + p.posOffset + 4 * c, va + (vb - va) * alpha);
                     }
+                sBlended++;
+                continue;
+            }
+            if (p.kind == Kind::Color) {  // material/light/TEV/fog colors: per channel
+                            const auto rd = [](const u8* s) { return u32(s[0]) << 24 | u32(s[1]) << 16 | u32(s[2]) << 8 | s[3]; };
+                const u32 ca = rd(a->bytes.data() + q.offset), cb = rd(b.bytes.data() + p.offset);
+                u32 out = cb;
+                const auto lerp = [&](int shift, int bits, bool sign) {
+                    const u32 mask = (1u << bits) - 1;
+                    int x = int((ca >> shift) & mask), y = int((cb >> shift) & mask);
+                    if (sign) {
+                        if (x & (1 << (bits - 1))) x -= 1 << bits;
+                        if (y & (1 << (bits - 1))) y -= 1 << bits;
+                    }
+                    const int v = int(std::lround(float(x) + float(y - x) * alpha));
+                    out = (out & ~(mask << shift)) | (u32(v) & mask) << shift;
+                };
+                if (p.posOffset == 0) {
+                    for (int s = 0; s < 32; s += 8) lerp(s, 8, false);
+                } else if (p.posOffset == 1) {
+                    const bool konst = (cb >> 23) & 1;
+                    if (((ca >> 23) & 1) == u32(konst)) {
+                        lerp(0, konst ? 8 : 11, !konst);
+                        lerp(12, konst ? 8 : 11, !konst);
+                    }
+                } else {
+                    for (int s = 0; s < 24; s += 8) lerp(s, 8, false);
+                }
+                u8* o = sReplay.data() + p.offset;
+                o[0] = u8(out >> 24), o[1] = u8(out >> 16), o[2] = u8(out >> 8), o[3] = u8(out);
                 sBlended++;
                 continue;
             }

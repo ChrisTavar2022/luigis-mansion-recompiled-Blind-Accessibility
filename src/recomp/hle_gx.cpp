@@ -981,8 +981,16 @@ GXHLE(GXSetChanCtrl) {
     GXSetChanCtrl(GXChannelID(c.r[3]), GXBool(c.r[4]), GXColorSrc(c.r[5]), GXColorSrc(c.r[6]), c.r[7],
                   GXDiffuseFn(c.r[8]), GXAttnFn(c.r[9]));
 }
-GXHLE(GXSetChanMatColor) { GXSetChanMatColor(GXChannelID(c.r[3]), color(c.r[4])); }
-GXHLE(GXSetChanAmbColor) { GXSetChanAmbColor(GXChannelID(c.r[3]), color(c.r[4])); }
+GXHLE(GXSetChanMatColor) {
+    const u32 at = interp::mark();
+    GXSetChanMatColor(GXChannelID(c.r[3]), color(c.r[4]));
+    interp::noteColors(at);
+}
+GXHLE(GXSetChanAmbColor) {
+    const u32 at = interp::mark();
+    GXSetChanAmbColor(GXChannelID(c.r[3]), color(c.r[4]));
+    interp::noteColors(at);
+}
 GXHLE(GXInitLightPos) { GXInitLightPos(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
 GXHLE(GXInitLightDir) { GXInitLightDir(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
 GXHLE(GXInitSpecularDir) {
@@ -1013,6 +1021,7 @@ GXHLE(GXLoadLightObjImm) {
         }
     }
     interp::note(at, interp::Kind::Light, c.r[3], std::countr_zero(c.r[4] | 0x100u), 6, 10);
+    interp::noteColors(at);
 }
 
 // --- textures ------------------------------------------------------------------------------
@@ -1107,13 +1116,23 @@ GXHLE(GXSetTevAlphaOp) {
     GXSetTevAlphaOp(GXTevStageID(c.r[3]), GXTevOp(c.r[4]), GXTevBias(c.r[5]), GXTevScale(c.r[6]), GXBool(c.r[7]),
                     GXTevRegID(c.r[8]));
 }
-GXHLE(GXSetTevColor) { GXSetTevColor(GXTevRegID(c.r[3]), color(c.r[4])); }
+GXHLE(GXSetTevColor) {
+    const u32 at = interp::mark();
+    GXSetTevColor(GXTevRegID(c.r[3]), color(c.r[4]));
+    interp::noteColors(at);
+}
 GXHLE(GXSetTevColorS10) {
     gxAudit("GXSetTevColorS10 reg=%u", c.r[3]);
     const u32 p = c.r[4];
+    const u32 at = interp::mark();
     GXSetTevColorS10(GXTevRegID(c.r[3]), GXColorS10{s16(rd16(p)), s16(rd16(p + 2)), s16(rd16(p + 4)), s16(rd16(p + 6))});
+    interp::noteColors(at);
 }
-GXHLE(GXSetTevKColor) { GXSetTevKColor(GXTevKColorID(c.r[3]), color(c.r[4])); }
+GXHLE(GXSetTevKColor) {
+    const u32 at = interp::mark();
+    GXSetTevKColor(GXTevKColorID(c.r[3]), color(c.r[4]));
+    interp::noteColors(at);
+}
 GXHLE(GXSetTevKColorSel) { GXSetTevKColorSel(GXTevStageID(c.r[3]), GXTevKColorSel(c.r[4])); }
 GXHLE(GXSetTevKAlphaSel) { GXSetTevKAlphaSel(GXTevStageID(c.r[3]), GXTevKAlphaSel(c.r[4])); }
 GXHLE(GXSetTevSwapMode) { GXSetTevSwapMode(GXTevStageID(c.r[3]), GXTevSwapSel(c.r[4]), GXTevSwapSel(c.r[5])); }
@@ -1204,7 +1223,9 @@ GXHLE(GXSetBlendMode) {
 GXHLE(GXSetDstAlpha) { GXSetDstAlpha(GXBool(c.r[3]), u8(c.r[4])); }
 GXHLE(GXSetFog) {
     gxAudit("GXSetFog type=%u start=%.1f end=%.1f near=%.1f far=%.1f", c.r[3], farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4));
+    const u32 at = interp::mark();
     GXSetFog(GXFogType(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), color(c.r[4]));
+    interp::noteColors(at);
 }
 GXHLE(GXSetFogRangeAdj) {
     gxAudit("GXSetFogRangeAdj en=%u center=%u", c.r[3], c.r[4]);

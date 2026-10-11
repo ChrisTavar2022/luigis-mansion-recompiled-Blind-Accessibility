@@ -17,7 +17,7 @@
 
 namespace recomp::interp {
 
-enum class Kind : u32 { PosMtx, NrmMtx, TexMtx, Projection, Light, Verts, Count };
+enum class Kind : u32 { PosMtx, NrmMtx, TexMtx, Projection, Light, Verts, Color, Count };
 
 // --- guest thread ---------------------------------------------------------------
 bool capturing();
@@ -44,6 +44,10 @@ void popLinearPosMtx();
 // Enhanced lighting extra lights (GX_AURORA_SET_EXTRA_LIGHTS written at `at`, `count`
 // lights): blended between tapes by light id.
 void noteExtraLights(u32 at, u32 count);
+
+// Colors (channel ambient/material colors, light colors, TEV color/konst registers, fog color):
+// after an Aurora call that wrote them, marked at `at`. They belong to the next draw.
+void noteColors(u32 at);
 
 // LM_FRAME_DUMP's EFB copy (hle_gx GXCopyDisp), marked at `at`: LM_INTERP_TEST
 // redirects it per replay.
@@ -86,6 +90,9 @@ void noteDraw(u64 id);
 // bytes starting at tape offset `at`, position at `posOffset` in each.
 void noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id);
 u64 mix(u64 h);
+// A color register written by the display list of the draw just noted (TEV/fog BP writes in
+// it): the u32 at tape offset `at`, register `reg`, format (0 RGBA8, 1 TEV RA/BG, 2 fog RGB).
+void noteDrawColor(u32 at, u32 reg, u8 fmt);
 void drawLog(const char* fmt, ...);  // LM_INTERP_DRAWS
 u8* captureBytes();  // the capture buffer (tape offsets index it)
 // This tape's texture/TLUT copies (kept alive by the tape) and the bytes newly copied.
