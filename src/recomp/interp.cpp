@@ -213,6 +213,8 @@ f32 vtx(const Tape& t, const Patch& p, u32 v, int c) {
 
 // --- pairing ----------------------------------------------------------------------------
 
+bool rigidView(const f32* v);
+
 // How different two values of the same kind are (for choosing among candidates).
 float distance(const Tape& ta, const Patch& a, const Tape& tb, const Patch& b) {
     float d = 0;
@@ -662,10 +664,36 @@ void pairTapes(const Tape& a, Tape& b) {
             if (drawPartner[j] < 0) continue;
             const auto& pa = ba.patches[drawPartner[j]];
             const auto& pb = bb.patches[j];
-            for (size_t k = 0; k < pb.size(); k++) {
-                b.partner[pb[k]] = s32(pa[k]);
-                usedA[pa[k]] = 1;
+            // Values in draw order; a skinned model may load its joints in another order the next
+            // frame: if a position matrix would then jump, its draw's values of each kind are
+            // paired nearest first instead.
+            bool reorder = false;
+            for (size_t k = 0; k < pb.size() && !reorder; k++) {
+                const Patch& p = b.patches[pb[k]];
+                if (p.kind != Kind::PosMtx || p.count != 12) continue;
+                f32 va[12], vb[12];
+                for (int e = 0; e < 12; e++) va[e] = val(a, a.patches[pa[k]], e), vb[e] = val(b, p, e);
+                reorder = !blendable(Kind::PosMtx, va, vb, 12);
             }
+            if (!reorder) {
+                for (size_t k = 0; k < pb.size(); k++) {
+                    b.partner[pb[k]] = s32(pa[k]);
+                    usedA[pa[k]] = 1;
+                }
+                continue;
+            }
+            static std::vector<std::tuple<float, u32, u32>> cand;
+            cand.clear();
+            for (size_t x = 0; x < pb.size(); x++)
+                for (size_t y = 0; y < pa.size(); y++)
+                    if (compatible(a.patches[pa[y]], b.patches[pb[x]]))
+                        cand.emplace_back(distance(a, a.patches[pa[y]], b, b.patches[pb[x]]), pa[y], pb[x]);
+            std::sort(cand.begin(), cand.end());
+            for (const auto& [d, ia, ib] : cand)
+                if (!usedA[ia] && b.partner[ib] < 0) {
+                    b.partner[ib] = s32(ia);
+                    usedA[ia] = 1;
+                }
         }
         // Colors follow their draw: the n-th write of a register before (or in) a draw pairs
         // with the n-th write of that register for the draw it was paired with.
@@ -743,6 +771,36 @@ void pairTapes(const Tape& a, Tape& b) {
         if (std::isfinite(dd) && std::isfinite(db)) rel.push_back(std::sqrt(dd) / std::max(std::sqrt(db), 300.0f));
     }
     b.cut = pos >= 8 && jumps * 2 > pos;
+    // The game's camera itself: the view most position matrices were noted under. A jump of its
+    // eye by more than 250 units or a turn of more than 30 degrees in one game frame is a cut.
+    {
+        auto mainView = [](const Tape& t) -> const M34* {
+            std::unordered_map<u16, u32> n;
+            for (const Patch& p : t.patches)
+                if (p.kind == Kind::PosMtx && p.role == 0 && p.view < t.views.size()) n[p.view]++;
+            u16 best = 0xFFFF;
+            u32 cnt = 0;
+            for (const auto& [v, c] : n)
+                if (c > cnt) best = v, cnt = c;
+            return cnt >= 8 ? &t.views[best] : nullptr;
+        };
+        const M34 *va = mainView(a), *vb = mainView(b);
+        if (va && vb && rigidView(va->data()) && rigidView(vb->data())) {
+            float ea[3], eb[3], dot = 0;
+            for (int c = 0; c < 3; c++) {
+                ea[c] = -((*va)[c] * (*va)[3] + (*va)[4 + c] * (*va)[7] + (*va)[8 + c] * (*va)[11]);
+                eb[c] = -((*vb)[c] * (*vb)[3] + (*vb)[4 + c] * (*vb)[7] + (*vb)[8 + c] * (*vb)[11]);
+            }
+            for (int r = 0; r < 3; r++) dot += (*va)[8 + r] * (*vb)[8 + r];  // view directions
+            const float de = std::sqrt((ea[0] - eb[0]) * (ea[0] - eb[0]) + (ea[1] - eb[1]) * (ea[1] - eb[1]) +
+                                       (ea[2] - eb[2]) * (ea[2] - eb[2]));
+            if (de > 250.0f || dot < 0.866f) {
+                if (sTrace && !b.cut) log("[interp] tape %llu: camera cut (eye moved %.0f, turned %.0f degrees)",
+                                         (unsigned long long)b.seq, de, std::acos(std::clamp(dot, -1.0f, 1.0f)) * 57.3f);
+                b.cut = true;
+            }
+        }
+    }
     // A camera cut to a nearby viewpoint (the camera jumps a few hundred units) keeps far objects
     // within the blend limits, so the test above misses it and the in-between frames would slide
     // from one shot to the other. Steady camera motion moves the scene by about the same relative
@@ -780,7 +838,7 @@ bool blendable(Kind kind, const f32* a, const f32* b, int n) {
             return false;  // cos(angle / 2) < 0.26: more than ~150 degrees, no telling which way
         for (int k = 0; k < 3; k++) {
             const float sa = std::fabs(ra.u[k][k]), sb = std::fabs(rb.u[k][k]);
-            if (sb > 2.0f * sa + 1e-4f || sa > 2.0f * sb + 1e-4f) return false;
+            if (sb > 4.0f * sa + 1e-4f || sa > 4.0f * sb + 1e-4f) return false;  // particles grow fast
         }
         if (cols == 4) {
             float da = 0, db = 0, dd = 0;
