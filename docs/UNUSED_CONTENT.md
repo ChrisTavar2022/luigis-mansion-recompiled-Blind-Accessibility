@@ -938,21 +938,12 @@ does not reach the rank-letter display, so the letter mapping rests on the table
   `text_archive_event26.png`. Test aid `LM_TEXT_ARCHIVE=lines|event26|notes`. Works on both
   releases (font found by address or by scanning).
 
-### Early lab script in the lab (Unused content, "Early E. Gadd lab script")
+### Early lab script in the lab (removed)
 
-With the option on, `/Event/event08.szp` (the lab's talk event, map 1 `eventinfo`) is served
-rebuilt from the retail archive with event26's script and messages. Dropped: event26's debug
-block (four `<FLAGON>`s: Boos released, explanation given, first lab visit, Hidden Mansion
-unlocked - they would alter the save) and its `<SE>(n)` commands (an older sound numbering).
-Everything else is the early script; its menu always offers the Hidden Mansion. Verified: a new
-game started in the lab (`LM_START_MAP=1 LM_LAB_EVENT26=1`) plays the first-visit branch in
-Japanese ("Professor Oya-Mar's Ghost Research Center") up to the warp to training:
-`lab_event26_*.png`. European game: its event archives have one message file per language
-(`message/<language>/book1.txt` in event08, `message/<language>/message26.csv` in event26, the
-latter all the same Japanese) and its message font is Latin only, so the Japanese came out as
-garbage. There every language gets the port's English translation (the text archive's), reflowed
-to the retail 32-character box with Luigi highlighted; fillers kept. Verified through the
-first-visit branch (`pal_lab_event26_english.png`).
+An "Early E. Gadd lab script" toggle once played event26 in the lab in place of event08. It was
+removed at the user's request (2026-10-11): the script and its translation are readable in
+Debug > Text archive, which is enough.
+
 
 ### Unused placements, colour variants, extra Speedy Spirits (`placements.cpp`)
 
