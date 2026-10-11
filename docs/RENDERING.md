@@ -1022,7 +1022,7 @@ draw classes, scene bracket, test lights), `shadows.cpp` (caster-pass class, sha
   part never rebuilds pipelines; only the master switch does (one-time compile hitch).
 - **Scene bracket**: `fn_8000BB98(0)` (main 3D view, US+PAL hook) is wrapped: before it the
   frame's extra lights are sent (`aurora::gfx::set_extra_lights`), after it `GXSceneEndAurora`
-  marks the end of the 3D scene, before the HUD: bloom, volumetric beam and ambient occlusion
+  marks the end of the 3D scene, before the HUD: bloom and the volumetric beam
   are composited onto the EFB there, so the HUD never glows and the CRT filter comes after.
 - **A/B test aid** `LM_ENHANCED_AB=<n>`: game frames alternate in blocks of n between enhanced
   and plain (draws classed OTHER, no lights, no scene end: the plain renderer), so consecutive
@@ -1042,7 +1042,7 @@ draw classes, scene bracket, test lights), `shadows.cpp` (caster-pass class, sha
 | Colored light shadows (`extra_light_shadows`, method, lights, quality, map size, softness) | Lights flagged `ExtraLightCastShadows` (the strongest 2/4/8: ghosts, fires, candelabras, fire spray) are blocked by furniture/characters | **Shadow maps** (default, patch 0028; see "Colored-light shadow maps" below): cube maps per light in one atlas, PCF/PCSS lookup into the mask. **Screen space** (fast, up to 4 lights), current frame: the opaque world draws are re-rendered depth-only (same pipelines, depth layout) into a half-resolution pre-pass **before** the EFB pass that draws them (pass pre-op), a ray-march pass (8/16/32 steps, thickness 160 units) writes an RGBA8 mask (one channel per light), which is copied into a reserved storage-buffer range; the world shaders read it (`enh_mask`, bilinear) |
 | Volumetric beam (`volumetric_beam`, intensity 2.0, quality) | Dusty haze in the flashlight beam, stopped by walls | Scene end: ray march along each view ray (16/24/48 steps, 1/4 or 1/2 resolution) through the flashlight's GX spot attenuation (the flashlight = the bright angular spot light nearest the camera among the world draws' lights), forward-scattering phase, depth-limited; density modulated by slowly drifting 3D value noise (dust motes) |
 | Bloom / glow (`bloom`, intensity, light sources, colored light glow, bright surfaces, threshold, radius, flashlight-lit walls) | Light sources glow, the HUD never | Scene end, HDR (RGBA16F) chain at ≤ 720 lines: bright pass = **glow buffer** (emissive) + soft-knee scene highlights × "bright surfaces" (suppressed where the flashlight is the only reason a wall is bright) + **light glows**; 6-level 13-tap downsample / tent upsample; composited additively onto the EFB |
-| Ambient occlusion (`ssao`, intensity, radius; off by default, experimental) | Contact darkening | Scene end, half resolution, 12 hemisphere samples from the depth buffer, depth-aware blur, multiplied onto the EFB |
+| Ambient occlusion (`ssao`, intensity, radius; off by default, experimental) | Contact darkening on solid surfaces | **Forward** (Aurora 0032): computed in the light-shadow mask pass from the opaque depth pre-pass (third mask plane, slot 8; 12 hemisphere samples, bias relative to the radius) and multiplied inside the opaque world draws (depth-writing, not additive; `enh_flags` bit 16). Unlit textured opaque world draws get the enhanced variant while it is on, so toggling it rebuilds those pipelines once. The former scene-end multiply also darkened everything drawn over an occluded corner: the ghost layer, the flashlight beam and glare, glows, particles, glass (`AURORA_ENH_AO_POST=1` restores it for A/B) |
 
 **Glow buffer (emissive-aware bloom).** Additive draws (blend SRCALPHA/ONE etc.: glows, lens
 sprite, sparkles, fire, dust, lightning and nozzle effects; not the beam volume itself, whose
@@ -1160,6 +1160,19 @@ world draws into the glow buffer / without depth test / inverted test), `=7` (gl
 `AURORA_SHADER_DUMP=<dir>` (every generated WGSL shader). Port: `LM_ENHANCED=0|1`,
 `LM_ENHANCED_AB=<n>`, `LM_TEST_LIGHTS`, `LM_SHADOW_MAP=0|1|2`, `LM_LIGHT_TRACE=1` (each distinct
 `GXLoadLightObjImm` call with its guest chain).
+
+`LM_SETTINGS_AT=<frame>:<section>.<key>=<value>[,...][;<frame>:...]` changes settings (ini names)
+live at a dump frame through the F1 path (`port::setSetting`, then the per-frame apply), e.g.
+`2640:enhanced_lighting.shadow_darkness=0.2;2652:enhanced_lighting.shadow_darkness=0.9`. Two
+concurrently started runs of the nursery script (`LM_ROOMS_LIT=1`, `LM_TEST_LIGHTS=4,450,1.5,0`,
+preset Custom) are frame-identical, so a run with changes against one without isolates each setting.
+Used to verify the 0031 fix: before it, Aurora's `same()` compared only the 0016 config fields, so a
+change of only the colored-light shadow method/quality/map size/softness, shadow darkness or
+colored shadow tint never reached the renderer (the shadow on/off and light count still worked,
+through the port's light flags). After it every shadow setting changes the picture on the next frame
+and reverting restores it exactly. 0031 also takes the glow depth from the farthest covered pixel
+(re-rendered emissive surfaces on grazing floors) and the AO bias relative to the radius (from SMS
+0150, docs/BACKPORT.md rows 77-80 there).
 
 ### Ghost lights
 
