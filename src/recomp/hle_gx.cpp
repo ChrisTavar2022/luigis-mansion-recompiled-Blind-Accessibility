@@ -1068,6 +1068,11 @@ GXHLE(GXInitTexObjLOD) {
         GXInitTexObjLOD(o, GXTexFilter(c.r[4]), GXTexFilter(c.r[5]), farg(c, 1), farg(c, 2), farg(c, 3),
                         GXBool(c.r[6]), GXBool(c.r[7]), GXAnisotropy(c.r[8]));
 }
+static bool zeroTexObj(u32 obj) {
+    for (u32 i = 0; i < 0x20; i += 4)
+        if (rd32(obj + i)) return false;
+    return true;
+}
 GXHLE(GXLoadTexObj) {
     if (GXTexObj* o = sTex.get(c.r[3], kTexTag)) {
         const u32 at = interp::mark();
@@ -1075,8 +1080,24 @@ GXHLE(GXLoadTexObj) {
         interp::texLoaded(at);
         const u32 idx = rd32(c.r[3] + 4);
         if (c.r[4] < 8) sMapImage[c.r[4]] = idx < sTexImage.size() ? sTexImage[idx] : 0;
+    } else if (zeroTexObj(c.r[3])) {
+        // Never initialised (zeroed .bss): the European game draws the file-select Luigi through
+        // the shadow receivers' setup (fn_8005DD50) before the shadow object's constructor
+        // (fn_8005D41C) has run, which the USA game calls earlier. The hardware loads the zero
+        // registers: a 1x1 I4 texture at physical address 0, clamped, nearest filtering.
+        static GXTexObj sZero = [] {
+            GXTexObj o{};
+            GXInitTexObj(&o, hostp(0x80000000), 1, 1, GX_TF_I4, GX_CLAMP, GX_CLAMP, GX_FALSE);
+            GXInitTexObjLOD(&o, GX_NEAR, GX_NEAR, 0.0f, 0.0f, 0.0f, GX_FALSE, GX_FALSE, GX_ANISO_1);
+            return o;
+        }();
+        const u32 at = interp::mark();
+        GXLoadTexObj(&sZero, GXTexMapID(c.r[4]));
+        interp::texLoaded(at);
+        if (c.r[4] < 8) sMapImage[c.r[4]] = 0;
     } else {
-        log("[gx] GXLoadTexObj: unknown texture object %08X", c.r[3]);
+        static u32 sUnknown = 0;
+        if (sUnknown++ < 16) log("[gx] GXLoadTexObj: unknown texture object %08X", c.r[3]);
     }
 }
 GXHLE(GXGetTexBufferSize) {
