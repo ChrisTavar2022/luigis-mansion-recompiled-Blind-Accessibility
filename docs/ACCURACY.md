@@ -43,6 +43,11 @@ were only read to understand the hardware):
 | [OGC] | libogc `gc/ogc/gx.h` doc comments | GXSetZCompLoc, GXSetDither, GXSetLineWidth... |
 | [PAT-Z] | US 6,664,958 "Z-texturing" | Z texture adders do not clamp; alpha compare can mask Z writes |
 | [PAT-TEV] | US 7,034,828 "Recirculating shade tree blender" | TEV datapath widths (8-bit A/B/C, signed 10-bit D/output), clamp ranges |
+| [HW-TEV] | Dolphin hwtests `gxtest/tev.cpp` (neobrain, 2014; run on a console) | randomized TEV combiner test incl. DIVIDE_2, bias, SUB, clamp; compare mode |
+| [HW-RAS] | Dolphin hwtests `gxtest/rasterization.cpp` (neobrain, 2014) | where a pixel counts as covered: left-edge threshold, tiny-viewport probe |
+| [D-12844] | Dolphin issue 12844 (Scorpion King / Spawn: line artifacts), pokechu22's hardware FIFO-player comparison | 1:1 LINEAR blits of an EFB copy are sharp and do not wrap on hardware; bisected to PR #306's 7/12 offset |
+| [PAT-AA] | US 6,999,100 "Method and apparatus for anti-aliasing" | 12x12 subpixel grid per pixel, 3 programmable samples per pixel in 1/12 units, Z per sample from the quad centre plane |
+| [OGC-SO] | libogc `GX_SetScissorBoxOffset` doc | "the dither matrix is 4x4"; the scissor offset displaces the image relative to the matrix |
 
 ## 2. What LM uses (vanilla, measured)
 
@@ -78,10 +83,10 @@ C : 0)`, bias/scale not applied, clamp applied; R8/GR16/BGR24 compare the colour
 alpha unit. The PE takes the low 8 bits of the last stage.
 
 Port (patch 0010 integer TEV, 0011): ADD and SUB give exactly Dolphin's results (checked
-algebraically: `floor((128 - x)/256) == -floor((x + 127)/256)`). DIVIDE_2 rounds (+256 before
-`>>9`) where Dolphin truncates; LM never uses DIVIDE_2, so this is **match for LM, open in
-general** (SMS?). Compare ops, simultaneous colour/alpha input reads, konst k/8 values, final
-`& 255`: **match**.
+algebraically: `floor((128 - x)/256) == -floor((x + 127)/256)`). DIVIDE_2 rounded (+256 before
+`>>9`) where Dolphin truncates; **settled on `hw-details` (section 9.3, Aurora 0180): truncation,
+as Dolphin's hardware test expects**. LM never uses DIVIDE_2; SMS does (Bianco Hills' alpha-tested windmill blades).
+Compare ops, simultaneous colour/alpha input reads, konst k/8 values, final `& 255`: **match**.
 
 ### 3.2 Lighting
 
@@ -187,8 +192,10 @@ notes that hardware lets alpha = 1 pass the alpha test but "does nothing in blen
 1+0 = 1/256, truncated away).
 
 Dither pattern: Dolphin (both renderers) uses a 2x2 matrix `0 2 / 3 1` (in 1/4 of a 6-bit step).
-libogc's doc for `GX_SetDither` says "A 4x4 Bayer matrix is used". Port: 2x2 like Dolphin.
-**Open** (sources disagree; no capture). Visible only as the grain pattern in dithered gradients.
+libogc's doc for `GX_SetDither` says "A 4x4 Bayer matrix is used". **Settled on `hw-details`
+(section 9.1): both are right.** A 4x4 Bayer matrix applied to an 8-bit value that loses 2 bits
+(RGBA6) produces exactly the 2x2 pattern `0 2 / 3 1`; the two only differ for RGB565's 5-bit red
+and blue. Aurora 0180 uses the 4x4 matrix (bit-identical output for RGBA6).
 
 Port: shader output is quantized to RGBA6 with the 2x2 dither when the draw is unblended (0010);
 **blended draws are blended at 8 bits by the GPU and never truncated to 6 bits**; alpha of blended
@@ -213,10 +220,11 @@ the Z texture. Relevant for SMS (fog is used there).
 
 - Pixel centre [D-PC]: Dolphin PR #306 (2014) placed the non-AA pixel centre at 7/12 instead of
   1/2, citing a hardware test; Dolphin PR #12972 (2024, open) argues no offset is needed and
-  reported mixed results. Aurora uses the PC convention (1/2). **Open.** If 7/12 is right, the
-  console samples LM's full-screen scene redraw (RGB565 copy drawn back, LINEAR) 1/12 texel off
-  centre, i.e. mixes about 8% of the neighbouring texel in x and y: a faint softening of the whole
-  image the port does not have. Low visibility.
+  reported mixed results. Aurora used the PC convention (1/2). **Settled on `hw-details`
+  (section 9.2):** neither a plain 1/2 nor a uniform 7/12. Vertex positions snap down to the
+  1/12-pixel grid and pixels are sampled at 6/12; that gives the measured 7/12 coverage threshold
+  while whole-pixel geometry (LM's scene redraw) is still sampled at texel centres, as a hardware
+  FIFO capture shows. Aurora 0180 snaps the positions.
 - Projective texcoords with q = 0: Dolphin special-cases them (`xy/2`, clamped, "a GameCube special
   case"). Aurora divides. Only matters on the projector's plane; not seen in LM.
 - Line width 6 = 1 px (units of 1/6 px; libogc's "1/16" is a documentation error, the SDK and
@@ -259,10 +267,10 @@ stale.
 | 2 | **Decide ZCOMPLOC + alpha test.** Test: count pixels the alpha test rejects in draws that have early Z and Z update (a debug colour for those pixels, or an occlusion query). Zero in normal scenes = the models are equivalent for LM, close the item. Non-zero = render those draws as a depth-only pass without discard followed by the colour pass (Z EQUAL/LEQUAL, no Z write), only for early-Z + alpha-test + Z-update draws, and compare Luigi's face and the room cut-outs | section 3.5 | unknown (none to small) | test: low; fix: one extra depth pass for the affected draws |
 | 3 | Aurora SDK fixes: `GXInitLightSpot` SHARP and RING1 `a0`, `GXInitLightDistAttn` `ref_br <= 0` | section 3.2 (SDK source in this repo) | none in LM | trivial; would change pipeline-independent uniforms only (no precache impact) |
 | 4 | 6-bit truncation (and the `f + f>>7` / truncating blend arithmetic) for blended draws | section 3.6 | HUD edges only (up to 3 levels) | high for an exact fix (WebGPU has no framebuffer fetch: needs an EFB copy per blended draw or a programmable-blend pass); a cheap partial step is SMS's 0113 (replace-blends + unread alpha). 0113 changes `ShaderConfig` -> re-run the pipeline sweep |
-| 5 | Pixel centre 7/12 | section 3.8 (disputed) | faint global softening, if right | trivial shader change, but changes every draw by 1/12 px; needs a console capture first |
+| 5 | ~~Pixel centre 7/12~~ **done** (`hw-details`, Aurora 0180: 1/12-pixel position snap, section 9.2) | section 3.8 | edges and textures of 3D geometry move by up to 1/12 px; whole-pixel 2D unchanged | done |
 | 6 | Integer lighting accumulation (`lacc` rounding, `(mat*(lacc+lacc>>7))>>8`) | section 3.2 | not visible (<= 1 level) | small; pipeline configs unchanged, shaders change -> re-run the sweep |
 | 7 | 7-bit truncating bilinear weights | section 3.3 | not visible | needs manual filtering in the shader: costly, not worth it |
-| 8 | Dither matrix 2x2 vs 4x4 | section 3.6 (sources disagree) | grain pattern only | needs a console capture of a dithered gradient first |
+| 8 | ~~Dither matrix 2x2 vs 4x4~~ **done** (`hw-details`, Aurora 0180: 4x4, identical output for RGBA6, section 9.1) | section 3.6 | none in LM | done |
 | 9 | Intensity copies with the integer Y coefficients | section 3.4 | none in LM | trivial |
 | 10 | AFC: drop the last partial frame of non-looping samples (AUDIO.md known gap) | microcode | inaudible | trivial |
 
@@ -302,8 +310,9 @@ deterministic and a good candidate).
 
 - Section 3.2 SDK bugs (`GXInitLightSpot` SHARP/RING1, `GXInitLightDistAttn` brightness 0) are in
   the shared Aurora; check whether SMS calls them with those functions.
-- DIVIDE_2 rounding in the integer TEV (3.1) is unverified: Aurora rounds, Dolphin truncates (and
-  marks it TODO). LM never uses DIVIDE_2; if SMS does, that is where a +-1 bias would show.
+- DIVIDE_2 rounding in the integer TEV (3.1): settled on `hw-details` (truncation, Aurora 0180,
+  section 9.3). SMS uses it (Bianco Hills' alpha-tested cut-outs, the windmill blades: alpha `(APREV + 128) / 2` against an
+  alpha test of 128).
 - 6-bit truncation after blending (3.6) matters more for SMS than for LM.
 - Fog (3.7): SMS uses fog; Dolphin's integer fog blend and power-of-two exp functions are the
   reference to audit Aurora's fog against.
@@ -320,7 +329,7 @@ Proposed SMS `docs/BACKPORT.md` row (research note, nothing to port yet):
 | ID | Area | Finding | Evidence | Status |
 |----|------|---------|----------|--------|
 | A1 | TEV | ADD/SUB rounding, compares, konst, wrap: match Dolphin's hardware-tested model | algebra vs [D-PS]; audit (LM: scale x1/x2, ops ADD/SUB/GR16) | verified match |
-| A2 | TEV | DIVIDE_2 rounding differs from Dolphin (unverified there) | [D-PS] TODO; LM never uses it | open, not LM |
+| A2 | TEV | DIVIDE_2: truncating lerp, floor halving (was: rounded) | [HW-TEV] hardware test, section 9.3 | fixed (0180), not LM |
 | A3 | Lighting | SPOT/SPEC/NONE formulas, normal normalization, emboss, SRTG | [D-LS, D-VS, SDK] | verified match |
 | A4 | Lighting | float vs integer accumulation | [D-LS] | minor, invisible |
 | A5 | SDK | `GXInitLightSpot` SHARP/RING1 a0 wrong | [SDK] GXLight.c vs Aurora GXLighting.cpp | defect, not LM |
@@ -331,8 +340,8 @@ Proposed SMS `docs/BACKPORT.md` row (research note, nothing to port yet):
 | A10 | Copies | intensity Y coefficients float vs integer | [D-SW] | minor, not LM-visible |
 | A11 | Z | early Z + alpha test: Z of rejected pixels | [OGC, PAT-Z, D-PS] vs port experiment; LM trace (rooms, Luigi) | open, test proposed |
 | A12 | EFB | blended draws not truncated to 6 bits | frame dumps: 4-8% of pixels, all HUD | mismatch, low |
-| A13 | EFB | dither 2x2 vs 4x4 | [D-SW] vs [OGC] | open |
-| A14 | Raster | pixel centre 7/12 | [D-PC] disputed | open |
+| A13 | EFB | dither 4x4 Bayer (= 2x2 `0 2 / 3 1` for RGBA6) | [OGC] + section 9.1 algebra | fixed (0180), no LM change |
+| A14 | Raster | positions snapped to 1/12 px, samples at 6/12 | [HW-RAS], [D-12844], [SDK] section 9.2 | fixed (0180), medium confidence |
 | A15 | Raster | line width units, Z texture wrap | [SDK, D-PS, PAT-Z] | verified match |
 | A16 | Flicker | mouth/hose: threaded FIFO reads guest arrays late | [D-12903], `lib/gx/fifo.cpp` | top suspect, test proposed |
 | A17 | Flicker | shadow compare precision | section 4 | ruled out as cause |
@@ -341,3 +350,115 @@ Proposed SMS `docs/BACKPORT.md` row (research note, nothing to port yet):
 | B3 | Audio | CLAUDE.md audio next step | AUDIO.md, b3a20b7 | stale (done) |
 
 Interpolation, widescreen and enhanced lighting were not retested: no code changed on this branch.
+
+## 9. Three hardware details settled (branch `hw-details`, Aurora 0180)
+
+Research pass 2026-10-11 on the three items section 5 left open (5, 8 and A2). Same rules as above:
+Dolphin, hwtests and libogc are GPL and were read only to understand the hardware; no code was
+copied. One generic patch, `patches/aurora/0180-flipper-hw-details.patch`, identical in LM and
+SMS (applies on both chains). Each part has an environment switch for A/B, read once at startup:
+`AURORA_PIXEL_SNAP=0`, `AURORA_DITHER_4X4=0`, `AURORA_TEV_DIV2_TRUNC=0` restore the previous
+behaviour (verified: with all three at 0 the new build's frames equal the old build's where the
+scene is deterministic). No pipeline-config change (no re-sweep needed); generated WGSL changes.
+
+### 9.1 Dither matrix: 4x4 Bayer, which is the 2x2 `0 2 / 3 1` for RGBA6 (confidence: high)
+
+- [OGC] `GX_SetDither`: "A 4x4 Bayer matrix is used"; [OGC-SO] `GX_SetScissorBoxOffset`: "Since
+  the dither matrix is 4x4, a yoffset of -2 shifts the image down by 2 lines with respect to the
+  matrix" (these docs follow Nintendo's SDK manual; the offset remark only makes sense with a
+  period of 4). So the matrix is 4x4, indexed by EFB pixel (after the scissor-box offset).
+- [D-PS]/[D-SW]: Dolphin dithers with the 2x2 matrix `0 2 / 3 1` (in 8-bit units added to
+  `c - (c >> 6)`, then truncated to 6 bits). No hardware test of dithering exists in hwtests (its
+  RGBA6 TEV path is disabled, "doesn't quite work, yet").
+- The two agree. The standard 4x4 Bayer index `B4(x, y) = 4 * B2(x, y) + B2(x >> 1, y >> 1)`
+  (B2 = `0 2 / 3 1`) in sixteenths of an output step, added to an 8-bit value that keeps 6 bits
+  (2 bits dropped, fractions 0, 4, 8, 12 sixteenths), rounds up exactly where `floor(B4 / 4) =
+  B2(x, y)` does, i.e. Dolphin's 2x2 result, pixel for pixel. The 4x4 pattern only shows where 3
+  bits are dropped: RGB565's red and blue (8 levels).
+- Port (0180): the 4x4 matrix in the shader's EFB quantization; RGBA6 and RGB565 green are
+  bit-identical to before; RGB565 red/blue now dither with 8 levels instead of 4. Alignment: EFB
+  pixel (render pixel at a higher render scale). SMS's 0176 resolve pass (6-bit blends) keeps its
+  2x2 formula, which is the same thing for 6-bit channels. Neither game renders into RGB565 with
+  dither in the scenes checked, so **no visible change in LM or SMS**.
+
+### 9.2 Pixel centres: positions snap down to 1/12 pixel, samples at 6/12 (confidence: medium)
+
+Evidence:
+- [PAT-AA]: each pixel is a 12x12 subpixel grid; the three sample points per pixel are given in
+  1/12-pixel units. [SDK] `GXSetCopyFilter` with `aa = GX_FALSE` writes all sample locations as
+  6 (`0x666666`), and every non-AA render mode uses `{6, 6}` for all 12 points: the non-AA sample
+  sits at 6/12 = the pixel centre on the 12-grid. The SDK adds 340 to the viewport origin (so
+  screen positions are positive for fixed-point conversion).
+- [HW-RAS] (run on a console): a left edge covers the pixel's sample while its x is at most
+  0.583328 (the float just below 7/12 at x = 342.58) and not from the next float up; a quad only
+  2e-5 wide covers the sample only when it straddles 7/12. Hence Dolphin PR #306's "pixel centre at
+  7/12" (a uniform +1/12 shift of every vertex, still in Dolphin today).
+- [D-12844] (hardware FIFO player): a game that copies 256x256 of the EFB and draws it back 1:1
+  with LINEAR filtering gets no blur and no wrap-around on the console, while Dolphin's 7/12 shift
+  blurs and wraps it; bisected to PR #306. So whole-pixel geometry is sampled exactly at texel
+  centres on hardware: attributes are not evaluated 1/12 off. Dolphin PR #12972 (open) removes the
+  offset for that reason, but then loses the measured coverage threshold.
+- One rule fits all three: **the setup unit truncates screen positions to the 1/12 grid (floor) and
+  samples at 6/12, edges inclusive top-left**. A left edge at x snaps to floor(12x)/12 and covers
+  the 6/12 sample iff x < 7/12 (the hwtest threshold; the tiny quad snaps to zero width unless it
+  straddles a grid line); whole-pixel (and half-pixel) positions do not move, so 1:1 blits stay
+  sharp. Dolphin's software rasterizer, "adjusted to match hardware output", also biases positions
+  by -9/16 (about the same threshold on its 1/16 grid). Medium confidence: no test measured a
+  sloped edge or an attribute value at a fractional position; truncation vs. a coverage-only offset
+  is inferred, not observed.
+- Multisample (3-point AA, RGB565_Z16): samples at the programmed `(x, y)/12` positions on the
+  same grid, coverage per sample, Z per sample from the quad's centre plane ([PAT-AA]); colour is
+  computed once per pixel (position not documented; presumably the pixel centre). Aurora does not
+  emulate the 3-point mode (its MSAA enhancement is the PC's), and neither game uses it.
+
+Port (0180): the vertex shader snaps `out.pos` (triangles and quads; lines/points and the enhanced
+shadow-map casters are not snapped) to floor(12 x)/12 in the logical (EFB) pixel grid, with a
+1/256-step tolerance so float noise on exact grid positions does not drop a step; coverage and
+attribute interpolation then follow the snapped positions, at any render scale (positions move by
+at most 1/12 native pixel). The uniform block gained the logical viewport origin (and a viewport
+`top` change now dirties the uniforms).
+
+### 9.3 TEV DIVIDE_2: no rounding constant, floor halving (confidence: medium-high)
+
+- [HW-TEV] (run on a console; the randomized test draws A, B, C from -1024..1023, D = 0, scale
+  from all four values including DIVIDE_2, bias ZERO/ADDHALF/SUBHALF, ADD/SUB, clamp on/off): the
+  expectation that passes is `lerp = (A*(256-C') + B*C' [<< s] + r) >> 8` with `r = 128` (ADD) /
+  `127` (SUB) for x1/x2/x4 but **`r = 0` for DIVIDE_2**, then `D [<< s] +- lerp + bias [<< s]`,
+  then `>> 1` for DIVIDE_2 (arithmetic, i.e. floor), then clamp to 0..255 or -1024..1023 (the
+  10/11-bit signed range). Dolphin's shader generator implements the same and still carries a
+  "TODO: is the rounding bias still added when the scale is divide by 2?", which the hwtest
+  answers for D = 0. The patents describe the scale stage (0.5/1/2/4 after the bias) but no
+  rounding.
+- So: the lerp is truncated, the sum (D + bias +- lerp) is halved with truncation toward minus
+  infinity (not round-half-up), and the clamped 8-bit output is the clamp of that. Untested by
+  anyone: D != 0 with DIVIDE_2 (the formula is linear in D, so a different carry would be a
+  separate adder stage; assumed not).
+- Compare modes (bias field = 3): the scale field selects the compare width (R8/GR16/BGR24/RGB8)
+  and the op GT/EQ; `D + (A cmp B ? C : 0)`, no lerp, no rounding, no scale, clamp applied
+  (hwtest compare block, [PAT-TEV] register table). Port: already so (match).
+- Port (0180): DIVIDE_2 in the integer TEV computes `(D + bias +- floor(lerp / 256)) >> 1`
+  (previously `(256 D + 256 bias +- lerp + 256) >> 9`, i.e. rounded). The float TEV (integer TEV
+  off) is unchanged. LM never uses DIVIDE_2. SMS does: Bianco Hills' alpha-tested cut-outs, the windmill blades (stage 1 alpha
+  `(APREV + 128) / 2` unclamped, alpha test `>= 128`): the cut-out threshold moves from texture
+  alpha 127 to 128, i.e. a few hundred edge pixels per frame.
+
+### 9.4 Verification (frame dumps, native, Original 30, 4:3, enhancements off)
+
+Old build vs new build and the new build with switches (`lmrecomp`/`smsrecomp` from this branch;
+scratch APPDATA, card and cache). LM's 3D scenes are not frame-identical run to run (dust, Luigi's
+idle animation: two runs of the old build differ in 8-48k pixels per nursery frame), so the
+changes were isolated with the switches and with the frames that are deterministic:
+
+- LM nursery (`LM_START_MAP=2 LM_START_APPEAR=1`, frames 2600-2900): GBH frames 2740/2760
+  (deterministic: old = old rerun = new with all switches 0) differ in 10.7k / 16.4k pixels with
+  the snap, 44-48 % of them on edges, the rest low-amplitude texture shifts on the 3D Game Boy
+  Horror model (mean 4-5 levels). Title / file select: unchanged (frames 200, 300) or <= 3 levels
+  on the slid-in file panels (frame 400); opening crows (frame 1400): branch and crow edges and the
+  bark texture, sky untouched. RGBA6 share of pixels unchanged (92-100 %).
+- Dither and DIVIDE_2: no LM pixel changes (RGBA6 only, no DIVIDE_2).
+- SMS: see SMS docs/ACCURACY.md "Hardware details" (plaza 1,0 and Bianco 2,0).
+- Enhanced lighting (nursery, master on): renders as before (flashlight pool, volumetric beam,
+  shadows), no shader/validation errors with the patch; differences vs the old build only at the
+  scale of the run-to-run noise plus the snap's edge shifts.
+
+Evidence images (agent scratch, not in the repo): `scratchpad/hw/report/`.
