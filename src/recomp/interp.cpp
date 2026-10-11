@@ -7,6 +7,7 @@
 #include <dolphin/gx/GXAurora.h>
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -91,6 +92,9 @@ struct Tape {
     std::vector<u64> bundleIds;  // per draw: what is drawn (display list, vertex layout)
     std::vector<std::vector<u8>> arrays;  // vertex-array copies the tape's array loads point at
     u64 arrayBytes = 0;
+    std::vector<std::shared_ptr<const std::vector<u8>>> textures;  // texture/TLUT copies its loads point at
+    u64 textureBytes = 0;  // newly copied for this tape
+    mutable std::atomic<bool> replayed{false};  // host: replayed at least once
     u32 retrace = 0;
     Clock::time_point done;
     // Pairing with the tape captured before this one (`pairedWith`, compared by identity).
@@ -799,6 +803,9 @@ void endTape(u32 retraceCount) {
     std::vector<std::vector<u8>> arrays;
     u64 arrayBytes = 0;
     detail::vtxEndTape(sScratch.data(), size, arrays, arrayBytes);
+    std::vector<std::shared_ptr<const std::vector<u8>>> textures;
+    u64 textureBytes = 0;
+    detail::texEndTape(textures, textureBytes);
     detail::noteDraw(0);
     sCapturing = false;
     auto tp = t0;
@@ -819,6 +826,8 @@ void endTape(u32 retraceCount) {
     sLights = {};
     tape->arrays = std::move(arrays);
     tape->arrayBytes = arrayBytes;
+    tape->textures = std::move(textures);
+    tape->textureBytes = textureBytes;
     tape->retrace = retraceCount;
     tape->phaseUs[0] = vtxUs;
     tape->phaseUs[1] = usSince(tp);
@@ -867,6 +876,8 @@ void noteDump(u32 at, const void* target, u32 frameNo) {
     sDumpPtr = target;
     sDumpFrame = frameNo;
 }
+
+u8* detail::captureBytes() { return sScratch.data(); }
 
 u32 mark() { return capturing() ? sBase + AuroraCapturePos() : ~0u; }
 
@@ -1069,6 +1080,10 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
     // before the late replays of N-1); a tape whose predecessor was never replayed (dropped, or
     // drawn directly since reset()) starts from the current state.
     if (b.seq > 1 && sEndSeq[(b.seq - 1) & 3] == b.seq - 1) GXRestoreStateAurora(u8((b.seq - 1) & 3));
+    // EFB copies made by this replay go into this tape's copy generation, so they don't replace the
+    // previous frame's copies that this frame's early draws may still read (Aurora patch 0023).
+    // Only the first replay of a tape reads its copies back into memory (bit 6 on the others).
+    GXSetCopyGenerationAurora(u8((b.seq & 3) | 0x80 | (b.replayed.exchange(true) ? 0x40 : 0)));
     AuroraReplay(sReplay.data(), u32(sReplay.size()));
     GXSaveStateAurora(u8(b.seq & 3));
     sEndSeq[b.seq & 3] = b.seq;
@@ -1183,10 +1198,27 @@ bool testReplay() {
     }
     TestItem& it = sTestItems.front();
     if (!it.target) it.target = efbcopy::namedDumpTarget(it.name.c_str());
-    sLogSnaps = sTrace && it.frames == 0 && it.alpha > 0.4f && it.alpha < 0.6f;
+    sLogSnaps = sTrace && it.frames == 0 && it.alpha < 1.0f && it.name.size() > 3 && it.name.compare(it.name.size() - 3, 3, "_s1") == 0;
     std::fill(std::begin(sLoggedSnaps), std::end(sLoggedSnaps), 0u);
     std::fill(std::begin(sSnapKinds), std::end(sSnapKinds), 0u);
+    // LM_INTERP_POISON=<item>,<phys hex>,<size hex> (test aid): fill that guest memory with garbage during
+    // that LM_INTERP_TEST replay, to find memory a replay still reads live (bisect the range).
+    static const char* sPoison = std::getenv("LM_INTERP_POISON");
+    std::vector<u8> saved;
+    u32 pphys = 0, psize = 0;
+    if (sPoison && it.frames == 0) {
+        char nm[64] = {};
+        if (std::sscanf(sPoison, "%63[^,],%x,%x", nm, &pphys, &psize) == 3 && it.name == nm) {
+            saved.assign(g_mem + pphys, g_mem + pphys + psize);
+            std::memset(g_mem + pphys, 0xA5, psize);
+            log("[dbg] poisoned %08X+%X for %s", pphys, psize, nm);
+        }
+    }
     replayPair(it.a.get(), *it.b, it.alpha, it.target);
+    if (!saved.empty()) {
+        AuroraGXSync();
+        std::memcpy(g_mem + pphys, saved.data(), psize);
+    }
     if (sLogSnaps) {
         u32 unpaired[kKinds] = {};
         for (u32 i = 0; i < it.b->patches.size(); i++)

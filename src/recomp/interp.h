@@ -12,6 +12,7 @@
 #include "recomp/ctx.h"
 
 #include <string>
+#include <memory>
 #include <vector>
 
 namespace recomp::interp {
@@ -59,6 +60,12 @@ void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective);  // GXBegin (bef
 void vtxBytes(u32 v, int size);                               // raw FIFO write from game code
 void vtxDisplayList(u32 guestAddr, const u8* data, u32 size);  // after GXCallDisplayList
 
+// Textures and TLUTs (interp_tex.cpp): the data a load points at is copied at capture time.
+void texLoaded(u32 at);   // after GXLoadTexObj, marked at `at`
+void tlutLoaded(u32 at);  // after GXLoadTlut, marked at `at`
+void efbCopied(u32 guestDest, u32 size);  // GXCopyTex: textures over that memory are not copied
+void efbWrittenBack(const void* dest, u32 size);  // a copy's bytes were written into memory
+
 // The game recording its own display list suspends the capture around it.
 void suspendForDisplayList();
 void resumeAfterDisplayList();
@@ -80,6 +87,9 @@ void noteDraw(u64 id);
 void noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id);
 u64 mix(u64 h);
 void drawLog(const char* fmt, ...);  // LM_INTERP_DRAWS
+u8* captureBytes();  // the capture buffer (tape offsets index it)
+// This tape's texture/TLUT copies (kept alive by the tape) and the bytes newly copied.
+void texEndTape(std::vector<std::shared_ptr<const std::vector<u8>>>& keep, u64& copiedBytes);
 }  // namespace detail
 
 // LM_INTERP_DRAWS: whether this draw is being logged, and its guest call chain.

@@ -10,6 +10,7 @@
 
 #include "port/settings.h"
 #include "recomp/hle.h"
+#include "recomp/interp.h"
 
 #include <aurora/efb_ram.h>
 
@@ -130,7 +131,8 @@ void writePpmPath(const u8* gx, u32 w, u32 h, const char* path) {
     }
 }
 
-void onWriteback(const void* dest, u32, u32, u32 w, u32 h, void*) {
+void onWriteback(const void* dest, u32 size, u32, u32 w, u32 h, void*) {
+    interp::efbWrittenBack(dest, size);
     if (!sDump.buffers && !sDump.active) return;
     for (auto& n : sNamed)
         if (!n.written && dest == n.buf.data()) {

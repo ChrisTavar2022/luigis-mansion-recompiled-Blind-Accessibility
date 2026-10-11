@@ -251,7 +251,8 @@ void flushPending() {
 }  // namespace
 
 void arrayBase(u32 at, u32 attr, u32 guestAddr, u32 stride) {
-    const int slot = int(attr) - GX_VA_POS;
+    // GX_VA_NBT shares the normal array slot (as on the hardware and in Aurora's GXSetArray).
+    const int slot = attr == GX_VA_NBT ? GX_VA_NRM - GX_VA_POS : int(attr) - GX_VA_POS;
     if (slot < 0 || slot >= kArrays) return;
     Binding& b = sBind[slot];
     b.guest = guestAddr;

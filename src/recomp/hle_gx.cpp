@@ -1044,7 +1044,9 @@ GXHLE(GXInitTexObjLOD) {
 }
 GXHLE(GXLoadTexObj) {
     if (GXTexObj* o = sTex.get(c.r[3], kTexTag)) {
+        const u32 at = interp::mark();
         GXLoadTexObj(o, GXTexMapID(c.r[4]));
+        interp::texLoaded(at);
         const u32 idx = rd32(c.r[3] + 4);
         if (c.r[4] < 8) sMapImage[c.r[4]] = idx < sTexImage.size() ? sTexImage[idx] : 0;
     } else {
@@ -1059,7 +1061,11 @@ GXHLE(GXInitTlutObj) {
     GXInitTlutObj(sTlut.forInit(c.r[3], kTlutTag), ptr(c.r[4]), GXTlutFmt(c.r[5]), u16(c.r[6]));
 }
 GXHLE(GXLoadTlut) {
-    if (GXTlutObj* o = sTlut.get(c.r[3], kTlutTag)) GXLoadTlut(o, c.r[4]);
+    if (GXTlutObj* o = sTlut.get(c.r[3], kTlutTag)) {
+        const u32 at = interp::mark();
+        GXLoadTlut(o, c.r[4]);
+        interp::tlutLoaded(at);
+    }
 }
 
 // --- TEV -------------------------------------------------------------------------------------
@@ -1342,6 +1348,7 @@ GXHLE(GXCopyTex) {
         if (sCopyDests.size() >= 64) sCopyDests.erase(sCopyDests.begin());
         sCopyDests.push_back(phys(c.r[3]));
     }
+    interp::efbCopied(c.r[3], GXGetTexBufferSize(u16(sCopyDiag.dw), u16(sCopyDiag.dh), sCopyDiag.fmt, GX_FALSE, 0));
     GXCopyTex(hostp(c.r[3]), GXBool(c.r[4]));
 }
 
