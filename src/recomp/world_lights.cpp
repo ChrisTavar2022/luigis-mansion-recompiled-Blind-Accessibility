@@ -72,17 +72,17 @@ struct Kind {
 };
 // Matched by prefix, first match wins.
 constexpr Kind kKinds[] = {
-    {"candle_vio", port::kWlCandles, {190, 110, 255}, 340.0f, 1.1f, 0.8f, 6.0f, 150.0f},
-    {"candle", port::kWlCandles, {255, 128, 40}, 360.0f, 1.2f, 0.8f, 6.0f, 150.0f},
-    {"danro_fire", port::kWlFires, {255, 105, 25}, 760.0f, 2.2f, 1.0f, 30.0f, 0.0f},
-    {"torch", port::kWlFires, {255, 115, 30}, 600.0f, 1.8f, 1.0f, 10.0f, 0.0f},
-    {"tc_s", port::kWlFires, {255, 115, 30}, 600.0f, 1.8f, 1.0f, 10.0f, 0.0f},
+    {"candle_vio", port::kWlCandles, {200, 130, 255}, 340.0f, 1.1f, 0.8f, 6.0f, 150.0f},
+    {"candle", port::kWlCandles, {255, 172, 85}, 360.0f, 1.2f, 0.8f, 6.0f, 150.0f},
+    {"danro_fire", port::kWlFires, {255, 155, 60}, 760.0f, 2.2f, 1.0f, 30.0f, 0.0f},
+    {"torch", port::kWlFires, {255, 160, 65}, 600.0f, 1.8f, 1.0f, 10.0f, 0.0f},
+    {"tc_s", port::kWlFires, {255, 160, 65}, 600.0f, 1.8f, 1.0f, 10.0f, 0.0f},
     {"chandelier", port::kWlLamps, {255, 205, 140}, 900.0f, 1.6f, 0.15f, 0.0f, 0.0f},
     {"shanyb", port::kWlLamps, {255, 205, 140}, 900.0f, 1.6f, 0.15f, 0.0f, 0.0f},
     {"m_light1_y", port::kWlLamps, {255, 220, 120}, 500.0f, 1.2f, 0.1f, 0.0f, 0.0f},
     {"m_light1_r", port::kWlLamps, {255, 80, 70}, 500.0f, 1.2f, 0.1f, 0.0f, 0.0f},
     {"m_light1_b", port::kWlLamps, {90, 140, 255}, 500.0f, 1.2f, 0.1f, 0.0f, 0.0f},
-    {"elemh_fire", port::kWlSprays, {255, 120, 30}, 620.0f, 1.0f, 0.7f, 0.0f, 400.0f},
+    {"elemh_fire", port::kWlSprays, {255, 150, 55}, 620.0f, 1.0f, 0.7f, 0.0f, 400.0f},
     {"elemh_wat", port::kWlSprays, {70, 140, 255}, 420.0f, 0.35f, 0.2f, 0.0f, 400.0f},
     {"elemh_ice", port::kWlSprays, {150, 230, 255}, 420.0f, 0.35f, 0.2f, 0.0f, 400.0f},
     {"fireball", port::kWlFireFx, {255, 110, 30}, 450.0f, 1.4f, 0.8f, 0.0f, 0.0f},
@@ -161,7 +161,7 @@ void toView(const float m[12], const float p[3], float out[3]) {
 
 bool enabled() {
     const auto& st = port::settings();
-    return sForce || (st.worldLights.enabled && st.enhancedLighting.enabled && st.enhancedLighting.extraLights);
+    return sForce || (st.worldLights.enabled && enh::masterOn() && st.enhancedLighting.extraLights);
 }
 
 const char* emitterName(u32 em) {
