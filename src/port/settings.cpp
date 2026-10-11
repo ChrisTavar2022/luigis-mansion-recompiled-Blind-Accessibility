@@ -303,6 +303,17 @@ void addSettingsExtension(const SettingsExtension& ext) { extensions().push_back
 
 std::string settingsPath() { return (configDir() / "settings.ini").string(); }
 
+bool setSetting(const std::string& section, const std::string& key, const std::string& value) {
+    bool known = false;
+    for (auto& f : fields())
+        if (section == f.section && key == f.key) {
+            f.set(value);
+            known = true;
+        }
+    if (known) sanitize();
+    return known;
+}
+
 void loadSettings() {
     for (auto& ext : extensions()) ext.reset();
     std::ifstream in(settingsPath());
