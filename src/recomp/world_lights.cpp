@@ -451,14 +451,17 @@ void onMainView(Ctx&) {
         }
     }
 
-    // Game Boy Horror screen: the GBH actor (Luigi +0x7AC, character type 0x0A) is only drawn
-    // while Luigi holds it up (calls, scanning); its screen gives a soft green glow.
+    // Game Boy Horror screen: the GBH actor (Luigi +0x7AC, character type 0x0A) hangs on Luigi's
+    // belt (~77 units up) and is raised to his face during calls; only a raised GBH gives its
+    // screen's soft green glow (the belt one stays dark).
     if (w.on[port::kWlSparkles] || sForce) {
         const u32 lu = rd32(VA(0x803D48A0));
         const u32 gbh = guestPtr(lu) ? rd32(lu + 0x7AC) : 0;
         if (guestPtr(gbh) && !(rd32(gbh + 0x40) & 0x6000) && rd32(gbh + 0x3C) == 0x0A) {
             const float p[3] = {rdf32(gbh + 0x44), rdf32(gbh + 0x48) + 10.0f, rdf32(gbh + 0x4C)};
-            if (p[0] != 0.0f || p[2] != 0.0f) {
+            const float up = rdf32(gbh + 0x48) - rdf32(lu + 0x48);
+            if (sLog && logNow) log("[worldlight] f%u gbh %.0f above Luigi", sFrame, up);
+            if ((p[0] != 0.0f || p[2] != 0.0f) && up > 105.0f) {
                 ExtraLight l{};
                 toView(view, p, l.pos);
                 l.color[0] = 0.35f, l.color[1] = 1.0f, l.color[2] = 0.45f;
