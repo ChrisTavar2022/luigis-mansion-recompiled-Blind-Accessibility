@@ -145,6 +145,11 @@ struct RenderingSettings {
     // copy with another format/size (the shadow depth map) and CPU reads see what the
     // console sees (docs/RENDERING.md). Off: copies stay GPU-only textures.
     bool efbCopyToRam = true;
+    // Vertex data each draw indexes is copied when the game issues the draw (as the console's GPU
+    // reads it then), not when Aurora's FIFO thread gets to it; fixes Luigi's rare mouth/hose
+    // flicker (CPU/GPU timing race; docs/RENDERING.md "Vertex snapshots"). Interpolated frame
+    // rates snapshot anyway.
+    bool vtxSnapshot = true;
     // Shadows (docs/RENDERING.md, "Shadows"). The game's shadow map (light's-view depth, copied
     // as Z16 and compared in the TEV) at the internal render resolution instead of 640x480.
     bool shadowRenderResolution = true;

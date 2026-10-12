@@ -1,5 +1,6 @@
 #include "recomp/ctx.h"
 #include "recomp/hle.h"
+#include "recomp/interp.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
 
@@ -105,6 +106,12 @@ u32 sWatchLo = 0, sWatchHi = 0, sWatchStride = 0, sWatchOffset = 0;
 }  // namespace
 
 void initWatch() {
+    // LM_VTX_RACE=1: every guest store is checked against vertex arrays still unprocessed draws read
+    // live (interp_vtx.cpp).
+    if (interp::raceDetectorOn()) {
+        g_watchOn = true;
+        sWatchLo = sWatchHi = 0;
+    }
     const char* env = std::getenv("LM_WATCH");
     if (!env || !*env) return;
     char* end = nullptr;
@@ -119,6 +126,11 @@ void initWatch() {
 }
 
 void watch_store(u32 a, u32 v, int size) {
+    if (interp::raceDetectorOn() && interp::raceStore(a, size)) [[unlikely]] {
+        const u32 fn = tRingPos ? tRing[(tRingPos - 1) % kRingSize] : 0;
+        log("[vtxrace] store%d %08X while an unprocessed draw reads it live, in %08X (thread %08X)", size * 8, a, fn,
+            sched::currentGuest());
+    }
     const u32 phys = a & kHostMemMask;
     if (phys + size <= (sWatchLo & kHostMemMask) || phys >= (sWatchHi & kHostMemMask)) return;
     if (sWatchStride && (phys - (sWatchLo & kHostMemMask)) % sWatchStride != sWatchOffset) return;

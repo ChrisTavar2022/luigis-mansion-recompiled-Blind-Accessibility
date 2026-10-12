@@ -343,7 +343,7 @@ Proposed SMS `docs/BACKPORT.md` row (research note, nothing to port yet):
 | A13 | EFB | dither 4x4 Bayer (= 2x2 `0 2 / 3 1` for RGBA6) | [OGC] + section 9.1 algebra | fixed (0180), no LM change |
 | A14 | Raster | positions snapped to 1/12 px, samples at 6/12 | [HW-RAS], [D-12844], [SDK] section 9.2 | fixed (0180), medium confidence |
 | A15 | Raster | line width units, Z texture wrap | [SDK, D-PS, PAT-Z] | verified match |
-| A16 | Flicker | mouth/hose: threaded FIFO reads guest arrays late | [D-12903], `lib/gx/fifo.cpp` | top suspect, test proposed |
+| A16 | Flicker | mouth/hose: threaded FIFO reads guest arrays late | [D-12903], `lib/gx/fifo.cpp` | confirmed and fixed (draw-time vertex snapshots, RENDERING.md "Vertex snapshots") |
 | A17 | Flicker | shadow compare precision | section 4 | ruled out as cause |
 | B1 | Audio | effect lines, filters, resampler, AFC, stop fade | [D-Z] | verified match |
 | B2 | Audio | mixer volume ramp length | [D-Z] vs disassembly | differs from Dolphin HLE, port follows LM code |

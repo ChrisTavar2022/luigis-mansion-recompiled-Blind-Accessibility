@@ -266,6 +266,52 @@ bits 23..16 in the IA8 intensity byte and 15..8 in the alpha byte, which is how 
   content when comparing.
 - `LM_EFB_RAM=0/1`, `LM_EFB_READBACK_ALL=1`.
 
+## Vertex snapshots (Luigi's mouth/hose flicker)
+
+**Cause.** The game passes its vertex arrays to `GXSetArray` as pointers into main memory, and Aurora's
+FIFO thread reads them when it processes each draw. Some arrays are rewritten by the CPU while
+earlier draws that read them are still queued: the vertex-morph animation (`fn_8005C760` -> 8x
+`fn_8005C464`, then `DCStoreRange`) rewrites Luigi's face positions (about 0x4A4 bytes per buffer).
+If the FIFO thread is still behind when that happens, the queued draw uses the new data. The
+mouth is then drawn in the wrong shape for one frame. How often this happens depends on timing,
+so it looks random. Dolphin's dual-core mode has the same race in the same scene (issue 12903).
+
+**Evidence** (US, Original 30, `LM_INPUT_CLOCK=frames`, `--input "600:START*10,1000:A*6,1400:A*4"`,
+intro forest walk, `LM_FRAME_DUMP` frames 1000-1450):
+- `LM_VTX_RACE=1` counts guest stores into array ranges that a published but unprocessed draw
+  reads live. With snapshots off it counts about 1.27 million such stores in intro frames
+  ~1000-1500, at normal timing and with `AURORA_FIFO_DELAY_US=1500`, all from the morph code.
+  With snapshots on it counts 0, in the intro, the foyer and the nursery (Poltergust, walking,
+  vacuuming), with and without the delay.
+- The intro is deterministic once frames are aligned by +-4. Four runs with snapshots on are
+  identical around Luigi's face. With snapshots off, 2 of 4 runs had 4 and 9 single frames whose
+  only difference is Luigi's mouth (a dark mouth shape over the mustache in a frame where the
+  neighbours and the snapshot runs have none). The other 2 runs had none.
+
+**Fix** (`src/recomp/interp_vtx.cpp`, `snap*`; F1 > Visuals > Rendering "Snapshot vertex data at
+draw time", `[rendering] vertex_snapshot`, on by default). On the guest thread, each draw is
+parsed to find which elements of each indexed array it reads. Display lists use the same parser as
+the interpolation tapes, with results cached per list and vertex layout. Immediate-mode draws
+emit a placeholder `GXSetArray` that is re-pointed once the indices are known. That range is copied into a
+per-frame arena (3 generations, power-of-two blocks so Aurora's size-0 upload rounding stays
+inside), and Aurora is pointed at the copy. Copies are shared per guest address until
+`GXInvalidateVtxCache`, as tapes do, and the live arrays are rebound at the end of each frame.
+Lists that cannot be parsed (recorded through Aurora) fall back to the live arrays. Above 30 fps
+the interpolation tape already snapshots arrays, and this path is idle.
+
+**Cost** (game thread, `LM_VTX_SNAP_LOG=1`): foyer 0.28 ms/frame (540 draws, 1.4 MiB copied);
+nursery gameplay 0.18 ms/frame (277 draws, 0.7 MiB).
+
+**Unchanged.** At Original 30, frames match the old build except for the glitch frames. With
+enhanced lighting, the only differences between snapshots on and off are on Luigi's face along
+his path. Interpolation at 120 shows the same tape and blend statistics as the old build. The
+shipped exe's fresh setup reaches the foyer.
+
+**Test aids:** `LM_VTX_SNAP=0/1` (overrides the setting), `LM_VTX_RACE=1` (race detector: hooks every guest
+store, slow; add `LM_TRACE=ring` for the last called function), `LM_VTX_SNAP_LOG=1` (stats
+every 300 frames), `AURORA_FIFO_DELAY_US=<n>` (Aurora 0181: the FIFO thread sleeps before each
+batch to provoke the race).
+
 ## GX accuracy audit (TEV, EFB format, copy filter, fog, lighting, textures)
 
 Aurora patch `0010-gx-hardware-accuracy.patch` (incremental on 0001..0009); host side in `src/recomp/hle_gx.cpp`

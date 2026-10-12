@@ -411,6 +411,7 @@ u8 gx::vtxDesc(int attr) { return attr < GX_VA_MAX_ATTR ? sDesc[attr] : 0; }
 namespace {
 
 void rawFifoWrite(u32 v, int size) {
+    interp::snapBytes(v, size);
     switch (size) {
     case 1: GXCmd1u8(u8(v)); break;
     case 2: GXCmd1u16(u16(v)); break;
@@ -661,6 +662,7 @@ static FILE* dlTraceFile() {
 u32 copyDispCount();
 void gx::endFrame() {
     endPendingDraw();
+    interp::snapEndFrame();
     efbcopy::onFrame(copyDispCount());
     indEndFrame();
     if (FILE* f = dlTraceFile()) std::fprintf(f, "\nF%u", sDlFrame), std::fflush(f);
@@ -690,6 +692,7 @@ void gx::endPendingDraw() {
         HUD_TRACE("held %s x[%.3f,%.3f] mode=%d anchor=%d %s", sHeldDecoded ? "dec" : "nodec", sHeldLo, sHeldHi,
                   int(mode), sHeldAnchor, sHeldChain.c_str());
         sRawCheck = true;
+        interp::snapBegin(sHeld.fmt, sHeld.verts);
         GXBegin(sHeld.prim, sHeld.fmt, sHeld.verts);
         for (u32 w : sHeld.writes) {
             const int size = int(w >> 30) + 1;  // 1, 2 or 4 (encoded 0, 1, 3)
@@ -699,7 +702,9 @@ void gx::endPendingDraw() {
             rawFifoWrite(v, size);
         }
     }
+    interp::snapEnd();
     GXEnd();
+    interp::snapAfterDraw();
     interp::vtxEnd();
 }
 
@@ -844,6 +849,7 @@ GXHLE(GXBegin) {
         return;
     }
     prepareDraw(drawMode(ProjMode::Scaled), "begin");
+    interp::snapBegin(c.r[4], c.r[5]);
     GXBegin(GXPrimitive(c.r[3]), GXVtxFmt(c.r[4]), u16(c.r[5]));
 }
 
@@ -863,7 +869,9 @@ GXHLE(GXCallDisplayList) {
                   guestChain(c).c_str());
     prepareDraw(drawMode(ProjMode::Scaled), "dlist");
     indNoteDraw(c, "dlist");
+    interp::snapDisplayList(hostp(c.r[3]), c.r[4]);
     GXCallDisplayList(hostp(c.r[3]), c.r[4]);
+    interp::snapAfterDraw();
     if (interp::drawLogActive()) interp::drawLogCaller(guestChain(c));
     if (interp::capturing()) interp::vtxDisplayList(c.r[3], hostp(c.r[3]), c.r[4]);
 }

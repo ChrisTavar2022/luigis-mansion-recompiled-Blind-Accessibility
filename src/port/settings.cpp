@@ -74,6 +74,7 @@ std::vector<Field> fields() {
         flag("rendering", "display_copy_filter", r.displayCopyFilter),
         flag("rendering", "texture_copy_filter", r.textureCopyFilter),
         flag("rendering", "efb_copy_to_ram", sSettings.rendering.efbCopyToRam),
+        flag("rendering", "vertex_snapshot", r.vtxSnapshot),
         flag("rendering", "shadow_render_resolution", r.shadowRenderResolution),
         flag("rendering", "shadow_widescreen", r.shadowWidescreen),
         flag("rendering", "shadow_any_distance", r.shadowAnyDistance),

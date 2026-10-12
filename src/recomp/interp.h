@@ -87,6 +87,22 @@ void vtxBytes(u32 v, int size);                               // raw FIFO write 
 void vtxEnd();  // gx::endPendingDraw: the immediate-mode draw is complete
 void vtxDisplayList(u32 guestAddr, const u8* data, u32 size);  // after GXCallDisplayList
 
+// Draw-time vertex array snapshots without interpolation (interp_vtx.cpp; F1 > Visuals >
+// Rendering "Snapshot vertex data at draw time", docs/RENDERING.md). Aurora's FIFO thread reads
+// guest arrays when it processes a draw, later than the console's GPU would; game code that
+// rewrites a buffer in between makes the draw use the wrong data. When active, the array ranges
+// each draw indexes are copied on the guest thread at submit time and Aurora reads the copies.
+// LM_VTX_RACE=1 counts guest stores into array ranges that a still-unprocessed draw reads live.
+bool snapActive();  // enabled, not capturing a tape, not recording a display list
+void snapDisplayList(const u8* data, u32 size);  // before GXCallDisplayList
+void snapBegin(u32 fmt, u32 nVerts);  // before Aurora's GXBegin (immediate-mode draw)
+void snapBytes(u32 v, int size);      // raw FIFO write inside that draw
+void snapEnd();                       // before Aurora's GXEnd
+void snapAfterDraw();                 // after the draw was written (race detector)
+void snapEndFrame();                  // gx::endFrame
+bool raceDetectorOn();
+bool raceStore(u32 addr, int size);   // every guest store (true: log it) while the detector is on
+
 // Textures and TLUTs (interp_tex.cpp): the data a load points at is copied at capture time.
 void texLoaded(u32 at);   // after GXLoadTexObj, marked at `at`
 void tlutLoaded(u32 at);  // after GXLoadTlut, marked at `at`

@@ -71,9 +71,31 @@ void emitLoad(int slot) {
     sCmds.push_back({at, -1});
 }
 
-// A draw reads bytes [0, extent) of the array in `slot`.
-void use(int slot, u32 extent) {
+// Draw-time snapshot mode (snapDisplayList/snapEnd): use() only collects what each slot needs.
+bool sSnapParse = false;
+struct Need {
+    u32 lo, end, extra;  // elements [lo, end) plus `extra` bytes; end == 0: unused
+};
+Need sNeed[kArrays];
+u32 sFmtSeen = 0;  // vertex formats the parsed draws used (bit per format)
+const u8* sSnapBound[kArrays] = {};  // the copy Aurora has bound per slot, nullptr: the live array
+struct SnapCopy {
+    const u8* ptr = nullptr;
+    u32 len = 0;
+};
+std::unordered_map<u32, SnapCopy> sSnapCopyOf;  // guest address -> copy (this vertex-cache epoch)
+
+// A draw reads elements [idxLo, idxEnd) of the array in `slot`, plus `extra` bytes past the last.
+void use(int slot, u32 idxLo, u32 idxEnd, u32 extra) {
+    if (sSnapParse) {
+        Need& n = sNeed[slot];
+        n.lo = n.end ? std::min(n.lo, idxLo) : idxLo;
+        n.end = std::max(n.end, std::max(idxEnd, 1u));
+        n.extra = std::max(n.extra, extra);
+        return;
+    }
     Binding& b = sBind[slot];
+    u32 extent = idxEnd * b.stride + extra;
     if (!b.valid || b.cmd < 0 || !inMem1(b.guest)) return;
     const u32 phys = b.guest & 0x01FFFFFF;
     if (phys >= kMem1Size) return;
@@ -112,7 +134,7 @@ void scanVertices(int fmt, const u8* v, u32 count, u32 vtxSize) {
         if ((type == GX_INDEX8 || type == GX_INDEX16) && a >= GX_VA_POS) {
             const u32 idxSize = type == GX_INDEX16 ? 2 : 1;
             const u32 skip = type == GX_INDEX16 ? 0xFFFF : 0xFF;
-            u32 maxIdx = 0;
+            u32 maxIdx = 0, minIdx = ~0u;
             bool any = false;
             for (u32 i = 0; i < count; i++) {
                 const u8* p = v + i * vtxSize + offset;
@@ -120,14 +142,16 @@ void scanVertices(int fmt, const u8* v, u32 count, u32 vtxSize) {
                     const u32 idx = idxSize == 2 ? u32(p[k] << 8 | p[k + 1]) : p[k];
                     if (idx == skip) continue;
                     maxIdx = std::max(maxIdx, idx);
+                    minIdx = std::min(minIdx, idx);
                     any = true;
                 }
             }
             if (any) {
                 const int slot = a - GX_VA_POS;
                 // Up to one element past the last index start: 36 bytes covers any element
-                // (an NBT normal of 9 floats) when the stride is smaller than the element.
-                use(slot, (maxIdx + 1) * sBind[slot].stride + 36);
+                // (an NBT normal of 9 floats) when the stride is smaller than the element; NBT3
+                // indices may read two strides more (Aurora sizes arrays that way).
+                use(slot, minIdx, maxIdx + 3, 36);
             }
         }
         offset += u32(s);
@@ -164,7 +188,7 @@ u32 parse(const u8* p, u32 size, bool partial) {
             if (i + len <= size) {
                 const int slot = 12 + (op - 0x20) / 8;
                 const u32 idx = be16(i + 1), n = (be16(i + 3) >> 12) + 1;
-                use(slot, idx * sBind[slot].stride + n * 4);
+                use(slot, idx, idx, n * 4);
                 sStreamIndexedLoads++;
             }
         } else if (op == 0x40) {  // CALL_DL (Aurora ignores nested calls)
@@ -183,6 +207,7 @@ u32 parse(const u8* p, u32 size, bool partial) {
                 break;
             }
             const int fmt = op & 7;
+            sFmtSeen |= 1u << fmt;
             const u32 vs = vertexSize(fmt);
             const u32 count = be16(i + 1);
             if (vs == 0 && count != 0) {
@@ -266,6 +291,7 @@ void arrayBase(u32 at, u32 attr, u32 guestAddr, u32 stride) {
     b.stride = stride;
     b.valid = guestAddr != 0;
     b.cmd = -1;
+    sSnapBound[slot] = nullptr;  // Aurora now reads the live guest array
     if (capturing() && at != ~0u && b.valid) {
         b.cmd = int(sCmds.size());
         sCmds.push_back({at, -1});
@@ -273,6 +299,7 @@ void arrayBase(u32 at, u32 attr, u32 guestAddr, u32 stride) {
 }
 
 void invalidateVtxCache() {
+    sSnapCopyOf.clear();  // draw-time snapshots: the game rewrote vertex data, later draws copy again
     if (!capturing()) return;
     finishDirect();
     flushPending();
@@ -401,4 +428,412 @@ void vtxEndTape(u8* tape, u32 size, std::vector<std::vector<u8>>& keep, u64& sna
 }
 
 }  // namespace detail
+
+// ---------------------------------------------------------------------------------
+// Draw-time snapshots without a tape (interp.h, docs/RENDERING.md "Vertex snapshots").
+//
+// At 30 fps the guest writes straight into Aurora's FIFO and Aurora's FIFO thread reads the
+// guest arrays a draw indexes when it processes the draw. The console's GPU reads them
+// while the CPU waits nowhere either, but games time their buffer reuse against the real
+// GPU; a FIFO thread that lags differently (a pipeline compile, a big upload, the OS
+// scheduler) can see a buffer the CPU already rewrote for a later draw (Dolphin's dual-core
+// mode has the same race in this game: Luigi's mouth, Dolphin issue 12903). Here every
+// draw's indexed ranges are copied when the draw is issued and Aurora is pointed at the
+// copies, so the processing time no longer matters. Copies are shared per guest address
+// until GXInvalidateVtxCache (as for tapes) and live for three frames (lockstep: the host
+// frame that processed them has finished by then).
+// ---------------------------------------------------------------------------------
+}  // namespace recomp::interp
+
+namespace aurora::gx::fifo {
+uint64_t stream_position() noexcept;
+uint64_t processed_position() noexcept;
+uint64_t published_position() noexcept;
+uint32_t get_buffer_size();
+const uint8_t* get_buffer_data();
+void patch_u32(uint32_t offset, uint32_t val);
+bool in_display_list();
+}  // namespace aurora::gx::fifo
+
+#include "port/settings.h"
+
+#include <chrono>
+#include <deque>
+#include <memory>
+
+namespace recomp::interp {
+namespace {
+namespace fifo = aurora::gx::fifo;
+
+int envFlag(const char* name) {
+    const char* e = std::getenv(name);
+    return e && *e ? (*e == '0' ? 0 : 1) : -1;
+}
+const int sSnapEnv = envFlag("LM_VTX_SNAP");  // overrides the F1 setting for testing
+const bool sRaceOn = envFlag("LM_VTX_RACE") == 1;
+const bool sSnapLog = sRaceOn || envFlag("LM_VTX_SNAP_LOG") == 1;
+bool sSnapEnabled = sSnapEnv >= 0 ? sSnapEnv != 0 : true;
+
+// Bump arena per frame generation; chunks are kept and reused.
+struct Gen {
+    std::vector<std::unique_ptr<u8[]>> chunks;  // kChunk bytes each
+    std::vector<std::unique_ptr<u8[]>> big;     // larger copies, freed when the generation is reused
+    size_t chunk = 0;
+    u32 used = 0;
+};
+constexpr u32 kChunk = 1u << 20;
+constexpr int kGens = 3;
+Gen sGens[kGens];
+int sGen = 0;
+
+u8* arenaAlloc(u32 n) {
+    Gen& g = sGens[sGen];
+    n = (n + 31) & ~31u;
+    if (n > kChunk / 4) {
+        g.big.push_back(std::make_unique<u8[]>(n));
+        return g.big.back().get();
+    }
+    if (g.chunk >= g.chunks.size() || g.used + n > kChunk) {
+        if (g.chunk < g.chunks.size()) g.chunk++;
+        if (g.chunk >= g.chunks.size()) g.chunks.push_back(std::make_unique<u8[]>(kChunk));
+        g.used = 0;
+    }
+    u8* p = g.chunks[g.chunk].get() + g.used;
+    g.used += n;
+    return p;
+}
+
+// Stats (LM_VTX_SNAP_LOG=1 / LM_VTX_RACE=1), per log period.
+u64 sStatBytes = 0, sStatNs = 0;
+u32 sStatDraws = 0, sStatLiveDraws = 0, sStatLoads = 0, sStatFrames = 0;
+u64 sRaceHits = 0, sRaceTotal = 0;
+u32 sFrameNo = 0;
+
+// A copy of what `slot` reads up to `need` bytes, as guest memory is now; nullptr if the
+// array is not in main memory.
+const u8* snapCopy(int slot, u32 need) {
+    const Binding& b = sBind[slot];
+    if (!b.valid || !inMem1(b.guest)) return nullptr;
+    const u32 phys = b.guest & 0x01FFFFFF;
+    if (phys >= kMem1Size) return nullptr;
+    need = std::min(need, kMem1Size - phys);
+    SnapCopy& c = sSnapCopyOf[b.guest];
+    if (c.ptr && need <= c.len) return c.ptr;
+    // A new block (never grown in place: earlier draws may still be read from the old one).
+    // Capacity is the power of two Aurora rounds a size-0 array's upload to, so its upload
+    // stays inside the block.
+    u32 cap = 256;
+    while (cap < need) cap *= 2;
+    u8* p = arenaAlloc(cap);
+    std::memcpy(p, hostp(b.guest), need);
+    sStatBytes += need;
+    c = {p, need};
+    return p;
+}
+
+void bindCopy(int slot, const u8* p) {
+    if (sSnapBound[slot] == p) return;
+    GXSetArray(GXAttr(GX_VA_POS + slot), p, 0, u8(sBind[slot].stride), false);
+    sSnapBound[slot] = p;
+    sStatLoads++;
+}
+
+// Points every slot that has a copy bound back at the live guest array (before a draw this
+// code could not parse, so it never reads past a copy).
+void unbindAll() {
+    for (int s = 0; s < kArrays; s++) {
+        if (!sSnapBound[s]) continue;
+        GXSetArray(GXAttr(GX_VA_POS + s), sBind[s].valid ? hostp(sBind[s].guest) : nullptr, 0, u8(sBind[s].stride),
+                   false);
+        sSnapBound[s] = nullptr;
+    }
+}
+
+// Race detector: array ranges that draws read live, until Aurora has processed the draw.
+struct Pending {
+    u32 lo, hi;
+    u64 pos;
+};
+std::deque<Pending> sRacePend;
+std::vector<std::pair<u32, u32>> sDrawLive;  // this draw's live ranges (phys)
+u32 sPendLo = ~0u, sPendHi = 0;
+
+// Bytes [0, n) of the array in `slot` a need covers.
+u32 needBytes(int slot, const Need& n) { return n.end * sBind[slot].stride + n.extra; }
+
+void noteLive(int slot, const Need& n) {
+    const Binding& b = sBind[slot];
+    if (!b.valid || !inMem1(b.guest)) return;
+    const u32 base = b.guest & 0x01FFFFFF;
+    sDrawLive.push_back({base + n.lo * b.stride, base + needBytes(slot, n)});
+}
+
+void beginNeeds() {
+    std::memset(sNeed, 0, sizeof(sNeed));
+    sFmtSeen = 0;
+    sDrawLive.clear();
+}
+
+// Parsed display lists: what each one indexes, in elements (independent of the bound arrays).
+// Display lists are mostly static model data; an entry is reused while the list's size, its
+// first and last bytes and the vertex layout of the formats it uses are unchanged.
+struct DlEntry {
+    u64 check = 0;
+    u32 fmtMask = 0;
+    bool unparsed = false;
+    Need need[kArrays];
+};
+struct DlSlot {
+    static constexpr u32 kVariants = 4;
+    DlEntry v[kVariants];
+    u32 count = 0, next = 0;
+};
+std::unordered_map<u64, DlSlot> sDlCache;
+u32 sStatCacheHits = 0;
+
+u64 dlCheck(const u8* data, u32 size, u32 fmtMask) {
+    u64 h = 0xCBF29CE484222325ull ^ size;
+    auto mixByte = [&](u8 b) { h = (h ^ b) * 0x100000001B3ull; };
+    for (u32 i = 0; i < size && i < 64; i++) mixByte(data[i]);
+    for (u32 i = size > 64 ? std::max(64u, size - 64) : size; i < size; i++) mixByte(data[i]);
+    for (int a = GX_VA_PNMTXIDX; a <= GX_VA_TEX7; a++) mixByte(gx::vtxDesc(a));
+    for (int f = 0; f < 8; f++) {
+        if (!(fmtMask >> f & 1)) continue;
+        for (int a = GX_VA_PNMTXIDX; a <= GX_VA_TEX7; a++) mixByte(u8(gx::vtxAttrSize(f, a) + 1));
+    }
+    return h;
+}
+
+// Immediate-mode draw in progress (snapBegin..snapEnd).
+struct {
+    bool active = false;
+    int fmt = 0;
+    u32 count = 0, size = 0;
+    std::vector<u8> bytes;
+    u32 at[kArrays];      // FIFO buffer offset of the placeholder array load, ~0u: none
+    u64 streamAt = 0;     // stream position at snapBegin (placeholders must still be unpublished)
+} sImmS;
+
+void patchPointer(u32 at, const void* from, const void* to) {
+    const u8* buf = fifo::get_buffer_data();
+    const u32 end = fifo::get_buffer_size();
+    const u64 want = u64(reinterpret_cast<uintptr_t>(from));
+    for (u32 i = at; i + 8 <= end && i < at + 16; i++) {
+        u64 v = 0;
+        for (int k = 0; k < 8; k++) v = v << 8 | buf[i + k];
+        if (v != want) continue;
+        const u64 ptr = u64(reinterpret_cast<uintptr_t>(to));
+        fifo::patch_u32(i, u32(ptr >> 32));
+        fifo::patch_u32(i + 4, u32(ptr));
+        return;
+    }
+}
+
+}  // namespace
+
+bool snapActive() { return sSnapEnabled && !capturing() && !fifo::in_display_list(); }
+bool raceDetectorOn() { return sRaceOn; }
+
+void snapDisplayList(const u8* data, u32 size) {
+    const bool snap = snapActive();
+    if (!snap && !sRaceOn) return;
+    if (capturing() || fifo::in_display_list()) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    beginNeeds();
+    const u64 key = u64(reinterpret_cast<uintptr_t>(data)) ^ u64(size) << 48;
+    DlEntry* e = nullptr;
+    DlSlot* slot = nullptr;
+    if (auto it = sDlCache.find(key); it != sDlCache.end()) {
+        slot = &it->second;
+        // The same list is drawn with several vertex layouts (e.g. shadow and main pass).
+        u32 lastMask = ~0u;
+        u64 check = 0;
+        for (u32 i = 0; i < slot->count && !e; i++) {
+            if (slot->v[i].fmtMask != lastMask) check = dlCheck(data, size, lastMask = slot->v[i].fmtMask);
+            if (slot->v[i].check == check) e = &slot->v[i];
+        }
+    }
+    if (e) {
+        sStatCacheHits++;
+    } else {
+        const u32 unparsed = sUnparsed;
+        sSnapParse = true;
+        parse(data, size, false);
+        sSnapParse = false;
+        if (!slot) {
+            if (sDlCache.size() > 50000) sDlCache.clear();
+            slot = &sDlCache[key];
+        }
+        e = &slot->v[slot->count < DlSlot::kVariants ? slot->count++ : slot->next++ % DlSlot::kVariants];
+        e->unparsed = sUnparsed != unparsed;
+        sUnparsed = unparsed;
+        e->fmtMask = sFmtSeen;
+        std::memcpy(e->need, sNeed, sizeof(sNeed));
+        e->check = dlCheck(data, size, e->fmtMask);
+    }
+    if (e->unparsed) {
+        // Unknown contents (e.g. a list recorded through Aurora): it reads the live arrays.
+        if (snap) unbindAll();
+        for (int s = 0; s < kArrays; s++)
+            if (sBind[s].valid) noteLive(s, Need{0, 0x10000 / std::max(sBind[s].stride, 1u), 0});
+        sStatLiveDraws++;
+    } else {
+        bool live = false;
+        for (int s = 0; s < kArrays; s++) {
+            const Need& n = e->need[s];
+            if (!n.end) continue;
+            const u8* p = snap ? snapCopy(s, needBytes(s, n)) : nullptr;
+            if (p) {
+                bindCopy(s, p);
+            } else {
+                if (sSnapBound[s]) {  // not copyable: back to live
+                    GXSetArray(GXAttr(GX_VA_POS + s), hostp(sBind[s].guest), 0, u8(sBind[s].stride), false);
+                    sSnapBound[s] = nullptr;
+                }
+                noteLive(s, n);
+                live = true;
+            }
+        }
+        if (live) sStatLiveDraws++;
+    }
+    sStatDraws++;
+    sStatNs += u64(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
+}
+
+void snapBegin(u32 fmt, u32 nVerts) {
+    sImmS.active = false;
+    const bool snap = snapActive();
+    if (!snap && !sRaceOn) return;
+    if (capturing() || fifo::in_display_list()) return;
+    fmt &= 7;
+    const u32 vs = vertexSize(int(fmt));
+    bool indexed = false;
+    for (int a = GX_VA_POS; a <= GX_VA_TEX7; a++) {
+        const u8 t = gx::vtxDesc(a);
+        sImmS.at[a - GX_VA_POS] = ~0u;
+        if (t != GX_INDEX8 && t != GX_INDEX16) continue;
+        indexed = true;
+        const int s = a - GX_VA_POS;
+        const int slot = a == GX_VA_NBT ? GX_VA_NRM - GX_VA_POS : s;
+        if (!snap || slot != s) continue;
+        // Placeholder load of the live array, re-pointed at the copy once the indices are known.
+        if (!sBind[slot].valid || !inMem1(sBind[slot].guest) || vs == 0) {
+            if (sSnapBound[slot]) {
+                GXSetArray(GXAttr(a), hostp(sBind[slot].guest), 0, u8(sBind[slot].stride), false);
+                sSnapBound[slot] = nullptr;
+            }
+            continue;
+        }
+        sImmS.at[slot] = fifo::get_buffer_size();
+        GXSetArray(GXAttr(a), hostp(sBind[slot].guest), 0, u8(sBind[slot].stride), false);
+        sSnapBound[slot] = nullptr;
+    }
+    if (!indexed) return;
+    sImmS.active = vs != 0 && nVerts != 0;
+    sImmS.fmt = int(fmt);
+    sImmS.count = nVerts;
+    sImmS.size = vs;
+    sImmS.bytes.clear();
+    sImmS.streamAt = fifo::stream_position();
+}
+
+void snapBytes(u32 v, int size) {
+    if (!sImmS.active) return;
+    for (int b = size - 1; b >= 0; b--) sImmS.bytes.push_back(u8(v >> (8 * b)));
+}
+
+void snapEnd() {
+    if (!sImmS.active) return;
+    sImmS.active = false;
+    const auto t0 = std::chrono::steady_clock::now();
+    beginNeeds();
+    if (sImmS.bytes.size() < size_t(sImmS.count) * sImmS.size) return;
+    sSnapParse = true;
+    scanVertices(sImmS.fmt, sImmS.bytes.data(), sImmS.count, sImmS.size);
+    sSnapParse = false;
+    // Placeholders are patchable only while nothing after them was published.
+    const u64 base = fifo::stream_position() - fifo::get_buffer_size();
+    bool live = false;
+    for (int s = 0; s < kArrays; s++) {
+        if (!sNeed[s].end) continue;
+        const u32 at = sImmS.at[s];
+        const u8* p = nullptr;
+        if (at != ~0u && base + at >= fifo::published_position()) p = snapCopy(s, needBytes(s, sNeed[s]));
+        if (p) {
+            patchPointer(at, hostp(sBind[s].guest), p);
+            sSnapBound[s] = p;
+        } else {
+            noteLive(s, sNeed[s]);
+            live = true;
+        }
+    }
+    if (live) sStatLiveDraws++;
+    sStatDraws++;
+    sStatNs += u64(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
+}
+
+void snapAfterDraw() {
+    if (!sRaceOn || sDrawLive.empty()) return;
+    const u64 pos = fifo::stream_position();
+    for (const auto& [lo, hi] : sDrawLive) {
+        sRacePend.push_back({lo, hi, pos});
+        sPendLo = std::min(sPendLo, lo);
+        sPendHi = std::max(sPendHi, hi);
+    }
+    sDrawLive.clear();
+}
+
+bool raceStore(u32 addr, int size) {
+    if (sRacePend.empty()) return false;
+    const u32 lo = addr & 0x01FFFFFF, hi = lo + u32(size);
+    if (hi <= sPendLo || lo >= sPendHi) return false;
+    const u64 done = fifo::processed_position();
+    while (!sRacePend.empty() && sRacePend.front().pos <= done) sRacePend.pop_front();
+    if (sRacePend.empty()) {
+        sPendLo = ~0u;
+        sPendHi = 0;
+        return false;
+    }
+    for (const Pending& p : sRacePend) {
+        if (hi > p.lo && lo < p.hi) {
+            sRaceHits++;
+            if (sRaceHits > 40) return false;  // log the first ones per period
+            log("[vtxrace] frame %u: store to %08X, read by a draw %llu bytes ahead of Aurora (range %08X-%08X)",
+                sFrameNo, addr, (unsigned long long)(p.pos - done), p.lo | 0x80000000u, p.hi | 0x80000000u);
+            return true;
+        }
+    }
+    return false;
+}
+
+void snapEndFrame() {
+    sImmS.active = false;
+    if (sSnapEnv < 0) sSnapEnabled = port::settings().rendering.vtxSnapshot;
+    // Leave Aurora on the live arrays between frames: nothing outside this frame reads a copy.
+    if (capturing()) {
+        std::fill(std::begin(sSnapBound), std::end(sSnapBound), nullptr);
+    } else if (!fifo::in_display_list()) {
+        unbindAll();
+    }
+    sSnapCopyOf.clear();
+    sGen = (sGen + 1) % kGens;
+    Gen& g = sGens[sGen];
+    g.big.clear();
+    g.chunk = 0;
+    g.used = 0;
+    sStatFrames++;
+    sFrameNo++;
+    if (sSnapLog && sStatFrames >= 300) {
+        sRaceTotal += sRaceHits;
+        log("[vtxsnap] %s: %u frames, %u draws (%u parsed, %u read live), %u loads, %.1f KiB/frame copied, %.3f ms/frame; "
+            "stores into unprocessed live arrays: %llu (total %llu)",
+            sSnapEnabled ? "on" : "off", sStatFrames, sStatDraws, sStatDraws - sStatCacheHits, sStatLiveDraws, sStatLoads,
+            double(sStatBytes) / 1024.0 / sStatFrames, double(sStatNs) / 1e6 / sStatFrames,
+            (unsigned long long)sRaceHits, (unsigned long long)sRaceTotal);
+        sStatBytes = sStatNs = 0;
+        sStatDraws = sStatLiveDraws = sStatLoads = sStatFrames = sStatCacheHits = 0;
+        sRaceHits = 0;
+    }
+}
+
 }  // namespace recomp::interp

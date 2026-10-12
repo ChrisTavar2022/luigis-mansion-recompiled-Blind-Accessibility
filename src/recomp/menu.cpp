@@ -202,6 +202,14 @@ void renderingTab() {
                           "read as an IA8 texture) get the console's exact bytes, and memory the game\n"
                           "overwrites stops showing a stale copy. Aimed at the rare Luigi mouth/hose flicker.\n"
                           "Off: copies stay GPU-only textures (saves ~0.6 ms CPU per frame).");
+    sDirty |= ImGui::Checkbox("Snapshot vertex data at draw time", &r.vtxSnapshot);
+    ImGui::SetItemTooltip(
+        "Snapshot vertex data at draw time (fixes rare mouth/hose flicker).\n"
+        "The vertex data each draw uses is copied when the game issues the draw, as the\n"
+        "GameCube's GPU reads it, instead of when the renderer thread gets to it. Without it,\n"
+        "a draw can pick up data the game already rewrote for a later draw: Luigi's mouth or\n"
+        "the Poltergust hose flicker now and then. Off: saves the copies (about 0.2-0.3 ms CPU per frame).\n"
+        "Above 30 fps (interpolation) vertex data is always snapshotted.");
     ImGui::Separator();
     ImGui::TextDisabled("Shadows (flashlight and lightning shadow map)");
     sDirty |= ImGui::Checkbox("Shadow map at render resolution", &r.shadowRenderResolution);
