@@ -351,6 +351,13 @@ void loadSettings() {
     sanitize();
 }
 
+void resetSettingsToDefaults() {
+    sSettings = Settings{};
+    for (auto& ext : extensions()) ext.reset();
+    sanitize();
+    saveSettings();
+}
+
 void saveSettings() {
     // Written to a temporary file and renamed over settings.ini, so a crash or power loss while
     // saving never leaves a truncated file (which would reset every setting on the next launch).

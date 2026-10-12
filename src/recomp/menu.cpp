@@ -1003,6 +1003,22 @@ void draw() {
         ImGui::PopItemWidth();
         // Quit (with confirmation): ends the host loop the same way closing the window does.
         ImGui::Separator();
+        if (ImGui::Button("Restore all defaults")) ImGui::OpenPopup("Restore defaults?");
+        ImGui::SetItemTooltip("Every setting in this menu (including controller bindings) goes back to its\n"
+                              "first-install default. Save files are not touched.");
+        if (ImGui::BeginPopupModal("Restore defaults?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Restore every setting to its default? This cannot be undone.");
+            ImGui::TextDisabled("A few options (marked in their tooltips) apply on the next launch.");
+            if (ImGui::Button("Restore defaults")) {
+                port::resetSettingsToDefaults();
+                sDirty = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        ImGui::SameLine();
         if (ImGui::Button("Quit game")) ImGui::OpenPopup("Quit?");
         if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::Text("Quit Luigi's Mansion? Unsaved progress will be lost.");

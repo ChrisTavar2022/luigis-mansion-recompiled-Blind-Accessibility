@@ -291,6 +291,9 @@ struct Settings {
 Settings& settings();
 void loadSettings();
 void saveSettings();
+// Every setting (the table and all extensions, e.g. controller bindings) back to its first-install
+// default, then saved.
+void resetSettingsToDefaults();
 std::string settingsPath();
 // Sets one ini key of the table (as if read from settings.ini, then sanitized); false when the
 // key is unknown. Not saved. Used by the LM_SETTINGS_AT test aid (menu.cpp).
