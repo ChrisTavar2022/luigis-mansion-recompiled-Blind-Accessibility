@@ -155,7 +155,50 @@ struct Source {
     const Kind* kind;
     u32 id;
     int count;
+    float level;  // 0 out .. 1 burning (per flame; a merged group: sum of its flames)
 };
+
+// Flame state per emitter (docs/RENDERING.md "World lights follow the game's flames"). The game's
+// candles are objects (pool from fn_80164608, 0x50 bytes; emitter +0xC4 points back, object +0x30
+// is the emitter) with a state byte at +0x10: 1 lit, 2 flickering (Luigi close), 3 blown by the
+// vacuum, 4 out (relit by fire: fn_80164140), 5 out until the room's light comes on, 0 freed. Going
+// out the game clears the emitter's emitting bit (+0xBE 0x0E -> 0x0C; removed objects 0x1C) and
+// relighting sets it again; the flame's particles then die out or grow back. The light follows that:
+// on while the flame burns, fading with the live particle count (emitter +0x74 + +0xB0, the count the
+// game's own candle light fn_801799AC is kept for) when it goes out or is relit; fireplaces, torches
+// and fire effects (no candle object) follow their emitter and particles the same way.
+struct Flame {
+    float peak = 0.0f, level = 0.0f;
+    u32 seen = 0;
+    bool init = false;
+};
+std::unordered_map<u32, Flame> sFlame;
+u32 sFlameTick = 0;
+std::unordered_map<u32, float> sLampLevel;  // lamp id -> room light fade
+
+float flameLevel(u32 e, u32 flags) {
+    Flame& f = sFlame[e];
+    f.seen = sFlameTick;
+    const float particles = float(std::max(s32(rd32(e + 0x74)) + s32(rd32(e + 0xB0)), 0));
+    bool lit = (flags & 2) != 0;
+    const u32 owner = rd32(e + 0xC4);
+    if (guestPtr(owner) && rd32(owner + 0x30) == e) {
+        const u8 state = rd8(owner + 0x10);
+        lit = lit && state >= 1 && state <= 3;
+    }
+    if (lit) f.peak = std::max(f.peak * 0.999f, particles);
+    const float ratio = f.peak > 0.5f ? std::clamp(particles / f.peak, 0.0f, 1.0f) : (lit ? 1.0f : 0.0f);
+    const float shown = std::clamp(ratio * 2.0f, 0.0f, 1.0f);  // full from half the usual particle count
+    float target = lit ? shown : std::min(shown, f.level);  // going out: only down, with the dying particles
+    if (!lit && particles < 1.0f) target = 0.0f;
+    if (!f.init) {
+        f.init = true;
+        f.level = target;  // first sight (map load, room comes into view): no fade-in
+    }
+    f.level += (target - f.level) * (target > f.level ? 0.2f : 0.3f);
+    if (f.level < 0.005f) f.level = 0.0f;
+    return f.level;
+}
 
 void toView(const float m[12], const float p[3], float out[3]) {
     for (int r = 0; r < 3; r++) out[r] = m[r * 4] * p[0] + m[r * 4 + 1] * p[1] + m[r * 4 + 2] * p[2] + m[r * 4 + 3];
@@ -343,10 +386,33 @@ void onMainView(Ctx&) {
     const auto& w = port::settings().worldLights;
     const float t = float(sFrame) / 30.0f;
 
-    // Live, visible, emitting emitters of a known kind.
+    // Live, visible emitters of a known kind.
     std::vector<Source> src;
     const u32 group = rd32(kPtclMgr + kMgrGroup);
     const u32 sentinel = guestPtr(group) ? rd32(group + kGroupList) : 0;
+    // Test aid LM_TEST_BLOWOUT=<frame>[,<relight frame>] (main-view frames of the map): every visible
+    // lit candle goes out at <frame> and is relit at <relight frame>, with exactly the writes the
+    // game makes (fn_80163D58 vacuum blow-out: emitter +0xBE = 0x0C, state 4; fn_80164140 fire
+    // relight: 0x0E, state 1).
+    static const std::pair<int, int> sBlow = [] {
+        std::pair<int, int> b{-1, -1};
+        if (const char* v = std::getenv("LM_TEST_BLOWOUT")) std::sscanf(v, "%d,%d", &b.first, &b.second);
+        return b;
+    }();
+    if (int(sFrame) == sBlow.first || int(sFrame) == sBlow.second) {
+        const bool out = int(sFrame) == sBlow.first;
+        for (u32 e = guestPtr(sentinel) ? rd32(sentinel + kEmNext) : 0; guestPtr(e) && e != sentinel; e = rd32(e + kEmNext)) {
+            const u32 owner = rd32(e + 0xC4);
+            if (!guestPtr(owner) || rd32(owner + 0x30) != e || (rd16(e + kEmFlags) & 0x40)) continue;
+            if (out && rd8(owner + 0x10) == 1) {
+                wr16(e + kEmFlags, 0x0C), wr8(owner + 0x10, 4);
+                log("[worldlight] f%u test: candle %08X blown out", sFrame, e);
+            } else if (!out && rd8(owner + 0x10) == 4) {
+                wr16(e + kEmFlags, 0x0E), wr8(owner + 0x10, 1);
+                log("[worldlight] f%u test: candle %08X relit", sFrame, e);
+            }
+        }
+    }
     int n = 0;
     for (u32 e = guestPtr(sentinel) ? rd32(sentinel + kEmNext) : 0; guestPtr(e) && e != sentinel && n < 512;
          e = rd32(e + kEmNext), n++) {
@@ -358,37 +424,63 @@ void onMainView(Ctx&) {
             const auto r = sRes.find(it->second);
             if (r != sRes.end()) res = &r->second;
         }
-        if (logNow)
-            log("[worldlight] f%u emitter %08X %-16s flags %04X pos %.0f,%.0f,%.0f", sFrame, e, res ? res->name.c_str() : "?",
-                flags, p[0], p[1], p[2]);
+        if (logNow) {
+            const u32 owner = rd32(e + 0xC4);
+            log("[worldlight] f%u emitter %08X %-16s flags %04X pos %.0f,%.0f,%.0f particles %d owner %08X state %d", sFrame, e,
+                res ? res->name.c_str() : "?", flags, p[0], p[1], p[2], s32(rd32(e + 0x74)) + s32(rd32(e + 0xB0)), owner,
+                guestPtr(owner) ? int(rd8(owner + 0x10)) : -1);
+        }
         if (!res || !res->kind) continue;
-        if ((flags & 0x4A) != 0x0A) continue;            // drawn and emitting, room visible
+        if ((flags & 0x48) != 0x08) continue;            // drawn, room visible
         if (p[0] == 0.0f && p[1] == 0.0f && p[2] == 0.0f) continue;  // pooled, never placed
         const Kind& k = *res->kind;
         if (!w.on[k.cat] && !sForce) continue;
-        src.push_back({{p[0], p[1] + k.height, p[2]}, &k, e, 1});
+        const float level = flameLevel(e, flags);
+        src.push_back({{p[0], p[1] + k.height, p[2]}, &k, e, 1, level});
+    }
+    sFlameTick++;
+    if ((sFlameTick & 255) == 0)
+        for (auto it = sFlame.begin(); it != sFlame.end();) it = sFlameTick - it->second.seen > 300 ? sFlame.erase(it) : std::next(it);
+    // Research aid (LM_WORLD_LIGHT_LOG >= 3): once, 200 frames into a map, where the candle
+    // emitters are referenced from (holder objects).
+    if (sLog >= 3 && sFrame == 200) {
+        for (u32 e = guestPtr(sentinel) ? rd32(sentinel + kEmNext) : 0; guestPtr(e) && e != sentinel; e = rd32(e + kEmNext)) {
+            if (std::strncmp(emitterName(e), "candle", 6) != 0) continue;
+            for (u32 a = 0x80000000u; a < 0x81800000u; a += 4)
+                if (rd32(a) == e) log("[worldlight] emitter %08X referenced at %08X", e, a);
+        }
     }
     if (!enabled()) return;
 
     // Nearby emitters of one kind become one light (a candelabra, the spray's several emitters).
+    // Unlit flames stay members (level 0): the group's id and shadow slot do not change when one
+    // of its candles goes out; the light dims by the flames still burning and leans toward them.
     if (w.mergeNearby) {
         std::vector<Source> merged;
         std::vector<bool> used(src.size(), false);
         for (size_t i = 0; i < src.size(); i++) {
             if (used[i]) continue;
             Source s = src[i];
-            float sum[3] = {s.pos[0], s.pos[1], s.pos[2]};
             const float m = s.kind->merge;
+            std::vector<size_t> members{i};
             for (size_t j = i + 1; j < src.size() && m > 0.0f; j++) {
                 if (used[j] || src[j].kind != s.kind) continue;
                 const float dx = src[j].pos[0] - s.pos[0], dy = src[j].pos[1] - s.pos[1], dz = src[j].pos[2] - s.pos[2];
                 if (dx * dx + dy * dy + dz * dz > m * m) continue;
                 used[j] = true;
-                for (int k = 0; k < 3; k++) sum[k] += src[j].pos[k];
-                s.count++;
+                members.push_back(j);
                 s.id = std::min(s.id, src[j].id);
             }
-            for (int k = 0; k < 3; k++) s.pos[k] = sum[k] / float(s.count);
+            float sum[3] = {}, wsum = 0.0f, lsum = 0.0f;
+            for (size_t j : members) {
+                const float wt = 0.05f + src[j].level;  // unlit members keep the centre from jumping
+                for (int k = 0; k < 3; k++) sum[k] += src[j].pos[k] * wt;
+                wsum += wt;
+                lsum += src[j].level;
+            }
+            for (int k = 0; k < 3; k++) s.pos[k] = sum[k] / wsum;
+            s.count = int(members.size());
+            s.level = lsum;  // burning flames (sum of levels)
             merged.push_back(s);
         }
         src.swap(merged);
@@ -403,9 +495,11 @@ void onMainView(Ctx&) {
         const Kind& k = *s.kind;
         float rgb[3], mx = 1e-4f;
         for (int i = 0; i < 3; i++) mx = std::max(mx, rgb[i] = srgbToLinear(k.rgb[i]));
-        // Several flames together: brighter and a bit wider, not n times.
+        // Several flames together: brighter and a bit wider, not n times. Only flames that burn
+        // count (level: the game's flame state, fading with the flame's particles).
+        if (s.level < 0.01f) continue;
         const float group = std::pow(float(s.count), 0.6f);
-        float I = k.intensity * group * master * std::clamp(w.intensity[k.cat], 0.0f, 3.0f);
+        float I = k.intensity * std::pow(s.level, 0.6f) * master * std::clamp(w.intensity[k.cat], 0.0f, 3.0f);
         if (w.flicker && k.flicker > 0.0f) I *= flameFlicker(t, s.id >> 4, k.flicker);
         ExtraLight l{};
         toView(view, s.pos, l.pos);
@@ -423,8 +517,8 @@ void onMainView(Ctx&) {
         l.id = 0x57000000u ^ s.id;
         lights.push_back(l);
         if (logNow)
-            log("[worldlight] f%u light %-12s x%d world %.0f,%.0f,%.0f view %.0f,%.0f,%.0f I %.2f r %.0f", sFrame, k.prefix,
-                s.count, s.pos[0], s.pos[1], s.pos[2], l.pos[0], l.pos[1], l.pos[2], l.intensity, l.radius);
+            log("[worldlight] f%u light %-12s x%d lit %.2f world %.0f,%.0f,%.0f view %.0f,%.0f,%.0f I %.2f r %.0f", sFrame, k.prefix,
+                s.count, s.level, s.pos[0], s.pos[1], s.pos[2], l.pos[0], l.pos[1], l.pos[2], l.intensity, l.radius);
     }
 
     // Lamps and chandeliers of lit rooms (the light-on bit a cleared room has), visible rooms
@@ -433,7 +527,14 @@ void onMainView(Ctx&) {
         buildLamps();
         int nl = 0;
         for (const Lamp& lp : sLamps) {
-            if (lp.room < 0 || !roomLit(lp.room) || !roomVisible(lp.room)) continue;
+            if (lp.room < 0 || !roomVisible(lp.room)) continue;
+            // The room's light switching on or off fades the fitting's light (~6 frames).
+            float& on = sLampLevel[lp.id];
+            on += ((roomLit(lp.room) ? 1.0f : 0.0f) - on) * 0.3f;
+            if (on < 0.01f) {
+                on = 0.0f;
+                continue;
+            }
             const auto c = sRoomColor.find(lp.room);
             const u32 rgb8 = c != sRoomColor.end() && c->second ? c->second : 0xFFD8A0u;
             const u32 cc[3] = {rgb8 >> 16, (rgb8 >> 8) & 0xFF, rgb8 & 0xFF};
@@ -445,7 +546,7 @@ void onMainView(Ctx&) {
             l.radius = lp.chandelier ? 950.0f : 520.0f;
             float I = (lp.chandelier ? 1.5f : 1.0f) * master * std::clamp(w.intensity[port::kWlLamps], 0.0f, 3.0f);
             if (w.flicker && lp.chandelier) I *= flameFlicker(t, lp.id, 0.12f);  // candle-lit chandeliers breathe a little
-            l.intensity = I;
+            l.intensity = I * on;
             l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent;
             l.id = lp.id;
             lights.push_back(l);
@@ -586,8 +687,14 @@ HLE(getResource__10JKRArchiveFUlPCc) {
 // LPS emitter creation (manager, .pcr data, texture, ...): returns the emitter.
 HLE(fn_8015FE9C) {
     const u32 res = c.r[4];
+    const u32 lr = c.lr, sp = c.r[1];
     callOriginal(c, "fn_8015FE9C");
-    if (guestPtr(c.r[3])) sEmitterRes[c.r[3]] = res;
+    if (guestPtr(c.r[3])) sEmitterRes[c.r[3]] = res, sFlame.erase(c.r[3]);  // pooled emitters are reused
+    if (sLog >= 3 && guestPtr(c.r[3])) {
+        u32 s = sp, chain[4] = {};
+        for (int i = 0; i < 4 && guestPtr(s); i++) chain[i] = rd32((s = rd32(s)) + 4);
+        log("[worldlight] create emitter %08X %s lr %08X<%08X<%08X<%08X", c.r[3], emitterName(c.r[3]), lr, chain[0], chain[1], chain[2]);
+    }
 }
 
 // Lightning strike (thunder light entry: light fov/near/far, ...).

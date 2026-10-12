@@ -13,6 +13,9 @@ struct DisplayCopy {
 const DisplayCopy& displayCopy();
 // Pushes the F1 > Visuals > Rendering accuracy options to Aurora (host thread, every frame).
 void applyAccuracySettings();
+// Enhanced lighting is on: "EFB color depth" (and "6-bit blending") are off whatever the
+// setting says (their F1 toggles are greyed out; docs/RENDERING.md).
+bool enhancedOverridesEfbDepth();
 
 // Re-evaluate the per-draw state (projection, enhanced-lighting draw class) before the next
 // draw written straight into the FIFO by game code.

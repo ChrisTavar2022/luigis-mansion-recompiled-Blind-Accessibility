@@ -431,12 +431,19 @@ void gx::recheckDrawState() { sRawCheck = true; }
 // (bit 0 integer TEV, bit 1 EFB color depth, bit 2 texture copy filter, bit 3 6-bit blending, bit 4 early-Z alpha
 // depth) and LM_ACCURACY_AB=<seconds>
 // (alternate between the configured options and all off every <seconds>, for A/B screenshots of one run).
+bool gx::enhancedOverridesEfbDepth() { return enh::configuredOn(); }
+
 void gx::applyAccuracySettings() {
     const auto& r = port::settings().rendering;
     u32 flags = (r.integerTev ? GX_AURORA_ACCURACY_INT_TEV : 0) | (r.efbColorDepth ? GX_AURORA_ACCURACY_EFB_DEPTH : 0) |
                 (r.efbColorDepth && r.efbBlend6 ? GX_AURORA_ACCURACY_EFB_BLEND : 0) |
                 (r.earlyZAlphaDepth ? GX_AURORA_ACCURACY_EARLY_Z : 0) |
                 (r.textureCopyFilter ? GX_AURORA_ACCURACY_COPY_FILTER : 0);
+    // Enhanced lighting turns the 6-bit EFB (and with it 6-bit blending and the dither) off: its
+    // smooth per-pixel and colored-light gradients went through the 6-bit framebuffer and the
+    // game's RGB565 scene copy, which banded them into visible steps (docs/RENDERING.md "Accuracy
+    // features with enhanced lighting"; the F1 toggles are greyed out while it is on).
+    if (enhancedOverridesEfbDepth()) flags &= ~(GX_AURORA_ACCURACY_EFB_DEPTH | GX_AURORA_ACCURACY_EFB_BLEND);
     static const char* sMask = std::getenv("LM_ACCURACY");
     if (sMask) flags = u32(std::strtoul(sMask, nullptr, 0));
     static const double sAb = [] {
