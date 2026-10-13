@@ -5,7 +5,9 @@
 #include <aurora/event.h>
 #include <aurora/main.h>
 #include <dolphin/dvd.h>
+#include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_messagebox.h>
+#include <SDL3/SDL_video.h>
 
 #include "port/crash_handler.h"
 #include "port/dol.h"
@@ -15,6 +17,7 @@
 #include "recomp/audio.h"
 #include "recomp/frame.h"
 #include "recomp/menu.h"
+#include "recomp/pacing.h"
 #include "recomp/hle.h"
 #include "recomp/interp.h"
 #include "recomp/module_loader.h"
@@ -191,7 +194,16 @@ int main(int argc, char* argv[]) {
         config.windowWidth = u32(960.0f * opts.aspectRatio + 0.5f);
     }
     precache::configure();
+    // LM_TOPMOST=1 (testing: screen-capture judder runs, tools/interp/screen_run.py): the window
+    // stays on top and a fullscreen window is not minimized when another window takes the focus.
+    const bool topmost = std::getenv("LM_TOPMOST") != nullptr;
+    if (topmost) SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
     aurora_initialize(argc, argv, &config);
+    if (topmost)
+        if (SDL_Window* w = aurora_get_window()) SDL_SetWindowAlwaysOnTop(w, true);
+    // LM_MAXIMIZE=1 (testing): open the window maximized, as players often run it.
+    if (std::getenv("LM_MAXIMIZE"))
+        if (SDL_Window* w = aurora_get_window()) SDL_MaximizeWindow(w);
     precache::init();
     ws::init();
 
@@ -301,6 +313,7 @@ int main(int argc, char* argv[]) {
         }
         frame::setHostPaused(paused);
         if (exiting || paused) continue;
+        pacing::beforeFrame();
         interp::hostMark(0);
         if (!aurora_begin_frame()) continue;
         interp::hostMark(1);
@@ -310,6 +323,7 @@ int main(int argc, char* argv[]) {
         menu::draw();
         precache::frame();
         aurora_end_frame();
+        pacing::afterFrame();
         interp::hostMark(3);
         frame::pace();
         interp::hostMark(4);

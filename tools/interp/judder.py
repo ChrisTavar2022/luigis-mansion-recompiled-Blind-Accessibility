@@ -30,6 +30,7 @@ K = 1001.0 / 60000.0 * 1e3  # ms per NTSC field
 
 def load(path):
     tapes, pres = {}, []
+    done = {}  # Aurora frame -> (submit, present, gpu done) ms (P lines, present timing)
     cur = {}
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -43,6 +44,10 @@ def load(path):
                 cur.update({"r": float(p[1]) / 1e3, "b": int(p[2]), "a": int(p[3]), "alpha": float(p[4])})
                 if len(p) >= 7:
                     cur["d"] = float(p[6])
+                if len(p) >= 9:
+                    cur["frame"] = int(p[8])
+            elif p[0] == "P" and len(p) >= 5:
+                done[int(p[1])] = (float(p[2]) / 1e3, float(p[3]) / 1e3, float(p[4]) / 1e3)
             elif p[0] == "H" and len(p) >= 3:
                 ph, t = int(p[1]), float(p[2]) / 1e3
                 if ph == 1:
@@ -53,7 +58,7 @@ def load(path):
                     cur = {}
                 elif ph in (2, 3):
                     cur[f"t{ph}"] = t
-    return tapes, pres
+    return tapes, pres, done
 
 
 def pct(v, q):
@@ -70,7 +75,7 @@ def main():
     lo, hi = float(opt("--from", 0)), float(opt("--to", 1e18))
     dump = int(opt("--dump", 0))
     frames = tuple(int(x) for x in opt("--frames", "").split(",")) if "--frames" in args else None
-    tapes, pres = load(path)
+    tapes, pres, done = load(path)
     # Nominal game frame period: the median stamp step over the measured tapes (2 fields at 30 fps).
     td = sorted((k, v) for k, v in tapes.items() if not frames or frames[0] <= v[4] <= frames[1])
     ints = [td[i][1][0] - td[i - 1][1][0] for i in range(1, len(td)) if td[i][0] == td[i - 1][0] + 1]
@@ -109,6 +114,18 @@ def main():
           f"max {max(steperr):.2f}")
     print(f"shown-time error ms: mean {st.mean(err):.2f} p95 {pct(err, .95):.2f} p99 {pct(err, .99):.2f} max {max(err):.2f}")
     print(f"stalls {stalls} reversals {back} alpha-1 presents {late}")
+    # Present timing (Aurora patch 0197): with a variable refresh rate display a frame is shown
+    # about when the GPU finishes it, so the motion step of a present should match the time between
+    # GPU completions: display step error = |du x P - d(gpu done)|.
+    gd = [(r[2].get("frame"), r[0], r[1]) for r in rows]
+    gd = [(done[f][2], tt, gg, done[f][0]) for f, tt, gg in gd if f is not None and f in done and done[f][2] > 0]
+    if len(gd) > 10:
+        lat = [x[0] - x[1] for x in gd]
+        dd = [gd[i][0] - gd[i - 1][0] for i in range(1, len(gd))]
+        de = [abs((gd[i][2] - gd[i - 1][2]) - dd[i - 1]) for i in range(1, len(gd)) if dd[i - 1] < 500]
+        print(f"gpu-done interval ms: mean {st.mean(dd):.2f} p50 {pct(dd, .5):.2f} p95 {pct(dd, .95):.2f} p99 {pct(dd, .99):.2f} "
+              f"max {max(dd):.2f}; latency replay->gpu done ms: p5 {pct(lat, .05):.2f} p50 {pct(lat, .5):.2f} p95 {pct(lat, .95):.2f}")
+        print(f"display step error ms (vs gpu done): mean {st.mean(de):.2f} p95 {pct(de, .95):.2f} p99 {pct(de, .99):.2f} max {max(de):.2f}")
     hist = {}
     for v in ints:
         hist[v] = hist.get(v, 0) + 1

@@ -67,6 +67,7 @@ std::vector<Field> fields() {
         num("video", "msaa", v.msaa),
         flag("video", "hud_keep_4x3", v.hudKeep4x3),
         flag("video", "pal60", v.pal60),
+        num("video", "vrr", v.vrr),
         flag("rendering", "integer_tev", r.integerTev),
         flag("rendering", "efb_color_depth", r.efbColorDepth),
         flag("rendering", "efb_blend_6bit", r.efbBlend6),

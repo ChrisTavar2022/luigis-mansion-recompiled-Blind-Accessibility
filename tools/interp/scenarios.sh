@@ -39,7 +39,8 @@ export APPDATA="$(win "$run/appdata")" LM_CARD_DIR="$(win "$run/card")" LM_BACKG
 export LM_INTERP_TEST=$steps LM_INTERP_TRACE=1
 [ "$steps" = 0 ] && unset LM_INTERP_TEST  # steps 0: a real-time run (pacing, alpha, cost)
 menu="300:START*10,450:START*10,600:A*6,750:A,900:A,1050:A,1200:A,1350:A,1500:A,1650:A"
-nursery() { export LM_INPUT_CLOCK=frames LM_START_MAP=2 LM_START_APPEAR=1 LM_SKIP_CUTSCENES=1 LM_SKIP_AUTO=30; }
+# (no cutscene skipper: it is slow and can get stuck; scripted A presses advance the dialogue)
+nursery() { export LM_INPUT_CLOCK=frames LM_START_MAP=2 LM_START_APPEAR=1; unset LM_SKIP_CUTSCENES LM_SKIP_AUTO; }
 case $scen in
 nursery)
     nursery; export LM_TEST_STATE=poltergust LM_LIGHTNING=0,90,1; range=2580,2960; secs=700

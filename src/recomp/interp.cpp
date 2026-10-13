@@ -4,7 +4,9 @@
 #include "recomp/efb_copy.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
+#include "recomp/pacing.h"
 
+#include <aurora/present_timing.h>
 #include <dolphin/gx/GXAurora.h>
 
 #include <algorithm>
@@ -239,6 +241,7 @@ void judderLine(const char* fmt, ...) {
     std::vfprintf(sJudder, fmt, ap);
     va_end(ap);
 }
+u32 sCrossCamera = 0;  // per replay: values whose partner was drawn under another camera (trace)
 u32 sSnapKinds[kKinds];
 bool sLogSnaps = false;  // LM_INTERP_TEST + trace: log what one test replay snapped
 u32 sLoggedSnaps[kKinds];
@@ -672,7 +675,7 @@ void pairTapes(const Tape& a, Tape& b) {
             const auto& A = it->second;
             const bool many = A.size() > 1 || B.size() > 1;
             float common[3] = {0, 0, 0};
-            if (many && A.size() * B.size() <= 250000) {
+            if (many) {
                 // From a sample of at most 64 of them: the median of a few dozen moves is as
                 // good, and big groups (hundreds of draws) stay linear.
                 std::vector<float> moves[3];
@@ -711,7 +714,7 @@ void pairTapes(const Tape& a, Tape& b) {
                 for (size_t k = 0; k < pa.size(); k++) d += distance(a, a.patches[pa[k]], b, b.patches[pb[k]]);
                 return d;
             };
-            if (many && A.size() * B.size() > 1024 && A.size() * B.size() <= 250000) {
+            if (many && A.size() * B.size() > 1024) {  // (also the huge ones: thousands of glyph quads in the menus took seconds all-pairs)
                 // Big groups: only draws within the motion limit can pair, so find them through
                 // the predecessors sorted by x (moved by the common motion) instead of comparing
                 // every draw with every other.
@@ -968,7 +971,25 @@ void pairTapes(const Tape& a, Tape& b) {
                 if (c > cnt) best = v, cnt = c;
             return cnt >= 8 ? &t.views[best] : nullptr;
         };
-        const M34 *va = mainView(a), *vb = mainView(b);
+        // b's main camera and the camera of a its draws were paired with (majority of the paired
+        // position matrices): picking a's most used camera on its own could compare b's camera with
+        // another pass's camera of a (or miss a jump when both tapes' counts are close).
+        const M34* vb = mainView(b);
+        const M34* va = nullptr;
+        if (vb) {
+            const u16 qb = u16(vb - b.views.data());
+            std::unordered_map<u16, u32> votes;
+            for (u32 i = 0; i < b.patches.size(); i++) {
+                const Patch& p = b.patches[i];
+                if (b.partner[i] < 0 || p.kind != Kind::PosMtx || p.role != 0 || p.view != qb) continue;
+                const u16 qa = a.patches[b.partner[i]].view;
+                if (qa < a.views.size()) votes[qa]++;
+            }
+            u32 best = 0;
+            for (const auto& [v, c] : votes)
+                if (c > best) best = c, va = &a.views[v];
+        }
+        if (!va) va = mainView(a);
         if (va && vb && rigidView(va->data()) && rigidView(vb->data())) {
             float ea[3], eb[3], dot = 0;
             for (int c = 0; c < 3; c++) {
@@ -1467,6 +1488,9 @@ const ViewPair* viewPair(const Tape& a, u16 qa, const Tape& b, u16 qb, float alp
             de += (ea[c] - eb[c]) * (ea[c] - eb[c]);
         }
         vp.cut = std::sqrt(de) > 250.0f || dot < 0.866f;
+        if (sLogSnaps)
+            log("[interp]   view pair a%u b%u: eye moved %.0f, turned %.1f deg%s", qa, qb, std::sqrt(de),
+                std::acos(std::clamp(dot, -1.0f, 1.0f)) * 57.2958f, vp.cut ? " CUT" : "");
     }
     vp.ok = rigidView(vp.va.data()) && rigidView(vp.vb.data()) && blendRigid(vp.va.data(), vp.vb.data(), 4, alpha, vp.vt.data()) &&
             invertAffine(vp.va.data(), vp.ia.data()) && invertAffine(vp.vb.data(), vp.ib.data()) &&
@@ -1559,10 +1583,22 @@ bool blendShadowReceiver(const Tape& a, const Patch& q, const f32* ta, const Tap
     (void)ta;
     return true;
 }
+bool reexpress(const ViewPair& vp, bool fromA, const Patch& p, const f32* v, f32* out);
 // view x world values blended as blended view x blended world.
 bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, const Patch& p, const f32* vb, float alpha,
                    f32* out) {
     if (p.view == 0xFFFF || q.view == 0xFFFF) return false;
+    // The partner was drawn under another camera than the one b's camera corresponds to (by
+    // majority): blending across the two cameras put the value somewhere in between (Luigi drawn
+    // small and far off for a game frame when the camera jumped while the scenery was shown as b).
+    // b's value is placed under the blended camera of b's camera pair instead, like the rest of
+    // its scene (or as captured on a cut).
+    if (p.view < sViewToA.size() && sViewToA[p.view] >= 0 && u16(sViewToA[p.view]) != q.view) {
+        const ViewPair* mp = viewPair(a, u16(sViewToA[p.view]), b, p.view, alpha);
+        if (!mp || mp->cut || !reexpress(*mp, false, p, vb, out)) std::copy(vb, vb + p.count, out);
+        sCrossCamera++;
+        return true;
+    }
     const ViewPair* vp = viewPair(a, q.view, b, p.view, alpha);
     if (!vp) return false;
     if (vp->cut) {  // drawn from a camera that jumped: as captured
@@ -1777,7 +1813,7 @@ bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, cons
 // Builds tape b with its values blended from a toward b (alpha 1 = b as captured) into
 // sReplay and submits it. `dump` redirects the LM_FRAME_DUMP copy (LM_INTERP_TEST).
 void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
-    sColorSwitches = sFadeIns = sFadeOuts = sSnapIns = sSnapOuts = 0;
+    sCrossCamera = sColorSwitches = sFadeIns = sFadeOuts = sSnapIns = sSnapOuts = 0;
     sReplay.assign(b.bytes.begin(), b.bytes.end());
     if (a && b.pairedWith != a) a = nullptr;  // not consecutive (a tape was dropped): no pairing
     if (a && b.cut) {
@@ -2243,10 +2279,10 @@ bool testReplay() {
                 }
             }
         log("[interp] %s: snapped pos %u nrm %u tex %u proj %u light %u verts %u; unpaired pos %u nrm %u tex %u proj %u "
-            "light %u verts %u fadein %u fadeout %u snapin %u snapout %u colorswitch %u%s",
+            "light %u verts %u fadein %u fadeout %u snapin %u snapout %u colorswitch %u crosscam %u%s",
             it.name.c_str(), sSnapKinds[0], sSnapKinds[1], sSnapKinds[2], sSnapKinds[3], sSnapKinds[4], sSnapKinds[5],
             unpaired[0], unpaired[1], unpaired[2], unpaired[3], unpaired[4], unpaired[5], sFadeIns, sFadeOuts,
-            sSnapIns, sSnapOuts, sColorSwitches, it.b->cut ? " CUT" : "");
+            sSnapIns, sSnapOuts, sColorSwitches, sCrossCamera, it.b->cut ? " CUT" : "");
     }
     sLogSnaps = false;
     efbcopy::applyWritebacks();
@@ -2404,6 +2440,9 @@ int pace(const std::vector<std::shared_ptr<const Tape>>& q, Clock::time_point no
     return -1;
 }
 
+PresentInfo sLastPresent;
+PresentInfo lastPresent() { return sLastPresent; }
+
 bool replay(bool final) {
     if (sTestSteps && !final) return testReplay();
     std::shared_ptr<const Tape> a, b;
@@ -2430,7 +2469,7 @@ bool replay(bool final) {
             q.assign(sQueue.begin(), sQueue.end());
         }
         if (q.empty()) return false;
-        const int i = pace(q, r0, alpha);
+        const int i = pace(q, pacing::frameTime(), alpha);
         if (i < 0) {
             b = q.back();
         } else {
@@ -2448,10 +2487,13 @@ bool replay(bool final) {
         }
         q.clear();
     }
-    judderLine("R %.1f %llu %llu %.4f %.3f %.2f\n", judderUs(r0), (unsigned long long)b->seq,
+    sLastPresent.present++;
+    sLastPresent.bSeq = b->seq;
+    sLastPresent.alpha = final || !a ? 1.0f : alpha;
+    judderLine("R %.1f %llu %llu %.4f %.3f %.2f %u %llu\n", judderUs(r0), (unsigned long long)b->seq,
                (unsigned long long)(a && !final ? a->seq : 0), alpha,
                a && !final ? double(a->retrace) + alpha * double(b->retrace - a->retrace) : double(b->retrace),
-               sPacer.d * 1000.0);
+               sPacer.d * 1000.0, sLastPresent.present, (unsigned long long)aurora_frame_counter());
     replayPair(final ? nullptr : a.get(), *b, alpha, nullptr);
     {
         // The FIFO thread reads these tapes' copies (arrays, textures) until the frame is drained in
@@ -2514,6 +2556,13 @@ bool replay(bool final) {
 }
 
 bool judderLogOn() { return sJudder != nullptr; }
+void logPresentTiming(u64 frame, int64_t submitNs, int64_t presentNs, int64_t doneNs) {
+    if (!sJudder) return;
+    // P frame submit present gpu-done (us, judder time base; Aurora patch 0197)
+    const double t0 = double(std::chrono::duration_cast<std::chrono::nanoseconds>(sJudderT0.time_since_epoch()).count());
+    const auto us = [t0](int64_t ns) { return ns ? (double(ns) - t0) / 1000.0 : 0.0; };
+    judderLine("P %llu %.1f %.1f %.1f\n", (unsigned long long)frame, us(submitNs), us(presentNs), us(doneNs));
+}
 void hostMark(int phase) {
     if (!sJudder) return;
     judderLine("H %d %.1f\n", phase, judderUs(Clock::now()));
