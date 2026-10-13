@@ -66,6 +66,11 @@ void noteShadowLight(const float lightView[12], const float kProj[12], const flo
 void pushShadowReceivers();
 // The pass being drawn (0 main; e.g. 1 the shadow caster pass): draws of different passes never pair.
 void setPass(u32 pass);
+// Draws noted while a snap scope is open (nests by count) never fade in or out: they appear and
+// vanish exactly at the game frame, as on the console (characters: a damage blink must stay an
+// on/off blink at every frame rate). Draws that toggle repeatedly are snapped anyway.
+void pushSnapScope();
+void popSnapScope();
 // Values noted while an orthographic projection is current are 2D (HUD): not camera-factored,
 // and a jump of more than 96 units (pixels) shows them unblended.
 void setOrthographic(bool ortho);
@@ -118,6 +123,12 @@ void resumeAfterDisplayList();
 // no tape yet. `final` replays the newest tape exactly (no blending).
 bool replay(bool final = false);
 void reset();  // drop all tapes (after leaving interpolated mode)
+// LM_INTERP_JUDDER=<file>: real-time pacing log for tools/interp/judder.py (host loop phases,
+// per present the tapes and alpha shown, per tape its stamp and finish time). Host thread:
+// 0 before aurora_begin_frame, 1 after it, 2 after the frame's replay, 3 after aurora_end_frame,
+// 4 after frame::pace.
+void hostMark(int phase);
+bool judderLogOn();
 
 namespace detail {  // interp.cpp <-> interp_vtx.cpp
 void vtxBeginTape();

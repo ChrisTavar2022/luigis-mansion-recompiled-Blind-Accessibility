@@ -4,6 +4,7 @@
 #include "recomp/enhanced_lighting.h"
 #include "port/settings.h"
 #include "recomp/hle.h"
+#include "recomp/interp.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
 
@@ -134,6 +135,12 @@ HLE(fn_80060E70) {
         explicit CharScope(bool on) { enh::setCharacterPass(on); }
         ~CharScope() { enh::setCharacterPass(prev); }
     } charScope(pass != 0x30);
+    // Characters (Luigi, ghosts, actors) appear and vanish at the game frame with frame
+    // interpolation, never faded: Luigi's damage blink stays an on/off blink (interp.h).
+    struct SnapScope {
+        SnapScope() { interp::pushSnapScope(); }
+        ~SnapScope() { interp::popSnapScope(); }
+    } snapScope;
     if (!sForce) return  // dev-only experiment (LM_EARLY_GHOSTS=1); the menu option is the beta lighting below
         callOriginal(c, "fn_80060E70");
     if (pass == 0x10) {

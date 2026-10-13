@@ -436,6 +436,12 @@ void gx::applyAccuracySettings() {
     u32 flags = (r.integerTev ? GX_AURORA_ACCURACY_INT_TEV : 0) | (r.efbColorDepth ? GX_AURORA_ACCURACY_EFB_DEPTH : 0) |
                 (r.efbColorDepth && r.efbBlend6 ? GX_AURORA_ACCURACY_EFB_BLEND : 0) |
                 (r.earlyZAlphaDepth ? GX_AURORA_ACCURACY_EARLY_Z : 0) |
+                // Interpolated presentation replays every frame on the host after the fact: the
+                // per-draw early-Z split cost ~20 ms per replay in the foyer (presentation fell to
+                // ~35 fps); merged split pairs keep it at ~4 ms. Original 30 keeps the exact split.
+                (r.earlyZAlphaDepth && (port::settings().video.matchDisplay || port::settings().video.targetFps > port::kMinFps)
+                     ? GX_AURORA_ACCURACY_EARLY_Z_MERGE
+                     : 0) |
                 (r.textureCopyFilter ? GX_AURORA_ACCURACY_COPY_FILTER : 0);
     static const char* sMask = std::getenv("LM_ACCURACY");
     if (sMask) flags = u32(std::strtoul(sMask, nullptr, 0));

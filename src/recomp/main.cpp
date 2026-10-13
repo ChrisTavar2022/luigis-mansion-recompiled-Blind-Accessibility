@@ -16,6 +16,7 @@
 #include "recomp/frame.h"
 #include "recomp/menu.h"
 #include "recomp/hle.h"
+#include "recomp/interp.h"
 #include "recomp/module_loader.h"
 #include "recomp/precache.h"
 #include "recomp/runtime.h"
@@ -299,13 +300,19 @@ int main(int argc, char* argv[]) {
             }
         }
         frame::setHostPaused(paused);
-        if (exiting || paused || !aurora_begin_frame()) continue;
+        if (exiting || paused) continue;
+        interp::hostMark(0);
+        if (!aurora_begin_frame()) continue;
+        interp::hostMark(1);
         ws::beginFrame();
         const bool running = frame::hostFrame();
+        interp::hostMark(2);
         menu::draw();
         precache::frame();
         aurora_end_frame();
+        interp::hostMark(3);
         frame::pace();
+        interp::hostMark(4);
         if (!running || menu::quitRequested()) break;
     }
 
