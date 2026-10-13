@@ -2229,3 +2229,46 @@ open/close, quick turns; the lens-to-light distance in every scene end of gamepl
 Test aids: `AURORA_BEAM_NOCONE=1` (first version's choice) / `=2` (on every other scene end,
 logged), `AURORA_BEAM_LOG=1` (cone lens, spot lights, match distance and angle), `LM_BEAM_LOG=1`
 (port: dump frame of each main view, to pair with the Aurora lines).
+
+## GPU cost (branch `gpu-opt`, Aurora 0210-0213)
+
+Goal: the same picture for less GPU time, in every configuration (vanilla, each enhanced-lighting
+preset, any resolution and frame rate). Every change below is byte-identical in frame dumps
+(verification at the end); none adds an option. Interpolation replays (each presented frame
+re-runs the whole tape, so every pass below runs at the presented rate) were left to the
+`interp-final` branch; see "Not done".
+
+### Measuring: `AURORA_GPU_PROFILE=<seconds>` (0210)
+
+The pass-timestamp profiler (`lib/webgpu/gpu_prof.cpp`) now also works without Tracy:
+`AURORA_GPU_PROFILE=5` logs every 5 s the GPU ms per presented frame of every pass, grouped by
+label (the trailing EFB pass index dropped, `xN` = passes per frame), the busiest single passes,
+the summed top-level busy time and its share of wall time (`busy ... = NN% of wall time`, which
+tracks the GPU utilisation the user sees). Every enhanced-lighting pass, the post chain (`PostFx
+<n>`, the last pass is in `Present blit`) and the 6-bit resolves (`EFB blend6 copy / quantize`)
+are labelled. Notes: timestamps measure the GPU at its current clock, so a lightly loaded GPU
+(vanilla at 1080p) clocks down and fixed passes look slower; compare busy time at similar load, or
+pass by pass within one run. `AURORA_BEAM_FREEZE_TIME=1` now also steps the flashlight flare by a
+fixed 1/30 s per scene end, so lit-room dumps of separate runs agree (the wall-clock flare made
+the beam brightness differ run to run; main's own reruns differed there too).
+
+### What was expensive (RTX 3090 Ti, 3840x2160, 120 fps target, user settings: Ultra-level
+enhanced lighting + AO + ghost/world lights + CRT, Original 30 logic, nursery)
+
+Busy 8.6 ms per presented frame (85-97% GPU in the four rooms, 94-114 fps instead of 120): EFB
+passes 2.5-3.8 (the game's own scene, per-pixel lighting, receivers), realistic flashlight
+scattering 1.4-2.1 (1920x1080 target at Ultra), ambient occlusion mask 0.8-1.7 (+ blur 0.2-0.4;
+two masks per frame in the nursery and lit rooms), light shadow-map atlas + mask 0.6-1.3,
+present/CRT 0.6, small passes (copies, snapshots, bloom) ~1. Vanilla at 4K: 3.5 ms busy, of which
+the 6-bit blend resolves were ~1.3 ms (6-7 per frame, each a full-target copy plus a full-screen
+quantize pass) and the game's EFB copies 0.4.
+
+### Changes
+
+| Patch | What | Exact because |
+|---|---|---|
+| 0211 | **Incremental second mask.** A frame's second light-shadow/AO mask (a later EFB pass with new opaque world draws) adds only the new draws to the depth pre-pass (also with AO alone, which re-rendered every draw), and recomputes AO and the shadow-map mask only within one 8x8 tile of where the pre-pass depth changed (`fs_dirty`: tile flags from the previous and the new depth snapshot, gathers; `mask_needed` discards elsewhere so the frame's first mask stays) | the second mask is read only by the later pass's own draws, at their own depth-matched texels (`enh_mask`), which are exactly where their depth landed in the pre-pass; tile + 3x3 neighbourhood covers the 4x4 receiver tent and the 4x4 AO blur. `AURORA_ENH_MASK_FULL=1` = complete masks (A/B) |
+| 0211 | AO: each sample's depth loaded once (the view position was re-read through `mask_view_pos`), same in the 4x4 blur; shadow-map mask: the face record's matrix loaded once per light, not per PCF/PCSS tap | same values, fewer loads |
+| 0211 | Realistic flashlight: the shadow map's 2x2 footprint per step = two gathers (the key's two bytes) at the footprint's shared corner instead of four loads; the periodic hash's modulo by a power of two is a bit mask | gather at the corner selects exactly texels b..b+1; clamp-to-edge = the clamped loads |
+| 0212 | **6-bit resolves nobody sees are dropped.** A pass whose color nothing reads afterwards (no color copy, snapshot or scene op) is resolved before the next op, or not at all when that op is the next pass on the same target and clears its color completely (the shadow-map caster pass, which the game renders into the EFB and copies only as Z16) | the dropped quantization would be overwritten by the clear before anything reads it. `AURORA_EFB_BLEND6_NODEFER=1` (A/B) |
+| 0213 | Scene end: bloom's bright pass samples the EFB's single-sample color directly instead of a full-resolution copy of it (the copy was also made with bloom off); receivers test an extra light's reach before loading its flags | same texels |
