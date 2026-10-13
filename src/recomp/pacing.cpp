@@ -8,6 +8,7 @@
 #include <aurora/aurora.h>
 #include <aurora/present_timing.h>
 #include <SDL3/SDL_properties.h>
+#include <SDL3/SDL_thread.h>
 #include <SDL3/SDL_timer.h>
 #include <SDL3/SDL_video.h>
 
@@ -294,9 +295,10 @@ void logFrame(const FrameRec& r, const AuroraPresentTiming& t, double cost, doub
 // the first 3 frames of the full scene after it then took 45-60 ms instead of 6 (4K, enhanced
 // lighting Ultra). Filler work keeps the GPU about as busy as in play: `heavy` follows the GPU
 // time of recent unfilled frames (held, halving over 20 s); the filler grows while a frame takes
-// less than 75% of want = min(heavy, 40% of the frame period), eases off above 115% and stops at
+// less than 75% of want = min(heavy, 60% of the frame period), eases off above 115% and stops at
 // once above 160% (the full scene is back). The first full frame after a menu costs at most its
-// own time + 40% of the period.
+// own time + 60% of the period (at 120 fps a 40% cap was not enough to hold the clocks: 20-28 ms
+// frames after a menu).
 struct KeepWarm {
     double heavy = 0;   // s
     u32 units = 0;
@@ -310,7 +312,7 @@ void keepWarm(double gpu, double period) {
     }
     w.heavy *= std::pow(0.5, period / 20.0);
     if (w.units == 0) w.heavy = std::max(w.heavy, std::min(gpu, 0.1));
-    const double want = std::min(w.heavy, 0.4 * period);
+    const double want = std::min(w.heavy, 0.6 * period);
     u32 u = w.units;
     if (w.heavy < 0.003) u = 0;  // light settings: the GPU stays fast enough at any clock
     else if (gpu > period * 0.9 || gpu > want * 1.6) u = 0;  // the full scene is back (or too much)
@@ -375,7 +377,8 @@ double median(const std::deque<double>& d) {
 //    20-27 ms at 12 fps), which kept the estimate above the target: a feedback loop.
 // Now: a frame whose start comes more than 25% late is a miss; a single very late frame (a hitch:
 // a load, a compile) only restarts the schedule. Only sustained misses (a quarter of the last
-// second's frames, at least 4) lower the rate, to the rate actually achieved; after 1 s without
+// second's frames, at least 4) or frames that are a little late most of the time (half of them by
+// more than 8%: uneven intervals) lower the rate, to the rate actually achieved; after 1 s without
 // misses it speeds up again (2% per frame), not below a rate that failed in the last 10 s.
 struct Governor {
     double limit = 0;  // s: the frame period the PC sustains (0: the target holds)
@@ -402,9 +405,15 @@ void governFrame(Clock::time_point start, double expected, double target, bool s
     }
     g.intervals.emplace_back(start, iv);
     if (iv > expected * 1.25) g.misses.push_back(start);
+    // Slightly late most of the time (the frame costs a little more than the period, e.g. 8-11 ms
+    // at a 116 fps cap): intervals that alternate between the period and a bit more are uneven
+    // motion on a VRR display; an even rate a little lower is smoother.
+    size_t late = 0;
+    for (const auto& [t, d] : g.intervals) late += d > expected * 1.08 ? 1 : 0;
+    const bool chronic = g.intervals.size() >= 20 && late * 2 >= g.intervals.size();
     // Sustained: a quarter of the last second's frames (at least 4) late. A few slow frames in a
     // row (a scene switch: new textures, the first frames of a room) are not.
-    if (g.misses.size() >= std::max<size_t>(4, g.intervals.size() / 4)) {
+    if (chronic || g.misses.size() >= std::max<size_t>(4, g.intervals.size() / 4)) {
         // Sustained: the rate actually achieved over the last half second, plus 3%.
         double sum = 0;
         u32 n = 0;
@@ -412,17 +421,19 @@ void governFrame(Clock::time_point start, double expected, double target, bool s
             if (start - t <= std::chrono::milliseconds(500)) sum += d, n++;
         const double achieved = n ? sum / n : iv;
         const double lim = std::max({achieved * 1.03, expected * 1.05, g.limit});
-        log("[pacing] frame rate not sustained (%zu late frames in 1 s, %.1f ms achieved vs %.1f ms): limited to %.1f fps",
-            g.misses.size(), achieved * 1000.0, expected * 1000.0, 1.0 / lim);
+        log("[pacing] frame rate not sustained (%zu of %zu frames late in 1 s, %zu by >25%%; %.1f ms achieved vs %.1f ms): "
+            "limited to %.1f fps",
+            late, g.intervals.size(), g.misses.size(), achieved * 1000.0, expected * 1000.0, 1.0 / lim);
         g.limit = lim;
         g.floor = lim * 0.97;
         g.floorUntil = start + std::chrono::seconds(10);
         g.holdUntil = start + std::chrono::milliseconds(1000);
         g.misses.clear();
+        g.intervals.clear();  // judged afresh at the new period
         g.slowdowns++;
         return;
     }
-    if (g.limit > 0 && start >= g.holdUntil && g.misses.empty()) {
+    if (g.limit > 0 && start >= g.holdUntil && g.misses.empty() && late * 3 < g.intervals.size()) {
         g.limit *= 0.98;
         if (start < g.floorUntil) g.limit = std::max(g.limit, g.floor);
         if (g.limit <= target * 1.005) g.limit = 0;
@@ -475,6 +486,11 @@ bool vrrActive() {
 }
 
 void beforeFrame() {
+    // The host thread waits for each frame's scheduled start (SDL_DelayPrecise); at normal priority
+    // that wait overslept by ~10 ms about once in 5 minutes (the thread not scheduled back in time
+    // among the guest, FIFO, render worker, audio and pipeline threads).
+    static const bool sPriority = SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_HIGH);
+    (void)sPriority;
     pollTimings();
     vblankFollowWindow();
     const auto now = Clock::now();
