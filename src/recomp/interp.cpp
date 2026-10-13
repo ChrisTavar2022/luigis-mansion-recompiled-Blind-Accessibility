@@ -100,6 +100,10 @@ struct Tape {
     std::vector<u8> bytes;
     std::vector<Patch> patches;
     std::vector<u64> bundleIds;  // per draw: what is drawn (display list, vertex layout)
+    // Per draw: a second identity that does not depend on where it is stored (a display list's
+    // content): draws left unpaired by bundleIds are paired by it (a model whose display lists
+    // moved in memory, e.g. when an allocation before them changed: Luigi when dust appears).
+    std::vector<u64> bundleAlt;
     std::vector<std::array<u32, 2>> bundleRange;  // per draw: its tape bytes (~0u: unknown)
     std::vector<u8> bundlePass;                    // per draw: the pass (0 main, 1 shadow casters)
     // Per draw, bits: 1 an EFB copy is bound as a texture (never faded), 2 drawn in a snap scope
@@ -157,6 +161,7 @@ u32 sBase = 0;            // start of the current capture segment in sScratch
 std::vector<Patch> sPatches;
 u32 sUngrouped = 0;  // patches from here on wait for their draw
 std::vector<u64> sBundleIds;
+std::vector<u64> sBundleAlt;
 std::vector<std::array<u32, 2>> sBundleRange;
 std::vector<u8> sBundlePass;
 std::vector<u8> sBundleCopy;
@@ -360,6 +365,7 @@ struct Bundles {
     std::vector<u32> flat;     // patch indices, grouped by draw
     std::vector<Span> patches;  // per draw
     std::vector<u64> key;
+    std::vector<u64> alt;  // the same with bundleAlt
 };
 Bundles bundlesOf(const Tape& t) {
     Bundles out;
@@ -378,14 +384,18 @@ Bundles bundlesOf(const Tape& t) {
         if (t.patches[i].bundle < n && t.patches[i].kind != Kind::Color) out.flat[fill[t.patches[i].bundle]++] = i;
     out.patches.resize(n);
     out.key.resize(n);
+    out.alt.resize(n);
     for (size_t k = 0; k < n; k++) {
         out.patches[k] = {out.flat.data() + start[k], start[k + 1] - start[k]};
-        u64 h = t.bundleIds[k];
+        u64 h = t.bundleIds[k], g = k < t.bundleAlt.size() ? t.bundleAlt[k] : h;
         for (u32 i : out.patches[k]) {
             const Patch& p = t.patches[i];
-            h = mix(h ^ (u64(p.kind) << 48 | u64(p.count) << 32 | u64(p.stride) << 16 | p.posOffset));
+            const u64 sig = u64(p.kind) << 48 | u64(p.count) << 32 | u64(p.stride) << 16 | p.posOffset;
+            h = mix(h ^ sig);
+            g = mix(g ^ sig);
         }
         out.key[k] = h;
+        out.alt[k] = g;
     }
     return out;
 }
@@ -641,6 +651,8 @@ void pairTapes(const Tape& a, Tape& b) {
         const bool velA = a.drawVelOk.size() == wa.size();
         std::vector<s32> drawPartner(bb.key.size(), -1);
         std::vector<u8> drawUsed(ba.key.size(), 0);
+        auto pairGroups = [&](const std::unordered_map<u64, std::vector<u32>>& ga,
+                              const std::unordered_map<u64, std::vector<u32>>& gb) {
         for (const auto& [key, B] : gb) {
             const auto it = ga.find(key);
             if (it == ga.end()) continue;
@@ -775,21 +787,42 @@ void pairTapes(const Tape& a, Tape& b) {
                     }
                 continue;
             }
+            // A few draws of one thing (a model drawn in a couple of passes, a handful of
+            // identical furniture pieces): nearest first without the motion limit, which is for
+            // particle swarms; a model's limbs swing well past it (Luigi's arm starting to walk).
+            const bool swarm = A.size() > 8 || B.size() > 8;
             pairNearest(A, B, drawPartner, drawUsed, [&](u32 i, u32 j) {
-                if (many) {
+                if (many && swarm) {
                     if (wa[i].ok && wb[j].ok) {
+                        // Within the limit of where its own motion or the group's common motion
+                        // carries it: a model that starts or stops moving (Luigi starting to walk:
+                        // own motion 0, now 15+ units per frame) is still itself. With only its own
+                        // motion as the prediction, all of Luigi's draws lost their partners on the
+                        // first walking frame and were swapped as a whole (his flashlight vanished).
                         const float* pb = wb[j].p;
-                        float d2 = 0, r2 = 0;
+                        float d2 = 0, d2c = 0, r2 = 0;
                         for (int c = 0; c < 3; c++) {
-                            const float e = pb[c] - pred[i][c];
-                            d2 += e * e, r2 += pb[c] * pb[c];
+                            const float e = pb[c] - pred[i][c], ec = pb[c] - (wa[i].p[c] + common[c]);
+                            d2 += e * e, d2c += ec * ec, r2 += pb[c] * pb[c];
                         }
+                        d2 = std::min(d2, d2c);
                         const float lim = 12.0f + 0.01f * std::sqrt(r2);
                         if (d2 > lim * lim) return 1e30f;
                     }
                 }
                 return fullDistance(i, j);
             });
+        }
+        };
+        pairGroups(ga, gb);
+        // Second round: what is left, by the storage-independent identity (bundleAlt).
+        {
+            std::unordered_map<u64, std::vector<u32>> ra, rb;
+            for (u32 k = 0; k < ba.key.size(); k++)
+                if (!drawUsed[k] && !ba.patches[k].empty()) ra[ba.alt[k]].push_back(k);
+            for (u32 k = 0; k < bb.key.size(); k++)
+                if (drawPartner[k] < 0 && !bb.patches[k].empty()) rb[bb.alt[k]].push_back(k);
+            if (!ra.empty() && !rb.empty()) pairGroups(ra, rb);
         }
         b.drawVel.assign(wb.size(), {0, 0, 0});
         b.drawVelOk.assign(wb.size(), 0);
@@ -1064,6 +1097,7 @@ void beginTape() {
     sBase = 0;
     sPatches.clear();
     sBundleIds.clear();
+    sBundleAlt.clear();
     sBundleRange.clear();
     sBundlePass.clear();
     sBundleCopy.clear();
@@ -1105,6 +1139,8 @@ void endTape(u32 retraceCount) {
     sPatches = {};
     tape->bundleIds = std::move(sBundleIds);
     sBundleIds = {};
+    tape->bundleAlt = std::move(sBundleAlt);
+    sBundleAlt = {};
     tape->bundleRange = std::move(sBundleRange);
     sBundleRange = {};
     tape->bundlePass = std::move(sBundlePass);
@@ -1277,6 +1313,7 @@ void detail::noteDraw(u64 id) {
     id = mix(id ^ u64(sPass) << 60);  // the same model drawn in another pass is another draw
     const u32 bundle = u32(sBundleIds.size());
     sBundleIds.push_back(id);
+    sBundleAlt.push_back(id);
     sBundleRange.push_back({~0u, ~0u});
     sBundlePass.push_back(u8(sPass));
     // Draws sampling an EFB copy (screen effects redrawing the frame, the GBH screen) never fade.
@@ -1291,6 +1328,11 @@ void detail::noteDraw(u64 id) {
     sUngrouped = u32(sPatches.size());
 }
 
+void detail::noteDrawAlt(u64 alt) {
+    if (!capturing() || sBundleAlt.empty()) return;
+    sBundleAlt.back() = mix(alt ^ u64(sPass) << 60 ^ 0xA17ull << 40);
+}
+
 void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id) {
     if (!capturing() || count == 0 || count > 0xFFFF) return;
     Patch p{at, u16(count), Kind::Verts, mix(u64(Kind::Verts) << 56 ^ id), 0, 0, 0, u16(stride), u16(posOffset)};
@@ -1299,6 +1341,7 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id) 
     // It belongs to the draw just begun (vtxBegin noted it), not to the next one.
     if (sBundleIds.empty()) {
         sBundleIds.push_back(id);
+        sBundleAlt.push_back(id);
         sBundleRange.push_back({~0u, ~0u});
         sBundlePass.push_back(u8(sPass));
         sBundleCopy.push_back(u8((gx::samplesCopy() ? 1 : 0) | (sSnapScope > 0 ? 2 : 0)));
@@ -1791,13 +1834,25 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
         // Which camera of a goes with which of b (for values without partner).
         sViewToA.assign(b.views.size(), -1);
         sViewToB.assign(a->views.size(), -1);
-        for (u32 i = 0; i < b.patches.size(); i++) {
-            const s32 j = b.partner[i];
-            if (j < 0) continue;
-            const u16 vb = b.patches[i].view, va = a->patches[j].view;
-            if (vb < sViewToA.size() && va < sViewToB.size()) {
-                if (sViewToA[vb] < 0) sViewToA[vb] = va;
-                if (sViewToB[va] < 0) sViewToB[va] = vb;
+        {
+            // By majority: a single value paired across two cameras (a pass drawn from another
+            // camera) must not decide where a whole camera's unpaired draws are placed (the first
+            // pair used to: vanished draws re-expressed under the wrong camera, far off).
+            static std::unordered_map<u32, u32> votes;
+            votes.clear();
+            for (u32 i = 0; i < b.patches.size(); i++) {
+                const s32 j = b.partner[i];
+                if (j < 0) continue;
+                const u16 vb = b.patches[i].view, va = a->patches[j].view;
+                if (vb < sViewToA.size() && va < sViewToB.size()) votes[u32(va) << 16 | vb]++;
+            }
+            static std::vector<u32> bestA, bestB;
+            bestA.assign(b.views.size(), 0);
+            bestB.assign(a->views.size(), 0);
+            for (const auto& [k, n] : votes) {
+                const u16 va = u16(k >> 16), vb = u16(k);
+                if (n > bestA[vb]) bestA[vb] = n, sViewToA[vb] = va;
+                if (n > bestB[va]) bestB[va] = n, sViewToB[va] = vb;
             }
         }
         for (u32 i = 0; i < b.patches.size(); i++) {

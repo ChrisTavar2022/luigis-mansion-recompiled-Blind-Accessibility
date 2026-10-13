@@ -141,6 +141,8 @@ void drawStart(u32 start);
 void drawEnd(u32 end);
 // A draw with identity `id`: values noted since the previous draw belong to it.
 void noteDraw(u64 id);
+// The draw just noted: its storage-independent identity (a display list's content hash).
+void noteDrawAlt(u64 alt);
 // Immediate-mode vertices with direct f32 XYZ positions: `count` vertices of `stride`
 // bytes starting at tape offset `at`, position at `posOffset` in each.
 void noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id);

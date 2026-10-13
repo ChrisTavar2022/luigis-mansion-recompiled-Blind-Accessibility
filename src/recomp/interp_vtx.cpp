@@ -360,6 +360,18 @@ void vtxDisplayList(u32 guestAddr, const u8* data, u32 size) {
     finishDirect();
     flushPending();
     detail::noteDraw(detail::mix(u64(guestAddr) << 24 ^ size ^ 0xD15Bull << 48));
+    {
+        // Content identity (FNV-1a over 8-byte words): the same mesh wherever its list is stored.
+        u64 h = 0xCBF29CE484222325ull ^ size;
+        u32 i = 0;
+        for (; i + 8 <= size; i += 8) {
+            u64 w;
+            std::memcpy(&w, data + i, 8);
+            h = (h ^ w) * 0x100000001B3ull;
+        }
+        for (; i < size; i++) h = (h ^ data[i]) * 0x100000001B3ull;
+        detail::noteDrawAlt(h);
+    }
     detail::drawLog("dlist %08X size %u", guestAddr, size);
     const u32 end = mark();
     sParseTapeBase = end != ~0u && end >= size ? end - size : ~0u;
