@@ -55,6 +55,10 @@ uint32_t shadowMapWidth();
 // Colored-light shadows: how many lights may cast them this frame (settings; screen-space at
 // most 4; 0 when off). Providers flag that many of their strongest lights.
 uint32_t shadowLightCap();
+
+// Realistic flashlight (Aurora 0196): a ghost's AI got the "in the flashlight beam" message
+// (EnThought message 2). The first one after a pause makes the beam flare, as the light stuns it.
+void onGhostInBeam(uint32_t actor);
 }  // namespace enh
 
 }  // namespace recomp

@@ -131,6 +131,9 @@ std::vector<Field> fields() {
         flag("enhanced_lighting", "volumetric_beam", l.volumetricBeam),
         num("enhanced_lighting", "volumetric_intensity", l.volumetricIntensity),
         num("enhanced_lighting", "volumetric_quality", l.volumetricQuality),
+        num("enhanced_lighting", "realistic_flashlight", l.realisticFlashlight),
+        num("enhanced_lighting", "beam_density", l.beamDensity),
+        num("enhanced_lighting", "beam_dust", l.beamDust),
         flag("enhanced_lighting", "bloom", l.bloom),
         num("enhanced_lighting", "bloom_intensity", l.bloomIntensity),
         num("enhanced_lighting", "bloom_threshold", l.bloomThreshold),
@@ -282,6 +285,9 @@ void sanitize() {
     clampTo(l.extraShadowMapSize, 0, 3);
     clampTo(l.extraShadowSoftness, 0.0f, 60.0f);
     clampTo(l.volumetricQuality, 0, 2);
+    clampTo(l.realisticFlashlight, 0, 3);
+    clampTo(l.beamDensity, 0.0f, 3.0f);
+    clampTo(l.beamDust, 0.0f, 2.0f);
     clampTo(l.shadowMapSize, 0, 2);
     clampTo(sSettings.ghostLights.maxLights, 1, 16);
     auto& g = sSettings.gameplay;

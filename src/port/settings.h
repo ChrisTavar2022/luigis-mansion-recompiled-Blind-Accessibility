@@ -245,6 +245,12 @@ struct EnhancedLightingSettings {
     bool volumetricBeam = true;
     float volumetricIntensity = 2.0f;  // 0..3
     int volumetricQuality = 1;         // 0 low, 1 medium, 2 high
+    // Realistic flashlight (Aurora 0196; replaces the volumetric beam while on): light scattering
+    // through the air against the flashlight's shadow map (shadow shafts), reflector-shaped
+    // footprint with inverse-square falloff, dust motes, the game's cone mesh hidden.
+    int realisticFlashlight = 2;       // 0 off, 1 medium, 2 high, 3 ultra
+    float beamDensity = 1.0f;          // 0..3: haze in the air
+    float beamDust = 1.0f;             // 0..2: dust motes in the beam
     // Glow around bright light sources (HUD excluded).
     bool bloom = true;
     float bloomIntensity = 0.5f;       // 0..2
