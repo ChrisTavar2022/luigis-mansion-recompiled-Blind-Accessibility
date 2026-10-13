@@ -43,14 +43,15 @@ diff --git a/lib/gfx/efb_blend6.cpp b/lib/gfx/efb_blend6.cpp
  } // namespace
  
  void after_pass(const wgpu::CommandEncoder& cmd, detail::FramePacket& frame, const detail::RenderPass& pass) {
-@@ -258,6 +268,19 @@
+@@ -258,6 +268,20 @@
      g_pending = {color.view.Get(), flags};
      return;
    }
-+  // 0212: nothing in this pass reads its color after it (no color copy, no snapshot): resolve
-+  // before the next op, or not at all when that op clears this color target completely.
++  // 0212: nothing in this pass reads its color after it (no color copy, no snapshot, no post-op):
++  // resolve before the next op, or not at all when that op clears this color target completely.
 +  static const bool sNoDefer = std::getenv("AURORA_EFB_BLEND6_NODEFER") != nullptr; // A/B
-+  if (!sNoDefer && !pass.snapshotColorDst && (!pass.resolveTarget || gx::is_depth_format(pass.resolveFormat))) {
++  if (!sNoDefer && !pass.snapshotColorDst && !pass.colorPostOps &&
++      (!pass.resolveTarget || gx::is_depth_format(pass.resolveFormat))) {
 +    g_deferred = {&pass, flags};
 +    return;
 +  }
@@ -63,7 +64,7 @@ diff --git a/lib/gfx/efb_blend6.cpp b/lib/gfx/efb_blend6.cpp
    const uint32_t samples = std::max(pass.msaaSamples, 1u);
    const auto& scratch = scratch_for(color.size, color.format, samples);
    const Pipeline quantize = pipeline_for({color.format, samples, static_cast<uint8_t>((flags & 2) != 0 ? 2 : 1)});
-@@ -319,6 +342,27 @@
+@@ -319,6 +343,27 @@
      finish_timing(cmd, frame, std::move(timing));
    }
  }
@@ -130,3 +131,27 @@ diff --git a/lib/gfx/frame.cpp b/lib/gfx/frame.cpp
      g_stagingBuffers[stagingSlot].Unmap();
      g_mappingStates[stagingSlot].store(BufferMapState::Unmapped, std::memory_order_release);
      auto encoder = std::move(packet.encoder);
+diff --git a/lib/gfx/frame_packet.hpp b/lib/gfx/frame_packet.hpp
+--- a/lib/gfx/frame_packet.hpp
++++ b/lib/gfx/frame_packet.hpp
+@@ -112,6 +112,9 @@
+   // 0176: blended RGBA6 draws in this pass (bit 0 without dither, bit 1 with): the color target is
+   // quantized after the pass (efb_blend6::resolve)
+   uint8_t efbBlend6 = 0;
++  // 0212: a post-op reads this pass's color target (push_scene_op); EFB-copy RAM ops only read
++  // their copy textures.
++  bool colorPostOps = false;
+   std::vector<tex_palette_conv::ConvRequest> paletteConvs;
+   std::vector<efb_ram::PassOp> ramPreOps;  // before the pass (EFB copy RAM decodes)
+   std::vector<efb_ram::PassOp> ramPostOps; // after the resolve (EFB copy RAM encode/readback)
+diff --git a/lib/gfx/recording.cpp b/lib/gfx/recording.cpp
+--- a/lib/gfx/recording.cpp
++++ b/lib/gfx/recording.cpp
+@@ -1034,6 +1034,7 @@
+   prevPass.ramPostOps.push_back([op = std::move(op), targets](const wgpu::CommandEncoder& cmd, detail::FramePacket&) {
+     op(cmd, targets);
+   });
++  prevPass.colorPostOps = true; // 0212
+   // The op must run even when the pass itself drew nothing.
+   prevPass.discardable = false;
+   enqueue_pass(current_frame_packet(), g_recorder.currentRenderPass);

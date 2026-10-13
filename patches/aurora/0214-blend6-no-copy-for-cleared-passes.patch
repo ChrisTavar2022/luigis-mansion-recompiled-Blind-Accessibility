@@ -1,0 +1,136 @@
+0214: 6-bit blend resolves without the target copy for cleared passes
+
+The single-sample RGBA6 resolve (0176) copies the whole color target into a scratch texture and
+quantizes it back: two full-screen reads and writes per resolved pass (Luigi's Mansion resolves
+6-7 EFB passes per frame; at 3840x2160 the copies alone were ~0.7 ms of GPU time). A pass that
+clears its color completely and will be resolved now renders into the scratch itself, and its
+resolve quantizes the scratch straight into the target: the copy is gone for every cleared pass
+(the main 3D view and the other full-clear passes). Peek-probe passes and multisampled targets are
+unchanged; a resolve deferred by 0212 keeps track of where the pixels are. Byte-identical.
+AURORA_EFB_BLEND6_NOREDIRECT=1: always copy (A/B).
+
+diff --git a/lib/gfx/efb_blend6.cpp b/lib/gfx/efb_blend6.cpp
+--- a/lib/gfx/efb_blend6.cpp
++++ b/lib/gfx/efb_blend6.cpp
+@@ -239,16 +239,42 @@
+ struct Deferred {
+   const detail::RenderPass* pass = nullptr;
+   uint8_t flags = 0;
++  bool inScratch = false; // 0214
+ };
+ Deferred g_deferred;
+ uint64_t g_skipped = 0;
+-void resolve(const wgpu::CommandEncoder& cmd, detail::FramePacket& frame, const detail::RenderPass& pass, uint8_t flags);
++const detail::RenderPass* g_redirected = nullptr; // 0214: the pass being rendered into the scratch
++void resolve(const wgpu::CommandEncoder& cmd, detail::FramePacket& frame, const detail::RenderPass& pass, uint8_t flags,
++             bool inScratch);
++bool is_peek(const detail::RenderPass& pass) {
++  return pass.resolveTarget && !pass.snapshotColorDst && pass.resolveRect.width * pass.resolveRect.height <= 64;
++}
+ } // namespace
++
++wgpu::TextureView redirect_target(const detail::RenderPass& pass) {
++  static const bool sOff = std::getenv("AURORA_EFB_BLEND6_NOREDIRECT") != nullptr; // A/B
++  if (sOff || pass.colorAttachmentCount == 0 || pass.msaaSamples > 1 || !pass.copySourceTexture) {
++    return {};
++  }
++  const auto& color = pass.colorAttachments[SceneColorAttachmentIndex];
++  uint8_t flags = pass.efbBlend6;
++  if (g_pending.flags != 0 && g_pending.view == color.view.Get()) {
++    flags |= g_pending.flags;
++  }
++  const bool clears = color.loadOp == wgpu::LoadOp::Clear || (color.loadOp == wgpu::LoadOp::Undefined && color.clear);
++  if (flags == 0 || !clears || !color.view || pass.copySourceView.Get() != color.view.Get() || is_peek(pass) ||
++      (color.format != wgpu::TextureFormat::RGBA8Unorm && color.format != wgpu::TextureFormat::BGRA8Unorm)) {
++    return {};
++  }
++  g_redirected = &pass;
++  return scratch_for(color.size, color.format, 1).view;
++}
+ 
+ void after_pass(const wgpu::CommandEncoder& cmd, detail::FramePacket& frame, const detail::RenderPass& pass) {
+   if (pass.colorAttachmentCount == 0) {
+     return;
+   }
++  const bool inScratch = std::exchange(g_redirected, nullptr) == &pass; // 0214
+   const auto& color = pass.colorAttachments[SceneColorAttachmentIndex];
+   uint8_t flags = pass.efbBlend6;
+   if (g_pending.flags != 0 && g_pending.view == color.view.Get()) {
+@@ -264,7 +290,7 @@
+   // A pass ended by a copy of a few pixels (GXPeekARGB's 4x4 probe) is not quantized: peek answers
+   // are converted to the EFB format by the caller anyway. The next pass on this target takes its
+   // flags over and quantizes everything when it ends.
+-  if (pass.resolveTarget && !pass.snapshotColorDst && pass.resolveRect.width * pass.resolveRect.height <= 64) {
++  if (is_peek(pass)) { // never redirected (0214)
+     g_pending = {color.view.Get(), flags};
+     return;
+   }
+@@ -273,14 +299,15 @@
+   static const bool sNoDefer = std::getenv("AURORA_EFB_BLEND6_NODEFER") != nullptr; // A/B
+   if (!sNoDefer && !pass.snapshotColorDst && !pass.colorPostOps &&
+       (!pass.resolveTarget || gx::is_depth_format(pass.resolveFormat))) {
+-    g_deferred = {&pass, flags};
+-    return;
+-  }
+-  resolve(cmd, frame, pass, flags);
++    g_deferred = {&pass, flags, inScratch};
++    return;
++  }
++  resolve(cmd, frame, pass, flags, inScratch);
+ }
+ 
+ namespace {
+-void resolve(const wgpu::CommandEncoder& cmd, detail::FramePacket& frame, const detail::RenderPass& pass, uint8_t flags) {
++void resolve(const wgpu::CommandEncoder& cmd, detail::FramePacket& frame, const detail::RenderPass& pass, uint8_t flags,
++             bool inScratch) {
+   const auto& color = pass.colorAttachments[SceneColorAttachmentIndex];
+   const uint32_t samples = std::max(pass.msaaSamples, 1u);
+   const auto& scratch = scratch_for(color.size, color.format, samples);
+@@ -326,7 +353,7 @@
+     const wgpu::TexelCopyTextureInfo src{.texture = pass.copySourceTexture};
+     const wgpu::TexelCopyTextureInfo dst{.texture = scratch.texture};
+     const wgpu::Extent3D size{color.size.width, color.size.height, 1};
+-    {
++    if (!inScratch) { // 0214: a redirected pass rendered into the scratch already
+       const webgpu::gpu_prof::Zone zone{cmd, "EFB blend6 copy"};
+       cmd.CopyTextureToTexture(&src, &dst, &size);
+     }
+@@ -360,7 +387,7 @@
+       return; // every quantized pixel would be cleared before anything reads it
+     }
+   }
+-  resolve(cmd, frame, *deferred.pass, deferred.flags);
++  resolve(cmd, frame, *deferred.pass, deferred.flags, deferred.inScratch);
+ }
+ 
+ void flush(const wgpu::CommandEncoder& cmd, detail::FramePacket& frame) { before_op(cmd, frame, nullptr); }
+diff --git a/lib/gfx/efb_blend6.hpp b/lib/gfx/efb_blend6.hpp
+--- a/lib/gfx/efb_blend6.hpp
++++ b/lib/gfx/efb_blend6.hpp
+@@ -27,6 +27,10 @@
+ // what is left at the end of the frame.
+ void before_op(const wgpu::CommandEncoder& cmd, detail::FramePacket& frame, const detail::RenderPass* next);
+ void flush(const wgpu::CommandEncoder& cmd, detail::FramePacket& frame);
++// 0214: a single-sampled pass that will be resolved and clears its color completely renders into
++// the resolve scratch instead (returned view, else null); its resolve then quantizes the scratch
++// into the target directly, without first copying the target into the scratch.
++wgpu::TextureView redirect_target(const detail::RenderPass& pass);
+ void initialize();
+ void shutdown();
+ 
+diff --git a/lib/gfx/encoding.cpp b/lib/gfx/encoding.cpp
+--- a/lib/gfx/encoding.cpp
++++ b/lib/gfx/encoding.cpp
+@@ -221,6 +221,12 @@
+                 .a = source.clearValue.w(),
+             },
+     };
++  }
++  if (passInfo.colorAttachmentCount > SceneColorAttachmentIndex) {
++    // 0214: a cleared pass whose 6-bit resolve follows renders into the resolve scratch.
++    if (auto scratch = efb_blend6::redirect_target(passInfo)) {
++      attachments[SceneColorAttachmentIndex].view = std::move(scratch);
++    }
+   }
+   wgpu::RenderPassDepthStencilAttachment depthStencilAttachment{};
+   const wgpu::RenderPassDepthStencilAttachment* depthStencilAttachmentPtr = nullptr;
