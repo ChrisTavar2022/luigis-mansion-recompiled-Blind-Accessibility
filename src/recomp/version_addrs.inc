@@ -3,6 +3,8 @@
     {0x8002C364u, 0x8002E014u},  // start of fn_8002C364
     {0x80043930u, 0x80044E24u},  // fn_800433B4+0x57c
     {0x80058290u, 0x8005ACD8u},  // fn_800581E8+0xa8
+    {0x800611C4u, 0x80063FA4u},  // fn_80060E70+0x354
+    {0x800611D4u, 0x80063FB4u},  // fn_80060E70+0x364
     {0x8021DB68u, 0x80222CA0u},  // pointed at by sSceneTable+0x8 (sSceneTable+0x8 (object moved by +0x50c8))
     {0x8021DBD8u, 0x80222D10u},  // pointed at by sSceneTable+0x10 (sSceneTable+0x10 (object moved by +0x50c8))
     {0x802FF218u, 0x80304340u},  // lbl_802FF218: 2 matching reference(s)

@@ -15,6 +15,11 @@ void onMainView(Ctx& c);
 // 4 capture end, 9 fishing (vacuum) begin, 12 collided with Luigi, 13-18 element hits), and
 // the Poltergust capture update (fn_80081BCC) holding `actor` this frame.
 void onCharacterEvent(u32 actor, u32 msg, u32 thought, u32 event);
+
+// From hle_gx.cpp: the ghost pass (fn_80060E70 pass 0x30) set the ghost layer's destination alpha
+// for `actor` right before drawing its model (GXSetDstAlpha(1, alpha) at 0x800611C0/0x800611D0).
+// Only ghosts the game actually draws this way with a non-zero alpha give light.
+void onGhostDrawn(u32 actor, u32 alpha);
 void onVacuumTick(u32 actor);
 
 // Test aid LM_GHOST_HUNT=1 (hle_pad.cpp, after the scripted input): steers Luigi to stun and

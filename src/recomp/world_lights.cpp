@@ -267,23 +267,8 @@ struct Jmp {
     s32 i32v(size_t r, const JmpField& f) const { return f.off != ~0u ? s32((be32h(*d, r + f.off) & f.mask) >> f.shift) : -1; }
 };
 
-// Room containing a world position (room table lbl_804D8170: 0x30 per room, int min xyz +0x8,
-// max xyz +0x14; shadows.cpp), -1 if none.
-int roomAt(const float p[3]) {
-    const u32 rooms = rd32(VA(0x804D8170));
-    if (!guestPtr(rooms)) return -1;
-    for (int r = 0; r < 80; r++) {
-        const u32 b = rooms + u32(r) * 0x30;
-        bool in = true;
-        for (int k = 0; k < 3 && in; k++) {
-            const float lo = float(s32(rd32(b + 8 + 4 * k))), hi = float(s32(rd32(b + 0x14 + 4 * k)));
-            if (!(hi > lo) || hi - lo > 20000.0f) in = false;
-            else if (p[k] < lo - 1.0f || p[k] > hi + 1.0f) in = false;
-        }
-        if (in) return r;
-    }
-    return -1;
-}
+// Room containing a world position (room table lbl_804D8170; enhanced_lighting.cpp), -1 if none.
+int roomAt(const float p[3]) { return enh::roomAt(p); }
 
 struct Lamp {
     float pos[3];
@@ -347,15 +332,34 @@ void buildLamps() {
 }
 
 // Room flags the game draws by (fn_8001CE1C(room, -1): table lbl_803A4BB0[lbl_804D8158], u16 at
-// room * 0xC, bit 1 = visible) and the room's light-on bit (room objects lbl_804D8178, 0x14C each,
-// +6 bit 0x80: fn_80018D78, what a cleared room has).
+// room * 0xC, bit 1 = visible) and whether the room's lights are on: the game's own test
+// fn_80018D78(room object) (room objects lbl_804D8178, 0x14C each): +6 bit 0x80 (set when the room
+// is cleared, CondLightOn), and 0 in the mansion while the breaker is off (fn_80037894: map 2 and
+// flag 61, the blackout). Evaluated once per frame per room (sLitCache).
 bool roomVisible(int room) {
     const u32 tab = rd32(VA(0x803A4BB0) + 4 * u32(s32(s8(rd8(VA(0x804D8158))))));
     return guestPtr(tab) && (rd16(tab + u32(room) * 0xC) & 1);
 }
+Ctx* sCtx = nullptr;  // guest context of the current onMainView (for the game's room-lit test)
+std::unordered_map<int, bool> sLitCache;
 bool roomLit(int room) {
+    if (room < 0 || room >= 128) return false;
+    const auto it = sLitCache.find(room);
+    if (it != sLitCache.end()) return it->second;
     const u32 rooms = rd32(VA(0x804D8178));
-    return guestPtr(rooms) && (rd8(rooms + u32(room) * 0x14C + 6) & 0x80);
+    bool lit = false;
+    if (guestPtr(rooms)) {
+        static const u32 fn = guestSymbol("fn_80018D78");
+        if (sCtx && fn) {
+            const Ctx saved = *sCtx;
+            lit = guestCall(*sCtx, fn, rooms + u32(room) * 0x14C) != 0;
+            *sCtx = saved;
+        } else {
+            lit = (rd8(rooms + u32(room) * 0x14C + 6) & 0x80) != 0;
+        }
+    }
+    sLitCache[room] = lit;
+    return lit;
 }
 
 }  // namespace
@@ -364,8 +368,13 @@ void noteResource(const char* path, u32 data) {
     if (sLog >= 2 && path && std::strstr(path, "info")) log("[worldlight] resource %s -> %08X", path, data);
 }
 
-void onMainView(Ctx&) {
+void onMainView(Ctx& c) {
     sFrame++;
+    sCtx = &c;
+    sLitCache.clear();
+    struct CtxScope {
+        ~CtxScope() { sCtx = nullptr; }
+    } ctxScope;
     // Test aid LM_ROOM_LIGHTS_ON=1: sets the current room's "light on" flag (room objects
     // lbl_804D8178, 0x14C each, +6 bit 0x80: what CondLightOn / fn_80018D78 test, the state a
     // cleared room is in) so lit rooms can be tested without clearing them.
@@ -435,7 +444,17 @@ void onMainView(Ctx&) {
         if (p[0] == 0.0f && p[1] == 0.0f && p[2] == 0.0f) continue;  // pooled, never placed
         const Kind& k = *res->kind;
         if (!w.on[k.cat] && !sForce) continue;
-        const float level = flameLevel(e, flags);
+        float level = flameLevel(e, flags);
+        // Electric fittings (chandelier / lamp glow emitters): light only while the game has the
+        // room's lights on (fades like the jmp-table lamps below). Candles, fires and effects are
+        // independent flames and keep their own state.
+        if (k.cat == port::kWlLamps) {
+            const float wp[3] = {p[0], p[1] + k.height, p[2]};
+            float& on = sLampLevel[0x57300000u ^ e];
+            on += ((roomLit(roomAt(wp)) ? 1.0f : 0.0f) - on) * 0.3f;
+            if (on < 0.01f) on = 0.0f;
+            level *= on;
+        }
         src.push_back({{p[0], p[1] + k.height, p[2]}, &k, e, 1, level});
     }
     sFlameTick++;
@@ -511,10 +530,14 @@ void onMainView(Ctx&) {
         if (flame) l.flags |= aurora::gfx::ExtraLightFire;  // yellow core, red-orange falloff (0025)
         // Shadows (0028): fireplaces, braziers and torches, candelabras (three or more candles
         // together) and big fire effects; the strongest few get a shadow slot (selectLights).
-        if (k.cat == port::kWlFires || (k.cat == port::kWlCandles && s.count >= 3) ||
-            (k.cat == port::kWlFireFx && k.radius >= 450.0f))
+        // With more than 8 shadow slots (12 / 16 lights), smaller candle groups and single candles
+        // become candidates too; the strongest still win the slots (selectLights).
+        const bool many = enh::shadowLightCap() > 8;
+        if (k.cat == port::kWlFires || (k.cat == port::kWlCandles && s.count >= (many ? 1 : 3)) ||
+            (k.cat == port::kWlFireFx && k.radius >= 450.0f) || (many && k.cat == port::kWlLamps))
             l.flags |= aurora::gfx::ExtraLightCastShadows;
         l.id = 0x57000000u ^ s.id;
+        enh::limitToRoom(l, roomAt(s.pos), s.pos);
         lights.push_back(l);
         if (logNow)
             log("[worldlight] f%u light %-12s x%d lit %.2f world %.0f,%.0f,%.0f view %.0f,%.0f,%.0f I %.2f r %.0f", sFrame, k.prefix,
@@ -547,8 +570,10 @@ void onMainView(Ctx&) {
             float I = (lp.chandelier ? 1.5f : 1.0f) * master * std::clamp(w.intensity[port::kWlLamps], 0.0f, 3.0f);
             if (w.flicker && lp.chandelier) I *= flameFlicker(t, lp.id, 0.12f);  // candle-lit chandeliers breathe a little
             l.intensity = I * on;
-            l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent;
+            l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent |
+                      (enh::shadowLightCap() > 8 ? aurora::gfx::ExtraLightCastShadows : 0u);  // 12 / 16 slots: fittings cast too
             l.id = lp.id;
+            enh::limitToRoom(l, lp.room, lp.pos);
             lights.push_back(l);
             nl++;
             if (logNow)
@@ -575,6 +600,7 @@ void onMainView(Ctx&) {
                 l.intensity = 0.7f * master * std::clamp(w.intensity[port::kWlSparkles], 0.0f, 3.0f);
                 l.flags = aurora::gfx::ExtraLightTranslucent;
                 l.id = 0x57006000u;
+                enh::limitToRoom(l, roomAt(p), p);
                 lights.push_back(l);
                 if (logNow) log("[worldlight] f%u gbh glow at %.0f,%.0f,%.0f", sFrame, p[0], p[1], p[2]);
             }
@@ -619,6 +645,7 @@ void onMainView(Ctx&) {
             l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent |
                       (e == 0 ? aurora::gfx::ExtraLightFire | aurora::gfx::ExtraLightCastShadows : 0u);
             l.id = 0x57005000u;
+            enh::limitToRoom(l, roomAt(sPos), sPos);
             lights.push_back(l);
             if (logNow) log("[worldlight] f%u spray element %d world %.0f,%.0f,%.0f I %.2f", sFrame, sElem, sPos[0], sPos[1], sPos[2], I);
         }
@@ -651,6 +678,11 @@ void onMainView(Ctx&) {
         l.intensity = 2.5f * env * master * std::clamp(w.intensity[port::kWlLightning], 0.0f, 3.0f);
         l.flags = aurora::gfx::ExtraLightSpecular | aurora::gfx::ExtraLightTranslucent;
         l.id = 0x5700FFFFu;
+        // The flash lights Luigi's room (it comes in through that room's windows).
+        if (guestPtr(lu)) {
+            const float lp[3] = {rdf32(lu + 0x44), rdf32(lu + 0x48) + 100.0f, rdf32(lu + 0x4C)};
+            enh::limitToRoom(l, roomAt(lp), sStrikePos);
+        }
         if (l.intensity > 0.01f) lights.push_back(l);
     }
 
@@ -661,6 +693,10 @@ void onMainView(Ctx&) {
         const u32 lu = rd32(VA(0x803D48A0));
         if (guestPtr(lu)) {
             const u32 noz = rd32(lu + 0x7A4);
+            const float lp[3] = {rdf32(lu + 0x44), rdf32(lu + 0x48) + 50.0f, rdf32(lu + 0x4C)};
+            const int lr = roomAt(lp);
+            log("[worldlight] f%u luigi room id %u table room %d lit %d visible %d", sFrame, rd32(VA(0x803A3CA0) + 0xC) >> 24, lr,
+                int(roomLit(lr)), lr >= 0 ? int(roomVisible(lr)) : -1);
             log("[worldlight] f%u luigi %.0f,%.0f,%.0f v50 %.2f,%.2f,%.2f v5c %.2f,%.2f,%.2f mode %d nozzle %.0f,%.0f,%.0f", sFrame,
                 rdf32(lu + 0x44), rdf32(lu + 0x48), rdf32(lu + 0x4C), rdf32(lu + 0x50), rdf32(lu + 0x54), rdf32(lu + 0x58),
                 rdf32(lu + 0x5C), rdf32(lu + 0x60), rdf32(lu + 0x64), s32(rd32(lu + 0x1180)), guestPtr(noz) ? rdf32(noz + 0x44) : 0.f,

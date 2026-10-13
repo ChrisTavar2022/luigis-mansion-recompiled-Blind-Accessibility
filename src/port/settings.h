@@ -179,7 +179,6 @@ struct GhostLightSettings {
     bool dramatic = true;       // pulse, flare on appearing/attacking, flicker when stunned, vacuum struggle, capture burst
     int maxLights = 48;         // 1..64, strongest/nearest visible ghosts first (shared 64-light budget)
     bool shadows = true;        // the 1-2 strongest ghost lights cast shadows (if the renderer supports it)
-    float invisibleHint = 0.0f; // 0..0.3: faint glow of fully invisible ghosts (0 = none)
 };
 
 // ---- Enhanced lighting > World lights (src/recomp/world_lights.cpp; docs/RENDERING.md) ----
@@ -238,7 +237,7 @@ struct EnhancedLightingSettings {
     bool extraLightShadows = true;     // shadows of lights flagged to cast them (ghost lights: the strongest two)
     int extraShadowQuality = 1;        // 0 low, 1 medium, 2 high (ray-march steps / shadow-map filter taps)
     int extraShadowMode = 1;           // 0 screen-space (cheap), 1 shadow maps (cube maps per light)
-    int extraShadowLights = 2;         // 0..3: 0 / 2 / 4 / 8 shadow-casting lights per frame
+    int extraShadowLights = 2;         // 0..5: 0 / 2 / 4 / 8 / 12 / 16 shadow-casting lights per frame
     int extraShadowMapSize = 1;        // 0..3: 256 / 512 / 1024 / 2048 texels per cube face
     float extraShadowSoftness = 14.0f; // light size (world units) for soft contact-hardening edges; 0 = hard
     // Volumetric haze in the flashlight beam.
@@ -253,7 +252,6 @@ struct EnhancedLightingSettings {
     float bloomFlashlightSuppress = 0.6f;  // 0..1: less glow from walls lit by the flashlight
     float bloomScene = 0.12f;          // 0..1: glow of ordinary bright surfaces (above the threshold)
     float bloomEmissive = 0.6f;        // 0..2: glow of light-emitting effects (glows, fire, beams, sparks)
-    float bloomLightGlow = 0.6f;       // 0..2: glow around colored light sources (ghosts)
     // Screen-space ambient occlusion (contact darkening in corners and under furniture).
     bool ssao = false;
     float ssaoIntensity = 0.4f;        // 0..2

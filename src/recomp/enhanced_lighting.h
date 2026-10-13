@@ -49,6 +49,13 @@ void endScene();
 // World (game) space -> view space with the current camera (lbl_803A3820 view eye/target).
 // False if there is no camera yet.
 bool worldToView(const float world[3], float view[3]);
+// Room (index into the room table lbl_804D8170: the index the game's room visibility, room
+// objects and actor room bytes use) whose bounds contain a world position, -1 if none.
+int roomAt(const float world[3]);
+// Limits a light (view-space position already set) to a room's bounds (ExtraLightRoomBox,
+// Aurora 0187): no light through walls into the next room. `world` = the light's world position.
+// No-op for room < 0 or a room without sane bounds.
+void limitToRoom(aurora::gfx::ExtraLight& l, int room, const float world[3]);
 // Enhanced "Shadow map size": width of the offscreen shadow map (height 3/4 of it), 0 = the
 // EFB (render resolution).
 uint32_t shadowMapWidth();

@@ -344,8 +344,6 @@ void ghostLightsSection() {
     ImGui::SetItemTooltip("Most ghost lights at once (the strongest/nearest first). Lower is faster.");
     sDirty |= ImGui::Checkbox("Shadows from ghost lights", &g.shadows);
     ImGui::SetItemTooltip("The one or two strongest ghost lights cast shadows. Costs a shadow pass per light.");
-    sDirty |= ImGui::SliderFloat("Invisible ghost glow", &g.invisibleHint, 0.0f, 0.3f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("A faint glow from ghosts that are currently invisible (0 = none, the default).");
     ImGui::EndDisabled();
 }
 
@@ -409,18 +407,21 @@ void enhancedLightingTab() {
         "Screen-space: a ray march through the visible depth at half resolution (up to 4 lights);\n"
         "cheap, but only what is on screen casts shadows and the edges are approximate.");
     static const char* kXlQ[] = {"Low", "Medium", "High"};
-    static const char* kXlN[] = {"Off", "2 lights", "4 lights", "8 lights"};
+    static const char* kXlN[] = {"Off", "2 lights", "4 lights", "8 lights", "12 lights", "16 lights"};
     static const char* kXlS[] = {"256", "512", "1024", "2048"};
     ImGui::BeginDisabled(l.preset != port::EnhancedPreset::Custom);
-    sDirty |= ImGui::Combo("Shadow-casting lights", &l.extraShadowLights, kXlN, 4);
+    sDirty |= ImGui::Combo("Shadow-casting lights", &l.extraShadowLights, kXlN, 6);
     ImGui::SetItemTooltip("How many of the strongest colored lights cast shadows each frame (screen-space: at most 4).\n"
-                          "Each light adds a cube map (shadow maps) or a ray march (screen-space).");
+                          "Each light adds a cube map (shadow maps) or a ray march (screen-space). With 12 or 16,\n"
+                          "single candles and lit lamps cast shadows too.\n"
+                          "Cost with shadow maps at 1024, High quality (RTX 3090 Ti, 1280x960): 8 lights ~1.5 ms,\n"
+                          "12 ~1.9 ms, 16 ~2.4 ms per frame; shadow-map memory ~200 / 300 / 450 MB.");
     sDirty |= ImGui::Combo("Light shadow quality", &l.extraShadowQuality, kXlQ, 3);
     ImGui::SetItemTooltip("Filter taps of the soft edge (shadow maps: 8 / 12 / 20) or ray-march steps (screen-space).");
     ImGui::BeginDisabled(l.extraShadowMode != 1);
     sDirty |= ImGui::Combo("Shadow map size", &l.extraShadowMapSize, kXlS, 4);
     ImGui::SetItemTooltip("Texels per cube face. Larger: sharper, more detailed shadows, more GPU memory\n"
-                          "(8 lights at 1024: about 200 MB; 2048 is reduced to fit the texture size limit).");
+                          "(at 1024: 8 lights about 200 MB, 16 about 450 MB; 2048 is reduced to fit the texture size limit).");
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     ImGui::BeginDisabled(l.extraShadowMode != 1);
@@ -493,7 +494,7 @@ void enhancedLightingTab() {
     ImGui::EndDisabled();
     sDirty |= ImGui::Checkbox("Bloom / glow", &l.bloom);
     ImGui::SetItemTooltip(
-        "Light sources glow: lamps, candles, fireplaces, the flashlight lens, ghost lights and auras,\n"
+        "Light sources glow: lamps, candles, fireplaces, the flashlight lens, ghost auras,\n"
         "lightning, nozzle effects. The HUD never glows. Computed at a capped resolution, so the\n"
         "cost hardly depends on the render resolution.");
     ImGui::BeginDisabled(!l.bloom);
@@ -501,8 +502,6 @@ void enhancedLightingTab() {
     sDirty |= ImGui::SliderFloat("Light sources", &l.bloomEmissive, 0.0f, 2.0f, "%.2f");
     ImGui::SetItemTooltip("Glow of light-emitting effects (what the game draws as added light): lamp and candle\n"
                           "glows, fire, the flashlight lens, ghost auras, sparkles, lightning and nozzle effects.");
-    sDirty |= ImGui::SliderFloat("Colored light glow", &l.bloomLightGlow, 0.0f, 2.0f, "%.2f");
-    ImGui::SetItemTooltip("Halo around the dynamic colored lights (ghosts), hidden by walls and objects in front.");
     sDirty |= ImGui::SliderFloat("Bright surfaces", &l.bloomScene, 0.0f, 1.0f, "%.2f");
     ImGui::SetItemTooltip("Glow of ordinary surfaces that are brighter than the threshold (lit walls, white\n"
                           "objects). Low keeps the glow on actual light sources.");

@@ -96,7 +96,7 @@ void addTestLights() {
         l.radius = sTest.radius;
         l.intensity = sTest.intensity;
         l.flags = aurora::gfx::ExtraLightTranslucent | aurora::gfx::ExtraLightSpecular |
-                  (i < 8 ? aurora::gfx::ExtraLightCastShadows : 0u);
+                  (i < 16 ? aurora::gfx::ExtraLightCastShadows : 0u);
         l.id = 0x7E570000u + u32(i);
         sPending[sPendingCount++] = l;
     }
@@ -125,6 +125,12 @@ namespace {
 // which then blinked as the order changed).
 struct LightTrack {
     float score = 0.0f;   // smoothed rank score
+    // 0187: peak-held score (decays to half in ~1.5 s) for the shadow-slot decisions: a pulsing or
+    // fading ghost and a flickering flame keep their place through their dim phases (a ghost light
+    // dropping to a fifth of its score every few seconds traded its slot with a candelabra over and
+    // over: both shadows faded out and in again, in the dining room every ~1 s).
+    float peak = 0.0f;
+    u32 gained = 0;       // tick the light got its shadow slot
     float w = 0.0f;       // shadow weight 0..1 (fades in/out)
     bool selected = false;  // in the sent set last frame
     bool holder = false;    // owns a shadow slot
@@ -161,6 +167,7 @@ uint32_t selectLights(aurora::gfx::ExtraLight* l, uint32_t n) {
         if (x.id != 0) {
             auto& t = sTrack[x.id];
             t.score = t.seen + 1 == sTrackTick ? t.score + (s - t.score) * kSmooth : s;
+            t.peak = t.seen + 1 == sTrackTick ? std::max(t.score, t.peak * 0.985f) : t.score;
             t.seen = sTrackTick;
             s = t.score * (t.selected ? kKeepBonus : 1.0f);
         }
@@ -183,9 +190,21 @@ uint32_t selectLights(aurora::gfx::ExtraLight* l, uint32_t n) {
     cand.clear();
     for (uint32_t i = 0; i < m; i++)
         if ((out[i].flags & kShadow) && out[i].id != 0) cand.push_back(i);
-    // Lights that left the set (or lost their flag) give their slot up at once: they are not drawn.
-    for (auto& [id, t] : sTrack)
-        if (t.seen != sTrackTick || !t.selected) t.holder = false, t.w = 0.0f;
+    // Lights that left the set (or lost their flag) stop casting at once: they are not drawn. 0187:
+    // a holder that vanished (a ghost hiding for a moment, a light culled for a few frames) keeps
+    // its slot reserved for ~0.7 s, so another light does not take it and give it back right away
+    // (each hand-over fades two shadows out and in).
+    constexpr u32 kReserve = 20;
+    u32 reserved = 0;
+    for (auto& [id, t] : sTrack) {
+        if (t.seen != sTrackTick) {
+            t.w = 0.0f;
+            if (t.holder && sTrackTick - t.seen <= kReserve) reserved++;
+            else t.holder = false;
+        } else if (!t.selected) {
+            t.holder = false, t.w = 0.0f;
+        }
+    }
     for (uint32_t i = 0; i < m; i++) {
         if (out[i].id == 0 || (out[i].flags & kShadow)) continue;
         auto& t = sTrack[out[i].id];
@@ -199,13 +218,14 @@ uint32_t selectLights(aurora::gfx::ExtraLight* l, uint32_t n) {
         while (holders > cap) {
             uint32_t weakest = UINT32_MAX;
             for (uint32_t i : cand)
-                if (trackOf(i).holder && (weakest == UINT32_MAX || trackOf(i).score < trackOf(weakest).score)) weakest = i;
+                if (trackOf(i).holder && (weakest == UINT32_MAX || trackOf(i).peak < trackOf(weakest).peak)) weakest = i;
             trackOf(weakest).holder = false;
             trackOf(weakest).w = 0.0f;
             holders--;
         }
     }
-    // Hysteresis: the strongest non-holder replaces the weakest holder only when clearly stronger.
+    // Hysteresis: the strongest non-holder replaces the weakest holder only when clearly stronger
+    // (peak-held scores) and the holder has had its slot for at least ~1.5 s.
     {
         uint32_t best = UINT32_MAX, weakest = UINT32_MAX;
         u32 holders = 0;
@@ -213,30 +233,35 @@ uint32_t selectLights(aurora::gfx::ExtraLight* l, uint32_t n) {
             const auto& t = trackOf(i);
             if (t.holder) {
                 holders++;
-                if (weakest == UINT32_MAX || t.score < trackOf(weakest).score) weakest = i;
-            } else if (best == UINT32_MAX || t.score > trackOf(best).score) {
+                if (weakest == UINT32_MAX || t.peak < trackOf(weakest).peak) weakest = i;
+            } else if (best == UINT32_MAX || t.peak > trackOf(best).peak) {
                 best = i;
             }
         }
-        if (best != UINT32_MAX && weakest != UINT32_MAX && holders >= cap && trackOf(best).score > trackOf(weakest).score * kSwapRatio) {
+        constexpr u32 kMinHold = 45;  // game frames
+        if (best != UINT32_MAX && weakest != UINT32_MAX && holders >= cap && trackOf(best).peak > trackOf(weakest).peak * kSwapRatio &&
+            sTrackTick - trackOf(weakest).gained >= kMinHold) {
             trackOf(weakest).holder = false;  // fades out; the newcomer gets the slot once it is free
-            if (sSelectLog) log("[lights] shadow slot: %08X (%.0f) yields to %08X (%.0f)", out[weakest].id, trackOf(weakest).score, out[best].id, trackOf(best).score);
+            if (sSelectLog)
+                log("[lights] f%u shadow slot: %08X (%.0f) yields to %08X (%.0f)", copyDispCount(), out[weakest].id, trackOf(weakest).peak,
+                    out[best].id, trackOf(best).peak);
         }
     }
     // Free slots (holders + lights still fading out) go to the strongest waiting candidates.
     {
-        u32 used = 0;
+        u32 used = reserved;
         for (uint32_t i : cand) used += trackOf(i).holder || trackOf(i).w > 0.0f;
         static std::vector<uint32_t> waiting;
         waiting.clear();
         for (uint32_t i : cand)
             if (!trackOf(i).holder && trackOf(i).w <= 0.0f) waiting.push_back(i);
-        std::stable_sort(waiting.begin(), waiting.end(), [&](uint32_t a, uint32_t b) { return trackOf(a).score > trackOf(b).score; });
+        std::stable_sort(waiting.begin(), waiting.end(), [&](uint32_t a, uint32_t b) { return trackOf(a).peak > trackOf(b).peak; });
         for (uint32_t i : waiting) {
             if (used >= cap) break;
             trackOf(i).holder = true;
+            trackOf(i).gained = sTrackTick;
             used++;
-            if (sSelectLog) log("[lights] shadow slot: %08X (%.0f) gains a slot", out[i].id, trackOf(i).score);
+            if (sSelectLog) log("[lights] f%u shadow slot: %08X (%.0f) gains a slot", copyDispCount(), out[i].id, trackOf(i).peak);
         }
     }
     // Weights fade toward the holder state (~5 game frames); the result is multiplied with the
@@ -296,8 +321,8 @@ bool active() { return sActive.load(std::memory_order_relaxed) && frameOn(); }
 uint32_t shadowLightCap() {
     const auto& l = port::settings().enhancedLighting;
     if (!l.extraLightShadows) return 0;
-    static constexpr u32 kXlLights[4] = {0, 2, 4, 8};
-    u32 n = kXlLights[std::clamp(l.extraShadowLights, 0, 3)];
+    static constexpr u32 kXlLights[6] = {0, 2, 4, 8, 12, 16};
+    u32 n = kXlLights[std::clamp(l.extraShadowLights, 0, 5)];
     if (const char* v = std::getenv("LM_XL_SHADOWS")) {
         int mode = -1, lights = -1;
         std::sscanf(v, "%d,%d", &mode, &lights);
@@ -306,7 +331,7 @@ uint32_t shadowLightCap() {
     } else if (l.extraShadowMode == 0) {
         n = std::min(n, 4u);
     }
-    return std::min(n, 8u);
+    return std::min(n, 16u);
 }
 bool masterOn() { return sActive.load(std::memory_order_relaxed); }
 bool configuredOn() {
@@ -371,10 +396,10 @@ void applySettings() {
         if (const char* v = std::getenv("LM_XL_SHADOWS")) std::sscanf(v, "%*d,%d,%d", &o[0], &o[1]);
         return o;
     }();
-    static constexpr u32 kXlLights[4] = {0, 2, 4, 8};
+    static constexpr u32 kXlLights[6] = {0, 2, 4, 8, 12, 16};
     static constexpr u32 kXlSize[4] = {256, 512, 1024, 2048};
     c.extraShadowMode = u32(sXlMode >= 0 ? sXlMode : std::clamp(l.extraShadowMode, 0, 1));
-    c.extraShadowLights = sXlOver[0] >= 0 ? u32(sXlOver[0]) : kXlLights[std::clamp(l.extraShadowLights, 0, 3)];
+    c.extraShadowLights = sXlOver[0] >= 0 ? u32(sXlOver[0]) : kXlLights[std::clamp(l.extraShadowLights, 0, 5)];
     c.extraShadowMapSize = sXlOver[1] > 0 ? u32(sXlOver[1]) : kXlSize[std::clamp(l.extraShadowMapSize, 0, 3)];
     c.extraShadowSoftness = l.extraShadowSoftness;
     c.volumetric = l.volumetricBeam;
@@ -387,7 +412,6 @@ void applySettings() {
     c.bloomFlashlightSuppress = l.bloomFlashlightSuppress;
     c.bloomScene = l.bloomScene;
     c.bloomEmissive = l.bloomEmissive;
-    c.bloomLightGlow = l.bloomLightGlow;
     c.ssao = l.ssao;
     c.ssaoIntensity = l.ssaoIntensity;
     c.ssaoRadius = l.ssaoRadius;
@@ -550,6 +574,62 @@ bool worldToView(const float world[3], float view[3]) {
     view[1] = y[0] * d[0] + y[1] * d[1] + y[2] * d[2];
     view[2] = z[0] * d[0] + z[1] * d[1] + z[2] * d[2];
     return true;
+}
+
+namespace {
+// Room table lbl_804D8170: 0x30 per room, int min xyz at +0x8, max xyz at +0x14.
+bool roomBounds(int room, float lo[3], float hi[3]) {
+    const u32 rooms = rd32(VA(0x804D8170));
+    if (room < 0 || room >= 80 || rooms < 0x80000000u || rooms >= 0x81800000u) return false;
+    const u32 b = rooms + u32(room) * 0x30;
+    for (int k = 0; k < 3; k++) {
+        lo[k] = float(s32(rd32(b + 8 + 4 * k)));
+        hi[k] = float(s32(rd32(b + 0x14 + 4 * k)));
+        if (!(hi[k] > lo[k]) || hi[k] - lo[k] > 20000.0f) return false;
+    }
+    return true;
+}
+}  // namespace
+
+int roomAt(const float p[3]) {
+    for (int r = 0; r < 80; r++) {
+        float lo[3], hi[3];
+        if (!roomBounds(r, lo, hi)) continue;
+        bool in = true;
+        for (int k = 0; k < 3 && in; k++) in = p[k] >= lo[k] - 1.0f && p[k] <= hi[k] + 1.0f;
+        if (in) return r;
+    }
+    return -1;
+}
+
+void limitToRoom(aurora::gfx::ExtraLight& l, int room, const float world[3]) {
+    // Test aid LM_ROOM_BOX=0: lights not limited to their room; =2: boxes shrunk to a quarter of
+    // the room around its centre (makes the cut visible, to check the box placement).
+    static const int sMode = [] {
+        const char* v = std::getenv("LM_ROOM_BOX");
+        return v && *v ? std::atoi(v) : 1;
+    }();
+    float lo[3], hi[3];
+    if (sMode == 0 || !roomBounds(room, lo, hi)) return;
+    if (sMode == 2)
+        for (int k = 0; k < 3; k += 2) {
+            const float c = (lo[k] + hi[k]) * 0.5f, h = (hi[k] - lo[k]) * 0.25f;
+            lo[k] = c - h, hi[k] = c + h;
+        }
+    // The GX view matrix (lbl_803A3820 +0x18C, +0x198 on PAL): the light positions' view space.
+    float m[12];
+    for (int i = 0; i < 12; i++) m[i] = rdf32(VA(0x803A3820) + VOFF(0x18C, 0x198) + 4 * i);
+    // The room's floor and ceiling are its box's y bounds; a little slack above and below so the
+    // floor and ceiling surfaces themselves are inside.
+    lo[1] -= 20.0f, hi[1] += 20.0f;
+    float c[3];
+    for (int k = 0; k < 3; k++) c[k] = (lo[k] + hi[k]) * 0.5f - world[k];
+    for (int r = 0; r < 3; r++) l.box[r] = m[r * 4] * c[0] + m[r * 4 + 1] * c[1] + m[r * 4 + 2] * c[2];
+    for (int k = 0; k < 3; k++) {
+        const float h = (hi[k] - lo[k]) * 0.5f;
+        for (int r = 0; r < 3; r++) l.box[3 + 3 * k + r] = m[r * 4 + k] * h;
+    }
+    l.flags |= aurora::gfx::ExtraLightRoomBox;
 }
 
 }  // namespace enh

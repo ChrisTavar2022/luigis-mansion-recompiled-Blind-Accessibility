@@ -9,6 +9,7 @@
 #include "recomp/efb_copy.h"
 #include "recomp/enhanced_lighting.h"
 #include "recomp/frame.h"
+#include "recomp/ghost_lights.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
 #include "recomp/interp.h"
@@ -1307,7 +1308,12 @@ GXHLE(GXSetBlendMode) {
         gxAudit("GXSetBlendMode %u %u %u %u", c.r[3], c.r[4], c.r[5], c.r[6]);
     GXSetBlendMode(GXBlendMode(c.r[3]), GXBlendFactor(c.r[4]), GXBlendFactor(c.r[5]), GXLogicOp(c.r[6]));
 }
-GXHLE(GXSetDstAlpha) { GXSetDstAlpha(GXBool(c.r[3]), u8(c.r[4])); }
+GXHLE(GXSetDstAlpha) {
+    // Ghost pass (fn_80060E70 pass 0x30): r21 is the ghost about to be drawn with this alpha
+    // (ghost_lights.cpp: only ghosts actually drawn visibly give light).
+    if (c.lr == VA(0x800611C4) || c.lr == VA(0x800611D4)) ghostlights::onGhostDrawn(c.r[21], c.r[4] & 0xFF);
+    GXSetDstAlpha(GXBool(c.r[3]), u8(c.r[4]));
+}
 GXHLE(GXSetFog) {
     gxAudit("GXSetFog type=%u start=%.1f end=%.1f near=%.1f far=%.1f", c.r[3], farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4));
     const u32 at = interp::mark();

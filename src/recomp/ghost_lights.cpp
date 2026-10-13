@@ -142,6 +142,7 @@ struct Track {
     float radius = 0;
     float outI = 0;      // submitted intensity, smoothed (no frame-to-frame jumps)
     float shadowW = 0;   // 0..1 weight of this light's shadow, faded in/out over a few frames
+    float rankPeak = 0;  // 0187: peak-held shadow rank score (pulses and fades do not reorder the shadow casters)
 };
 
 // The last moments of a captured ghost after it left the actor list.
@@ -154,6 +155,14 @@ struct Burst {
 };
 
 std::unordered_map<u32, Track> sTracks;
+// Ghosts the ghost pass actually drew (GXSetDstAlpha hook): actor -> game frame (sFrame) and the
+// destination alpha it was drawn into the ghost layer with. The lights of a frame are built
+// before its ghost pass, so they use the previous frame's pass.
+struct Drawn {
+    u32 frame = 0;
+    u32 alpha = 0;
+};
+std::unordered_map<u32, Drawn> sDrawn;
 std::vector<Burst> sBursts;
 std::unordered_map<u32, std::vector<u8>> sDiffPrev;
 u32 sFrame = 1;      // game frames seen by update() (events are stamped with it)
@@ -310,7 +319,6 @@ void update(Ctx& c) {
     const float radiusScale = std::clamp(s.radiusScale, 0.25f, 3.0f);
     const bool dramatic = s.dramatic;
     const u32 maxLights = u32(std::clamp(s.maxLights, 1, int(aurora::gfx::MaxExtraLights)));
-    const float hint = std::clamp(s.invisibleHint, 0.0f, 0.3f);
     const float t = float(sFrame) / 30.0f;
     constexpr float kBase = 1.6f;  // ghost light strength at intensity 1
 
@@ -375,7 +383,14 @@ void update(Ctx& c) {
         if (drawn && !(flags & 0x200)) drawn = guestCall(c, roomVisible, rd32(a + kActRoom) >> 24, u32(-1)) != 0;
         if (sDiff && drawn) diffDump(a);
 
-        const float alpha = float(rd8(a + kActAlpha)) / 255.0f;
+        // Visible = drawn into the ghost layer by the last ghost pass with a non-zero alpha (the
+        // alpha the pass really used: some types flicker with their own value instead of +0xE3).
+        // Hidden ghosts (in furniture, not yet appeared, outside the pass's own tests) give no
+        // light at all.
+        const auto dr = sDrawn.find(a);
+        const bool passDrawn = dr != sDrawn.end() && dr->second.frame + 1 == sFrame;
+        if (!passDrawn) drawn = false;
+        const float alpha = passDrawn ? std::min(float(rd8(a + kActAlpha)), float(dr->second.alpha)) / 255.0f : 0.0f;
         const u32 pb = paramBase(type);
         const int hp = s16(rd16(a + kActHp));
         const int maxHp = pb ? int(rd32(pb + kParamLife)) : 0;
@@ -459,8 +474,10 @@ void update(Ctx& c) {
             k *= std::max(0.0f, 1.0f - float(sFrame - tr.captureStart) / 20.0f);
         }
         tr.flare *= 0.9f;
+        // Only a visibly drawn ghost gives light (no faint glow from invisible ghosts); the capture
+        // burst shows while the shrinking ghost is still drawn.
         float vis = alpha;
-        if (vis <= 0.01f) vis = capturing && dramatic ? 1.0f : hint;  // the capture burst shows even as it shrinks away
+        if (vis <= 0.01f) vis = capturing && dramatic && passDrawn ? 1.0f : 0.0f;
         if (!drawn || tr.captureEnd) vis = 0.0f;
 
         // Small ghosts (bats, mice, Boos) glow less: hallways have several of them hanging right
@@ -482,11 +499,20 @@ void update(Ctx& c) {
         if (lightI <= 0.005f) continue;
         Candidate cd{};
         cd.light = {{vp.x, vp.y, vp.z}, {color[0], color[1], color[2]}, tr.radius * radiusK, lightI, kFlagBase, a};
+        {
+            // Limited to the ghost's room (Aurora 0187): no light through walls into the next room.
+            const float w[3] = {tr.world.x, tr.world.y, tr.world.z};
+            int room = enh::roomAt(w);
+            if (room < 0) room = int(rd32(a + kActRoom) >> 24);
+            enh::limitToRoom(cd.light, room, w);
+        }
         const float dist = std::sqrt(vp.x * vp.x + vp.y * vp.y + vp.z * vp.z);
         cd.score = lightI * cd.light.radius / (1.0f + dist / 1500.0f);
         cands.push_back(cd);
     }
     c = saved;
+    if ((sFrame & 255) == 0)
+        for (auto it = sDrawn.begin(); it != sDrawn.end();) it = sFrame - it->second.frame > 120 ? sDrawn.erase(it) : std::next(it);
 
     // Ghosts that left the actor list mid-capture keep their burst at the last position.
     for (auto it = sTracks.begin(); it != sTracks.end();) {
@@ -516,6 +542,10 @@ void update(Ctx& c) {
         Candidate cd{};
         cd.light = {{vp.x, vp.y, vp.z}, {it->color[0], it->color[1], it->color[2]}, it->radius * (1.0f + 0.3f * std::min(b, 1.0f)),
                     intensity * kBase * b, kFlagBase, it->id};
+        {
+            const float w[3] = {it->world.x, it->world.y, it->world.z};
+            enh::limitToRoom(cd.light, enh::roomAt(w), w);
+        }
         cd.score = cd.light.intensity * cd.light.radius;
         cands.push_back(cd);
         if (logNow) log("[ghostlight] f%u burst id %08X age %u I %.2f view %.0f,%.0f,%.0f", sFrame, it->id, sFrame - it->start, cd.light.intensity, vp.x, vp.y, vp.z);
@@ -537,7 +567,11 @@ void update(Ctx& c) {
             if (!s.shadows || cd.light.intensity <= 0.3f) continue;
             const auto it = sTracks.find(cd.light.id);
             const bool holding = it != sTracks.end() && it->second.shadowW > 0.5f;
-            ranked.push_back({cd.score * (holding ? 1.35f : 1.0f), cd.light.id});
+            // Peak-held score (half-life ~1.5 s): the breathing pulse, flicker and fades of a ghost
+            // do not reorder the shadow casters every few frames.
+            float sc = cd.score;
+            if (it != sTracks.end()) sc = it->second.rankPeak = std::max(cd.score, it->second.rankPeak * 0.985f);
+            ranked.push_back({sc * (holding ? 1.35f : 1.0f), cd.light.id});
         }
         std::sort(ranked.begin(), ranked.end(), [](const auto& x, const auto& y) { return x.first > y.first; });
         for (auto& [id, tr] : sTracks) {
@@ -553,7 +587,7 @@ void update(Ctx& c) {
     for (auto& cd : cands) {
         const auto it = sTracks.find(cd.light.id);
         const float w = it != sTracks.end() ? it->second.shadowW : 0.0f;
-        if (s.shadows && w > 0.0f && shadowed < 8) {
+        if (s.shadows && w > 0.0f && shadowed < 16) {
             cd.light.flags |= kFlagShadow | (std::clamp(u32(w * 255.0f + 0.5f), 1u, 255u) << 8);
             shadowed++;
         }
@@ -602,6 +636,14 @@ void onCharacterEvent(u32 actor, u32 msg, u32 thought, u32 event) {
         log("[ghostlight] f%u in beam %08X %s ai %X ev %08X %08X %08X %08X %08X %08X %08X %08X", sFrame, actor,
             typeName(rd32(actor + kActType)), aiState(thought), rd32(event), rd32(event + 4), rd32(event + 8),
             rd32(event + 12), rd32(event + 16), rd32(event + 20), rd32(event + 24), rd32(event + 28));
+}
+
+void onGhostDrawn(u32 actor, u32 alpha) {
+    if (!enabled() || !guestPtr(actor)) return;
+    Drawn& d = sDrawn[actor];
+    // The same ghost may be drawn more than once in a frame: keep the largest alpha.
+    d.alpha = d.frame == sFrame ? std::max(d.alpha, alpha) : alpha;
+    d.frame = sFrame;
 }
 
 void onVacuumTick(u32 actor) {

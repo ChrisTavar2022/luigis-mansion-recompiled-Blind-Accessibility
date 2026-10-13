@@ -86,7 +86,6 @@ std::vector<Field> fields() {
         flag("ghost_lights", "dramatic", sSettings.ghostLights.dramatic),
         num("ghost_lights", "max_lights_64", sSettings.ghostLights.maxLights),
         flag("ghost_lights", "shadows", sSettings.ghostLights.shadows),
-        num("ghost_lights", "invisible_hint", sSettings.ghostLights.invisibleHint),
         // Enhanced lighting > World lights
         flag("world_lights", "enabled", sSettings.worldLights.enabled),
         num("world_lights", "intensity", sSettings.worldLights.masterIntensity),
@@ -138,7 +137,6 @@ std::vector<Field> fields() {
         num("enhanced_lighting", "bloom_flashlight_suppress", l.bloomFlashlightSuppress),
         num("enhanced_lighting", "bloom_scene", l.bloomScene),
         num("enhanced_lighting", "bloom_emissive", l.bloomEmissive),
-        num("enhanced_lighting", "bloom_light_glow", l.bloomLightGlow),
         flag("enhanced_lighting", "ssao", l.ssao),
         num("enhanced_lighting", "ssao_intensity", l.ssaoIntensity),
         num("enhanced_lighting", "ssao_radius", l.ssaoRadius),
@@ -278,7 +276,7 @@ void sanitize() {
     clampTo(l.softShadowQuality, 0, 3);
     clampTo(l.extraShadowQuality, 0, 2);
     clampTo(l.extraShadowMode, 0, 1);
-    clampTo(l.extraShadowLights, 0, 3);
+    clampTo(l.extraShadowLights, 0, 5);
     clampTo(l.extraShadowMapSize, 0, 3);
     clampTo(l.extraShadowSoftness, 0.0f, 60.0f);
     clampTo(l.volumetricQuality, 0, 2);
