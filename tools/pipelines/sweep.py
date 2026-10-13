@@ -25,7 +25,11 @@ The European game: the same with --exe <PAL build>/lmrecomp.exe --disc orig/GLMP
 (--only selects scenario name prefixes; `--list` prints the names).
 
 GX accuracy toggles (integer TEV, EFB colour depth) need no runs of their own: Aurora derives
-those variants from the recorded configs (patch 0013). MSAA only changes the render target
+those variants from the recorded configs (patch 0013). Since Aurora 0217 the same holds for the
+Enhanced-lighting variants (shader classes, glow, depth pre-pass, shadow casters, beam cone) and
+the early-Z split: a sweep only needs to reach each material once, with any settings; configs
+are canonical (export the known set with LM_PIPELINE_EXPORT to get a deduplicated list), and
+tools/pipelines/verify.py measures what a fresh cache still misses. MSAA only changes the render target
 layout, which Aurora rebuilds the whole set for. The CRT filter and Enhanced lighting's
 scene-end passes (bloom, volumetric beam, AO, cube shadow-map clears) are their own pipelines
 outside the cache; Enhanced lighting's GX-derived draws (enhanced shader classes, glow draws,

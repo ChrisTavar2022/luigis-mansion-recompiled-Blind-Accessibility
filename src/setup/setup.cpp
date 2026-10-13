@@ -360,8 +360,7 @@ bool run(const Options& opts, LaunchInfo& launch) {
                 ImGui::Dummy(ImVec2(0, 8 * scale));
                 ImGui::ProgressBar(pr.fraction(), ImVec2(-1, 0));
                 ImGui::Text("Compiling shaders: %u / %u", pr.done, pr.total);
-                ImGui::Dummy(ImVec2(0, 8 * scale));
-                if (ImGui::Button("Play now (finish in the background)")) finished = true;
+                // (No "play now": the game waits for its shaders anyway, precache.h holdGame.)
             } else if (screen == Screen::Working) {
                 ImGui::TextWrapped("Preparing the game. This happens once per disc (and again after updates).");
                 ImGui::Dummy(ImVec2(0, 8 * scale));

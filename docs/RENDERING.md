@@ -1133,6 +1133,84 @@ while it is off.)
 `pipelines.py info <list|db>` summarises a list; `aurora_pipeline_cache_export` writes the
 current known set in the same format.
 
+### Variants for every settings combination, canonical keys, shaders before the game (Aurora 0217)
+
+**Symptom (user, 2026-10-13):** with 0214 a play session (4K, 60 fps, Enhanced lighting Ultra with
+ghost/world lights, AO, realistic flashlight, many shadow lights, CRT, smooth banding) still
+compiled pipelines on demand: 34 in the first 5 minutes, **137 over the whole session**
+(`out/play2`), several at 100-180 ms, matching visible dips (arriving in the foyer from the lab,
+a room with a fire effect, the treasure chest after a room clear, the key-get pose). Boot logos
+and the title could also stutter, since the game started while the precache was still running.
+
+**What they were.** The session's `pipeline_cache.db` (1212 configs) against the shipped list
+adjusted for the session's flags: 427 configs not in it. By category:
+- **The destination alpha value** (about 140, the largest): `PipelineConfig::dstAlpha` holds the
+  GX destination alpha value, but the pipeline only depends on whether it is off, 0 or another
+  value (the value is the draw's blend constant). LM's ghost pass writes each ghost's fade level
+  there, so every fade level of every ghost material was its own pipeline; 4200 of the list's
+  5453 configs were such duplicates.
+- **Variants the settings derive from a recorded config** (about 200): enhanced shader classes
+  (world / ghost pass) of configs recorded with Enhanced lighting off, the depth pre-pass and
+  shadow-caster copies (`dc`/`lc`), glow re-draws, the realistic flashlight's alpha-only cone and
+  the early-Z alpha-test split pair (0170/0179: never derived, recorded only where a sweep ran).
+- **State the shader does not read** (about 50): lighting parameters of color channels no TEV stage
+  reads (the game sets the flashlight's spot attenuation on channels a material ignores),
+  texgens of unused coordinates.
+- **New content** (about 40): materials no sweep reached (the user's lab -> foyer, fire room,
+  chest, key-get).
+Smooth banding, 6-bit blending and the vertex snapshot are uniforms or passes, not configs: no
+gaps from them.
+
+**Fix** (`patches/aurora/0217-precache-variants.patch`, `src/recomp/precache.cpp`, `main.cpp`):
+- **Canonical keys.** `gx::canonicalize_pipeline_config` (applied in `find_pipeline` and to every
+  known config) reduces `dstAlpha` to off / 0 / other, resets unread color channels and texgens,
+  and drops the enhanced class of depth-only copies (they never run the enhanced shading; the
+  class only appended uniforms after everything else). Equal shaders share one pipeline: the
+  5453-config list is 1117 shaders.
+- **Variants generated, not recorded.** The rebuild expands every known config into what the
+  current settings produce (`queue_gx_variants`): accuracy flags (as before), then
+  `enhanced::precache_variants` for the enhanced-lighting parts that select variants
+  (`enhanced::precache_bits`: master switch, emissive bloom, depth pre-pass for point-light
+  shadows or AO, shadow-map casters, realistic flashlight, AO receivers) and the early-Z split
+  pair (`gx::early_z_split_variants`, shared with the draw path), each for the targets it is
+  drawn into (scene / offscreen / 0214's depth and glow targets). The list therefore only needs
+  each material once, recorded with any settings; every combination of settings is built from
+  it, and a change of those parts rebuilds like an accuracy flag change. Where the draw class is
+  unknown it errs towards building one variant too many.
+- A config first met in play queues its variants at once (one miss, not one per variant).
+- **The game waits for its shaders** (`precache::holdGame`, both executables): the guest does not
+  run before every pipeline the startup rebuild queued is built (Aurora stat `rebuildPending`);
+  the window shows "Preparing shaders... n / m" (nothing for the first 0.3 s, "Loading..." when
+  short). A settings change that queues new variants pauses the game (and its audio) with the
+  same overlay instead of stuttering in play. The settings are applied before the first frame,
+  so the first build is the right one. `LM_PRECACHE_WAIT=0` restores the background compile.
+- MISS log lines name the canonical config, the render target layout and the state (class,
+  depth-only/caster, EFB format, blend, depth, cull, dst alpha).
+- New list: the canonical union of every config recorded on the development machine (all sweeps
+  and test runs of both releases since the config version 15, the user's play sessions
+  `out/play1`/`play2`): **4333 configs** (77 KB). `LM_PIPELINE_EXPORT=<file>` writes the canonical
+  known set (with `LM_PRECACHE_WAIT=0 LM_PIPELINE_EXPORT_EXIT=1` on the first frame and exits):
+  `pipelines.py build -o data/pipelines.bin <export>`.
+
+**Startup (fresh `APPDATA`, i.e. empty `dawn_cache.db`; 8 threads, i9-12900KS):**
+
+| Settings | Pipelines | Cold | Warm |
+|----|----|----|----|
+| Default (Enhanced lighting off), old 5453 list | 1100 | 6.4 s | |
+| User's settings (Enhanced Ultra, ghost/world lights, AO, realistic flashlight, shadow maps) | 8969 | 82.9 s | 1.64 s |
+
+(The first Ultra attempt queued 13103 pipelines in 142 s: enhanced classes for every textured
+config, the depth copies per class, and a first rebuild for Enhanced lighting off before the
+settings were applied. The class test now follows `shader_class`; depth copies are class-free.)
+
+**Coverage check** (`tools/pipelines/verify.py`): scripted routes different from the recording
+sweep's (boot + unskipped opening, every room in reverse order with the fire element and the
+GBH, ghost captures until the room is clear with the hunting aid, the lab, the King Boo and Boo
+balcony entry events, Chauncey, Bogmire, the ending), each with a fresh cache and only the
+shipped list, one game at a time (`--lock`), per F1 preset:
+
+VERIFY_TABLE
+
 **Not covered yet** (these compile on first use, without dropping draws): boss fights past
 their first phase (Bowser, Chauncey: blind input does not play them), the credits after the
 rank screen, the gallery's portrait battles, menus reached only from a save with progress,

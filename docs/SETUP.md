@@ -48,9 +48,11 @@ The LLVM binaries are copied at install time, never committed. Toolchain lookup 
    (`pipelines.bin`) plus any this PC used before, on worker threads, from the first setup
    frame on, so most of it overlaps the disc picking and the module build. When setup was
    shown (first run, `--setup`, a rebuild) and the compile is not finished yet, a
-   "Compiling shaders n / N" step with a progress bar follows; "Play now" leaves the rest to
-   the background. Later launches without the setup screen compile whatever is missing in the
-   background while the title runs (a small corner note shows progress). A draw never waits on
+   "Compiling shaders n / N" step with a progress bar follows. The game itself only starts
+   once every precache pipeline for the current settings is built (Aurora 0217, held before
+   its first frame with a "Preparing shaders... n / m" screen; about a second with a warm
+   cache), and a settings change that needs other shader variants pauses it the same way, so
+   the boot logos, the title and play never stutter on a compile. A draw never waits on
    anything but its own pipeline, and is never skipped (docs/RENDERING.md, "Pipeline precache").
 4. **Launch** the chosen version: open its disc in Aurora's DVD layer, check the DOL
    again, load the module, boot.

@@ -314,8 +314,27 @@ int main(int argc, char* argv[]) {
                 audio::outSetPaused(false);
             }
         }
-        frame::setHostPaused(paused);
+        // Shaders first (precache.h holdGame): at startup the game does not start, and after a
+        // settings change that needs other shader variants it waits, until they are compiled.
+        const bool hold = !exiting && precache::holdGame();
+        static bool sHoldAudio = false;
+        if (hold != sHoldAudio) {
+            sHoldAudio = hold;
+            if (!paused) audio::outSetPaused(hold);
+        }
+        frame::setHostPaused(paused || hold);
         if (exiting || paused) continue;
+        if (hold) {
+            if (!aurora_begin_frame()) continue;
+            menu::draw();  // applies settings changes (they may change what is being compiled)
+            precache::drawHold();
+            precache::frame();
+            aurora_end_frame();
+            // Leave the CPU to the compile threads (no VSync pacing without a game frame).
+            std::this_thread::sleep_for(std::chrono::milliseconds(8));
+            if (menu::quitRequested()) break;
+            continue;
+        }
         pacing::beforeFrame();
         interp::hostMark(0);
         if (!aurora_begin_frame()) continue;

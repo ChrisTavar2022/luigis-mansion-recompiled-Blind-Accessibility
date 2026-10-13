@@ -1,6 +1,7 @@
 // Shader/pipeline precaching: see precache.h and docs/RENDERING.md ("Pipeline precache").
 #include "recomp/precache.h"
 
+#include "recomp/enhanced_lighting.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
 
@@ -54,6 +55,9 @@ void init() {
     // The GX accuracy flags select shader variants; set them before the first frame builds the
     // known pipelines, or the first build is for the default flags and wasted.
     recomp::gx::applyAccuracySettings();
+    // Likewise the enhanced-lighting parts that select shader variants (Aurora 0217): otherwise the
+    // first build is for enhanced lighting off and the second frame queues its variants again.
+    recomp::enh::applySettings();
     // LM_PRECACHE=0: no shipped list (cold-cache testing). LM_PIPELINE_LIST=<file>: another list.
     if (const char* p = std::getenv("LM_PRECACHE"); p && std::atoi(p) == 0) return;
     std::string list;
@@ -61,6 +65,88 @@ void init() {
     else list = (exeDir() / "pipelines.bin").string();
     const uint32_t n = aurora_pipeline_cache_seed(list.c_str());
     if (sLog) log("[precache] %u configs from %s", n, list.c_str());
+}
+
+namespace {
+// Startup: the known set is (re)built on the first frames (Aurora begin_pipeline_frame) once the
+// settings are applied (menu::draw on the first hold frame sets the enhanced-lighting parts, which
+// can queue a second batch on the next frame), so the hold lasts at least kMinHoldFrames frames.
+constexpr int kMinHoldFrames = 3;
+bool sStartupDone = false;
+int sHoldFrames = 0;
+Clock::time_point sHoldStart{};
+bool sHolding = false;
+uint32_t sHoldMax = 0;  // most pending pipelines seen in this hold (the bar's total)
+}  // namespace
+
+bool holdGame() {
+    static const bool sNoWait = [] {
+        const char* v = std::getenv("LM_PRECACHE_WAIT");
+        return v && std::atoi(v) == 0;
+    }();
+    AuroraPipelineStats s{};
+    aurora_pipeline_cache_get_stats(&s);
+    bool hold;
+    if (!sStartupDone) {
+        hold = sHoldFrames < kMinHoldFrames || s.rebuildPending > 0;
+        if (sNoWait && sHoldFrames >= 1) hold = false;
+        if (!hold) {
+            sStartupDone = true;
+            // LM_PIPELINE_EXPORT=<file> (list maintenance, tools/pipelines): write the known set
+            // (shipped list + this cache, canonical form) once loaded.
+            // (with LM_PRECACHE_WAIT=0 the export is written on the first frame, before compiling;
+            // LM_PIPELINE_EXPORT_EXIT=1 then ends the program).
+            if (const char* path = std::getenv("LM_PIPELINE_EXPORT")) {
+                aurora_pipeline_cache_export(path);
+                if (std::getenv("LM_PIPELINE_EXPORT_EXIT")) std::_Exit(0);
+            }
+            log("[precache] game starts after %.2f s of shader preparation (%u pipelines, %u threads)%s",
+                std::chrono::duration<double>(Clock::now() - sHoldStart).count(), s.precacheDone, s.workerThreads,
+                sNoWait ? " (LM_PRECACHE_WAIT=0: not waited for)" : "");
+        }
+    } else {
+        hold = !sNoWait && s.rebuildPending > 0;
+    }
+    if (hold && !sHolding) {
+        sHoldStart = Clock::now();
+        sHoldMax = 0;
+        if (sStartupDone) log("[precache] settings change: game held for %u pipelines", s.rebuildPending);
+    } else if (!hold && sHolding && sStartupDone && sHoldFrames > 0) {
+        log("[precache] resumed after %.2f s", std::chrono::duration<double>(Clock::now() - sHoldStart).count());
+    }
+    sHolding = hold;
+    sHoldMax = std::max(sHoldMax, s.rebuildPending);
+    return hold;
+}
+
+void drawHold() {
+    sHoldFrames++;
+    AuroraPipelineStats s{};
+    aurora_pipeline_cache_get_stats(&s);
+    // With a warm cache the whole set loads in about a second: show nothing for the first moment.
+    const double t = std::chrono::duration<double>(Clock::now() - sHoldStart).count();
+    if (t < 0.3) return;
+    const uint32_t total = std::max(sHoldMax, 1u);
+    const uint32_t done = total - std::min(s.rebuildPending, total);
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float scale = std::max(1.0f, vp->WorkSize.y / 720.0f);
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(420 * scale, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.85f);
+    ImGui::Begin("##preparing", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove);
+    ImGui::SetWindowFontScale(scale);
+    if (sHoldMax < 64 && t < 2.0) {
+        ImGui::TextUnformatted("Loading...");
+    } else {
+        ImGui::Text("Preparing shaders... %u / %u", done, total);
+        ImGui::ProgressBar(float(done) / float(total), ImVec2(-1, 0), "");
+        ImGui::TextDisabled(sStartupDone ? "New graphics settings: the game continues when this is done."
+                                             : "Once per graphics setup; later starts take about a second.");
+    }
+    ImGui::End();
 }
 
 Progress progress() {
@@ -102,7 +188,8 @@ void frame() {
     // setup, after a driver update or a settings change that needs other shaders). Loading the
     // whole list from the shader cache takes about 1 s on every launch, so the note only appears
     // once that is clearly exceeded, i.e. when shaders are really being compiled.
-    if (s.precacheDone < s.precacheTotal && now - start > std::chrono::seconds(4)) {
+    // (Only without the hold, LM_PRECACHE_WAIT=0; single new configs met in play compile unnoticed.)
+    if (!sHolding && s.rebuildPending > 0 && now - start > std::chrono::seconds(4)) {
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 8, vp->WorkPos.y + vp->WorkSize.y - 8),
                                 ImGuiCond_Always, ImVec2(1, 1));
@@ -111,7 +198,7 @@ void frame() {
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                          ImGuiWindowFlags_NoNav);
-        ImGui::Text("Compiling shaders %u / %u", s.precacheDone, s.precacheTotal);
+        ImGui::Text("Compiling shaders: %u left", s.rebuildPending);
         ImGui::End();
     }
 }
