@@ -475,7 +475,7 @@ following), parts of Luigi (the flashlight) blink out, and the damage blink look
 
 ### What it does now
 
-1. **Aurora 0191** (`patches/aurora/0191-early-z-split-cache-merge.patch`): the split decision and
+1. **Aurora 0192** (`patches/aurora/0192-early-z-split-cache-merge.patch`): the split decision and
    its two pipelines are cached with the draw cache, and while interpolating
    (`GX_AURORA_ACCURACY_EARLY_Z_MERGE`, set by `gx::applyAccuracySettings` when the frame-rate
    target is above 30) consecutive draws with the same state merge into one split pair (both halves
@@ -551,9 +551,9 @@ lower than on an idle machine; the comparison is fair):
 | | presented | step error p95 / p99 / max | stalls | alpha-1 presents |
 |---|---|---|---|---|
 | before (main: early-Z unmerged, old pacing; earlier run, 1 other instance) | 36 fps (27.8 ms intervals) | (pre-metric: G - t error p99 2.8 ms at 36 fps) | | 31 |
-| old pacing, 0191 | 71.8 fps | 9.27 / 12.69 / 19.19 ms | 10 | 73 |
-| **new pacing, 0191** | 86.9 fps | **3.59 / 7.12 / 10.39 ms** | **0** | 3 |
-| new pacing, 0191, less load | 99.0 fps | 2.99 / 3.61 / 5.41 ms | 0 | 2 |
+| old pacing, 0192 | 71.8 fps | 9.27 / 12.69 / 19.19 ms | 10 | 73 |
+| **new pacing, 0192** | 86.9 fps | **3.59 / 7.12 / 10.39 ms** | **0** | 3 |
+| new pacing, 0192, less load | 99.0 fps | 2.99 / 3.61 / 5.41 ms | 0 | 2 |
 | 144 target, VSync off, old pacing (run at the same time as the next) | 105.7 fps | 8.73 / 13.94 / 21.84 ms | 44 | 107 |
 | **144 target, VSync off, new pacing** | 101.0 fps | **3.22 / 3.64 / 4.59 ms** | **0** | 0 |
 
