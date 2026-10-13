@@ -141,7 +141,7 @@ index 1568405..2803b59 100644
 @@ -203,6 +232,7 @@ struct Fx {
    bloom2: vec4f, // scene highlights amount, emissive amount, light glow amount, light count
    glowdepth: vec4f, // glow depth pass: source scale xy (glow -> target pixels), reversed z, bias
-   xl: array<vec4f, 32>, // light glows: view pos + core radius, color * intensity
+   xl: array<vec4f, 36>, // light shadows (0187: 16 lights): see fs_xlshadow / cube_occlusion
 +  beam: array<vec4f, 16>, // 0196 realistic flashlight (see fs_beam)
  };
  @group(0) @binding(0) var<uniform> fx: Fx;
@@ -494,11 +494,11 @@ index 1568405..2803b59 100644
 @@ -838,8 +1197,9 @@ struct FxUniform {
    float bloom2[4];
    float glowdepth[4];
-   float xl[32][4];
+   float xl[36][4];
 +  float beam[16][4]; // 0196
  };
--static_assert(sizeof(FxUniform) == 224 + 32 + 512);
-+static_assert(sizeof(FxUniform) == 224 + 32 + 512 + 256);
+-static_assert(sizeof(FxUniform) == 224 + 32 + 576);
++static_assert(sizeof(FxUniform) == 224 + 32 + 576 + 256);
  
  constexpr uint32_t MaxBloomLevels = 6;
  constexpr auto HdrFormat = wgpu::TextureFormat::RGBA16Float;
