@@ -427,6 +427,19 @@ const gx::DisplayCopy& gx::displayCopy() { return sDisplayCopy; }
 
 void gx::recheckDrawState() { sRawCheck = true; }
 
+bool gx::smoothBandingForced() {
+    return !port::settings().rendering.smoothBanding && enh::masterOn();
+}
+
+int gx::smoothBandingLevel() {
+    static const int sForce = [] {
+        const char* e = std::getenv("LM_SMOOTH_BANDING");
+        return e ? std::clamp(std::atoi(e), 0, 2) : -1;
+    }();
+    if (sForce >= 0) return sForce;
+    return port::settings().rendering.smoothBanding || smoothBandingForced() ? 1 : 0;
+}
+
 // F1 > Visuals > Rendering accuracy options -> Aurora. Test overrides: LM_ACCURACY=<mask>
 // (bit 0 integer TEV, bit 1 EFB color depth, bit 2 texture copy filter, bit 3 6-bit blending, bit 4 early-Z alpha
 // depth) and LM_ACCURACY_AB=<seconds>
@@ -443,6 +456,11 @@ void gx::applyAccuracySettings() {
                      ? GX_AURORA_ACCURACY_EARLY_Z_MERGE
                      : 0) |
                 (r.textureCopyFilter ? GX_AURORA_ACCURACY_COPY_FILTER : 0);
+    // Smooth color banding (Aurora 0190): an enhancement on top of the EFB color depth; enhanced
+    // lighting forces at least the plain smoothing (docs/RENDERING.md "Smooth color banding").
+    const int smooth = gx::smoothBandingLevel();
+    if (r.efbColorDepth && smooth > 0)
+        flags |= GX_AURORA_ACCURACY_EFB_SMOOTH | (smooth == 1 ? GX_AURORA_ACCURACY_EFB_SMOOTH_NOISE : 0);
     static const char* sMask = std::getenv("LM_ACCURACY");
     if (sMask) flags = u32(std::strtoul(sMask, nullptr, 0));
     static const double sAb = [] {

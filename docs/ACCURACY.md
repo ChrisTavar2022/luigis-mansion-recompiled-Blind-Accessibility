@@ -491,3 +491,39 @@ Not done: the mouth/hose flicker fix (candidate 1). `AURORA_FIFO_INLINE=1` is av
 test; at 30 fps draws still read guest arrays from Aurora's FIFO thread, while above 30 fps the
 interpolation tape already copies the arrays at draw time. The 0170 depth-only pipeline variants
 are not in `data/pipelines.bin` (built on first use).
+
+## 11. Where LM's color banding comes from (branch `deband`, 2026-10-12)
+
+Measured with native frame dumps (`LM_FRAME_DUMP`, nursery `LM_START_MAP=2 LM_START_APPEAR=1
+LM_TEST_STATE=poltergust`, flashlight, lightning, GBH; Original 30, 4:3, render scale 1) and window
+captures at render scale 3 (1920x1440), accurate build vs the same build with `LM_ACCURACY=0x15`
+(EFB color depth and 6-bit blending off = 8-bit everywhere).
+
+- **The RGB565 scene copy is the main source.** Every 3D frame is copied to RGB565
+  (`fn_8005F518`) and pasted back (`fn_8005F8B8`), so the whole scene has 32 levels of red and blue
+  and 64 of green. In dark rooms (R ~15-25, B ~35-45 of 255) one 5-bit step is 8 levels, 20-50 % of
+  the value, and red/blue steps fall in different places than green ones: dark walls, ceilings and
+  the floor break up into greenish and bluish blotches with contour lines (render-scale-3 ceiling
+  crop: the most visible banding in the game).
+- **The RGBA6 EFB** adds 64-level contours in the beam, its pool and lit gradients. LM draws its
+  J3D models (`loadDither(0)`, ~34k `GXSetDither` calls per scene) and the room geometry
+  (`fn_8001497C`) with dither **off**, so these are pure truncation steps; dither is on only for
+  the display reset / 2D setup (`LMResetRenderDisplay`, `fn_80009B80`) and a few effects
+  (`LM_TRACE=801F8CAC`). Dither therefore hides little banding in LM; the port follows the
+  game's per-draw choice (`GXSetDither` -> BP 0x41 bit 2 -> `ShaderConfig::dither`, 0180 matrix).
+- **6-bit blending (0176)** only touches blended draws (HUD edges, glows, beam halo); small share.
+- **Fog**: LM never enables fog (`GX_FOG_NONE` everywhere), so fog contributes nothing.
+- **Copies to RAM** do not change the picture: the scene copy is read back with its own format
+  (exact match, fast texture) and the encode/decode path is bit-exact.
+- Accurate frames are 100 % RGBA6 values (6-bit share 1.000 in every dump), ~3600-5100 distinct
+  colors per dark frame vs ~37000-75000 at 8 bits; in smooth dark areas 66 % of horizontal
+  neighbours are equal and 28 % differ by a full step (4-8 levels), at 8 bits 38 % / 10 %.
+- The truncations also **darken and tint**: plain 8-bit rendering is +3.1 (R) / +1.6 (G) / +4.5 (B)
+  levels brighter on average in the dark nursery (the 5-bit copy drops ~2 levels of red and blue,
+  each undithered EFB write ~1.5). So "just render in 8 bits" changes the game's colors (bluer,
+  lighter blacks), which is why the smoothing option below models the means instead.
+
+The enhancement (Aurora 0190, F1 > Visuals > Rendering "Smooth color banding", off by default) is
+described in docs/RENDERING.md "Smooth color banding". It is not an accuracy fix: with it off the
+frames are byte-identical to the accurate pipeline (23/23 nursery frames incl. lightning, beam and
+GBH, against main's build).

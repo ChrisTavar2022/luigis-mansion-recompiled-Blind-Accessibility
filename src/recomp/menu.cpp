@@ -178,6 +178,26 @@ void renderingTab() {
         "console: the same banding and dither grain as the rest of the image at their edges and\n"
         "see-through parts instead of smooth 8-bit gradients. Subtle in this game.\n"
         "Costs a few full-screen passes per frame (well under 1 ms at 1440p; more with MSAA).");
+    {
+        // Enhancement on top of the 6-bit framebuffer (Aurora 0190); OFF = the console's look.
+        const bool forced = recomp::gx::smoothBandingForced();
+        bool on = forced || r.smoothBanding;
+        ImGui::BeginDisabled(forced);
+        if (ImGui::Checkbox("Smooth color banding", &on)) {
+            r.smoothBanding = on;
+            sDirty = true;
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip(
+            "The console's 6-bit framebuffer and the 5-bit screen copy the game redraws every frame\n"
+            "turn smooth gradients (dark rooms, the flashlight beam and its pool, glows) into visible\n"
+            "bands and greenish/bluish blotches, partly hidden by dither grain. On: the same colors and\n"
+            "brightness as the accurate picture, but each band is drawn as the smooth average of its\n"
+            "steps (plus an invisible sub-step noise against the PC's own 8-bit steps): no contour\n"
+            "lines, no blotches, no grain. Off: exactly what the GameCube outputs (default).\n"
+            "No measurable cost.%s",
+            forced ? "\n\nOn while Enhanced lighting is on (its lighting gradients and bloom band in 6 bits)." : "");
+    }
     ImGui::Unindent();
     ImGui::EndDisabled();
     sDirty |= ImGui::Checkbox("Early depth for cut-out textures", &r.earlyZAlphaDepth);
@@ -1003,6 +1023,22 @@ void draw() {
         ImGui::PopItemWidth();
         // Quit (with confirmation): ends the host loop the same way closing the window does.
         ImGui::Separator();
+        if (ImGui::Button("Restore all defaults")) ImGui::OpenPopup("Restore defaults?");
+        ImGui::SetItemTooltip("Every setting in this menu (including controller bindings) goes back to its\n"
+                              "first-install default. Save files are not touched.");
+        if (ImGui::BeginPopupModal("Restore defaults?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Restore every setting to its default? This cannot be undone.");
+            ImGui::TextDisabled("A few options (marked in their tooltips) apply on the next launch.");
+            if (ImGui::Button("Restore defaults")) {
+                port::resetSettingsToDefaults();
+                sDirty = false;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        ImGui::SameLine();
         if (ImGui::Button("Quit game")) ImGui::OpenPopup("Quit?");
         if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::Text("Quit Luigi's Mansion? Unsaved progress will be lost.");

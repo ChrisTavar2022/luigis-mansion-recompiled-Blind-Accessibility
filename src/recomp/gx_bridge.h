@@ -13,6 +13,12 @@ struct DisplayCopy {
 const DisplayCopy& displayCopy();
 // Pushes the F1 > Visuals > Rendering accuracy options to Aurora (host thread, every frame).
 void applyAccuracySettings();
+// Effective "Smooth color banding" (Aurora 0190): 0 off, 1 smooth + sub-step noise (the option),
+// 2 smooth without the noise (A/B test only). The setting, forced on while enhanced lighting is
+// on; LM_SMOOTH_BANDING=<0-2> overrides (test aid).
+int smoothBandingLevel();
+// Enhanced lighting is what forces smoothing on (for the F1 menu note).
+bool smoothBandingForced();
 
 // Re-evaluate the per-draw state (projection, enhanced-lighting draw class) before the next
 // draw written straight into the FIFO by game code.

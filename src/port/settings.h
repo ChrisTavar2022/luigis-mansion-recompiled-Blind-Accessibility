@@ -131,6 +131,13 @@ struct RenderingSettings {
     // are stored like the console's RGBA6 framebuffer stores them, the blend result dithered and
     // truncated to 6 bits (GX_AURORA_ACCURACY_EFB_BLEND, Aurora 0176).
     bool efbBlend6 = true;
+    // Smooth color banding (enhancement, OFF = vanilla-accurate): with efbColorDepth, the 6-bit
+    // framebuffer and the game's RGB565 screen copy store the local average of the console's
+    // 6/5-bit result instead of its steps, so gradients keep the same brightness and tint without
+    // contour bands or dither grain, plus a sub-step noise so the 8-bit target does not band either
+    // (Aurora 0190, GX_AURORA_ACCURACY_EFB_SMOOTH + _NOISE). Forced on while enhanced lighting is on
+    // (its per-pixel gradients and bloom band badly in 6 bits).
+    bool smoothBanding = false;
     // Early Z writes depth for alpha-tested pixels: draws that compare Z before texturing
     // (GXSetZCompLoc(GX_TRUE)) update Z even where the alpha test then rejects the pixel, as the
     // hardware does (GX_AURORA_ACCURACY_EARLY_Z, Aurora 0170/0179: depth-only pass + colour pass).
@@ -291,6 +298,9 @@ struct Settings {
 Settings& settings();
 void loadSettings();
 void saveSettings();
+// Every setting (the table and all extensions, e.g. controller bindings) back to its first-install
+// default, then saved.
+void resetSettingsToDefaults();
 std::string settingsPath();
 // Sets one ini key of the table (as if read from settings.ini, then sanitized); false when the
 // key is unknown. Not saved. Used by the LM_SETTINGS_AT test aid (menu.cpp).
