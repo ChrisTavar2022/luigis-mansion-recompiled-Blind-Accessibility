@@ -310,7 +310,9 @@ void keepWarm(double gpu, double period) {
         if (w.units) aurora_set_gpu_keep_warm(w.units = 0);
         return;
     }
-    w.heavy *= std::pow(0.5, period / 20.0);
+    // (Held while filling: a long menu must not lower the level the GPU is kept at; measured at
+    // 120 fps the filler fell to 40% of the period over 5 s and the clocks dropped anyway.)
+    if (w.units == 0) w.heavy *= std::pow(0.5, period / 20.0);
     // (A frame longer than the period is a hitch or an overload, not the level to hold.)
     if (w.units == 0 && gpu < period) w.heavy = std::max(w.heavy, gpu);
     const double want = std::min(w.heavy, 0.6 * period);
@@ -385,8 +387,13 @@ struct Governor {
     double limit = 0;  // s: the frame period the PC sustains (0: the target holds)
     double floor = 0;  // s: a period that failed recently
     Clock::time_point floorUntil{}, holdUntil{}, prevStart{};
-    std::deque<std::pair<Clock::time_point, double>> intervals;  // recent start intervals (no hitches)
-    std::deque<Clock::time_point> misses;
+    struct Interval {
+        Clock::time_point t;
+        double iv;   // s
+        bool late;   // > 8% over the period it was scheduled at
+        bool miss;   // > 25% over it
+    };
+    std::deque<Interval> intervals;  // the last second's start intervals (no hitches)
     u32 hitches = 0, slowdowns = 0;
 };
 Governor sGov;
@@ -398,43 +405,48 @@ void governFrame(Clock::time_point start, double expected, double target, bool s
     g.prevStart = start;
     if (!sameMode || prev == Clock::time_point{} || expected <= 0) return;
     const double iv = secs(start - prev);
-    while (!g.intervals.empty() && start - g.intervals.front().first > std::chrono::milliseconds(1000)) g.intervals.pop_front();
-    while (!g.misses.empty() && start - g.misses.front() > std::chrono::milliseconds(1000)) g.misses.pop_front();
+    while (!g.intervals.empty() && start - g.intervals.front().t > std::chrono::milliseconds(1000)) g.intervals.pop_front();
     if (iv > std::max(3.0 * expected, expected + 0.05)) {
         g.hitches++;  // a load or compile: not a sign the PC cannot hold the rate
         return;
     }
-    g.intervals.emplace_back(start, iv);
-    if (iv > expected * 1.25) g.misses.push_back(start);
+    // Each interval is judged against the period it was scheduled at (while speeding up, the
+    // period shrinks every frame: judging the last second against the newest one counted on-time
+    // frames as late and locked a 90 fps target at 20-45 fps).
+    g.intervals.push_back({start, iv, iv > expected * 1.08, iv > expected * 1.25});
+    size_t late = 0, misses = 0;
+    for (const auto& i : g.intervals) {
+        late += i.late ? 1 : 0;
+        misses += i.miss ? 1 : 0;
+    }
+    const size_t n = g.intervals.size();
     // Slightly late most of the time (the frame costs a little more than the period, e.g. 8-11 ms
     // at a 116 fps cap): intervals that alternate between the period and a bit more are uneven
     // motion on a VRR display; an even rate a little lower is smoother.
-    size_t late = 0;
-    for (const auto& [t, d] : g.intervals) late += d > expected * 1.08 ? 1 : 0;
-    const bool chronic = g.intervals.size() >= 20 && late * 2 >= g.intervals.size();
+    const bool chronic = n >= 20 && late * 2 >= n;
     // Sustained: a quarter of the last second's frames (at least 4) late. A few slow frames in a
     // row (a scene switch: new textures, the first frames of a room) are not.
-    if (chronic || g.misses.size() >= std::max<size_t>(4, g.intervals.size() / 4)) {
-        // Sustained: the rate actually achieved over the last half second, plus 3%.
+    const bool sustained = n >= 15 && misses >= std::max<size_t>(4, n / 4);
+    if (chronic || sustained) {
+        // The rate actually achieved over the last half second, plus 3%.
         double sum = 0;
-        u32 n = 0;
-        for (const auto& [t, d] : g.intervals)
-            if (start - t <= std::chrono::milliseconds(500)) sum += d, n++;
-        const double achieved = n ? sum / n : iv;
+        u32 k = 0;
+        for (const auto& i : g.intervals)
+            if (start - i.t <= std::chrono::milliseconds(500)) sum += i.iv, k++;
+        const double achieved = k ? sum / k : iv;
         const double lim = std::max({achieved * 1.03, expected * 1.05, g.limit});
         log("[pacing] frame rate not sustained (%zu of %zu frames late in 1 s, %zu by >25%%; %.1f ms achieved vs %.1f ms): "
             "limited to %.1f fps",
-            late, g.intervals.size(), g.misses.size(), achieved * 1000.0, expected * 1000.0, 1.0 / lim);
+            late, n, misses, achieved * 1000.0, expected * 1000.0, 1.0 / lim);
         g.limit = lim;
         g.floor = lim * 0.97;
         g.floorUntil = start + std::chrono::seconds(10);
         g.holdUntil = start + std::chrono::milliseconds(1000);
-        g.misses.clear();
         g.intervals.clear();  // judged afresh at the new period
         g.slowdowns++;
         return;
     }
-    if (g.limit > 0 && start >= g.holdUntil && g.misses.empty() && late * 3 < g.intervals.size()) {
+    if (g.limit > 0 && start >= g.holdUntil && misses == 0 && late * 3 < n) {
         g.limit *= 0.98;
         if (start < g.floorUntil) g.limit = std::max(g.limit, g.floor);
         if (g.limit <= target * 1.005) g.limit = 0;

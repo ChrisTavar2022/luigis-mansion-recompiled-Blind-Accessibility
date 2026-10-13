@@ -1123,9 +1123,12 @@ takes correspondingly longer. 2147 of the 5453 configs only occur with Enhanced 
 (off by default). The remaining Enhanced-lighting MISSes are **not list gaps**: the precache
 builds each known config for the scene and offscreen render-target layouts only, while
 Enhanced lighting draws known configs into its own targets (glow layout, the depth-only
-pre-pass, light shadow maps), and `pipeline_cache.db` does not record the layout. Closing them
-needs Aurora to remember the layout per config (or to precache those layouts for the configs
-Enhanced lighting derives) - and could skip Enhanced-only configs while it is off.
+pre-pass, light shadow maps), and `pipeline_cache.db` does not record the layout.
+**Closed by Aurora 0214** (fps-lock, docs/INTERPOLATION.md "Pass 5"): the layout follows from
+the config itself - depthOnly / lightDepth variants are built for the depth-only target (only),
+glow-shaped ones (additive, no depth/alpha writes, dstAlpha off) also for the glow target. A
+10-minute foyer run with enhanced Ultra: 64 MISSes -> 0. (Enhanced-only configs are still built
+while it is off.)
 
 `pipelines.py info <list|db>` summarises a list; `aurora_pipeline_cache_export` writes the
 current known set in the same format.
