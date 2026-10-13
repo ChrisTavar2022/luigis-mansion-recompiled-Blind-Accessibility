@@ -507,6 +507,7 @@ HLE(fn_80009148) {
 }
 
 HLE(fn_80055C54) {
+    ws::WipeScope wipe;  // widescreen: the mask covers the whole width (widescreen.h)
     if (ver::pal()) return hm::callWithoutFlag(c, "fn_80055C54");
     sInWipe = hm::mirrorActive();
     callOriginal(c, "fn_80055C54");
