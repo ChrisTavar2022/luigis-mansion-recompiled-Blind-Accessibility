@@ -275,6 +275,16 @@ void beforeFrame() {
     const float hz = frame::displayRefreshHz();
     const int fps = frame::targetFps();
     detectVrr(hz);
+    if (v.unlimitedFps) {
+        // Unlimited: no schedule, no cap and no wait for the GPU; each frame starts as soon as the
+        // previous one is handed over (only the swap chain's VSync, if on, still limits it).
+        sMode = Mode::Off;
+        sNext = now;
+        sStarts.push_back(now);
+        while (sStarts.size() > 1 && sStarts.back() - sStarts.front() > std::chrono::seconds(1)) sStarts.pop_front();
+        std::snprintf(sStatus, sizeof(sStatus), "%.0f fps (unlimited%s)", presentedFps(), v.vsync ? ", VSync on" : "");
+        return;
+    }
     const bool vrr = vrrActive();
     const double need = costP90() * 1.08 + 0.0003;  // what one frame takes, with a margin
     const double minPeriod = 1.0 / double(fps);
@@ -341,7 +351,9 @@ void beforeFrame() {
     sStarts.push_back(Clock::now());
     while (sStarts.size() > 1 && sStarts.back() - sStarts.front() > std::chrono::seconds(1)) sStarts.pop_front();
     const float shown = presentedFps();
-    const char* why = need > minPeriod * 1.02 ? " (frame cost limits)" : "";
+    char why[64] = "";
+    if (need > minPeriod * 1.02)
+        std::snprintf(why, sizeof(why), " (frame cost limits: %.1f ms > %.1f ms)", need * 1000.0, minPeriod * 1000.0);
     if (mode == Mode::Fifo)
         std::snprintf(sStatus, sizeof(sStatus), "%.0f fps (%.0f Hz)", shown, hz);
     else if (mode == Mode::Vblank)

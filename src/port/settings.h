@@ -21,6 +21,7 @@ struct VideoSettings {
     // above 30 the frames in between are interpolated (src/recomp/interp.*). matchDisplay
     // uses the refresh rate of the display the window is on instead of targetFps.
     int targetFps = 30;         // kMinFps..kMaxFps
+    bool unlimitedFps = false;  // interpolated, as fast as the PC can (no frame-rate cap or schedule)
     bool matchDisplay = false;
     AspectMode aspect = AspectMode::Auto;
     int resolutionScale = 0;    // internal render resolution: 0 = match window, N = N x 480p (aspect-widened)

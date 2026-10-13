@@ -58,6 +58,7 @@ std::vector<Field> fields() {
     auto& u = sSettings.unused2;
     return {
         num("video", "target_fps", v.targetFps),
+        flag("video", "unlimited_fps", v.unlimitedFps),
         flag("video", "match_display_refresh", v.matchDisplay),
         enm("video", "aspect", v.aspect),
         num("video", "resolution_scale", v.resolutionScale),

@@ -810,12 +810,21 @@ void frameRateControls(port::VideoSettings& v) {
     if (v.matchDisplay) std::snprintf(label, sizeof(label), "%d fps (display)", target);
     else if (v.targetFps <= port::kMinFps) std::snprintf(label, sizeof(label), "30 fps (original)");
     else std::snprintf(label, sizeof(label), "%d fps", v.targetFps);
-    ImGui::BeginDisabled(v.matchDisplay);
+    if (v.unlimitedFps) std::snprintf(label, sizeof(label), "Unlimited");
+    ImGui::BeginDisabled(v.matchDisplay || v.unlimitedFps);
     sDirty |= ImGui::SliderInt("Frame rate", &v.targetFps, port::kMinFps, port::kMaxFps, label, ImGuiSliderFlags_AlwaysClamp);
     ImGui::EndDisabled();
     const bool sliderHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+    ImGui::BeginDisabled(v.unlimitedFps);
     sDirty |= ImGui::Checkbox("Match display refresh rate", &v.matchDisplay);
-    const bool checkHovered = ImGui::IsItemHovered();
+    ImGui::EndDisabled();
+    const bool checkHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+    sDirty |= ImGui::Checkbox("Unlimited frame rate", &v.unlimitedFps);
+    ImGui::SetItemTooltip("Interpolated frames as fast as the PC can draw them: no frame-rate target, no frame\n"
+                          "pacing and no cap below the display's refresh rate (the game itself still runs at 30).\n"
+                          "With VSync on, the display's refresh rate still limits it (with G-SYNC the frame\n"
+                          "rate can then sit right at the refresh rate); turn VSync off for a truly unlimited\n"
+                          "rate. Uneven frame times can look less smooth than a paced target.");
     if (v.matchDisplay && hz > 0) {
         ImGui::SameLine();
         ImGui::TextDisabled("(%.0f Hz)", hz);

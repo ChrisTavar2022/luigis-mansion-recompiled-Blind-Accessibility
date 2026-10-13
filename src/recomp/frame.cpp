@@ -139,6 +139,7 @@ float displayRefreshHz() {
 int targetFps() {
     const auto& v = port::settings().video;
     int fps = v.targetFps;
+    if (v.unlimitedFps) return port::kMaxFps;
     if (v.matchDisplay) {
         const float hz = displayRefreshHz();
         fps = hz > 0 ? int(std::lround(hz)) : 60;
