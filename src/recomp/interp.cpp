@@ -2434,6 +2434,9 @@ struct Pacer {
     std::deque<double> samples;                        // per tape: finished - predecessor's game time
     u64 lastSeq = 0;
     u32 stalls = 0, snaps = 0, stallRun = 0;
+    bool stalledNow = false;  // this present: g held at the newest tape
+    double behindSum = 0;     // shown game time behind the newest game frame (s), summed per present
+    u32 behindN = 0;
     // Smoothed tape times (s) by seq. The stamp of a frame is the retrace count at its present,
     // so a frame whose work ends just after a retrace is stamped a field late and the next one a
     // field early: steps of 1 and 3 fields in a steady 30 fps game (3-4% of frames in the foyer),
@@ -2529,6 +2532,9 @@ int pace(const std::vector<std::shared_ptr<const Tape>>& q, Clock::time_point no
         const double next = p.g + dClk;
         p.g = next + std::clamp((target - next) * 0.1, -0.05 * dClk, 0.05 * dClk);
     }
+    p.stalledNow = p.g > newest;
+    p.behindSum += std::max(0.0, newest - p.g);
+    p.behindN++;
     if (p.g > newest) {
         p.g = newest;
         p.stalls++;
@@ -2558,6 +2564,7 @@ int pace(const std::vector<std::shared_ptr<const Tape>>& q, Clock::time_point no
 }
 
 PresentInfo sLastPresent;
+u64 sStatsSeq = 0;  // newest tape at the start of the stats window: game frames made = newest - this
 PresentInfo lastPresent() { return sLastPresent; }
 
 bool replay(bool final) {
@@ -2607,6 +2614,15 @@ bool replay(bool final) {
     sLastPresent.present++;
     sLastPresent.bSeq = b->seq;
     sLastPresent.alpha = final || !a ? 1.0f : alpha;
+    sLastPresent.stalled = sPacer.stalledNow;
+    sPacer.stalledNow = false;
+    {
+        std::lock_guard lk(sM);
+        if (sNewest) {
+            sLastPresent.newestSeq = sNewest->seq;
+            sLastPresent.newestDone = std::chrono::duration<double>(sNewest->done.time_since_epoch()).count();
+        }
+    }
     judderLine("R %.1f %llu %llu %.4f %.3f %.2f %u %llu\n", judderUs(r0), (unsigned long long)b->seq,
                (unsigned long long)(a && !final ? a->seq : 0), alpha,
                a && !final ? double(a->retrace) + alpha * double(b->retrace - a->retrace) : double(b->retrace),
@@ -2668,11 +2684,11 @@ bool replay(bool final) {
     }
     const double elapsed = std::chrono::duration<double>(Clock::now() - sStatsStart).count();
     if (elapsed >= 5.0) {
-        log("[interp] presented %.1f fps, game %.1f fps, tape %.0f KiB + arrays %.0f KiB + new texture copies %.0f KiB, "
+        log("[interp] presented %.1f fps, game %.1f fps (shown %.1f), tape %.0f KiB + arrays %.0f KiB + new texture copies %.0f KiB, "
             "per tape %.0f paired / %.0f "
             "unpaired; per present %u blended / %u snapped; %u cut presents; tape close %.2f ms (guest: arrays %.2f, "
-            "copy %.2f, draws %.2f, rest %.2f, cut %.2f), replay %.2f ms (host); pacing delay %.1f ms, %u stalls, %u resyncs",
-            sPresented / elapsed, sTapes / elapsed, sTapes ? double(sTapeBytes) / sTapes / 1024.0 : 0.0,
+            "copy %.2f, draws %.2f, rest %.2f, cut %.2f), replay %.2f ms (host); shown %.1f ms behind the newest game frame, %u stalls, %u resyncs",
+            sPresented / elapsed, sStatsSeq ? double(sLastPresent.newestSeq - sStatsSeq) / elapsed : 0.0, sTapes / elapsed, sTapes ? double(sTapeBytes) / sTapes / 1024.0 : 0.0,
             sTapes ? double(sArrayBytes) / sTapes / 1024.0 : 0.0, sTapes ? double(sTexBytes) / sTapes / 1024.0 : 0.0,
             sTapes ? double(sPairedSum) / sTapes : 0.0,
             sTapes ? double(sUnpairedSum) / sTapes : 0.0, sPresented ? sBlended / sPresented : 0,
@@ -2680,12 +2696,15 @@ bool replay(bool final) {
             sTapes ? double(sPhaseUs[0]) / sTapes / 1000.0 : 0.0, sTapes ? double(sPhaseUs[1]) / sTapes / 1000.0 : 0.0,
             sTapes ? double(sPhaseUs[2]) / sTapes / 1000.0 : 0.0, sTapes ? double(sPhaseUs[3]) / sTapes / 1000.0 : 0.0,
             sTapes ? double(sPhaseUs[4]) / sTapes / 1000.0 : 0.0,
-            sPresented ? double(sReplayUs) / sPresented / 1000.0 : 0.0, sPacer.d * 1000.0, sPacer.stalls, sPacer.snaps);
+            sPresented ? double(sReplayUs) / sPresented / 1000.0 : 0.0, sPacer.behindN ? sPacer.behindSum / sPacer.behindN * 1000.0 : 0.0, sPacer.stalls, sPacer.snaps);
+        sPacer.behindSum = 0;
+        sPacer.behindN = 0;
         sPacer.stalls = sPacer.snaps = 0;
         sPresented = sTapes = sBlended = sSnapped = sCuts = 0;
         sTapeBytes = sArrayBytes = sTexBytes = sPairedSum = sUnpairedSum = sGuestUs = sReplayUs = 0;
         std::fill(std::begin(sPhaseUs), std::end(sPhaseUs), 0ull);
         sStatsStart = Clock::now();
+        sStatsSeq = sLastPresent.newestSeq;
     }
     return true;
 }
