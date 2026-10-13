@@ -112,6 +112,11 @@ struct Tape {
     // Per draw, bits: 1 an EFB copy is bound as a texture (never faded), 2 drawn in a snap scope
     // (setSnapScope: characters, Luigi): appears/vanishes at the game frame, never faded.
     std::vector<u8> bundleCopy;
+    // Per draw: one of a swarm (many draws of one identity: dust, sparkles, smoke puffs). Those
+    // are paired only where the pair is unambiguous (mutual nearest); the others are shown as
+    // this tape's particles placed under the in-between camera, never dithered or drawn from the
+    // previous tape (pairTapes, findFades).
+    std::vector<u8> bundleSwarm;
     // Fades (pairTapes): draws of this tape without a partner fade in; draws of pairedWith
     // without a partner fade out, drawn from pairedWith's commands at `.second` (an offset
     // in this tape: after the draw paired with the closest earlier paired draw).
@@ -241,6 +246,11 @@ void judderLine(const char* fmt, ...) {
     std::vfprintf(sJudder, fmt, ap);
     va_end(ap);
 }
+// LM_INTERP_SWARM=any: swarm particles paired greedily (second choices too), as before;
+// =fades: unpaired particles fade in/out (dither) as before; =old: both. Test aids (A/B).
+const char* const sSwarmEnv = std::getenv("LM_INTERP_SWARM") ? std::getenv("LM_INTERP_SWARM") : "";
+const bool sSwarmAny = std::strcmp(sSwarmEnv, "any") == 0 || std::strcmp(sSwarmEnv, "old") == 0;
+const bool sSwarmFades = std::strcmp(sSwarmEnv, "fades") == 0 || std::strcmp(sSwarmEnv, "old") == 0;
 u32 sCrossCamera = 0;  // per replay: values whose partner was drawn under another camera (trace)
 u32 sSnapKinds[kKinds];
 bool sLogSnaps = false;  // LM_INTERP_TEST + trace: log what one test replay snapped
@@ -294,7 +304,7 @@ bool compatible(const Patch& a, const Patch& b) {
 // the same mesh or two particles of one effect don't swap. `dist(i, j)` compares a[i], b[j].
 template <class Dist>
 void pairNearest(const std::vector<u32>& A, const std::vector<u32>& B, std::vector<s32>& partnerB,
-                 std::vector<u8>& usedA, Dist dist) {
+                 std::vector<u8>& usedA, Dist dist, bool mutual = false) {
     if (A.size() == 1 && B.size() == 1) {
         if (!usedA[A[0]] && partnerB[B[0]] < 0) {
             partnerB[B[0]] = s32(A[0]);
@@ -319,11 +329,20 @@ void pairNearest(const std::vector<u32>& A, const std::vector<u32>& B, std::vect
                 if (const float d = dist(i, j); d < 1e29f) cand.emplace_back(d, i, j);  // too far: never a pair
     }
     std::sort(cand.begin(), cand.end());
-    for (const auto& [d, i, j] : cand)
+    // Mutual: a pair only where each is the other's nearest (sorted: the first candidate of each
+    // index is its nearest); a particle whose nearest was taken by another is left unpaired
+    // instead of taking its second choice (a puff blended toward another puff).
+    static std::unordered_set<u32> seenA, seenB;
+    seenA.clear();
+    seenB.clear();
+    for (const auto& [d, i, j] : cand) {
+        const bool firstA = seenA.insert(i).second, firstB = seenB.insert(j).second;
+        if (mutual && !(firstA && firstB)) continue;
         if (!usedA[i] && partnerB[j] < 0) {
             partnerB[j] = s32(i);
             usedA[i] = 1;
         }
+    }
 }
 
 // The values of one draw: a view into Bundles::flat.
@@ -569,10 +588,16 @@ void findFades(const Tape& a, Tape& b) {
     if (sToggled.size() > 4096)
         for (auto it = sToggled.begin(); it != sToggled.end();)
             it = b.seq - it->second > kBlinkTapes ? sToggled.erase(it) : std::next(it);
-    // LM_INTERP_FADES=0 (off), in, out: test aid.
+    // LM_INTERP_FADES=0 (off), in, out, all: test aid. Default: fade-ins only. Redrawing a's
+    // vanished draws from a's commands (fade-outs, and snapped characters kept until alpha 1) drew
+    // with GX state that was not the draw's own in some frames: a stray flashlight cone across the
+    // room when the vacuum switched it off, a miniature of the whole picture over a black screen
+    // among heavy dust, a small copy of Luigi when his body's draws changed identity. A vanished
+    // draw now vanishes at the first in-between frame (at most one game frame early).
     static const char* sMode = std::getenv("LM_INTERP_FADES") ? std::getenv("LM_INTERP_FADES") : "";
     if (sMode[0] == '0' || b.cut) return;
-    const bool fadeIn = std::strcmp(sMode, "out") != 0, fadeOut = std::strcmp(sMode, "in") != 0;
+    const bool fadeIn = std::strcmp(sMode, "out") != 0;
+    const bool fadeOut = std::strcmp(sMode, "out") == 0 || std::strcmp(sMode, "all") == 0;
     const auto eligible = [](const Tape& t, std::vector<u8>& out) {
         out.assign(t.bundleIds.size(), 0);
         for (const Patch& p : t.patches)
@@ -604,8 +629,9 @@ void findFades(const Tape& a, Tape& b) {
     idsB.clear();
     idsA.insert(a.bundleIds.begin(), a.bundleIds.end());
     idsB.insert(b.bundleIds.begin(), b.bundleIds.end());
+    const auto swarm = [](const Tape& t, u32 k) { return !sSwarmFades && k < t.bundleSwarm.size() && t.bundleSwarm[k]; };
     for (u32 k = 0; k < eB.size() && fadeIn; k++)
-        if (eB[k] && !bPaired[k]) {
+        if (eB[k] && !bPaired[k] && !swarm(b, k)) {
             b.spawns.push_back(k);
             const bool blink = !idsA.count(b.bundleIds[k]) && blinkCheck(b.bundleIds[k], b.seq);
             b.spawnSnap.push_back(u8(snapFlag(b, k) || blink));
@@ -617,7 +643,7 @@ void findFades(const Tape& a, Tape& b) {
             lastB = aToB[k];
             continue;
         }
-        if (!eA[k] || lastB < 0 || u32(lastB) >= b.bundleRange.size()) continue;
+        if (!eA[k] || lastB < 0 || u32(lastB) >= b.bundleRange.size() || swarm(a, k)) continue;
         u32 at = b.bundleRange[lastB][1];
         if (at == ~0u) continue;
         // a's commands are run in order (one pass over a per replay): a draw paired out of order
@@ -662,6 +688,7 @@ void pairTapes(const Tape& a, Tape& b) {
         const bool velA = a.drawVelOk.size() == wa.size();
         std::vector<s32> drawPartner(bb.key.size(), -1);
         std::vector<u8> drawUsed(ba.key.size(), 0);
+        b.bundleSwarm.assign(b.bundleIds.size(), 0);
         auto pairGroups = [&](const std::unordered_map<u64, std::vector<u32>>& ga,
                               const std::unordered_map<u64, std::vector<u32>>& gb) {
         for (const auto& [key, B] : gb) {
@@ -791,17 +818,28 @@ void pairTapes(const Tape& a, Tape& b) {
                     for (u32 i : nowhereA) add(groupDistance(i, j), i, j);
                 }
                 std::sort(keys.begin(), keys.end());
-                for (const u64 k : keys)
-                    if (const auto [i, j] = cand[u32(k)]; !drawUsed[i] && drawPartner[j] < 0) {
+                // Swarms: mutual nearest only (see pairNearest).
+                static std::unordered_set<u32> firstA, firstB;
+                firstA.clear();
+                firstB.clear();
+                for (const u64 k : keys) {
+                    const auto [i, j] = cand[u32(k)];
+                    const bool fa = firstA.insert(i).second, fb = firstB.insert(j).second;
+                    if (!sSwarmAny && !(fa && fb)) continue;
+                    if (!drawUsed[i] && drawPartner[j] < 0) {
                         drawPartner[j] = s32(i);
                         drawUsed[i] = 1;
                     }
+                }
+                for (u32 j : B) b.bundleSwarm[j] = 1;
                 continue;
             }
             // A few draws of one thing (a model drawn in a couple of passes, a handful of
             // identical furniture pieces): nearest first without the motion limit, which is for
             // particle swarms; a model's limbs swing well past it (Luigi's arm starting to walk).
             const bool swarm = A.size() > 8 || B.size() > 8;
+            if (many && swarm)
+                for (u32 j : B) b.bundleSwarm[j] = 1;
             pairNearest(A, B, drawPartner, drawUsed, [&](u32 i, u32 j) {
                 if (many && swarm) {
                     if (wa[i].ok && wb[j].ok) {
@@ -822,7 +860,7 @@ void pairTapes(const Tape& a, Tape& b) {
                     }
                 }
                 return fullDistance(i, j);
-            });
+            }, many && swarm && !sSwarmAny);
         }
         };
         pairGroups(ga, gb);
@@ -1715,6 +1753,8 @@ bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, cons
                 const std::vector<s32>& viewToB) {
     sFadeIns = sFadeOuts = sSnapIns = sSnapOuts = 0;
     if (b.spawns.empty() && (b.dying.empty() || !haveAStart)) return false;
+    static std::vector<u8> skipA;  // a's vanished draws not shown (below)
+    skipA.clear();
     const u8 qIn = u8(std::lround((1.0f - alpha) * 255.0f)), qOut = u8(std::lround(alpha * 255.0f));
     struct Ev {
         u32 at;
@@ -1729,6 +1769,9 @@ bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, cons
         const u32 k = b.spawns[i];
         const bool snap = i < b.spawnSnap.size() && b.spawnSnap[i];
         if (qIn == 0) continue;
+        // Without a's vanished draws (fade-outs off) a snapped spawn is shown at once: hidden until
+        // alpha 1 it left a gap (Luigi's body missing when its draws changed identity).
+        if (snap && b.dying.empty()) continue;
         evs.push_back({b.bundleRange[k][0], 2, k});
         evs.push_back({b.bundleRange[k][1], 0, k});
         snapIn[k] = snap;
@@ -1739,6 +1782,21 @@ bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, cons
         static std::vector<u8> dyingA;
         dyingA.assign(a.bundleIds.size(), 0);
         for (const auto& [k, at] : b.dying) dyingA[k] = 1;
+        // A vanished draw is shown only where its camera has a clear counterpart in b (the two
+        // majority mappings agree) that did not jump: re-expressed through another camera (the
+        // shadow light's) it was drawn small and far off (a stray copy of Luigi for a game frame),
+        // and after a camera jump a's things do not belong in b's picture at all.
+        skipA.assign(a.bundleIds.size(), 0);
+        for (const Patch& q : a.patches) {
+            if (q.bundle >= dyingA.size() || !dyingA[q.bundle] || q.role != 0 || q.view == 0xFFFF) continue;
+            bool ok = q.view < viewToB.size() && viewToB[q.view] >= 0 && u32(viewToB[q.view]) < viewToA.size() &&
+                      viewToA[viewToB[q.view]] == s32(q.view);
+            if (ok) {
+                const ViewPair* vp = viewPair(a, q.view, b, u16(viewToB[q.view]), alpha);
+                ok = vp && vp->ok && !vp->cut;
+            }
+            if (!ok) skipA[q.bundle] = 1;
+        }
         for (const Patch& q : a.patches) {
             if (q.bundle >= dyingA.size() || !dyingA[q.bundle] || q.view >= a.views.size() || q.view >= viewToB.size()) continue;
             if (viewToB[q.view] < 0 || q.count > 16) continue;
@@ -1790,6 +1848,7 @@ bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, cons
             for (; nextDying <= e.index; nextDying++) {
                 const auto& r = a.bundleRange[b.dying[nextDying].first];
                 if (r[0] < aCursor || r[1] > sReplayA.size()) continue;  // out of order: skipped
+                if (b.dying[nextDying].first < skipA.size() && skipA[b.dying[nextDying].first]) continue;  // see above
                 sFaded.insert(sFaded.end(), sReplayA.begin() + aCursor, sReplayA.begin() + r[0]);
                 auroraCmd(sFaded, GX_AURORA_SET_REPLAY_MASK, 0);
                 const bool snapOut = nextDying < b.dyingSnap.size() && b.dyingSnap[nextDying];

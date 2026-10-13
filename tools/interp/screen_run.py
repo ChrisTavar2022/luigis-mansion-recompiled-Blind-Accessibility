@@ -18,7 +18,8 @@ Scenarios (US disc, LM_INPUT_CLOCK=frames):
   turn     foyer: walking in circles / turning (C-stick and stick)
   nursery  nursery: walking, dust, spiderwebs
   ghosts   gold ghosts room: ghost fight (LM_GHOST_HUNT)
-  gallery  the gallery (map 2 room via LM_TELEPORT), strafing
+  vacuum   foyer: the vacuum running with the nozzle down while walking: heavy dust
+  ballroom the ballroom (LM_TELEPORT), strafing
 """
 import argparse
 import os
@@ -59,20 +60,20 @@ def scenario(name):
             f += 30
         inp = MENU + "," + ",".join(parts)
     elif name == "vacuum":
-        # heavy dust: the Poltergust running (R) with the nozzle tilted down (C-stick down) while
+        # heavy dust: the Poltergust running (R) with the nozzle tilted down (C-stick up tilts it down) while
         # walking around the foyer: far more dust than walking kicks up
         env["LM_START_APPEAR"] = "6"
         parts = []
         f = 2600
         for i in range(40):
             d = ["STICKLEFT", "STICKUP", "STICKRIGHT", "STICKDOWN"][i % 4]
-            parts.append(f"{f}:R+CDOWN+{d}*40")
+            parts.append(f"{f}:R+CUP+{d}*40")
             f += 42
         inp = MENU + "," + ",".join(parts)
     elif name == "nursery":
         inp = MENU + "," + strafe(2600, 60, extra="+STICKUP")
-    elif name == "gallery":
-        env["LM_TELEPORT"] = "-1300,0,-3400,100"
+    elif name == "ballroom":
+        env["LM_TELEPORT"] = "1800,0,-1400,100"
         inp = MENU + "," + strafe(2600, 60)
     elif name == "ghosts":
         env.update({"LM_TELEPORT": "0,550,-3300,100", "LM_GHOST_HUNT": "9", "LM_GHOST_HUNT_BEAM": "89",

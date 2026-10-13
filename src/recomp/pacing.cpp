@@ -292,7 +292,9 @@ void beforeFrame() {
         // Fixed refresh: every n-th refresh, never an uneven rate.
         const double refresh = 1.0 / double(hz);
         u32 n = u32(std::max(1.0, std::ceil(std::max(minPeriod, need) / refresh - 0.02)));
-        n = std::min<u32>(n, 4);
+        // LM_PACING_DIVISOR=n (test aid): at least every n-th refresh.
+        static const u32 sMinDiv = [] { const char* e = std::getenv("LM_PACING_DIVISOR"); return e ? u32(std::max(1, std::atoi(e))) : 1u; }();
+        n = std::min<u32>(std::max(n, sMinDiv), 4);
         if (n < sDivisor) {  // speed up only after a while with room to spare
             if (need < double(n) * refresh * 0.92) sCalmFrames++;
             else sCalmFrames = 0;
