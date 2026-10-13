@@ -277,6 +277,60 @@ bits 23..16 in the IA8 intensity byte and 15..8 in the alpha byte, which is how 
   content when comparing.
 - `LM_EFB_RAM=0/1`, `LM_EFB_READBACK_ALL=1`.
 
+### Lock order: the Sealed Room / mirror-warp freeze (Aurora patch 0191)
+
+Reported in the first full playthrough (2026-10-12): the game froze ("not responding", Windows
+closed it: three `AppHang` events in the Application log, no crash dump) while loading the Sealed
+Room after dropping down the roof chimney, and when using a mirror to warp back to the foyer.
+
+Cause, from the all-thread stacks of a frozen run (`LM_HANG_DUMP=8`): a lock-order deadlock
+between efb_ram's mutex and Dawn's device lock (on since `ImplicitDeviceSynchronization`, Aurora
+0175, 2026-10-11).
+
+- Render worker: `Queue::Submit` (frame submit, `aurora.cpp`) holds the device lock; Dawn fires
+  the `AllowSpontaneous` MapAsync callback of an EFB-copy readback inside it, and the callback
+  locked `g_mutex` to queue the landed bytes.
+- GX FIFO thread: `resolve_texture` held `g_mutex` and called `new_conv_texture` (Dawn
+  `CreateTexture` → device lock) for a texture decoded from EFB copy memory for the first time.
+- Guest audio thread (JAudio `DspbufProcess` → `DCInvalidateRange` → `aurora_efb_ram_cpu_read`)
+  then waited for `g_mutex` while holding the guest CPU, so no guest thread ran again and the main
+  loop waited for a frame forever.
+
+Readbacks complete every frame (the two `DCInvalidateRange`'d screen buffers), so the callback side
+is always there; the trigger is the first decode of a new texture over copy memory, which special
+transitions do (the Sealed Room arrival decodes an 84x110 RGB565 texture over a 70x100 copy) and
+normal doors rarely do. Any Dawn object created or released under `g_mutex` (dropped copies,
+evicted copy textures, old decoded textures) was the same hazard.
+
+Fix (0191): the map callback takes only leaf locks (`g_landedMutex` for the landed list, the
+readback pool lock, whose new buffers are created after unlocking); `g_mutex` is never taken in a
+callback, and nothing is created or released under it (the decoded texture is created between two
+locked passes; dropped entries/textures and copy-texture evictions happen after unlocking). A
+guest thread in `DCInvalidateRange` therefore no longer waits behind the device lock (e.g. a
+pipeline compile) either. The comment at `g_mutex` in `lib/gfx/efb_ram.cpp` states the rule.
+
+Evidence: with a 400 ms sleep held under `g_mutex` at the first decode (temporary stress hook) and
+`LM_EFB_READBACK_ALL=1`, the unfixed build froze on the Sealed Room arrival with exactly the three
+stacks above; the fixed build ran on in the room (3 of 3 runs, 400/800 ms). The unstressed freeze
+was also seen once in about a dozen unfixed runs (same audio-thread stack in `LM_WATCHDOG`).
+Workaround for older builds: F1 > Visuals > Rendering, "EFB copies to RAM" off.
+
+Same pattern elsewhere: upstream `depth_peek.cpp` (GXPeekZ) creates buffers under its mutex
+(`ensure_slot`) and its spontaneous map callback takes that mutex; LM never peeks Z, but a port
+that does (SMS?) has the same deadlock.
+
+Regression test (US save with the roof open; `LM_CARD_DIR` scratch copy):
+`LM_START_APPEAR=3 LM_SKIP_TEST=1450:pos:2402,2300,-2566 LM_HANG_DUMP=8 LM_INPUT_CLOCK=frames
+--input "480:START*10,880:A,1000:A,1100:A,1200:A,1300:A,1400:A"` drops Luigi into the roof
+chimney (the real route: Sealed Room event, Luigi at 1910,550,-2770, room 37); mirror warps:
+stand in front of a mirror and press A (furniture `move` 22 in map2 jmp/furnitureinfo: foyer
+(420,0,-400), jmp rooms 17 (-1960,280,-4380), 38 Wardrobe Room (-1540,780,-3860), 42
+(-1960,830,-4380), 36 Sealed Room (3765,860,-2790)). Sweep on the fixed build (teleport in front,
+A in four facings, `LM_HANG_DUMP=8`): the foyer mirror warps (twice in a row, no stall); in the
+other four rooms nothing froze, but no warp happened either: with the test save they are still
+dark (ghosts appear), and a mirror only warps from a lit room. Re-test those with a save that has
+them cleared.
+
 ## Vertex snapshots (Luigi's mouth/hose flicker)
 
 **Cause.** The game passes its vertex arrays to `GXSetArray` as pointers into main memory, and Aurora's
