@@ -311,7 +311,8 @@ void keepWarm(double gpu, double period) {
         return;
     }
     w.heavy *= std::pow(0.5, period / 20.0);
-    if (w.units == 0) w.heavy = std::max(w.heavy, std::min(gpu, 0.1));
+    // (A frame longer than the period is a hitch or an overload, not the level to hold.)
+    if (w.units == 0 && gpu < period) w.heavy = std::max(w.heavy, gpu);
     const double want = std::min(w.heavy, 0.6 * period);
     u32 u = w.units;
     if (w.heavy < 0.003) u = 0;  // light settings: the GPU stays fast enough at any clock
