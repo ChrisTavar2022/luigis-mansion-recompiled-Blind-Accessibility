@@ -33,7 +33,7 @@ for n in frames:
     worst.append((a + b + st + oc, n, a, b, st, oc))
 log = open(os.path.join(run, "log.txt"), encoding="utf-8", errors="replace").read()
 kinds = ["pos", "nrm", "tex", "proj", "light", "verts"]
-sn = {k: [] for k in kinds}; up = {k: [] for k in kinds + ["fadein", "fadeout"]}
+sn = {k: [] for k in kinds}; up = {k: [] for k in kinds + ["fadein", "fadeout", "snapin", "snapout", "colorswitch"]}
 for m in re.finditer(r"_s1: snapped (.*?); unpaired (.*?)(\n| CUT)", log):
     for part, dst in ((m.group(1), sn), (m.group(2), up)):
         for k, v in re.findall(r"(\w+) (\d+)", part):
@@ -41,7 +41,7 @@ for m in re.finditer(r"_s1: snapped (.*?); unpaired (.*?)(\n| CUT)", log):
 avg = lambda v: sum(v) / len(v) if v else 0
 print(f"frames {len(stale)}  stale px total {sum(stale)} (frames>0: {sum(1 for x in stale if x)})  snap blobs start {sum(snapS)} end {sum(snapE)}  back-and-forth {sum(osc)}")
 print("per frame snapped: " + " ".join(f"{k} {avg(sn[k]):.1f}" for k in kinds) + "   unpaired: " + " ".join(f"{k} {avg(up[k]):.1f}" for k in kinds))
-print(f"per frame fades: in {avg(up['fadein']):.1f} out {avg(up['fadeout']):.1f}")
+print(f"per frame fades (dithered): in {avg(up['fadein']):.1f} out {avg(up['fadeout']):.1f}; snapped (game-frame timing): in {avg(up['snapin']):.1f} out {avg(up['snapout']):.1f}; color switches {avg(up['colorswitch']):.1f}")
 cl = re.findall(r"tape close ([0-9.]+) ms", log); pr = re.findall(r"present ([0-9.]+) ms", log)
 if cl: print("tape close ms (last):", cl[-1])
 worst.sort(reverse=True)

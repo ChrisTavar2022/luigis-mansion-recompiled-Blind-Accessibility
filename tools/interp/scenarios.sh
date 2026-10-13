@@ -15,6 +15,8 @@
 #   opening  title -> opening cutscene (crows, camera cuts) -> foyer, nothing skipped (1880-2120)
 #   fire     nursery with the fire element: blowing fire, vacuum air stream, turns (2580-2920)
 #   water    as fire with the water element (2580-2920)
+#   foyer    foyer by the front door, strafing left/right, camera following (2600-2900)
+#   hit      nursery, Luigi hit every 60 frames (LM_TEST_HIT): hurt reaction, damage blink (2600-2760)
 #   ballroom ballroom (dancing ghosts, chairs, flashlight), turning (2580-2900)
 #   call     E. Gadd's Game Boy Horror call: call screen, portrait, message windows (2590-2900)
 #   pause    the pause screen and its pages, back to the game (2590-2880)
@@ -33,7 +35,7 @@ printf '[video]\ntarget_fps=%s\nmatch_display_refresh=false\n' "$fps" > "$run/ap
 if [ -n "${LM_EXTRA_INI:-}" ]; then printf '%b\n' "$LM_EXTRA_INI" >> "$run/appdata/Luigi's Mansion PC/settings.ini"; fi
 user_appdata=${APPDATA:-}  # Python finds user-installed packages through it
 win() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
-export APPDATA="$(win "$run/appdata")" LM_CARD_DIR="$(win "$run/card")" LM_BACKGROUND=1
+export APPDATA="$(win "$run/appdata")" LM_CARD_DIR="$(win "$run/card")" LM_BACKGROUND=1 LM_AUDIO=${LM_AUDIO:-0}
 export LM_INTERP_TEST=$steps LM_INTERP_TRACE=1
 [ "$steps" = 0 ] && unset LM_INTERP_TEST  # steps 0: a real-time run (pacing, alpha, cost)
 menu="300:START*10,450:START*10,600:A*6,750:A,900:A,1050:A,1200:A,1350:A,1500:A,1650:A"
@@ -50,6 +52,12 @@ ghosts)
     range=3280,3600; secs=700; input="600:START*10,1000:A*6" ;;
 opening)
     range=1880,2120; secs=700; input="600:START*10,1000:A*6" ;;
+foyer)  # foyer by the front door: strafing left/right with the camera following (candlesticks, door)
+    nursery; export LM_TEST_STATE=poltergust LM_START_APPEAR=6; range=2600,2900; secs=700
+    input="$menu,2600:STICKLEFT*45,2650:STICKRIGHT*45,2700:STICKLEFT*45,2750:STICKRIGHT*45,2800:STICKLEFT*30,2830:STICKUP*30,2860:STICKRIGHT*40" ;;
+hit)  # nursery: Luigi takes damage every 60 frames (LM_TEST_HIT) while walking: hurt reaction, damage blink
+    nursery; export LM_TEST_STATE=poltergust LM_TEST_HIT=2620,60,5; range=2600,2760; secs=700
+    input="$menu,2600:STICKUP*20,2630:STICKLEFT*30,2670:STICKRIGHT*30,2710:STICKDOWN*40" ;;
 ballroom)
     nursery; export LM_TEST_STATE=poltergust LM_TELEPORT=1800,0,-1400,100; range=2580,2900; secs=700
     input="$menu,2600:STICKLEFT*8,2612:STICKRIGHT*8,2624:STICKLEFT*8,2636:STICKRIGHT*8,2660:STICKUP*40,2720:CLEFT*20,2760:CRIGHT*20,2800:STICKDOWN*40" ;;
@@ -67,8 +75,18 @@ ending)  # the ending scene (house, rank, caption fades), rank A
 *) echo "unknown scenario $scen"; exit 1 ;;
 esac
 range=${LM_RANGE:-$range}  # LM_RANGE=<first>,<last>: dump only part of the scenario
-export LM_FRAME_DUMP="$(win "$run/dump"),$range"
+if [ "$steps" = 0 ]; then
+    # Real time: no dumps (they cost time); the pacing log is measured over the scenario's frames
+    # (tools/interp/judder.py), from the first frame of the range on.
+    export LM_INTERP_JUDDER="$(win "$run/judder.log")"
+else
+    export LM_FRAME_DUMP="$(win "$run/dump"),$range"
+fi
 cd "$root"
 secs=${LM_SECS:-$secs}  # LM_SECS: stop earlier (with LM_RANGE)
 timeout "$secs" "${LM_EXE:-build/windows-clang/lmrecomp.exe}" --disc "$disc" --input "$input" > "$run/log.txt" 2>&1
-APPDATA="$user_appdata" "$py" "$root/tools/interp/metrics.py" "$run" "$steps"
+if [ "$steps" = 0 ]; then
+    APPDATA="$user_appdata" "$py" "$root/tools/interp/judder.py" "$run/judder.log" --frames "$range"
+else
+    APPDATA="$user_appdata" "$py" "$root/tools/interp/metrics.py" "$run" "$steps"
+fi
