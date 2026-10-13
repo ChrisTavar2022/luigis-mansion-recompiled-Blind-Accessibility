@@ -182,7 +182,10 @@ int main(int argc, char* argv[]) {
     // APPDATA like the rest. On Windows this is the same folder SDL_GetPrefPath gives for players,
     // but SDL ignores the APPDATA variable, so test runs with a scratch APPDATA used to write
     // imgui.ini into the real install.
-    static const std::string sUserDir = port::dataDir().string() + "/";
+    // LM_CARD_DIR (test runs) is the user path too: Aurora's CARDInit builds the card paths from
+    // userPath whenever one is set, so CARDSetBasePath alone no longer moved the cards.
+    static const std::string sUserDir =
+        std::getenv("LM_CARD_DIR") ? std::string(std::getenv("LM_CARD_DIR")) + "/" : port::dataDir().string() + "/";
     config.userPath = sUserDir.c_str();
     if (const char* dir = std::getenv("LM_CACHE_DIR")) config.cachePath = dir;
     const port::Options& opts = port::options();
