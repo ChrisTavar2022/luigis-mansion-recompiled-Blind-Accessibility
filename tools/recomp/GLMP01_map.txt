@@ -3224,6 +3224,8 @@
 801B1080 Jac_HVQM_ForceStop hook
 801B00C0 StreamSyncCheckReady hook
 8000935C fn_80008D58 hook
+8018A6F8 fn_8018721C hook
+801B1FA4 J2DFillBox__FiiiiQ28JUtility6TColor hook
 80013FD8 fn_8001333C hook
 800EA4F8 fn_800E70BC hook
 800EAAD0 fn_800E7698 hook
