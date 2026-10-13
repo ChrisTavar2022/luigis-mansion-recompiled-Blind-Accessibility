@@ -427,9 +427,9 @@ const gx::DisplayCopy& gx::displayCopy() { return sDisplayCopy; }
 
 void gx::recheckDrawState() { sRawCheck = true; }
 
-bool gx::smoothBandingForced() {
-    return !port::settings().rendering.smoothBanding && enh::masterOn();
-}
+// Enhanced lighting used to force the smoothing on; it now turns the 6-bit framebuffer off
+// altogether (enhancedOverridesEfbDepth), so nothing forces the smoothing any more.
+bool gx::smoothBandingForced() { return false; }
 
 int gx::smoothBandingLevel() {
     static const int sForce = [] {
@@ -444,6 +444,8 @@ int gx::smoothBandingLevel() {
 // (bit 0 integer TEV, bit 1 EFB color depth, bit 2 texture copy filter, bit 3 6-bit blending, bit 4 early-Z alpha
 // depth) and LM_ACCURACY_AB=<seconds>
 // (alternate between the configured options and all off every <seconds>, for A/B screenshots of one run).
+bool gx::enhancedOverridesEfbDepth() { return enh::configuredOn(); }
+
 void gx::applyAccuracySettings() {
     const auto& r = port::settings().rendering;
     u32 flags = (r.integerTev ? GX_AURORA_ACCURACY_INT_TEV : 0) | (r.efbColorDepth ? GX_AURORA_ACCURACY_EFB_DEPTH : 0) |
@@ -456,10 +458,16 @@ void gx::applyAccuracySettings() {
                      ? GX_AURORA_ACCURACY_EARLY_Z_MERGE
                      : 0) |
                 (r.textureCopyFilter ? GX_AURORA_ACCURACY_COPY_FILTER : 0);
-    // Smooth color banding (Aurora 0190): an enhancement on top of the EFB color depth; enhanced
-    // lighting forces at least the plain smoothing (docs/RENDERING.md "Smooth color banding").
+    // Enhanced lighting turns the 6-bit EFB (and with it 6-bit blending, the dither and the
+    // smoothing of 0190) off: its smooth per-pixel and colored-light gradients went through the
+    // 6-bit framebuffer and the game's RGB565 scene copy, which banded them into visible steps
+    // (docs/RENDERING.md "Enhanced lighting fixes"; the F1 toggles are greyed out while it is on).
+    const bool efbDepth = r.efbColorDepth && !enhancedOverridesEfbDepth();
+    if (!efbDepth) flags &= ~(GX_AURORA_ACCURACY_EFB_DEPTH | GX_AURORA_ACCURACY_EFB_BLEND);
+    // Smooth color banding (Aurora 0190): an enhancement on top of the EFB color depth
+    // (docs/RENDERING.md "Smooth color banding").
     const int smooth = gx::smoothBandingLevel();
-    if (r.efbColorDepth && smooth > 0)
+    if (efbDepth && smooth > 0)
         flags |= GX_AURORA_ACCURACY_EFB_SMOOTH | (smooth == 1 ? GX_AURORA_ACCURACY_EFB_SMOOTH_NOISE : 0);
     static const char* sMask = std::getenv("LM_ACCURACY");
     if (sMask) flags = u32(std::strtoul(sMask, nullptr, 0));

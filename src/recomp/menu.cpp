@@ -163,27 +163,53 @@ void renderingTab() {
     ImGui::SetItemTooltip(
         "Color combiner math as on the GameCube: 8-bit inputs, signed 11-bit registers and rounding\n"
         "after every stage. Slightly darker multi-stage shading and exact overflow; tiny GPU cost.");
-    sDirty |= ImGui::Checkbox("EFB color depth (6-bit + dither)", &r.efbColorDepth);
-    ImGui::SetItemTooltip(
-        "The game renders into a 6-bit-per-channel framebuffer with an ordered dither, like the\n"
-        "console, and its screen/texture copies keep their format's precision (RGB565: 5-bit red\n"
-        "and blue in the full-screen copy the game redraws every frame; RGB5A3 for the Mario\n"
-        "painting). Off: smooth 8-bit color (less banding/dither grain in dark rooms). No real cost.");
-    ImGui::BeginDisabled(!r.efbColorDepth);
+    // Enhanced lighting turns the 6-bit framebuffer off (hle_gx.cpp): shown greyed out and unticked.
+    const bool enhOverride = recomp::gx::enhancedOverridesEfbDepth();
+    constexpr const char* kEnhNote =
+        "\n\nOff while Enhanced lighting is on (F1 > Visuals > Enhanced lighting): its smooth\n"
+        "per-pixel, colored-light, bloom and occlusion gradients would be cut into visible 6-bit\n"
+        "steps (and 5-bit in the game's full-screen RGB565 copy). Turn Enhanced lighting off to\n"
+        "use this option again; the setting itself is kept.";
+    {
+        ImGui::BeginDisabled(enhOverride);
+        bool shown = r.efbColorDepth && !enhOverride;
+        if (ImGui::Checkbox("EFB color depth (6-bit + dither)", &shown) && !enhOverride) {
+            r.efbColorDepth = shown;
+            sDirty = true;
+        }
+        ImGui::EndDisabled();
+        const std::string tip = std::string(
+            "The game renders into a 6-bit-per-channel framebuffer with an ordered dither, like the\n"
+            "console, and its screen/texture copies keep their format's precision (RGB565: 5-bit red\n"
+            "and blue in the full-screen copy the game redraws every frame; RGB5A3 for the Mario\n"
+            "painting). Off: smooth 8-bit color (less banding/dither grain in dark rooms). No real cost.") +
+                                (enhOverride ? kEnhNote : "");
+        ImGui::SetItemTooltip("%s", tip.c_str());
+    }
+    ImGui::BeginDisabled(!r.efbColorDepth || enhOverride);
     ImGui::Indent();
-    sDirty |= ImGui::Checkbox("6-bit blending", &r.efbBlend6);
-    ImGui::SetItemTooltip(
-        "Translucent things drawn over the scene (the Game Boy Horror screen, health counter and\n"
-        "room captions, glows) are stored in the 6-bit framebuffer after blending, like on the\n"
-        "console: the same banding and dither grain as the rest of the image at their edges and\n"
-        "see-through parts instead of smooth 8-bit gradients. Subtle in this game.\n"
-        "Costs a few full-screen passes per frame (well under 1 ms at 1440p; more with MSAA).");
+    {
+        bool shown = r.efbBlend6 && !enhOverride;
+        if (ImGui::Checkbox("6-bit blending", &shown) && !enhOverride) {
+            r.efbBlend6 = shown;
+            sDirty = true;
+        }
+        const std::string tip = std::string(
+            "Translucent things drawn over the scene (the Game Boy Horror screen, health counter and\n"
+            "room captions, glows) are stored in the 6-bit framebuffer after blending, like on the\n"
+            "console: the same banding and dither grain as the rest of the image at their edges and\n"
+            "see-through parts instead of smooth 8-bit gradients. Subtle in this game.\n"
+            "Costs a few full-screen passes per frame (well under 1 ms at 1440p; more with MSAA).") +
+                                (enhOverride ? kEnhNote : "");
+        ImGui::SetItemTooltip("%s", tip.c_str());
+    }
     {
         // Enhancement on top of the 6-bit framebuffer (Aurora 0190); OFF = the console's look.
+        // (Already disabled with the parent group while enhanced lighting turns the 6-bit EFB off.)
         const bool forced = recomp::gx::smoothBandingForced();
-        bool on = forced || r.smoothBanding;
+        bool on = (forced || r.smoothBanding) && !enhOverride;
         ImGui::BeginDisabled(forced);
-        if (ImGui::Checkbox("Smooth color banding", &on)) {
+        if (ImGui::Checkbox("Smooth color banding", &on) && !enhOverride) {
             r.smoothBanding = on;
             sDirty = true;
         }
@@ -196,7 +222,8 @@ void renderingTab() {
             "steps (plus an invisible sub-step noise against the PC's own 8-bit steps): no contour\n"
             "lines, no blotches, no grain. Off: exactly what the GameCube outputs (default).\n"
             "No measurable cost.%s",
-            forced ? "\n\nOn while Enhanced lighting is on (its lighting gradients and bloom band in 6 bits)." : "");
+            enhOverride ? "\n\nNot used while Enhanced lighting is on: the 6-bit framebuffer is off then and\n"
+                          "the picture is plain 8-bit, with nothing left to smooth." : "");
     }
     ImGui::Unindent();
     ImGui::EndDisabled();

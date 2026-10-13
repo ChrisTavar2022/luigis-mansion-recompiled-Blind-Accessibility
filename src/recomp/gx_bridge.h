@@ -13,6 +13,9 @@ struct DisplayCopy {
 const DisplayCopy& displayCopy();
 // Pushes the F1 > Visuals > Rendering accuracy options to Aurora (host thread, every frame).
 void applyAccuracySettings();
+// Enhanced lighting is on: "EFB color depth" (and "6-bit blending") are off whatever the
+// setting says (their F1 toggles are greyed out; docs/RENDERING.md).
+bool enhancedOverridesEfbDepth();
 // Effective "Smooth color banding" (Aurora 0190): 0 off, 1 smooth + sub-step noise (the option),
 // 2 smooth without the noise (A/B test only). The setting, forced on while enhanced lighting is
 // on; LM_SMOOTH_BANDING=<0-2> overrides (test aid).

@@ -26,6 +26,9 @@ namespace enh {
 bool active();
 // Master switch only (active() is also false on the plain frames of LM_ENHANCED_AB).
 bool masterOn();
+// Master switch as configured (settings or LM_ENHANCED), before applySettings runs: the
+// accuracy options that enhanced lighting turns off (hle_gx.cpp) are decided from it.
+bool configuredOn();
 // LM_ENH_PERF_AB phase: -1 off, 0 part on, 1 part off.
 int perfPhase();
 // F1 settings -> Aurora (host thread, every frame).

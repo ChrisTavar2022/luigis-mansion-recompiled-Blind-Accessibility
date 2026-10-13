@@ -181,6 +181,13 @@ void onFrame(u32 frameNo) {
         log("[efb] copies to RAM %s", want ? "on" : "off");
     }
     aurora_efb_ram_apply();
+    // Test aid LM_DUMP_EXIT=1: quit once the LM_FRAME_DUMP range is written (automated runs).
+    static const bool sDumpExit = envInt("LM_DUMP_EXIT", 0) != 0;
+    if (sDumpExit && sDump.active && frameNo > sDump.last + 10) {
+        log("[efb] frame dump range done, exiting (LM_DUMP_EXIT)");
+        std::fflush(nullptr);
+        std::_Exit(0);
+    }
     if (sLog && frameNo % 300 == 0) {
         AuroraEfbRamStats s;
         aurora_efb_ram_get_stats(&s);

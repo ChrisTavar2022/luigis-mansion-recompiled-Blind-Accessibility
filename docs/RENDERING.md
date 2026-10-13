@@ -342,7 +342,7 @@ configured/all-off every s seconds and log fps per phase, for A/B screenshots of
 |---|---|---|---|
 | Integer-accurate TEV (`integer_tev`) | TEV stages evaluated in integer WGSL (8-bit A/B/C, s11 D/registers, per-stage rounding/clamp) | +-1 level on ~40-45% of pixels, unbiased (mean +0.06); nothing structural | see table |
 | EFB color depth (`efb_color_depth`) | fragment output quantized to the EFB format (RGBA6 / RGB565) with the PE's 2x2 dither when the draw enables it; texture copies to RGB565/RGB5A3 keep their format's precision (patch 0014) | ~1.4 levels darker on average (LM draws much of the scene with dither off, where the PE truncates), 6-bit banding rings in smooth gradients (flashlight pool on the floor), dither grain where dither is on | see table |
-| Smooth color banding (`smooth_banding`, **off**: an enhancement, see "Smooth color banding") | EFB and RGB565/RGB5A3 copy quantizers output the local average of their steps (same mean colour), plus sub-step noise; forced on by enhanced lighting | no 6/5-bit contours, blotches or dither grain; colours within ~1 level of the accurate picture | none measurable |
+| Smooth color banding (`smooth_banding`, **off**: an enhancement, see "Smooth color banding") | EFB and RGB565/RGB5A3 copy quantizers output the local average of their steps (same mean colour), plus sub-step noise; off (not needed) while enhanced lighting turns the 6-bit EFB off | no 6/5-bit contours, blotches or dither grain; colours within ~1 level of the accurate picture | none measurable |
 | Display copy filter (`display_copy_filter`) | present-time pass (`dcopy_filter` in crt.cpp, ahead of the CRT chain) with the game's GXSetCopyFilter taps + GXSetDispCopyGamma | ~5% less vertical high-frequency detail (6/52/6 of 64), no color shift (mean 0.2 levels); only runs when the taps/gamma change the picture | see table |
 | Texture copy filter (`texture_copy_filter`) | GXSetCopyFilter taps applied to color GXCopyTex copies (patch 0018, `GX_AURORA_ACCURACY_COPY_FILTER`) | the scene the game redraws from its RGB565 copy is softer vertically (nursery: vertical gradient energy -30%, horizontal -6%; differences only along horizontal edges, no shift) | a copy that was a plain texture copy becomes a shader blit with three taps |
 
@@ -469,12 +469,11 @@ levels brighter in R / G / B in the dark nursery (bluer, lifted blacks), i.e. no
 colours. A post-process deband filter was not needed: the bands are removed at their source, so
 HUD and texture detail are untouched and nothing blurs.
 
-**Enhanced lighting** forces smoothing on (checkbox shown greyed and ticked, tooltip says why):
-its per-pixel lighting gradients, flashlight pool and volumetric haze contour badly in 6 bits, and
-bloom/glow is composited over the result (an 8-bit + RGBA16F path), so the two compose without
-special cases (`gx::smoothBandingLevel()` in hle_gx.cpp). If the `enh-fixes` work also turns
-6-bit blending off under enhanced lighting, that is consistent with this (smoothing already
-bypasses it).
+**Enhanced lighting** (branch `enh-fixes`): the 6-bit EFB is turned off altogether while it is on
+(`gx::enhancedOverridesEfbDepth()`, "Enhanced lighting fixes" below), so the lit picture is plain
+8-bit and the smoothing has nothing to act on; the checkbox is greyed out with the 6-bit group and
+its tooltip says why. (The first version of this option forced the smoothing on under enhanced
+lighting instead; turning the 6-bit EFB off gives the enhanced gradients without the sub-step noise.)
 
 **Verification** (native frame dumps, nursery `LM_START_MAP=2 LM_START_APPEAR=1
 LM_TEST_STATE=poltergust LM_LIGHTNING=0,90,1`, flashlight + GBH; window captures at render scale 3):
@@ -1781,3 +1780,115 @@ colored-light shadows (`LM_XL_SHADOWS_AB=1`: shadows only on even frames) and th
   Luigi lifts the Game Boy Horror to chest height (106 units above his feet, over the 105 gate)
   and its green screen glow lights his face and hands before the call screen opens
   (`build/worldlights/gbh_call_glow_off_on.png`, `LM_WORLD_LIGHT_AB=1` off / on).
+
+### Enhanced lighting fixes (branch `enh-fixes`, Aurora 0186)
+
+User report after a full playthrough with enhanced lighting: "the general look of everything is
+very nice but the implementations are buggy". Four problems, each fixed at its cause; the plain
+renderer (master switch off) is untouched (verification at the end). Images: `build/enhfix/`
+(not in the repo).
+
+**1. Ambient occlusion drew over everything in front (Luigi took the cabinet's AO).** Cause: the
+opaque depth pre-pass that the AO and colored-light shadow masks are computed from kept at most
+`MaxGlowDraws` = 4096 draws, but LM's main view has about 5000-7400 opaque world draws per frame
+(`AURORA_ENH_LOG`: "4096 depth draws" before the copy that ends a pass of 5019 world draws). The
+draws past the cap are the late ones: Luigi, the other actors, late room parts. Their pixels then
+read the mask of whatever stood behind them. Fixes (0186):
+- The pre-pass list has its own cap, `MaxDepthDraws` = 32768.
+- The pre-pass depth goes into the mask buffer as a fourth plane (`MaskDepthPlane`, R32F bits;
+  `MaskBufferSize` 48 -> 64 MiB) and a receiver takes a mask texel only if the depth stored with
+  it is its own surface (depth match within the fragment's depth slope over the tap distance plus
+  0.4%; `enh_fz` / `enh_dz` are set at the top of `fs_main`). The 4x4 tent is one 16-tap loop
+  with normalised weights; no matching texel = unshadowed / unoccluded. This covers AO and the
+  colored-light shadows (screen-space and shadow-map masks), so the half-resolution mask no longer
+  bleeds across silhouettes either. Side effect: translucent receivers (not in the pre-pass) no
+  longer pick up the colored-light shadow of the surface behind them.
+- AO samples use a 4x4 interleaved rotation followed by a depth-aware 4x4 blur (`fs_aoblur4`)
+  instead of a per-pixel noise rotation, which left a hatched pattern on flat walls.
+- Debug: `AURORA_ENH_AO_SHOW=1` outputs the occlusion each surface receives (white = none),
+  `AURORA_ENH_GLOWDBG=11` the raw AO mask; port `LM_AO_AB=1` (AO only on odd dump frames).
+
+Other screen-space parts checked for the same class of bug: the colored-light shadow masks (same
+mask, fixed above); bloom's glow buffer is depth-tested against the depth at the end of its pass;
+the light glows test the final depth (now five taps over the glow core instead of one, so a glow
+fades as an edge slides over its light instead of popping); the volumetric beam and the bloom
+bright pass run at scene end on the final depth; the game's own shadow map is unaffected.
+
+**2. Candle lights stayed lit after the candles went out.** How the game does candles (US):
+`objinfo` "sfire" objects (arg0 = behaviour: 2 unlit until fire, 3 can be blown out by the
+vacuum, 6 relit when Luigi leaves the room) are candle objects from the pool of `fn_80164608`
+(0x50 bytes: +0x10 state, +0x30 emitter, +0x40 colour; the emitter's +0xC4 points back). The
+update `fn_80164140` runs a state machine: 1 lit, 2 flickering near Luigi, 3 blown by the vacuum
+(`fn_80163D58`), 4 out (relit by the fire element), 5 out until the room's light comes on
+(`fn_80018D78`); going out it writes emitter flags 0x0C (emitting bit cleared), relighting 0x0E,
+removal 0x1C. World lights now follow that every frame (`flameLevel` in world_lights.cpp):
+- a flame counts while its emitter is drawn in a visible room; it is lit while emitting and, for
+  a candle object, while its state is 1-3;
+- the light fades with the flame's live particles (emitter +0x74 + +0xB0, the count the game keeps
+  its own candle GX light for, `fn_801799AC`): out = down with the dying particles (~10 frames),
+  relit = up as the flame grows; the first sight of an emitter takes its state without a fade;
+- merged groups (candelabras) keep their unlit members, so the group's id and shadow slot do not
+  change when one candle goes out; the light dims by the flames still burning and its centre leans
+  toward them;
+- fireplaces, torches and fire effects (no candle object) follow their emitter and particles the
+  same way; lamps and chandeliers of lit rooms fade with the room's light-on bit instead of popping.
+
+Test aid `LM_TEST_BLOWOUT=<frame>[,<relight frame>]` (main-view frames of the map): every visible
+lit candle goes out / is relit with exactly the game's writes. `LM_WORLD_LIGHT_LOG` lines show each
+candle's state and particle count and each light's `lit` level; `=3` also logs who creates each
+emitter and where candle emitters are referenced from (research). Foyer, all 14 candles out at
+main-view frame 250: the group lights go lit 3.00 -> 0.87 -> 0.02 -> gone within 20 frames and come
+back after the relight at 330.
+
+**3. Shadows blinking while idle (foyer sconce above the stairs).** The user's 120 fps clip: the
+wall under the sconce alternates between the sconce's shadow and fully lit, in blocks of 1-2 game
+frames (4-8 presented frames). Cause: more shadow-flagged lights than shadow slots. The port gave
+the "wanted" state to the first N flagged lights by a score that includes the flame flicker and
+the ghost pulse, but every light still fading kept its cast-shadows flag; with a fifth candidate
+(a ghost light, or a test light, next to the foyer's four candelabras at the default High = 4
+slots) Aurora saw five flagged lights and gave its slots to the first four in list order, which
+the flicker reordered every frame: the sconce lost its whole shadow in alternate frames. Fixes:
+- `selectLights` (enhanced_lighting.cpp): rank by a score smoothed per light id (~5 frames),
+  lights already in the set rank 25% higher (no flipping at the 64-light cut), a shadow slot
+  changes hands only for a 35% stronger light, and a new light gets a slot only once the light
+  that lost it has faded out, so the flagged lights never exceed the slots (also in interpolated
+  replays, which blend one frame's fading-out shadow with the next frame's).
+- Aurora `assign_shadow_slots`: if more lights are flagged than there are slots anyway, the slots
+  go to the strongest shadow weights instead of list order.
+- Test aids: `LM_LIGHT_SELECT_LOG=1` (slot changes) / `=2` (every frame: the shadow-casting lights
+  with their weights), `LM_XL_SHADOW_LOG=2` (casters per frame).
+
+Reproduced at the user's spot (`LM_TELEPORT=-430,0,-10,30`, foyer start, idle, High preset, ghost
+lights, `LM_TEST_LIGHTS=2,450,1.2,0` = two fixed extra shadow casters as the fifth/sixth
+candidate): old build 11 jumps of more than 8 levels in 150 frames in the wall area under the
+sconce (shadow / no shadow alternating, `sconce_seq_old_new.png`), new build 3 (the scripted
+camera settling); the blink heat maps (`starve_heat_old_new.png`) show the sconce and banister
+region blinking only in the old build. Without the extra casters the selection log shows the four
+candelabras keeping full weight for the whole idle stretch.
+
+**4. Hardware-accuracy features with enhanced lighting** (A/B in the nursery with enhanced
+lighting on, `LM_ACCURACY` masks, the same frame of two runs; matrix also in docs/ACCURACY.md
+section 12):
+
+| Feature | Interaction with enhanced lighting | Decision |
+|---|---|---|
+| EFB color depth (6-bit + dither, RGB565/RGB5A3 copy precision) | the lit scene goes through the 6-bit EFB and the game's RGB565 full-screen copy that it redraws every frame: bloom haze, colored-light pools, AO and per-pixel gradients band into blotches (a floor crop: 63 distinct green levels instead of 247, `acc_band.png`) | **off while enhanced lighting is on** (`gx::enhancedOverridesEfbDepth`); F1 toggle greyed out and unticked with a tooltip note; the setting itself is kept |
+| 6-bit blending (0176) | only exists inside EFB color depth | off with it (greyed out) |
+| PE dither (0180 4x4) | part of EFB color depth | off with it |
+| Early-Z cut-out split (0170/0179) | the depth-only half writes the same depth the colour half tests; the pre-pass copies each draw with its own depth state | kept |
+| Pixel snap 1/12 (0180) | the pre-pass and the shadow-map casters reuse the draw's vertex shader; positions move by less than 1/12 px, inside the depth-match tolerance | kept |
+| TEV DIVIDE_2 truncation (0180), integer TEV | per-stage TEV math after the enhanced lighting terms; no visible interaction | kept |
+| Vertex snapshots | the pre-pass and casters re-render the recorded draw data, so they see the same snapshot as the draw | kept |
+| EFB copies to RAM | the game's Z16 shadow copy is read back exactly; the enhanced offscreen shadow map still needs "Shadow map at render resolution" | kept |
+| Display / texture copy filters | soften the redrawn scene vertically as on the console, enhanced output included; no artefact | kept |
+
+Measured (nursery frame 2651, enhanced lighting with AO and ghost lights, each feature switched off
+alone against a run with all accuracy features except EFB color depth; separate runs, so the ball,
+the dust and Luigi's idle animation differ a little): pixels differing by more than 8 levels:
+early-Z split 2.0%, pixel snap 2.4%, DIVIDE_2 truncation 1.0%, vertex snapshots 1.7%, EFB copies
+to RAM 0.7%, integer TEV 0.7% (all the run-to-run level, no structure in the difference images);
+EFB color depth on: 52% (the banding).
+
+Coordination with "Smooth color banding" (`deband`, Aurora 0190): it smooths the 6-bit EFB; with the
+6-bit EFB off under enhanced lighting it does not apply there (greyed out), and the remaining
+quantization is the 8-bit target itself.

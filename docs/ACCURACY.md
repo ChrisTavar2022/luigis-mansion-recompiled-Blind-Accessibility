@@ -527,3 +527,23 @@ The enhancement (Aurora 0190, F1 > Visuals > Rendering "Smooth color banding", o
 described in docs/RENDERING.md "Smooth color banding". It is not an accuracy fix: with it off the
 frames are byte-identical to the accurate pipeline (23/23 nursery frames incl. lightning, beam and
 GBH, against main's build).
+
+## 12. Accuracy features with enhanced lighting (branch `enh-fixes`, 2026-10-12)
+
+Each accuracy feature was A/B tested with F1 > Visuals > Enhanced lighting on (nursery and foyer,
+`LM_ACCURACY` masks; details and images in docs/RENDERING.md "Enhanced lighting fixes", item 4).
+Only the 6-bit framebuffer conflicts: the enhanced look is smooth gradients (per-pixel lights,
+colored pools, bloom haze, occlusion), and the 6-bit EFB plus the game's RGB565 scene copy cut them
+into visible bands (63 instead of 247 levels in a floor crop). While enhanced lighting is on,
+"EFB color depth" is therefore off (with "6-bit blending" and the PE dither, which only exist
+inside it): `recomp::gx::enhancedOverridesEfbDepth()` in hle_gx.cpp clears
+`GX_AURORA_ACCURACY_EFB_DEPTH | GX_AURORA_ACCURACY_EFB_BLEND`, and F1 > Visuals > Rendering shows
+both toggles greyed out and unticked with a tooltip saying why (the stored setting is kept and
+applies again when enhanced lighting is turned off). `LM_ACCURACY` still overrides everything for
+tests. Kept with enhanced lighting (no conflict found): integer TEV and the DIVIDE_2 truncation,
+early-Z cut-out depth (0170/0179), the 1/12-pixel snap (0180), vertex snapshots, EFB copies to
+RAM, the display and texture copy filters. Enhanced lighting off: nothing changes (the override
+is not active, frames identical to main).
+With the 6-bit EFB off, "Smooth color banding" (section 11, Aurora 0190) has nothing to smooth and is
+greyed out under enhanced lighting too; the lit picture is plain 8-bit (it is not the game's
+palette anyway: the enhanced lighting changes every lit color).

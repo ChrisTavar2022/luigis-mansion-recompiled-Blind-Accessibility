@@ -115,6 +115,29 @@ namespace {
 // widescreen/FOV options widen the view); the rest are ranked by intensity x reach over distance
 // and the strongest MaxExtraLights kept, in that order (Aurora gives shadow slots to the first
 // flagged lights).
+// Stable selection (docs/RENDERING.md "Enhanced lighting fixes"): the raw score follows the
+// providers' flame flicker and ghost pulses every frame, so two candelabras of about the same
+// strength swapped places from frame to frame. Ranking and shadow slots therefore use a score
+// smoothed per light id, lights already chosen keep their place unless another is clearly
+// stronger (hysteresis), and a shadow slot only goes to a new light once the light losing it has
+// faded out, so Aurora never sees more shadow-casting lights than it has slots for (it gave the
+// slots to the first flagged lights in order: a fading light could take a wanted light's slot,
+// which then blinked as the order changed).
+struct LightTrack {
+    float score = 0.0f;   // smoothed rank score
+    float w = 0.0f;       // shadow weight 0..1 (fades in/out)
+    bool selected = false;  // in the sent set last frame
+    bool holder = false;    // owns a shadow slot
+    u32 seen = 0;
+};
+std::unordered_map<u32, LightTrack> sTrack;
+u32 sTrackTick = 0;
+// Test aid LM_LIGHT_SELECT_LOG=1: shadow-slot changes (gained / lost) with scores.
+const int sSelectLog = [] {
+    const char* v = std::getenv("LM_LIGHT_SELECT_LOG");
+    return v ? std::max(std::atoi(v), 1) : 0;
+}();
+
 uint32_t selectLights(aurora::gfx::ExtraLight* l, uint32_t n) {
     struct Ranked {
         float score;
@@ -122,6 +145,10 @@ uint32_t selectLights(aurora::gfx::ExtraLight* l, uint32_t n) {
     };
     static std::vector<Ranked> rank;
     rank.clear();
+    sTrackTick++;
+    constexpr float kSmooth = 0.2f;       // score smoothing per game frame (~5 frames)
+    constexpr float kKeepBonus = 1.25f;   // a light already in the set ranks 25% higher
+    constexpr float kSwapRatio = 1.35f;   // a shadow slot changes hands only for a 35% stronger light
     for (uint32_t i = 0; i < n; i++) {
         const auto& x = l[i];
         if (!(x.intensity > 0.0f) || !(x.radius > 0.0f)) continue;
@@ -130,50 +157,118 @@ uint32_t selectLights(aurora::gfx::ExtraLight* l, uint32_t n) {
         const float side = std::max(z, 0.0f) * 2.5f + x.radius;  // ~136 degrees wide, 2.5:1
         if (std::fabs(x.pos[0]) > side || std::fabs(x.pos[1]) > side) continue;
         const float d = std::sqrt(x.pos[0] * x.pos[0] + x.pos[1] * x.pos[1] + x.pos[2] * x.pos[2]);
-        rank.push_back({x.intensity * x.radius / (1.0f + std::max(d - x.radius, 0.0f) / 800.0f), i});
+        float s = x.intensity * x.radius / (1.0f + std::max(d - x.radius, 0.0f) / 800.0f);
+        if (x.id != 0) {
+            auto& t = sTrack[x.id];
+            t.score = t.seen + 1 == sTrackTick ? t.score + (s - t.score) * kSmooth : s;
+            t.seen = sTrackTick;
+            s = t.score * (t.selected ? kKeepBonus : 1.0f);
+        }
+        rank.push_back({s, i});
     }
     std::stable_sort(rank.begin(), rank.end(), [](const Ranked& a, const Ranked& b) { return a.score > b.score; });
     static std::array<aurora::gfx::ExtraLight, aurora::gfx::MaxExtraLights> out;
     uint32_t m = 0;
+    for (auto& [id, t] : sTrack) t.selected = false;
     for (const auto& r : rank) {
         if (m == aurora::gfx::MaxExtraLights) break;
-        out[m++] = l[r.i];
+        out[m] = l[r.i];
+        if (out[m].id != 0) sTrack[out[m].id].selected = true;
+        m++;
     }
-    // Shadow slots go to the first flagged lights in this order (Aurora). Each light's shadow fades
-    // in over a few frames when it gets one and out when it loses it (weight in flags bits 8..15,
-    // multiplied with the provider's own weight), so a change in the strongest set does not pop.
+    // Shadow slots. Candidates: flagged lights in the sent set.
+    constexpr u32 kShadow = aurora::gfx::ExtraLightCastShadows;
+    const u32 cap = enh::shadowLightCap();
+    static std::vector<uint32_t> cand;
+    cand.clear();
+    for (uint32_t i = 0; i < m; i++)
+        if ((out[i].flags & kShadow) && out[i].id != 0) cand.push_back(i);
+    // Lights that left the set (or lost their flag) give their slot up at once: they are not drawn.
+    for (auto& [id, t] : sTrack)
+        if (t.seen != sTrackTick || !t.selected) t.holder = false, t.w = 0.0f;
+    for (uint32_t i = 0; i < m; i++) {
+        if (out[i].id == 0 || (out[i].flags & kShadow)) continue;
+        auto& t = sTrack[out[i].id];
+        t.holder = false, t.w = 0.0f;
+    }
+    auto trackOf = [&](uint32_t i) -> LightTrack& { return sTrack[out[i].id]; };
+    // Too many holders (the cap was lowered): drop the weakest at once.
     {
-        constexpr u32 kShadow = aurora::gfx::ExtraLightCastShadows;
-        static std::unordered_map<u32, float> sW;
-        static std::unordered_map<u32, u32> sSeen;
-        static u32 sTick = 0;
-        sTick++;
-        const u32 cap = enh::shadowLightCap();
-        u32 wanted = 0;
-        for (uint32_t i = 0; i < m; i++) {
-            auto& x = out[i];
-            if (!(x.flags & kShadow) || x.id == 0) continue;
-            const bool want = wanted < cap;
-            wanted += want;
-            float& w = sW[x.id];
-            sSeen[x.id] = sTick;
-            w += ((want ? 1.0f : 0.0f) - w) * 0.25f;
-            if (!want && w < 0.03f) w = 0.0f;
-            const u32 own = (x.flags >> 8) & 0xFFu;
-            const float ow = own ? float(own) / 255.0f : 1.0f;
-            const float fw = w * ow;
-            x.flags &= ~(kShadow | 0xFF00u);
-            if (fw > 0.0f) x.flags |= kShadow | (std::clamp(u32(fw * 255.0f + 0.5f), 1u, 255u) << 8);
+        u32 holders = 0;
+        for (uint32_t i : cand) holders += trackOf(i).holder;
+        while (holders > cap) {
+            uint32_t weakest = UINT32_MAX;
+            for (uint32_t i : cand)
+                if (trackOf(i).holder && (weakest == UINT32_MAX || trackOf(i).score < trackOf(weakest).score)) weakest = i;
+            trackOf(weakest).holder = false;
+            trackOf(weakest).w = 0.0f;
+            holders--;
         }
-        if ((sTick & 63) == 0) {
-            for (auto it = sSeen.begin(); it != sSeen.end();) {
-                if (sTick - it->second > 60) {
-                    sW.erase(it->first);
-                    it = sSeen.erase(it);
-                } else {
-                    ++it;
-                }
+    }
+    // Hysteresis: the strongest non-holder replaces the weakest holder only when clearly stronger.
+    {
+        uint32_t best = UINT32_MAX, weakest = UINT32_MAX;
+        u32 holders = 0;
+        for (uint32_t i : cand) {
+            const auto& t = trackOf(i);
+            if (t.holder) {
+                holders++;
+                if (weakest == UINT32_MAX || t.score < trackOf(weakest).score) weakest = i;
+            } else if (best == UINT32_MAX || t.score > trackOf(best).score) {
+                best = i;
             }
+        }
+        if (best != UINT32_MAX && weakest != UINT32_MAX && holders >= cap && trackOf(best).score > trackOf(weakest).score * kSwapRatio) {
+            trackOf(weakest).holder = false;  // fades out; the newcomer gets the slot once it is free
+            if (sSelectLog) log("[lights] shadow slot: %08X (%.0f) yields to %08X (%.0f)", out[weakest].id, trackOf(weakest).score, out[best].id, trackOf(best).score);
+        }
+    }
+    // Free slots (holders + lights still fading out) go to the strongest waiting candidates.
+    {
+        u32 used = 0;
+        for (uint32_t i : cand) used += trackOf(i).holder || trackOf(i).w > 0.0f;
+        static std::vector<uint32_t> waiting;
+        waiting.clear();
+        for (uint32_t i : cand)
+            if (!trackOf(i).holder && trackOf(i).w <= 0.0f) waiting.push_back(i);
+        std::stable_sort(waiting.begin(), waiting.end(), [&](uint32_t a, uint32_t b) { return trackOf(a).score > trackOf(b).score; });
+        for (uint32_t i : waiting) {
+            if (used >= cap) break;
+            trackOf(i).holder = true;
+            used++;
+            if (sSelectLog) log("[lights] shadow slot: %08X (%.0f) gains a slot", out[i].id, trackOf(i).score);
+        }
+    }
+    // Weights fade toward the holder state (~5 game frames); the result is multiplied with the
+    // provider's own weight (flags bits 8..15, 0 = full).
+    for (uint32_t i = 0; i < m; i++) {
+        auto& x = out[i];
+        if (!(x.flags & kShadow) || x.id == 0) {
+            x.flags &= ~(kShadow | 0xFF00u);
+            continue;
+        }
+        auto& t = trackOf(i);
+        t.w += ((t.holder ? 1.0f : 0.0f) - t.w) * 0.25f;
+        if (!t.holder && t.w < 0.03f) t.w = 0.0f;
+        if (t.holder && t.w > 0.97f) t.w = 1.0f;
+        const u32 own = (x.flags >> 8) & 0xFFu;
+        const float ow = own ? float(own) / 255.0f : 1.0f;
+        const float fw = t.w * ow;
+        x.flags &= ~(kShadow | 0xFF00u);
+        if (fw > 0.0f) x.flags |= kShadow | (std::clamp(u32(fw * 255.0f + 0.5f), 1u, 255u) << 8);
+    }
+    if (sSelectLog >= 2) {  // every frame: the shadow-casting lights with their weights
+        char buf[512];
+        int len = std::snprintf(buf, sizeof(buf), "[lights] f%u n %u shadows:", copyDispCount(), m);
+        for (uint32_t i = 0; i < m && len < 440; i++)
+            if (out[i].flags & kShadow)
+                len += std::snprintf(buf + len, sizeof(buf) - len, " %08X:%u", out[i].id, (out[i].flags >> 8) & 0xFFu);
+        log("%s", buf);
+    }
+    if ((sTrackTick & 63) == 0) {
+        for (auto it = sTrack.begin(); it != sTrack.end();) {
+            if (sTrackTick - it->second.seen > 60) it = sTrack.erase(it);
+            else ++it;
         }
     }
     std::memcpy(l, out.data(), m * sizeof(aurora::gfx::ExtraLight));
@@ -214,6 +309,13 @@ uint32_t shadowLightCap() {
     return std::min(n, 8u);
 }
 bool masterOn() { return sActive.load(std::memory_order_relaxed); }
+bool configuredOn() {
+    static const int sForce = [] {
+        const char* v = std::getenv("LM_ENHANCED");
+        return v ? std::atoi(v) : -1;
+    }();
+    return sForce >= 0 ? sForce != 0 : port::settings().enhancedLighting.enabled;
+}
 int perfPhase() { return sPerfPhase; }
 
 void applySettings() {
@@ -289,6 +391,10 @@ void applySettings() {
     c.ssao = l.ssao;
     c.ssaoIntensity = l.ssaoIntensity;
     c.ssaoRadius = l.ssaoRadius;
+    // Test aid LM_AO_AB=1: ambient occlusion only on odd dump frames (intensity 0 on even ones, so
+    // no pipeline changes), consecutive LM_FRAME_DUMP frames compare with / without.
+    static const bool sAoAb = std::getenv("LM_AO_AB") != nullptr;
+    if (sAoAb && ((copyDispCount() + 1) & 1) == 0) c.ssaoIntensity = 0.0f;
     // LM_ENH_PERF_AB=<seconds>,<part>: performance A/B within one run. Every <seconds> the part
     // (all, ppl, flq, soft, xl, xls, vol, bloom, ssao, map) is switched off/on; LM_FPS_LOG lines
     // carry the phase (perfPhase()).
@@ -322,12 +428,15 @@ void applySettings() {
     aurora_enhanced_set_config(&c);
     // LM_XL_SHADOW_LOG=1: shadow-map statistics every 120 host frames (lights, caster draws,
     // casters skipped while their pipeline compiles).
-    static const bool sXlLog = std::getenv("LM_XL_SHADOW_LOG") != nullptr;
+    static const int sXlLog = [] {
+        const char* v = std::getenv("LM_XL_SHADOW_LOG");
+        return v ? std::max(std::atoi(v), 1) : 0;
+    }();
     static u32 sXlTick = 0;
-    if (sXlLog && ++sXlTick % 120 == 0) {
+    if (sXlLog && ++sXlTick % (sXlLog >= 2 ? 1 : 120) == 0) {  // 2: every host frame
         u32 lights = 0, casters = 0, skipped = 0;
         aurora_enhanced_shadow_stats(&lights, &casters, &skipped);
-        log("[xlshadow] lights %u casters %u skipped %u", lights, casters, skipped);
+        log("[xlshadow] f%u lights %u casters %u skipped %u", copyDispCount(), lights, casters, skipped);
     }
     sActive.store(c.enabled, std::memory_order_relaxed);
 }
