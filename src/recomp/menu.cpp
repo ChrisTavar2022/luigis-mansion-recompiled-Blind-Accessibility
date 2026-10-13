@@ -480,6 +480,26 @@ void enhancedLightingTab() {
         "pass per frame (4096: noticeable on weak GPUs).");
 
     ImGui::SeparatorText("Atmosphere");
+    static const char* kRealQ[] = {"Off", "Medium", "High", "Ultra"};
+    sDirty |= ImGui::Combo("Realistic flashlight", &l.realisticFlashlight, kRealQ, 4);
+    ImGui::SetItemTooltip(
+        "A physically based flashlight beam: light scattering in the air of the room, ray-marched\n"
+        "against the flashlight's own shadow map, so Luigi's hand, furniture, ghosts and door frames\n"
+        "cut shadow shafts into the haze; a reflector-shaped pool on walls and floors (hot centre,\n"
+        "faint rings, soft edge, inverse-square falloff); dust motes lit only inside the beam; a\n"
+        "flare when the light flashes. Replaces the game's cone mesh and the volumetric beam below.\n"
+        "Cost (RTX 3090 Ti, 2560x1920): Medium ~0.3 ms (half resolution, 24 steps), High ~0.5 ms\n"
+        "(half resolution up to 720 lines, 40 steps), Ultra ~1.5 ms (full resolution up to 1080\n"
+        "lines, 64 steps, more dust). Weak GPUs: Medium. Off: the volumetric beam below.");
+    ImGui::BeginDisabled(l.realisticFlashlight == 0);
+    sDirty |= ImGui::SliderFloat("Beam density", &l.beamDensity, 0.0f, 3.0f, "%.2f");
+    ImGui::SetItemTooltip("How hazy the air is: brightness of the beam and its shadow shafts, and how quickly\n"
+                          "it fades with distance (denser air also absorbs more). No cost difference.");
+    sDirty |= ImGui::SliderFloat("Dust motes", &l.beamDust, 0.0f, 2.0f, "%.2f");
+    ImGui::SetItemTooltip("Dust drifting in the beam, lit only where the beam (and not a shadow) reaches it.\n"
+                          "0 turns it off and saves its cost (about a third of the beam pass).");
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(l.realisticFlashlight != 0);
     sDirty |= ImGui::Checkbox("Volumetric flashlight beam", &l.volumetricBeam);
     ImGui::SetItemTooltip(
         "Light scattering in the air of the flashlight beam (dusty haze), stopped by walls and\n"
@@ -489,6 +509,7 @@ void enhancedLightingTab() {
     static const char* kVolQ[] = {"Low", "Medium", "High"};
     ImGui::BeginDisabled(!custom);
     sDirty |= ImGui::Combo("Beam quality", &l.volumetricQuality, kVolQ, 3);
+    ImGui::EndDisabled();
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     sDirty |= ImGui::Checkbox("Bloom / glow", &l.bloom);
