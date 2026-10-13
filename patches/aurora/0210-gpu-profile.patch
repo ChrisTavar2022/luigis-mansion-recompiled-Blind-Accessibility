@@ -10,6 +10,9 @@ atlas, composite, mask copies, scene copy), the post-process chain (PostFx <n>) 
 blend resolves (EFB blend6 copy / quantize). Up to 511 zones per frame (was 127). Nothing changes
 without the variable.
 
+Test aid: AURORA_BEAM_FREEZE_TIME=1 (frozen dust/haze) also steps the realistic flashlight's flare and
+off-time by a fixed 1/30 s per scene end, so frame dumps of separate runs agree in lit rooms too.
+
 diff --git a/lib/webgpu/gpu_prof.cpp b/lib/webgpu/gpu_prof.cpp
 --- a/lib/webgpu/gpu_prof.cpp
 +++ b/lib/webgpu/gpu_prof.cpp
@@ -530,3 +533,25 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
    const auto pass = cmd.BeginRenderPass(&desc);
    pass.SetPipeline(g_gpu.composite);
    pass.SetBindGroup(0, bind(job.base,
+@@ -3112,7 +3131,10 @@
+     using Clock = std::chrono::steady_clock;
+     static Clock::time_point sPrev = Clock::now();
+     const auto now = Clock::now();
+-    const float dt = std::clamp(std::chrono::duration<float>(now - sPrev).count(), 0.f, 0.25f);
++    // AURORA_BEAM_FREEZE_TIME=1 also steps the flare by a fixed 1/30 s per scene end, so frame
++    // dumps of separate runs agree (wall-clock steps made the beam brightness differ run to run).
++    static const bool sFreezeFlare = std::getenv("AURORA_BEAM_FREEZE_TIME") != nullptr;
++    const float dt = sFreezeFlare ? 1.f / 30.f : std::clamp(std::chrono::duration<float>(now - sPrev).count(), 0.f, 0.25f);
+     sPrev = now;
+     const float level = 0.2126f * f.color.x() + 0.7152f * f.color.y() + 0.0722f * f.color.z();
+     if (g_flashLevel <= 0.f) {
+@@ -3199,7 +3221,8 @@
+     using Clock = std::chrono::steady_clock;
+     static Clock::time_point sOff = Clock::now();
+     const auto now = Clock::now();
+-    const float dt = std::clamp(std::chrono::duration<float>(now - sOff).count(), 0.f, 0.25f);
++    static const bool sFreezeOff = std::getenv("AURORA_BEAM_FREEZE_TIME") != nullptr; // see fill_beam
++    const float dt = sFreezeOff ? 1.f / 30.f : std::clamp(std::chrono::duration<float>(now - sOff).count(), 0.f, 0.25f);
+     sOff = now;
+     g_flashOffTime += dt;
+   }
