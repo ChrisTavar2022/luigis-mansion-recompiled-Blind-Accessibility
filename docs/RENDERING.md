@@ -1276,7 +1276,7 @@ draw classes, scene bracket, test lights), `shadows.cpp` (caster-pass class, sha
 | Dynamic colored lights (`extra_lights`, intensity) | Up to 16 point lights per pixel on world geometry | `aurora/lights.h` interface below; added to the lit color channel (× material color) so the game's TEV decides the response; smooth (1-x²)² falloff to the radius, half-Lambert on ghost draws, optional specular |
 | Colored light shadows (`extra_light_shadows`, method, lights, quality, map size, softness) | Lights flagged `ExtraLightCastShadows` (the strongest 2/4/8: ghosts, fires, candelabras, fire spray) are blocked by furniture/characters | **Shadow maps** (default, patch 0028; see "Colored-light shadow maps" below): cube maps per light in one atlas, PCF/PCSS lookup into the mask. **Screen space** (fast, up to 4 lights), current frame: the opaque world draws are re-rendered depth-only (same pipelines, depth layout) into a half-resolution pre-pass **before** the EFB pass that draws them (pass pre-op), a ray-march pass (8/16/32 steps, thickness 160 units) writes an RGBA8 mask (one channel per light), which is copied into a reserved storage-buffer range; the world shaders read it (`enh_mask`, bilinear) |
 | Volumetric beam (`volumetric_beam`, intensity 2.0, quality) | Dusty haze in the flashlight beam, stopped by walls | Scene end: ray march along each view ray (16/24/48 steps, 1/4 or 1/2 resolution) through the flashlight's GX spot attenuation (the flashlight = the bright angular spot light nearest the camera among the world draws' lights), forward-scattering phase, depth-limited; density modulated by slowly drifting 3D value noise (dust motes) |
-| Bloom / glow (`bloom`, intensity, light sources, colored light glow, bright surfaces, threshold, radius, flashlight-lit walls) | Light sources glow, the HUD never | Scene end, HDR (RGBA16F) chain at ≤ 720 lines: bright pass = **glow buffer** (emissive) + soft-knee scene highlights × "bright surfaces" (suppressed where the flashlight is the only reason a wall is bright) + **light glows**; 6-level 13-tap downsample / tent upsample; composited additively onto the EFB |
+| Bloom / glow (`bloom`, intensity, light sources, bright surfaces, threshold, radius, flashlight-lit walls) | Light sources glow, the HUD never | Scene end, HDR (RGBA16F) chain at ≤ 720 lines: bright pass = **glow buffer** (emissive) + soft-knee scene highlights × "bright surfaces" (suppressed where the flashlight is the only reason a wall is bright); 6-level 13-tap downsample / tent upsample; composited additively onto the EFB |
 | Ambient occlusion (`ssao`, intensity, radius; off by default, experimental) | Contact darkening on solid surfaces | **Forward** (Aurora 0032): computed in the light-shadow mask pass from the opaque depth pre-pass (third mask plane, slot 8; 12 hemisphere samples, bias relative to the radius) and multiplied inside the opaque world draws (depth-writing, not additive; `enh_flags` bit 16). Unlit textured opaque world draws get the enhanced variant while it is on, so toggling it rebuilds those pipelines once. The former scene-end multiply also darkened everything drawn over an occluded corner: the ghost layer, the flashlight beam and glare, glows, particles, glass (`AURORA_ENH_AO_POST=1` restores it for A/B) |
 
 **Glow buffer (emissive-aware bloom).** Additive draws (blend SRCALPHA/ONE etc.: glows, lens
@@ -1291,8 +1291,10 @@ wrong way). The game draws the 3D scene, copies it (RGB565 640x480, color clear,
 draws the ghost layer and pastes the scene back before the HUD: glow draws survive that copy;
 a color + depth clear (a new scene) drops them. Ordinary lit surfaces only glow through "bright
 surfaces" (0.25 by default), so walls do not bloom; the glow buffer is Reinhard-compressed.
-**Light glows**: each extra light adds a small screen-space halo at its position (core =
-3% of its radius), hidden when the depth buffer shows a surface in front of it.
+**Light glows** (removed in `enh-fixes-2`, Aurora 0187): each extra light used to add a small
+screen-space halo at its position (core = 3% of its radius), hidden when the depth buffer showed
+a surface in front of it. They showed as floating orbs (hidden ghosts, the light above Grabbing
+Ghosts, fixtures); glow now only comes from pixels that are actually drawn.
 
 ### Extra light interface (`include/aurora/lights.h`)
 
@@ -1443,8 +1445,8 @@ flashlight beam is on it; while the Poltergust holds it the light ramps with los
 (0.35 + 0.65 × (1 − HP/max)) with a fast tremor and a larger radius; capture (message 3, or HP
 reaching 0 while held) gives a ~3× burst that fades over 1.5 s and follows the ghost into the
 nozzle (and stays at its last position if the actor leaves the list); element hits tint the
-light with the element for 20 frames. Invisible ghosts give no light ("Invisible ghost glow"
-0..0.3 adds a faint hint). Lights are sorted by strength / distance; "Max ghost lights"
+light with the element for 20 frames. Invisible ghosts give no light (the former "Invisible ghost glow"
+hint is gone; since `enh-fixes-2` only ghosts the ghost pass actually drew visibly give light). Lights are sorted by strength / distance; "Max ghost lights"
 (default 8, renderer limit 16) keeps the strongest, the strongest two get the cast-shadows flag
 when "Shadows from ghost lights" is on (now as many as "Shadow-casting lights" allows; see
 "Colored-light shadow maps"). Radius by class 380/560/720/1100 × "Ghost light radius"; ids = actor pointer, so
@@ -1453,7 +1455,7 @@ interpolation pairs them. Actors are pooled and reused, so capture marks expire.
 The lights do not carry `ExtraLightTranslucent`: only draws of the ghost pass (`fn_80060E70`
 pass 0x30) are ghost draws for the renderer, blended room geometry (much of the ballroom floor
 and walls) is ordinary world geometry and gets the light, and a ghost's body does not light
-itself; its halo comes from the bloom's light glow.
+itself; its halo comes from the game's own glow draws (through the glow buffer).
 
 Built at the start of the main view `fn_8000BB98(0)` (enhanced_lighting.cpp's hook calls
 `ghostlights::onMainView` before `enh::beginScene`) and submitted with
@@ -1957,6 +1959,114 @@ EFB color depth on: 52% (the banding).
 Coordination with "Smooth color banding" (`deband`, Aurora 0190): it smooths the 6-bit EFB; with the
 6-bit EFB off under enhanced lighting it does not apply there (greyed out), and the remaining
 quantization is the 8-bit target itself.
+
+### Enhanced lighting fixes, second round (branch `enh-fixes-2`, Aurora 0187)
+
+After a full playthrough with enhanced lighting. Images: `build/enhfix2/` (not in the repo).
+
+**1. No light balls.** The visible orbs (balcony railing, above Grabbing Ghosts, in fixtures) were
+the bloom's "light glows": a screen-space halo drawn at every extra light's position, hidden only
+when the depth buffer showed a surface in front of it. A light whose source is hidden or never
+drawn (a ghost behind the railing or inside a plant, a light lifted above a ghost's head, a lamp's
+light point inside its shade) still showed it. 0187 removes the halo pass entirely (the
+"Colored light glow" setting and `bloom_light_glow` key are gone); glow now only comes from pixels
+that are actually drawn: the glow buffer (the game's additive draws re-rendered, depth-tested) and
+the bright-surface term. The realistic flashlight's screen-space lens glare (0196) was the same kind
+of sprite (with the lens hidden behind Luigi it was a bright ball around his head,
+`lens_glare_before_after.png`) and is removed too; its flare still brightens the beam.
+
+**Ghost lights only from visibly drawn ghosts.** The light used actor +0xE3 (alpha) and the draw
+pass's flag tests, but not the pass's own per-type test `(actor +0x40 & 0xF) & pass` nor the alpha
+the pass really draws with (some types flicker with their own value). Now the ghost layer's
+`GXSetDstAlpha(1, alpha)` calls inside `fn_80060E70` (return addresses 0x800611C4 / 0x800611D4,
+r21 = the actor; `hle_gx.cpp` -> `ghostlights::onGhostDrawn`) record which ghosts were drawn with
+which alpha; a ghost gives light only if the previous ghost pass drew it with a non-zero alpha
+(lights are built before the pass of their frame). Hidden ghosts (in furniture, not yet appeared,
+fading between appearances) give none; the "Invisible ghost glow" option is removed. Verified in
+the anteroom (gold ghosts, `LM_GHOST_LIGHT_LOG`): light while visible / in the beam, `hidden` and
+0 between appearances.
+
+**2. Room-lit lamps; candles independent.** World-light categories:
+
+| Category (resource / source) | Kind | Light while |
+|---|---|---|
+| `candle_*` (`candle_moe`, `candle_vio`; sfire candle objects) | flame | its own state (`fn_80164140`: lit 1-3, out 4/5, emitter emitting) |
+| `danro_fire`, `torch`, `tc_s*` (hearths, braziers, torches) | flame | the emitter emits (independent of the room light) |
+| `chandelier`, `shanyb`, `m_light1_*` particle glows | electric | the room is lit |
+| `jmp/objinfo` "chandelier", `jmp/furnitureinfo` `syan*`/`shan*`/`a_lamp*`/`lamp*`/`a_ligh*`/`a_lump*` | electric | the room is lit |
+| fire effects, element sprays, sparkles, GBH screen, lightning | effects | their own state |
+
+"Room lit" is now the game's own test `fn_80018D78(room object)`: room object +6 bit 0x80 (a
+cleared room) and 0 in the mansion while flag 61 (the breaker blackout) is set (`fn_80037894`). The
+port used to read only the bit, so lamps stayed on during the blackout; particle lamp glows had no
+room test at all. Logged (`LM_ROOM_LIGHTS_ON=1`, foyer): 10 chandelier/lamp lights while lit, none
+after `LM_SKIP_TEST=2700:flag:61`; candles unchanged. Room numbering checked: the current-room id,
+the room table index and the room objects agree (foyer 2, dining 8, hallway 10, Twins' room 27).
+
+Candles in real play (not `LM_TEST_BLOWOUT`): vacuuming next to the foyer's side-table candelabra
+(`LM_TELEPORT=-420,0,-80,800`, R held) puts the candles in state 3 while the nozzle pulls, then
+blows them out one by one (state 4, flags 0x0C): the group light goes 3.00 -> 2.00 -> 1.00 with its
+centre leaning to the burning one. Dining room: two of each violet candelabra's three candles
+start out (state 4) and the lights burn at 1.00 per candelabra. Anything else that puts a candle
+out (a ghost) goes through the same emitter flags / state, so it is covered by the same path.
+
+**5. Lights stay in their room.** `ExtraLight` gains a box (0187, flag `ExtraLightRoomBox`,
+`GX_AURORA_EXTRA_LIGHT_WORDS` 10 -> 22, storage 24 words per light): the room's bounds from the
+room table `lbl_804D8170`, in view space relative to the light (centre offset + three half-axis
+vectors, so it follows the light when interpolation blends the position; the box itself is not
+blended). The shader fades the light out over 24 units past the box. Every provider sets it
+(`enh::limitToRoom`): flames and lamps by their position's room, ghosts by theirs (room byte as
+fallback), spray / GBH / lightning by Luigi's room. Test aid `LM_ROOM_BOX=0` (off) / `2` (boxes
+shrunk to a quarter around the room centre: the cut shows where the box is, `room_box_check.png`).
+
+**3. Shadow flicker.** Idle captures (every frame, 120 frames) in the foyer, dining room, ballroom
+and anteroom at 30 fps, and the interpolated in-betweens at 120 fps (`LM_INTERP_TEST=4`), with a
+blink detector (luminance jumps that reverse within 1-3 frames; the GBH screen's static excluded).
+The remaining shadow blinks came from shadow-slot hand-overs: in the dining room a gold ghost's
+light (its score drops to a fifth while it fades between appearances) and a candelabra traded a
+slot every ~1 s (42 slot changes in ~2000 frames), each a fade-out/fade-in of two shadows. Fixes
+(`selectLights`): slot decisions use a peak-held score (decays to half in ~1.5 s), a holder keeps
+its slot at least 45 game frames, and a holder that disappears (a ghost hiding, a culled light)
+keeps its slot reserved for 20 frames. Same peak-hold for the ghost provider's own shadow ranking.
+Ballroom 133 -> 28 slot changes; at 16 slots only reappearing ghosts gain slots (no hand-overs).
+The 120 fps in-between sequences showed no shadow blinks (dancers: motion only).
+
+**4. Ambient occlusion.** The user's builds had the 0186 depth-prepass fix. Remaining issue: the
+range term `radius / |dz|` still weighted an occluder far in front of the receiver (10-50%), so the
+wall around a character's silhouette darkened (a halo following Luigi; `AURORA_ENH_AO_SHOW=1`,
+`ao_show_dining_before_after.png`). Occluders now count only within the radius in 3D (hard falloff
+from 1x to 1.5x the radius): contact darkening stays (floor at Luigi's feet, corners, under
+furniture), halos are gone. Luigi himself receives none from what is behind him (checked in the
+show mode while walking in the dining and Twins' rooms). The half-resolution mask (High) still
+shows small steps on thin cut-out frames (the dining cabinet's glazing bars); Ultra's mask is full
+resolution.
+
+**6. Banding.** With enhanced lighting the 6-bit EFB is off and so is the RGB565 precision of the
+game's scene copy (`GX_AURORA_ACCURACY_EFB_DEPTH` gates the copy quantization in `recording.cpp`).
+Checked on enhanced frame dumps (dining, Twins' room, anteroom): 255-256 distinct levels per
+channel and the pixels are not on the RGB565 lattice (R 0.11-0.16 of pixels, the random rate is
+0.125; G 0.26-0.30 vs 0.25), so the copy does not band and the smoothing stays off there.
+
+**More shadow-casting lights.** "Shadow-casting lights" offers 12 and 16 (`extra_shadow_lights` 4,
+5). `MaxShadowLights` 16, four RGBA8 mask planes (slots 0-15; AO plane 4, depth plane 5,
+`MaskBufferSize` 128 MiB), the mask pass writes four targets, the uniform's light-shadow block is
+`xl[36]` (`xl[s]`, `xl[16 + s]`, `xl[32]`, `xl[33]`), and the atlas is a near-square grid of cube
+maps within the device's texture limit (16 lights at 1024: 9216 x 12288). With more than 8 slots,
+single candles and lit lamps are shadow candidates too. GPU time per mask (`AURORA_ENH_GPU_TIMING`,
+16 fixed test lights, 1024 faces, High quality, 1280x960, GPU shared with other agents):
+
+| Lights | Pre-pass | Atlas | Mask | Total | Atlas memory |
+|---|---|---|---|---|---|
+| 4 | ~0.5 | ~1.2 | 0.17 | ~1.8 | 100 MB |
+| 8 | ~0.2 | ~1.0 | 0.37 | ~1.5 | 200 MB |
+| 12 | 0.16 | 1.13 | 0.56 | 1.85 | 300 MB |
+| 16 | 0.16 | 1.48 | 0.74 | 2.4 | 450 MB |
+
+Defaults unchanged (High 4, Ultra 8).
+
+**Enhanced off.** Two runs of the nursery script with the master switch off (main vs this branch)
+reach the same frame with one pixel different (dust); runs differ from each other by timing on a
+loaded machine, the same way for both builds (`enhanced_off_same.png`).
 
 ### Realistic flashlight (branch `flashlight-beam`, Aurora 0196)
 

@@ -547,3 +547,9 @@ is not active, frames identical to main).
 With the 6-bit EFB off, "Smooth color banding" (section 11, Aurora 0190) has nothing to smooth and is
 greyed out under enhanced lighting too; the lit picture is plain 8-bit (it is not the game's
 palette anyway: the enhanced lighting changes every lit color).
+
+Checked again in `enh-fixes-2` (docs/RENDERING.md "Enhanced lighting fixes, second round", item 6):
+the game's RGB565 scene copy is not quantized either under enhanced lighting (the copy precision is
+part of `GX_AURORA_ACCURACY_EFB_DEPTH`). Enhanced frame dumps of the dining room, the Twins' room
+and the anteroom have 255-256 levels per channel and their pixels are not on the RGB565 lattice
+(at the random rate), so nothing bands there and the smoothing stays off under enhanced lighting.
