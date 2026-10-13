@@ -853,6 +853,7 @@ unless noted, `mixed` scenario, one game instance (GAME_LOCK). "Over" = present 
 | 40, 4 min | + keep-warm | **39.98** | 26.2 / 62.0 | 5 (loads) |
 | 60 vanilla (enhanced/lights/CRT off), 10 min | + keep-warm | **60.00** | 18.0 / 33.2 | **1** |
 | 120 vanilla, 4 min | + keep-warm | **116.40** (VRR cap) | 9.6 / 12.3 | **0** |
+| 120, 10 min | before | 102.98 | 23.4 / 43.7 | 3459 (3289 chosen by the schedule) |
 | 120, 10 min | governor + keep-warm, before 0216 | 110.31 | 13.2 / 37.0 | 1357 |
 | 120, 10 min | + 0216 (present timing polled) | 116.04 | 9.6 / 81.4 | 208 |
 | **final build** (governor per-interval, keep-warm 90% cap): | | | | |
@@ -864,7 +865,7 @@ unless noted, `mixed` scenario, one game instance (GAME_LOCK). "Over" = present 
 | 60, VRR set Off (vblank mode), 4 min | 0216 | **59.99** | 17.9 / 42.1 | 10 |
 
 The A/B at 60 in one line: 55.27 -> 60.00 fps presented, intervals over 1.5x 2032 -> 2, p99
-41.8 -> 17.6 ms. At 120: 110.3 -> 116.3 (the VRR cap), 1357 -> 74. The 0216 fix also lowered the
+41.8 -> 17.6 ms. At 120: 102.98 -> 116.32 (the VRR cap), 3459 -> 74, p99 23.4 -> 9.7 ms. The 0216 fix also lowered the
 GPU time per frame at 120 (p50 8 -> 5.3 ms): the device lock had been stalling the render worker
 and the FIFO thread behind the GPU. No governor slowdown happened in any final run after the boot
 (one during the boot's loading screens, recovered within seconds).
