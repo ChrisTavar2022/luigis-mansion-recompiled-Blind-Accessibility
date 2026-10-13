@@ -342,6 +342,7 @@ configured/all-off every s seconds and log fps per phase, for A/B screenshots of
 |---|---|---|---|
 | Integer-accurate TEV (`integer_tev`) | TEV stages evaluated in integer WGSL (8-bit A/B/C, s11 D/registers, per-stage rounding/clamp) | +-1 level on ~40-45% of pixels, unbiased (mean +0.06); nothing structural | see table |
 | EFB color depth (`efb_color_depth`) | fragment output quantized to the EFB format (RGBA6 / RGB565) with the PE's 2x2 dither when the draw enables it; texture copies to RGB565/RGB5A3 keep their format's precision (patch 0014) | ~1.4 levels darker on average (LM draws much of the scene with dither off, where the PE truncates), 6-bit banding rings in smooth gradients (flashlight pool on the floor), dither grain where dither is on | see table |
+| Smooth color banding (`smooth_banding`, **off**: an enhancement, see "Smooth color banding") | EFB and RGB565/RGB5A3 copy quantizers output the local average of their steps (same mean colour), plus sub-step noise; off (not needed) while enhanced lighting turns the 6-bit EFB off | no 6/5-bit contours, blotches or dither grain; colours within ~1 level of the accurate picture | none measurable |
 | Display copy filter (`display_copy_filter`) | present-time pass (`dcopy_filter` in crt.cpp, ahead of the CRT chain) with the game's GXSetCopyFilter taps + GXSetDispCopyGamma | ~5% less vertical high-frequency detail (6/52/6 of 64), no color shift (mean 0.2 levels); only runs when the taps/gamma change the picture | see table |
 | Texture copy filter (`texture_copy_filter`) | GXSetCopyFilter taps applied to color GXCopyTex copies (patch 0018, `GX_AURORA_ACCURACY_COPY_FILTER`) | the scene the game redraws from its RGB565 copy is softer vertically (nursery: vertical gradient energy -30%, horizontal -6%; differences only along horizontal edges, no shift) | a copy that was a plain texture copy becomes a shader blit with three taps |
 
@@ -434,6 +435,67 @@ autocorrelation of the vertical gradient had spikes at 3 rows (+0.50) and 6 rows
 (duplicate edges from the texture copy and the display filter); after, it decays smoothly
 (+0.40, +0.18, +0.12, +0.09, ~0 from 5 rows). At 1x, native frame dumps of the old and new
 spacing are identical (max 0-5 levels on a few pixels where the copy clamp now applies).
+
+## Smooth color banding (Aurora 0190, enhancement)
+
+F1 > Visuals > Rendering > **Smooth color banding** (`[rendering] smooth_banding`, **off** by
+default = the console's picture; under "EFB color depth", which it needs). Where the banding comes
+from is measured in docs/ACCURACY.md section 11: mostly the RGB565 scene copy the game pastes back
+every frame (5-bit red/blue: green/blue blotches and contours in dark rooms), then the RGBA6 EFB
+(LM draws its models and rooms with dither off, so these are bare truncation steps).
+
+**What it does.** The accurate pipeline stays (same copies, same passes, same alpha, same
+precision decisions); only the colour *output* of each quantizer is replaced by its local average:
+
+- EFB writes (`efb_quantize`, shader.cpp): the 6/5-bit value the PE would store is replaced by the
+  widened level ramp `X(k) = (k << (8 - n)) | (k >> (2n - 8))` interpolated at `t`, where `t` is the
+  mean stored level for a smooth input: `(c - (c >> n)) / step` for dithered draws (the dither adds
+  0..step-1 uniformly, so its mean is exact), `(c - (step - 1) / 2) / step` for truncating ones (the
+  8-bit TEV output loses 1.5 levels on average). Alpha keeps its exact 6-bit value (dst alpha /
+  blend factor semantics unchanged). Selected per draw by bit 16 of the `current_pnmtx` immediate,
+  so no pipeline config changes: no precache re-sweep, toggling it compiles nothing.
+- Sub-step noise (bit 17, always on with the option): +-0.5 of an 8-bit step of interleaved gradient
+  noise by render pixel before the RGBA8 target rounds, so very dark gradients do not show the PC's
+  own 8-bit steps and the rounding does not bias the mean (without it the smoothed picture came out
+  ~0.4 levels darker: the truncation ramp lands on half levels). Static pattern, no flicker.
+- RGB565 / RGB5A3 texture copies (`tex_copy_conv`, `quantize = 2`): `smooth8` = the n-bit level
+  ramp shifted by the average the copy drops from a 6-bit EFB value, `2 * (2^(6-n) - 1)` (2 for
+  5 bits, 0 for green's 6, 6 for RGB5A3's 4).
+- 6-bit blending (0176) is skipped (no resolve passes) while smoothing is on: blends stay 8-bit.
+- The bytes of copies to RAM (`efb_ram` encoder) keep the exact format; only the picture changes.
+
+The alternative of "just 8 bits" (EFB color depth off) was rejected: it is +3.1 / +1.6 / +4.5
+levels brighter in R / G / B in the dark nursery (bluer, lifted blacks), i.e. not the game's
+colours. A post-process deband filter was not needed: the bands are removed at their source, so
+HUD and texture detail are untouched and nothing blurs.
+
+**Enhanced lighting** (branch `enh-fixes`): the 6-bit EFB is turned off altogether while it is on
+(`gx::enhancedOverridesEfbDepth()`, "Enhanced lighting fixes" below), so the lit picture is plain
+8-bit and the smoothing has nothing to act on; the checkbox is greyed out with the 6-bit group and
+its tooltip says why. (The first version of this option forced the smoothing on under enhanced
+lighting instead; turning the 6-bit EFB off gives the enhanced gradients without the sub-step noise.)
+
+**Verification** (native frame dumps, nursery `LM_START_MAP=2 LM_START_APPEAR=1
+LM_TEST_STATE=poltergust LM_LIGHTNING=0,90,1`, flashlight + GBH; window captures at render scale 3):
+- Off: byte-identical to main's build (23/23 frames 2580-2800 incl. lightning, beam, GBH). Note
+  that runs fall into a few lightning-timing variants even with the same binary (main's build:
+  23/23, 5/23 and 9/23 against its own reruns), so compare against a run of the same variant.
+- On vs accurate, mean per channel (block averages, dark frames): R -0.5..-0.7, G +0.1..+0.3,
+  B +0.9..+1.0 levels (8 bits: +3.1 / +1.6 / +4.5); by brightness the residual is -1.5..+1 below 64
+  and up to +3 above 128 (where a step is a few % of the value). Distinct colours per frame
+  ~4.5k -> ~40-50k; equal horizontal neighbours in smooth areas 66 % -> 30 %, full-step jumps
+  28 % -> 11 %. HUD, GBH screens: within 0-3 levels.
+- Render scale 3: the ceiling/wall blotches and the beam's contour rings are gone, texture detail
+  and edges unchanged; enhanced lighting (forced) loses the contour lines in the beam and pool.
+- 120 fps, render scale 2, `LM_INTERP_TEST=3` (tools/interp/scenarios.sh nursery, frames
+  2580-2700): 0 stale pixels, snapped/unpaired counts identical to the same run with smoothing off;
+  in-between frames are smoothed like the game frames (6-bit share 3 %).
+- Cost: ~20 ALU ops per pixel on quantized draws, one branch on an immediate; no extra pass (and
+  the 0176 resolve passes are skipped). At render scale 6, uncapped, on a shared GPU the frame-rate
+  samples were dominated by other load (on 51-65 fps, off 30-43 fps across alternating runs): below
+  the measurement noise.
+- Test aid: `LM_SMOOTH_BANDING=0|1|2` (off / on / on without the sub-step noise) overrides the
+  setting; `LM_ACCURACY=<mask>` with bits 0x20 (smooth) and 0x40 (noise).
 
 ## Indirect effects
 
@@ -1806,7 +1868,7 @@ candelabras keeping full weight for the whole idle stretch.
 
 **4. Hardware-accuracy features with enhanced lighting** (A/B in the nursery with enhanced
 lighting on, `LM_ACCURACY` masks, the same frame of two runs; matrix also in docs/ACCURACY.md
-section 11):
+section 12):
 
 | Feature | Interaction with enhanced lighting | Decision |
 |---|---|---|
@@ -1827,5 +1889,6 @@ early-Z split 2.0%, pixel snap 2.4%, DIVIDE_2 truncation 1.0%, vertex snapshots 
 to RAM 0.7%, integer TEV 0.7% (all the run-to-run level, no structure in the difference images);
 EFB color depth on: 52% (the banding).
 
-Coordination: the `deband` branch may add a debanding option; with EFB color depth off under
-enhanced lighting the remaining quantization is the 8-bit target itself.
+Coordination with "Smooth color banding" (`deband`, Aurora 0190): it smooths the 6-bit EFB; with the
+6-bit EFB off under enhanced lighting it does not apply there (greyed out), and the remaining
+quantization is the 8-bit target itself.

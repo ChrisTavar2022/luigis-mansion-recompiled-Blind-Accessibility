@@ -427,6 +427,19 @@ const gx::DisplayCopy& gx::displayCopy() { return sDisplayCopy; }
 
 void gx::recheckDrawState() { sRawCheck = true; }
 
+// Enhanced lighting used to force the smoothing on; it now turns the 6-bit framebuffer off
+// altogether (enhancedOverridesEfbDepth), so nothing forces the smoothing any more.
+bool gx::smoothBandingForced() { return false; }
+
+int gx::smoothBandingLevel() {
+    static const int sForce = [] {
+        const char* e = std::getenv("LM_SMOOTH_BANDING");
+        return e ? std::clamp(std::atoi(e), 0, 2) : -1;
+    }();
+    if (sForce >= 0) return sForce;
+    return port::settings().rendering.smoothBanding || smoothBandingForced() ? 1 : 0;
+}
+
 // F1 > Visuals > Rendering accuracy options -> Aurora. Test overrides: LM_ACCURACY=<mask>
 // (bit 0 integer TEV, bit 1 EFB color depth, bit 2 texture copy filter, bit 3 6-bit blending, bit 4 early-Z alpha
 // depth) and LM_ACCURACY_AB=<seconds>
@@ -439,11 +452,17 @@ void gx::applyAccuracySettings() {
                 (r.efbColorDepth && r.efbBlend6 ? GX_AURORA_ACCURACY_EFB_BLEND : 0) |
                 (r.earlyZAlphaDepth ? GX_AURORA_ACCURACY_EARLY_Z : 0) |
                 (r.textureCopyFilter ? GX_AURORA_ACCURACY_COPY_FILTER : 0);
-    // Enhanced lighting turns the 6-bit EFB (and with it 6-bit blending and the dither) off: its
-    // smooth per-pixel and colored-light gradients went through the 6-bit framebuffer and the
-    // game's RGB565 scene copy, which banded them into visible steps (docs/RENDERING.md "Accuracy
-    // features with enhanced lighting"; the F1 toggles are greyed out while it is on).
-    if (enhancedOverridesEfbDepth()) flags &= ~(GX_AURORA_ACCURACY_EFB_DEPTH | GX_AURORA_ACCURACY_EFB_BLEND);
+    // Enhanced lighting turns the 6-bit EFB (and with it 6-bit blending, the dither and the
+    // smoothing of 0190) off: its smooth per-pixel and colored-light gradients went through the
+    // 6-bit framebuffer and the game's RGB565 scene copy, which banded them into visible steps
+    // (docs/RENDERING.md "Enhanced lighting fixes"; the F1 toggles are greyed out while it is on).
+    const bool efbDepth = r.efbColorDepth && !enhancedOverridesEfbDepth();
+    if (!efbDepth) flags &= ~(GX_AURORA_ACCURACY_EFB_DEPTH | GX_AURORA_ACCURACY_EFB_BLEND);
+    // Smooth color banding (Aurora 0190): an enhancement on top of the EFB color depth
+    // (docs/RENDERING.md "Smooth color banding").
+    const int smooth = gx::smoothBandingLevel();
+    if (efbDepth && smooth > 0)
+        flags |= GX_AURORA_ACCURACY_EFB_SMOOTH | (smooth == 1 ? GX_AURORA_ACCURACY_EFB_SMOOTH_NOISE : 0);
     static const char* sMask = std::getenv("LM_ACCURACY");
     if (sMask) flags = u32(std::strtoul(sMask, nullptr, 0));
     static const double sAb = [] {
