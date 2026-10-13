@@ -569,13 +569,24 @@ void beforeFrame() {
         if (sMode != Mode::Vblank || sVb.count < sStartVblank || sVb.count > sStartVblank + sDivisor + 2)
             sStartVblank = sVb.count;  // (re)start: from the next refresh
         const u64 target = sStartVblank + sDivisor;
-        // At most a period (+1 ms) after the previous start: a display that refreshes only when
+        // At most a period after the previous start: a display that refreshes only when
         // a frame arrives (VRR active although set Off) would otherwise hold every frame until
         // its lowest refresh rate; then the start is the plain grid time.
-        const auto deadline = (sMode == Mode::Vblank ? prevFrameTime : now) + dur(period + 0.001);
-        const bool hit = sVb.cv.wait_until(lk, deadline, [&] { return sVb.count >= target; });
+        // (The condition variable's timeout is only good to a millisecond or two on Windows: the
+        // last 2 ms before the grid time are a precise sleep; 59.5 fps instead of 60 before.)
+        const auto grid = (sMode == Mode::Vblank ? prevFrameTime : now) + dur(period);
+        const auto ready = [&] { return sVb.count >= target; };
+        bool hit = sVb.cv.wait_until(lk, grid - dur(0.002), ready);
+        if (!hit) {
+            lk.unlock();
+            const auto left = grid - Clock::now();
+            if (left > Clock::duration::zero())
+                SDL_DelayPrecise(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(left).count()));
+            lk.lock();
+            hit = ready();
+        }
         sStartVblank = sVb.count;
-        sFrameTime = hit ? sVb.last : deadline - dur(0.001);
+        sFrameTime = hit ? sVb.last : grid;
         sCur.mode = 'V';
     } else {  // Fifo: the swap chain paces at the refresh rate
         sPeriod = period;
