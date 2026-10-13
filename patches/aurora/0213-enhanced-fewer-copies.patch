@@ -49,7 +49,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
 --- a/lib/gx/shader.cpp
 +++ b/lib/gx/shader.cpp
-@@ -1057,12 +1057,13 @@
+@@ -1037,12 +1037,13 @@
    let v = normalize(-p);
    for (var i = 0u; i < cnt; i++) {
      let b = ubuf.enh_light_base + i * 24u;
