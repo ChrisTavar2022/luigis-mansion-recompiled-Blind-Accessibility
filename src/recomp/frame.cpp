@@ -146,26 +146,11 @@ int targetFps() {
     return std::clamp(fps, port::kMinFps, port::kMaxFps);
 }
 
+bool interpolating() { return sHostDecoupled; }
+
 void pace() {
-    // Interpolated presentation: the host frame loop is capped at the target. With vsync the
-    // swap chain already waits for the display, so a target at or above the refresh rate
-    // runs at the refresh rate (the menu says so).
-    using Clock = std::chrono::steady_clock;
-    static Clock::time_point next = Clock::now();
-    const int fps = targetFps();
-    const float hz = displayRefreshHz();
-    if (!sHostDecoupled || (port::settings().video.vsync && hz > 0 && float(fps) >= hz - 0.5f)) {
-        next = Clock::now();
-        return;
-    }
-    const auto period = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / fps));
-    next += period;
-    const auto now = Clock::now();
-    if (next < now - period) {  // fell behind: don't try to catch up
-        next = now;
-        return;
-    }
-    if (next > now) SDL_DelayPrecise(u64(std::chrono::duration_cast<std::chrono::nanoseconds>(next - now).count()));
+    // Interpolated presentation is paced by pacing::beforeFrame (pacing.cpp); lockstep frames are
+    // paced by the guest (VI retraces) and the swap chain.
 }
 
 void stop() {

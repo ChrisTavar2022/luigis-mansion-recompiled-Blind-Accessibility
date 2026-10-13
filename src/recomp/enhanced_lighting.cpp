@@ -598,7 +598,8 @@ void beginScene() {
     const uint32_t sent = addBeamAnchor(sPending.data(), count);
     const u32 at = interp::mark();
     aurora::gfx::set_extra_lights(sPending.data(), sent);
-    interp::noteExtraLights(at, count);
+    // (all of them: the realistic flashlight's anchors too, so they follow the blended camera)
+    interp::noteExtraLights(at, sent);
 }
 
 void endScene() {

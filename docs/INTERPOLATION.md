@@ -571,6 +571,187 @@ Test mode (same scenarios as before; foyer and hit are new):
 | foyer, 16:9 | 0 | 16,915 / 15,773 | 18,511 | 12.5 | 6.6 | 6.0 / 1.1 |
 | hit 2600-2760 | 0 | 34,293 / 35,869 | 22,092 | 1.5 | 6.5 | 7.2 / 5.2 |
 
+## Pass 4: what reaches the screen (interp-final, October 2026)
+
+User report after pass 3: "dust, completely static objects, many things still judder", with
+screen recordings (ShadowPlay, 4K 120 fps) showing a candlestick shaking under the moving camera
+and a small extra copy of Luigi for a moment. The earlier passes measured dumps and the game's
+own pacing log; this pass measures the display output under the user's real conditions.
+
+### The user's conditions
+
+- RTX 3090 Ti, LG TV 3840x2160 at 120 Hz with G-SYNC on, VSync on in the game (Aurora picks the
+  Fifo present mode), frame rate "match display" (120), enhanced lighting (realistic flashlight,
+  colored lights, light shadow maps, AO), CRT filter, windowed or fullscreen.
+- G-SYNC confirmed from the display's refresh timing (D3DKMTWaitForVerticalBlankEvent): with the
+  game paced at 90 fps fullscreen the refreshes come every 11.0 ms (p5-p95 9.7-12.8 ms), not on a
+  8.33 ms grid.
+- The user's recordings show 22-32 distinct frames per second (08.31.34: 74% of the 120 captured
+  frames repeat the previous one, steps of 36 px at the game rate; 08.37.23: 81%, down to 17 fps).
+  The machine was shared with agents' test runs then: a second game instance halves the GPU
+  (measured: 120 -> 65 fps presented, 3-field tape stamps, the game itself slowing down).
+  Parallel game windows are now serialised by a machine-wide lock (`LM_GAME_LOCK`).
+
+### Method: `tools/interp/screen_run.py` (the primary regression test)
+
+Runs the game visibly (fullscreen, topmost: `LM_TOPMOST`), muted, with a scratch APPDATA holding
+a copy of the user's settings.ini (read only) plus `--set` overrides, waits for the scenario's
+frame and records the display with ffmpeg's ddagrab (Desktop Duplication, `dup_frames=0`: one
+captured frame per screen update; NVENC HEVC). Then:
+
+- `screen_judder.py`: per pair of shown frames, the shift of the static scenery (phase
+  correlation of image blocks in the top third of the picture, away from Luigi, his beam and the
+  dust; median of the blocks; flash frames left out). Reports shown fps and interval spread, the
+  position error of the scenery against a smooth path (px at 4K), "even steps" (step within 25%
+  of the local speed x interval).
+- `LM_FRAME_TAG=1` draws a bar code in the top-left corner (ImGui, after the CRT): present number,
+  tape and alpha. The capture then knows which present and which interpolation position u = tape +
+  alpha reached the screen: repeated and skipped presents, and the blending check: the scenery
+  step of each shown frame divided by (du x the local speed per game frame), which must be 1;
+  reported as `|r - 1|` and the share off by more than 25%, and per place in the tape (#0 = the
+  present that crosses a game frame).
+- `judder.py` on the game's log: present intervals, and with Aurora patch 0197 the GPU completion
+  time of every frame (P lines). With VRR a frame is shown about when the GPU finishes it, so the
+  display step error is |du x 33.37 ms - (gpu done step)|. `--camera`: the blended main camera of
+  every present (V lines) and a fixed world point projected through it (the math alone).
+- `blips.py`: one-frame artifacts (pixels unlike both neighbours), with crops of the worst frames;
+  `osc_map.py`: a heat map of back-and-forth; `track_bright.py`: a self-lit feature (candle
+  flames) tracked against u; `dump_motion.py`: scenery steps through the in-betweens of an
+  `LM_INTERP_TEST` run (deterministic).
+- `screen_suite.py`: all scenarios (foyer strafing, turning, vacuum/heavy dust, nursery,
+  ballroom, ghosts) into one table. `lockrun.py` runs any command under the game lock.
+
+### What was wrong
+
+1. **Pacing under GPU load and VRR.** Presents were started whenever the swap chain let the loop
+   continue; alpha came from the time the replay started. At the VRR ceiling (120 on 120 Hz) the
+   display falls back to fixed timing and the queue adds latency; below it (the GPU busy: 65 fps
+   in the shared-machine run the user recorded) frames 13-17 ms apart carried motion computed for
+   other times: display step error 4.1 ms mean, 8.7 ms p95.
+2. **Pairs across cameras.** A position matrix whose partner in the previous tape was drawn under
+   another camera (a GX camera slot used by the shadow light in one frame and by the main camera's
+   draws in the next) was blended between the two cameras: drawn in between, small and far off,
+   or snapped to b for all in-betweens while the rest of the scene moved (static scenery stepping
+   at 30 Hz in some tapes). The camera-cut test compared b's most used camera with a's most used
+   camera on its own, which can be another pass's camera.
+3. **Redrawing vanished draws from the previous tape** (fade-outs, and characters kept fully drawn
+   until alpha 1) used GX state that was not the draw's own in some frames: a stray flashlight
+   cone across the room when the vacuum switched it off (foyer, test mode frame 2603), a miniature
+   of the whole picture over a black screen among heavy dust (frame 2685), and Luigi's body
+   replaced by a small copy for a game frame (the user's video).
+4. **Dust.** Particle swarms (hundreds of identical one-quad draws) were paired nearest-first with
+   second choices: a puff whose nearest was taken blended toward another puff; the unpaired ones
+   faded in and out with a 4x4 dither (29.5 fade-ins and 20.3 fade-outs per in-between while
+   vacuuming): flicker and popping.
+5. **Menus**: groups of thousands of identical glyph quads were paired all-pairs (tape close up to
+   3.4 s per tape on the title/file screens: boot took 3-4 minutes in test runs).
+
+### What it does now
+
+1. **Pacing** (`src/recomp/pacing.cpp`, Aurora `0197-present-timing`):
+   - interpolated frames start on an even schedule and are interpolated for their scheduled
+     time (the constant latency to the display is absorbed by the interpolation delay);
+   - variable refresh (detected from the refresh timing, `[pacing] variable refresh rate
+     detected`, or F1 > Visuals > Variable refresh rate On/Off): a grid a little below the refresh
+     rate (116 fps on 120 Hz: inside the VRR range), slowed evenly to what one frame costs (p90 of
+     max(CPU, GPU) time per frame + 8%) when the PC cannot hold it;
+   - fixed refresh: the refresh rate (Fifo) or an even fraction of it (60, 40, 30 fps on 120 Hz),
+     started at the vblank, never an uneven rate (`LM_PACING_DIVISOR=n` forces one for tests);
+   - the GPU is kept at most one frame behind (`aurora_wait_frame_done`), so the time from a
+     frame's start to its display stays nearly constant;
+   - the F1 frame-rate section and the FPS overlay show the pacing ("116 fps (variable
+     refresh)", "60 fps = 120 Hz / 2 (frame cost limits)").
+2. **Cameras**: the cut test uses b's main camera and the camera of a its draws were paired with
+   (majority). A value whose partner was drawn under another camera than its own camera's
+   counterpart is placed under the blended camera of its own camera pair (or shown as captured on
+   a cut), never blended across cameras (`crosscam` in the test-mode trace).
+3. **No redraw of vanished draws** (`LM_INTERP_FADES=out|all` restores it for tests): a vanished
+   draw disappears at the first in-between frame (at most one game frame early); a snapped spawn
+   (characters, blinks) is shown at once. Spawns still fade in by dithering.
+4. **Swarms** pair mutual nearest neighbours only; the other particles are this frame's particles
+   placed under the in-between camera, drawn fully, never dithered or redrawn from the previous
+   tape (`LM_INTERP_SWARM=old|any|fades` for A/B).
+5. Huge identical-draw groups use the range-scan pairing too (menus: tape close <= 3.5 ms).
+
+### Results
+
+Real time, fullscreen 3840x2160 at 120 Hz (G-SYNC), the user's settings with enhanced lighting,
+one game instance (lock), 20 s per scenario. "Before" = main (e86513c) as built at 01:31 (no frame
+tags: no blending columns), "after" = this branch.
+
+Static scenery on screen (`screen_suite.py`; position error = distance of the scenery from a
+smooth path, px at 4K; even = steps within 25% of speed x interval; blending = the step against
+linear interpolation between game frames, from the frame tags; blob = largest one-frame
+artifact of the run, px at 1280 wide):
+
+| scenario | build | presented (screen) | position error mean / p95 px | even steps | blending off >25% | display step err mean / p95 ms | worst one-frame blob |
+|---|---|---|---|---|---|---|---|
+| foyer strafing | before | 120 (118.7) | 0.82 / 2.78 | 89.0% | - | - | 764 |
+| | after | 116 (114.4) | **0.69 / 2.08** | **92.1%** | 4.0% | 0.43 / 1.05 | 265 |
+| turning | before | 120 (117.8) | 2.21 / 9.18 | 59.6% | - | - | 966 |
+| | after | 116 (103.5) | **1.82 / 7.47** | **69.3%** | 11.6% | 0.56 / 0.98 | 231 |
+| vacuum, heavy dust | before | 120 (89.6) | 0.46 / 1.21 | 96.2% | - | - | 1024 (dust puffs for one frame) |
+| | after | 116 (75.3) | 0.49 / 1.31 | **98.6%** | 1.4% | 0.71 / 1.18 | 276 (Luigi's instant turn) |
+| nursery | before | 120 (112.1) | 1.76 / 7.72 | 77.6% | - | - | 328 |
+| | after | 116 (108.8) | 1.77 / 7.95 | 76.7% | 12.3% | 0.56 / 1.01 | 123 |
+| ballroom | before (240 Hz capture timestamps) | 120 (88.3) | 1.32 / 5.08 | 79.8% | - | - | 908 |
+| | after | 116 (86.2) | 1.15 / 4.22 | 81.1% | 6.8% | 0.36 / 0.89 | 947 (a flying chair) |
+| ghost fight (gold ghosts room, the camera nearly still) | after | 116 | - | - | - | 0.25 / 0.57 | 426 (ghost glow) |
+
+(The screen column counts distinct captured frames: frames that differ by less than 0.25 levels
+on average, e.g. a slow pan with the flashlight off, are counted once.)
+
+GPU-bound (foyer at 8x internal resolution: about 28 ms of GPU work per frame), the case of a
+shared or slower GPU:
+
+| | presents (game log) | shown on screen | shown intervals p50 / p95 / max ms | position error mean / p95 / max px | even steps |
+|---|---|---|---|---|---|
+| before | 61.8 fps | 36.1 fps | 32 / 37 / 52 (34.7% off the median) | 1.47 / 4.44 / 27.9 | 93.8% |
+| after | 35.4 fps | 35.3 fps | 28 / 30 / 32 (0.2% off) | 1.09 / 3.74 / 18.0 | **97.7%** |
+
+Before, the game believed it presented 62 fps while the screen showed 36 at uneven times, each
+frame interpolated for a time it was not shown at; after, every frame is shown, evenly, at the
+rate the GPU holds (display step error 0.62 / 2.10 ms). Original 30 is unchanged: 41 nursery
+frames at 30 fps, main's executable vs this branch, 0 pixels differ (two runs of this branch: 0).
+
+Pacing alone (game log), foyer strafing at the user's settings:
+
+| | presented | present interval p99 / max ms | display step error (vs GPU done) mean / p95 ms |
+|---|---|---|---|
+| before, machine shared with a second game (what the user recorded) | 64.7 fps | 19.6 / 44.6 | 4.06 / 8.70 |
+| before, idle machine | 120.0 fps | 10.1 / 14.2 | (no GPU times) |
+| after, idle machine | 116.1 fps | 9.2 / 9.3 | 0.39 / 0.89 |
+
+Test mode (`scenarios.sh`, 640x480 dumps, deterministic), vacuum scenario frames 2600-2700,
+`LM_INTERP_SWARM=old` vs the new swarm handling: dithered fades per in-between 29.5 / 20.3 -> 0.2 /
+0.3; back-and-forth 73,490 -> 32,152 px (46,060 -> 4,722 without frame 2603, the vacuum switching
+the flashlight off); the miniature-picture frame 2685 (41,683 px) gone. With the fade-out redraw
+off the stray flashlight cone of frame 2603 is gone too (back-and-forth 27,430 -> 141 px).
+
+**Enhanced lighting's lights were never interpolated with the realistic flashlight on** (the
+user's setting; found with the camera check below): `beginScene` noted the light count before
+the flashlight's three anchor lights were appended, the capture check saw another count and
+dropped the note, so every colored light and the anchors stepped at the game frame while the
+scene moved. All lights are noted now and blended in world space under the blended main camera
+(unpaired ones keep their world place, room boxes turn with the camera). The "after" rows above
+include this fix.
+
+The interpolation math itself is exact: the blended main camera's path (`judder.py --camera`, a
+fixed point projected through every present's camera) is piecewise linear between game frames to
+0.02% (median). On screen, with the game-frame speed changes of linear interpolation taken into
+account, steps that cross a game frame are 1.087 x the expected step in the foyer with enhanced
+lighting (1.168 before the light fix), 1.000 inside a game frame, and 0.986 / 0.999 in a lit room
+without enhanced lighting (`LM_ROOMS_LIT=1`): what is left moves at the game frame by design
+(Luigi turns instantly and his flashlight with him, so the lit region jumps; candle flicker; the
+light shadow maps change shape: `blips.py` in the turn scenario shows one-frame orange glows and
+shadow shapes behind the candles: enhanced lighting's light shadow maps, not geometry).
+
+Fixed refresh with VRR off (`video.vrr=2`, `LM_PACING_DIVISOR=2`) on this VRR display first ran
+at 26 fps: the vblank wait for every second refresh never came while the display waited for
+frames; the start now falls back to the grid after one period: 59.9 fps presented, 59.4 shown,
+shown intervals p95 19 ms (1 kHz capture timestamps), 94.4% even steps, display step error 0.67 /
+1.64 ms.
+
 ## Known limitations
 
 - On the test machine presentation never exceeded the display's 60 Hz even with VSync off
@@ -579,9 +760,15 @@ Test mode (same scenarios as before; foyer and hit are new):
   VSync in the GPU control panel); targets below the refresh rate are hit exactly (45 and 50 fps
   measured). `LM_BACKEND=d3d12|d3d11|vulkan` picks the backend for such tests.
 - Things the game snaps itself (Luigi's instant turns, a light switching on) stay snapped.
-- Spawns and despawns of particles and props fade by dithering (see Polish); characters and blink
-  patterns switch at the game frame (pass 3); 2D elements, draws sampling EFB copies and the
-  shadow caster pass still appear/vanish at the first in-between frame.
+- Props that appear fade in by dithering (see Polish); anything that vanishes disappears at the
+  first in-between frame (pass 4: the redraw from the previous tape is off); characters and blink
+  patterns switch at the first in-between frame; particles of a swarm without an unambiguous
+  partner move with the camera but their own motion is at the game rate.
+- Variable refresh is detected from the display's refresh timing once frames come at uneven
+  times (boot, loads); before that, or on a display whose VRR is off, a GPU-limited frame rate
+  drops to an even fraction of the refresh rate. F1 > Visuals > Variable refresh rate forces it.
+- The vblank monitor (VRR detection, fixed-refresh frame starts) is Windows only
+  (D3DKMTWaitForVerticalBlankEvent); elsewhere the schedule is a plain timer grid.
 - Original 30 is unchanged by construction (no capture, Aurora 0191 keeps the exact per-draw
   split at 30), but it could not be shown pixel for pixel this time: two runs of the *same*
   executable no longer give identical dumps (lightning timing, particles; 2.4 M px differ over 61

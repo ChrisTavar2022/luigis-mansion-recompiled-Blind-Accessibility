@@ -14,6 +14,8 @@
 #include "recomp/enhanced_lighting.h"
 #include "recomp/frame.h"
 #include "recomp/hidden_mansion.h"
+#include "recomp/interp.h"
+#include "recomp/pacing.h"
 #include "recomp/skip.h"
 #include "recomp/unused2.h"
 
@@ -25,6 +27,7 @@
 #include <dolphin/vi.h>
 
 #include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -835,6 +838,21 @@ void frameRateControls(port::VideoSettings& v) {
                           "(currently %.0f Hz).%s",
                           hz, vs);
     }
+    static const char* kVrr[] = {"Auto (detect)", "On", "Off"};
+    sDirty |= combo("Variable refresh rate", v.vrr, kVrr, 3);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("For G-SYNC / FreeSync displays. Interpolated frames are started on an even schedule\n"
+                          "and each one shows the game exactly at its scheduled time, so motion steps are equal.\n"
+                          "Variable refresh: up to a little below the refresh rate (inside the VRR range); if a\n"
+                          "frame takes longer, the rate drops evenly to what the PC can hold (e.g. 95 fps).\n"
+                          "Fixed refresh: the refresh rate or an even fraction of it (120 Hz: 120, 60, 40 fps),\n"
+                          "never an uneven rate that would show frames for one or two refreshes.\n"
+                          "Auto: variable refresh is detected from the display's refresh timing%s.",
+                          recomp::pacing::vrrActive() ? " (detected)" : " (not detected so far)");
+    if (const char* st = recomp::pacing::status(); st && *st) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("now %s", st);
+    }
 }
 
 void visualsTab() {
@@ -1227,6 +1245,8 @@ void fpsOverlay() {
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
                      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
     ImGui::Text("%.0f fps", fps);
+    // Interpolated presentation: how it is paced, and why it is below the target if it is.
+    if (const char* st = recomp::pacing::status(); st && *st) ImGui::TextDisabled("%s", st);
     ImGui::End();
 }
 
@@ -1345,6 +1365,23 @@ void draw() {
         }
     }
     recomp::dev::drawOverlays();
+    // LM_FRAME_TAG=1 (testing, tools/interp/screen_run.py): the replay shown in this present as a
+    // bar code in the top-left corner: a white and a black reference cell, then 32 bits (present
+    // number low 16, tape seq low 8, alpha x 255), most significant first, 16 px cells.
+    static const bool sFrameTag = std::getenv("LM_FRAME_TAG") != nullptr;
+    if (sFrameTag) {
+        const auto info = recomp::interp::lastPresent();
+        const u32 v = (info.present & 0xFFFF) << 16 | u32(info.bSeq & 0xFF) << 8 |
+                      u32(std::clamp(int(std::lround(info.alpha * 255.0f)), 0, 255));
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        const ImVec2 o = ImGui::GetMainViewport()->Pos;
+        const float s = 16.0f / std::max(ImGui::GetIO().DisplayFramebufferScale.x, 1.0f);
+        dl->AddRectFilled(o, ImVec2(o.x + s * 34, o.y + s), IM_COL32(0, 0, 0, 255));
+        dl->AddRectFilled(o, ImVec2(o.x + s, o.y + s), IM_COL32(255, 255, 255, 255));
+        for (int i = 0; i < 32; i++)
+            if (v >> (31 - i) & 1)
+                dl->AddRectFilled(ImVec2(o.x + s * (2 + i), o.y), ImVec2(o.x + s * (3 + i), o.y + s), IM_COL32(255, 255, 255, 255));
+    }
     if (!sOpen) return;
     ImGui::SetNextWindowSize(ImVec2(680, 400), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));

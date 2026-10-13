@@ -129,6 +129,16 @@ void reset();  // drop all tapes (after leaving interpolated mode)
 // 4 after frame::pace.
 void hostMark(int phase);
 bool judderLogOn();
+void logPresentTiming(u64 frame, int64_t submitNs, int64_t presentNs, int64_t doneNs);  // P lines (pacing.cpp)
+// The last replay: a running present number, the tape shown (b) and alpha. LM_FRAME_TAG=1 draws
+// them as a bar code in the top-left corner (menu.cpp), so a screen capture tells which present
+// (and which in-between) reached the screen (tools/interp/screen_judder.py --tag).
+struct PresentInfo {
+    u32 present = 0;
+    u64 bSeq = 0;
+    float alpha = 1.0f;
+};
+PresentInfo lastPresent();
 
 namespace detail {  // interp.cpp <-> interp_vtx.cpp
 void vtxBeginTape();
