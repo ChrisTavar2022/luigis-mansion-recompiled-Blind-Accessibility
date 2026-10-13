@@ -2272,3 +2272,89 @@ quantize pass) and the game's EFB copies 0.4.
 | 0211 | Realistic flashlight: the shadow map's 2x2 footprint per step = two gathers (the key's two bytes) at the footprint's shared corner instead of four loads; the periodic hash's modulo by a power of two is a bit mask | gather at the corner selects exactly texels b..b+1; clamp-to-edge = the clamped loads |
 | 0212 | **6-bit resolves nobody sees are dropped.** A pass whose color nothing reads afterwards (no color copy, snapshot or scene op) is resolved before the next op, or not at all when that op is the next pass on the same target and clears its color completely (the shadow-map caster pass, which the game renders into the EFB and copies only as Z16) | the dropped quantization would be overwritten by the clear before anything reads it. `AURORA_EFB_BLEND6_NODEFER=1` (A/B) |
 | 0213 | Scene end: bloom's bright pass samples the EFB's single-sample color directly instead of a full-resolution copy of it (the copy was also made with bloom off); receivers test an extra light's reach before loading its flags | same texels |
+
+### Results (RTX 3090 Ti, `AURORA_GPU_PROFILE`, 120 fps target, frame interpolation, averages of
+the last 20 s in each room; "before" = main + the 0210 profiler only, "after" = this branch)
+
+GPU busy ms per presented frame, GPU utilisation (busy / wall time) and presented fps, then the
+pass groups (ms per presented frame):
+
+| Configuration | Busy ms | GPU use | fps | Flashlight | AO | Light shadows | 6-bit resolves | EFB passes | Copies/snapshots | Bloom/glow/composite | CRT/post/present |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| user settings, nursery 4K | 8.12 -> 6.71 | 94% -> 80% | 115 -> 120 | 2.18 -> 1.75 | 2.12 -> 0.76 | 0.22 -> 0.28 | - | 2.28 -> 2.69 | 0.49 -> 0.42 | 0.24 -> 0.24 | 0.58 -> 0.59 |
+| user settings, foyer 4K | 8.46 -> 7.74 | 96% -> 92% | 113 -> 119 | 2.18 -> 1.81 | 1.07 -> 0.67 | 0.80 -> 0.73 | - | 3.05 -> 3.22 | 0.54 -> 0.48 | 0.25 -> 0.25 | 0.58 -> 0.59 |
+| user settings, ballroom 4K | 8.02 -> 7.42 | 90% -> 88% | 112 -> 118 | 1.72 -> 1.43 | 0.94 -> 0.61 | 1.05 -> 0.97 | - | 3.03 -> 3.17 | 0.46 -> 0.41 | 0.24 -> 0.24 | 0.58 -> 0.59 |
+| user settings, lit dining room 4K | 10.67 -> 8.92 | 97% -> 96% | 91 -> 108 | 1.87 -> 1.61 | 1.96 -> 0.75 | 1.60 -> 1.31 | - | 3.86 -> 3.94 | 0.55 -> 0.49 | 0.24 -> 0.24 | 0.58 -> 0.58 |
+| vanilla defaults, foyer 4K | 4.24 -> 4.19 | 51% -> 50% | 120 -> 120 | - | - | - | 1.45 -> 1.32 | 1.90 -> 1.96 | 0.56 -> 0.57 | - | 0.33 -> 0.34 |
+| Low, foyer 4K | 4.36 -> 4.34 | 52% -> 52% | 120 -> 120 | 0.87 -> 0.72 | - | 0.18 -> 0.17 | - | 2.37 -> 2.52 | 0.52 -> 0.47 | 0.25 -> 0.26 | 0.18 -> 0.18 |
+| Medium, foyer 4K | 4.38 -> 4.35 | 52% -> 52% | 120 -> 120 | 0.87 -> 0.72 | - | 0.19 -> 0.18 | - | 2.37 -> 2.53 | 0.52 -> 0.47 | 0.25 -> 0.26 | 0.17 -> 0.18 |
+| High, foyer 4K | 4.53 -> 4.39 | 54% -> 53% | 120 -> 120 | 0.82 -> 0.66 | - | 0.26 -> 0.24 | - | 2.54 -> 2.61 | 0.50 -> 0.46 | 0.24 -> 0.25 | 0.17 -> 0.17 |
+| Ultra, foyer 4K | 5.05 -> 4.79 | 60% -> 58% | 120 -> 120 | 0.81 -> 0.65 | - | 0.75 -> 0.68 | - | 2.58 -> 2.61 | 0.51 -> 0.46 | 0.24 -> 0.24 | 0.16 -> 0.16 |
+| vanilla defaults, foyer 1080p | 2.16 -> 2.19 | 26% -> 26% | 119 -> 120 | - | - | - | 0.55 -> 0.47 | 1.06 -> 1.13 | 0.46 -> 0.50 | - | 0.08 -> 0.09 |
+| Low, foyer 1080p | 4.21 -> 4.05 | 50% -> 48% | 120 -> 120 | 1.11 -> 0.90 | - | 0.30 -> 0.29 | - | 2.05 -> 2.14 | 0.44 -> 0.40 | 0.23 -> 0.24 | 0.08 -> 0.08 |
+| Medium, foyer 1080p | 4.24 -> 4.14 | 51% -> 50% | 120 -> 120 | 1.09 -> 0.92 | - | 0.32 -> 0.32 | - | 2.05 -> 2.19 | 0.47 -> 0.38 | 0.23 -> 0.24 | 0.08 -> 0.08 |
+| High, foyer 1080p | 4.31 -> 4.33 | 52% -> 52% | 120 -> 120 | 1.00 -> 0.86 | - | 0.44 -> 0.45 | - | 2.14 -> 2.35 | 0.44 -> 0.37 | 0.21 -> 0.22 | 0.07 -> 0.08 |
+| Ultra, foyer 1080p | 4.26 -> 4.24 | 51% -> 51% | 120 -> 120 | 0.84 -> 0.71 | - | 0.99 -> 0.97 | - | 1.78 -> 1.90 | 0.38 -> 0.39 | 0.19 -> 0.20 | 0.07 -> 0.08 |
+
+"User settings" = the user's settings.ini (Ultra-level quality, AO, ghost and world lights, realistic
+flashlight Ultra, CRT) with enhanced lighting on, window 3840x2160, 120 fps target, VSync off.
+Presets = default settings plus the preset (AO and ghost lights are off by default, so their
+masks do not run). Reading the table:
+
+- The big wins are where the frame had a second mask (nursery, lit room: -1.2 to -1.4 ms of AO,
+  -0.4 ms of shadow-map mask) and the flashlight scattering (-0.15 to -0.45 ms in every preset).
+  The user's lit room went from 91 to 108 fps, the other rooms reach (or nearly) the 120 target.
+- The EFB passes did not get more expensive: their shaders are unchanged (an A/B build without
+  0213's one-line receiver change measured the same). Timestamps measure the GPU at its current
+  clock, and with idle time per frame (the 120 fps cap reached, util 80% instead of 94%) the GPU
+  clocks down, so unchanged passes read up to ~15% longer; in the lit room, which stays GPU-bound
+  (96-97%), the EFB passes differ by 2%. Compare the busy time and fps at similar load.
+- Vanilla: the 6-bit resolves are the largest accuracy cost (6-7 per frame, ~1.3 ms at 4K); 0212
+  removes one per frame. The rest of vanilla's GPU time is the game's own passes and copies.
+
+### Verification (frame dumps, `tools`-style deterministic runs: `LM_INPUT_CLOCK=frames`,
+`AURORA_BEAM_FREEZE_TIME=1`, the same frame of the reference and the branch)
+
+| Run | Frames | Result |
+|---|---|---|
+| user settings (enhanced Ultra-level + AO + lights), render scale 4, nursery / lit dining room / ballroom / foyer, 30 fps | 39 / 33 / 33 / 31 | all byte-identical |
+| Low preset foyer, High preset nursery, render scale 4 | 31 / 39 | byte-identical |
+| vanilla defaults, render scale 1 and 4, nursery / foyer | 39 / 31 each | byte-identical |
+| 120 fps with `LM_INTERP_TEST=3` (fresh + in-betweens + late replays), user settings nursery and vanilla foyer, scale 2 | 73 / 62 | byte-identical |
+| foyer turning (`turn` scenario), 120 fps, `LM_INTERP_TEST=4`, incremental vs `AURORA_ENH_MASK_FULL=1` | 362 | byte-identical |
+
+The lit-room dumps first differed in the flashlight beam between any two runs (main against
+itself too): the beam's flare advanced on wall-clock time. With the 0210 test aid both runs agree.
+
+Light shadow maps changing shape in single frames (interp-final's turn scenario): in deterministic
+`LM_INTERP_TEST=4` dumps of that scenario (frames 2600-2640, every in-between) the largest one-frame
+artifacts are the same pixel for pixel with `extra_light_shadows=false` and with
+`world_lights.flicker=false`, so they do not come from the light shadow maps there; the incremental
+masks do not change any frame (table). What remains in those dumps is the flashlight pool and the
+wall lighting next to the foyer candelabras stepping at the game frame. Not investigated further.
+
+### Tried and not kept
+
+- Rendering a cleared, 6-bit-resolved pass straight into the resolve scratch (saves the target
+  copy, ~0.3 ms at 4K): the pass itself measured as much slower, no net change.
+- Sharing the receivers' 16 mask taps between lights and AO (`var<private>` arrays): every enhanced
+  EFB pass got slower (register pressure / occupancy).
+- Restricting the 6-bit resolve to the union of the pass's draw rectangles: every LM pass with
+  blended draws covers the whole target (3D view or full-screen quads), and pixels written raw
+  (replace blends' alpha, dst alpha) make a partial resolve inexact anyway.
+
+### Not done (bigger wins, outside this branch's scope)
+
+- **Per-present replay.** Every pass above runs at the presented rate (4x per game frame at 120
+  fps). Work that is the same for every in-between frame could run once per game frame: the
+  game's EFB copies of content that does not move, and the light shadow-map atlas if its cube faces
+  were world-aligned instead of view-aligned (now they turn with the camera, so the atlas changes
+  every present even for static lights and casters; world-aligned faces would let a light's six
+  faces be cached while it and the casters in its reach do not move). Both change sampling
+  slightly (not byte-identical) or need the replay architecture (interp-final).
+- The realistic flashlight's scattering is still 1.4-1.8 ms at Ultra/4K: per step it evaluates
+  the reflector profile, two exponentials and the shadow test, plus a 9-point haze and a dust DDA
+  (measured: march 1.0, haze 0.35, dust 0.33, shadow 0.2 ms). Fewer steps or a lower target are
+  visible changes, so they were left to the quality presets.
+- The 6-bit resolve (0176) could avoid its full-target copy only with in-place read-modify-write
+  (framebuffer fetch / read-write storage on RGBA8), which WebGPU does not offer on D3D12.
