@@ -593,6 +593,8 @@ void beginScene() {
         if (f == sFlareAt[0] || (sFlareAt[1] != 0 && f > sFlareAt[0] && (f - sFlareAt[0]) % sFlareAt[1] == 0))
             aurora_enhanced_beam_flare(0.85f);
     }
+    static const bool sBeamLog = std::getenv("LM_BEAM_LOG") != nullptr;
+    if (sBeamLog) log("[beam] main view of dump frame %u", copyDispCount() + 1);
     const uint32_t sent = addBeamAnchor(sPending.data(), count);
     const u32 at = interp::mark();
     aurora::gfx::set_extra_lights(sPending.data(), sent);

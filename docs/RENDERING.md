@@ -2179,3 +2179,53 @@ every scene end), `AURORA_BEAM_SIGMA=<x>` (scattering coefficient at density 1, 
 strategy-specific: gold ghost +0x590); element ghosts, bosses and cutscene lights with the beam on
 were not checked; dust and flare run on wall-clock time, so frame dumps of separate runs differ in
 them unless frozen.
+
+#### The beam detached from the flashlight (branch `flashlight-fix`)
+
+User report on the merged build: "the new realistic flashlight cone frequently detaches from the
+flashlight". Cause: the beam took its origin and direction from "the bright spot light nearest the
+camera" among the frame's world draws, and that is often not the flashlight's lens.
+Measured with `AURORA_BEAM_LOG=1 LM_BEAM_LOG=1` (every scene end: the lens of the game's cone mesh,
+the spot lights seen, and how far the first version's choice was from the lens):
+
+| Situation | What the first version used |
+|---|---|
+| Nursery, about one scene end in five | a second spot light with the same direction 216 units above the lens (a light the game uses for some models) |
+| Gold-ghost room, whole stretches (e.g. dump frames 2624-2694, 3050-3122 of the ghost script) | a scene light 1100+ units away pointing ~138 degrees elsewhere: the haze appeared as a blob at the far wall |
+| Luigi entering a room, turning on the spot, startled (nursery 2244-2316, 2490-2562) | the game's own flashlight light, which there trails the hand by up to ~220 units (smoothly) |
+| Interpolated replays (120 fps) | the light blended as a light while the hand is blended as a model matrix; in the scripted nursery runs they agreed to within 15 units, in an earlier run up to ~13 units / 2 degrees |
+
+Not causes: in ordinary play the game builds the flashlight GX light from the cone mesh's matrix in
+the same frame (position = the matrix translation, direction = model -X: equal to float precision,
+nursery), so the light is neither lagged by a frame nor at Luigi's head there; the shadow map's
+light is the game's light (the beam's shadow test keeps using the receivers' matrices, so its
+shadows still match the surfaces).
+
+**Fix** (0196, `resolve_flash` in `enhanced.cpp`): the beam is welded to the game's own cone mesh
+(`handlight_ef`, the draw that is hidden while the beam is on): its position matrix gives the lens
+(translation) and the axis (-X). That matrix is one of Luigi's model matrices, so frame
+interpolation blends it with his hand and arm. The spot parameters (cone, colour, distance terms)
+come from the flashlight light: the bright spot light within 400 units of the lens pointing within
+30 degrees of the axis (the trailing case included). When no such light exists (the lift between
+floors, scripted scenes: the scene is lit by other lights and the flashlight is only the mesh) the
+realistic beam is skipped and the game's cone mesh is drawn as in the original (decided from the
+previous frame, since the mesh is drawn before all lights are known). Without a cone mesh in the
+frame (cutscene lights such as the opening's) the previous choice is kept. The cone mesh is lit by a
+dummy light 7 at (0, 0, 10000), so its own lighting cannot identify the flashlight. The shadow-map
+check compares the map's eye with the flashlight light (not the mesh), so a trailing light keeps
+its shafts. The beam's inverse-square term is capped at 4x the reference level, so a camera looking
+down the beam from close by (it happens in the lift) is not washed out to white.
+
+Images (`build/flashlight-fix/`, consecutive dump frames of one run with `AURORA_BEAM_NOCONE=2`:
+odd frames = first version, even = fixed): `ghostroom_ab_2640_crop.png` and
+`ghostroom_ab_2640.png` (old: the haze sits at the far wall, off the hand; new: the beam leaves the
+lens), `nursery_entry_ab_2500_crop.png` / `nursery_entry_ab_2500.png` (Luigi walking in: old: a
+glow in front of him from the trailing/other light; new: from the lens),
+`ghostroom_lift_ab.png`, `ghostroom_ab_2895.png` (idle, both agree),
+`nursery_120fps_vacuum_gbh_turns.png` (120 fps `LM_INTERP_TEST=4` replays: vacuum, Game Boy Horror
+open/close, quick turns; the lens-to-light distance in every scene end of gameplay stayed below
+15 units, the beam stays on the lens). Interpolation: 0 stale pixels as before.
+
+Test aids: `AURORA_BEAM_NOCONE=1` (first version's choice) / `=2` (on every other scene end,
+logged), `AURORA_BEAM_LOG=1` (cone lens, spot lights, match distance and angle), `LM_BEAM_LOG=1`
+(port: dump frame of each main view, to pair with the Aurora lines).
