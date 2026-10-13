@@ -808,7 +808,7 @@ void frameRateControls(port::VideoSettings& v) {
     const int target = recomp::frame::targetFps();
     char label[64];
     if (v.matchDisplay) std::snprintf(label, sizeof(label), "%d fps (display)", target);
-    else if (v.targetFps <= port::kMinFps) std::snprintf(label, sizeof(label), "30 fps (original)");
+    else if (v.targetFps <= port::kMinFps) std::snprintf(label, sizeof(label), "Original");
     else std::snprintf(label, sizeof(label), "%d fps", v.targetFps);
     if (v.unlimitedFps) std::snprintf(label, sizeof(label), "Unlimited");
     ImGui::BeginDisabled(v.matchDisplay || v.unlimitedFps);
