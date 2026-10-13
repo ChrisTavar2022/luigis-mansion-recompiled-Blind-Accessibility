@@ -262,6 +262,7 @@ void beforeFrame() {
     pollTimings();
     vblankFollowWindow();
     const auto now = Clock::now();
+    const Clock::time_point prevFrameTime = sFrameTime;
     sFrameTime = now;
     sPacing = frame::interpolating();
     if (!sPacing) {
@@ -322,9 +323,13 @@ void beforeFrame() {
         if (sMode != Mode::Vblank || sVb.count < sStartVblank || sVb.count > sStartVblank + sDivisor + 2)
             sStartVblank = sVb.count;  // (re)start: from the next refresh
         const u64 target = sStartVblank + sDivisor;
-        sVb.cv.wait_for(lk, std::chrono::milliseconds(100), [&] { return sVb.count >= target; });
+        // At most a period (+1 ms) after the previous start: a display that refreshes only when
+        // a frame arrives (VRR active although set Off) would otherwise hold every frame until
+        // its lowest refresh rate; then the start is the plain grid time.
+        const auto deadline = (sMode == Mode::Vblank ? prevFrameTime : now) + dur(period + 0.001);
+        const bool hit = sVb.cv.wait_until(lk, deadline, [&] { return sVb.count >= target; });
         sStartVblank = sVb.count;
-        sFrameTime = sVb.last;
+        sFrameTime = hit ? sVb.last : deadline - dur(0.001);
     } else {  // Fifo: the swap chain paces at the refresh rate
         sPeriod = period;
         sFrameTime = now;
