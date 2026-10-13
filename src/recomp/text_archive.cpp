@@ -434,7 +434,8 @@ bool sTextOpen = false;
 }  // namespace
 
 void textArchiveButton() {
-    if (ImGui::Button(sTextOpen ? "Close text archive" : "Text archive (unused lines)")) sTextOpen = !sTextOpen;
+    if (ImGui::Button(sTextOpen ? "Close text archive###textarchive" : "Text archive (unused lines)###textarchive")) sTextOpen = !sTextOpen;
+    ImGui::SetItemTooltip("Opens a window with the game's text, unused lines included, drawn in the game font.");
 }
 
 void textArchiveWindow() {
