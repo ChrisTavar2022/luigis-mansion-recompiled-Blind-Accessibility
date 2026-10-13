@@ -295,10 +295,11 @@ void logFrame(const FrameRec& r, const AuroraPresentTiming& t, double cost, doub
 // the first 3 frames of the full scene after it then took 45-60 ms instead of 6 (4K, enhanced
 // lighting Ultra). Filler work keeps the GPU about as busy as in play: `heavy` follows the GPU
 // time of recent unfilled frames (held, halving over 20 s); the filler grows while a frame takes
-// less than 75% of want = min(heavy, 60% of the frame period), eases off above 115% and stops at
-// once above 160% (the full scene is back). The first full frame after a menu costs at most its
-// own time + 60% of the period (at 120 fps a 40% cap was not enough to hold the clocks: 20-28 ms
-// frames after a menu).
+// less than 75% of want = min(heavy, 90% of the frame period), eases off above 115% and stops at
+// once above 160% (the full scene is back). The first full frame after a menu costs its own time
+// plus the filler. At 120 fps lower caps did not hold the clocks (2-minute menu cycling: 40% ->
+// 20-28 ms frames after each menu, 60% -> 69 intervals over 1.5x, 90% -> 14); at 60 fps `heavy`
+// is the binding limit anyway.
 struct KeepWarm {
     double heavy = 0;   // s
     u32 units = 0;
@@ -315,7 +316,9 @@ void keepWarm(double gpu, double period) {
     if (w.units == 0) w.heavy *= std::pow(0.5, period / 20.0);
     // (A frame longer than the period is a hitch or an overload, not the level to hold.)
     if (w.units == 0 && gpu < period) w.heavy = std::max(w.heavy, gpu);
-    const double want = std::min(w.heavy, 0.6 * period);
+    // LM_KEEP_WARM_CAP=<fraction> (test aid): the cap as a fraction of the period (default 0.9).
+    static const double sCap = [] { const char* e = std::getenv("LM_KEEP_WARM_CAP"); return e ? std::atof(e) : 0.9; }();
+    const double want = std::min(w.heavy, sCap * period);
     u32 u = w.units;
     if (w.heavy < 0.003) u = 0;  // light settings: the GPU stays fast enough at any clock
     else if (gpu > period * 0.9 || gpu > want * 1.6) u = 0;  // the full scene is back (or too much)

@@ -827,7 +827,8 @@ smooth banding, 4K fullscreen).
 - **GPU keep-warm** (Aurora 0215, F1 > Visuals > Rendering "Keep GPU clocks up in menus", on):
   while a frame is much lighter than recent play, a compute pass streams through a 64 MiB buffer
   after the frame's own work so the GPU stays about as busy as in play (target min(recent play GPU
-  time, 60% of the period); grows below 75% of it, eases off above 115%, stops at once above 160%
+  time, 90% of the period; at 120 fps 40%/60% caps still let the clocks drop: 69 -> 14 intervals
+  over 1.5x in 2 minutes of menu cycling with 90%); grows below 75% of it, eases off above 115%, stops at once above 160%
   = the scene is back). ALU-only filler kept the core clock but the driver still dropped the
   memory clock (P3). Menu-cycle test (120 s, 60 target): intervals over 1.5x 44 -> 1, worst 55.6 ->
   29.7 ms. Costs GPU power in menus only; off for light settings (recent play under 3 ms).
@@ -852,15 +853,35 @@ unless noted, `mixed` scenario, one game instance (GAME_LOCK). "Over" = present 
 | 40, 4 min | + keep-warm | **39.98** | 26.2 / 62.0 | 5 (loads) |
 | 60 vanilla (enhanced/lights/CRT off), 10 min | + keep-warm | **60.00** | 18.0 / 33.2 | **1** |
 | 120 vanilla, 4 min | + keep-warm | **116.40** (VRR cap) | 9.6 / 12.3 | **0** |
-RESULTS_FINAL
+| 120, 10 min | governor + keep-warm, before 0216 | 110.31 | 13.2 / 37.0 | 1357 |
+| 120, 10 min | + 0216 (present timing polled) | 116.04 | 9.6 / 81.4 | 208 |
+| **final build** (governor per-interval, keep-warm 90% cap): | | | | |
+| 60, 10 min | final | **60.00** | 17.6 / 50.0 | **2** (one 37 ms render-worker stall, not a compile: 0 MISSes) |
+| 120, 10 min | final | **116.32** (VRR cap 116.4) | 9.7 / 23.1 | 74 (GPU-bound frames right after a menu closes) |
+| 60, 4 min | final (90% keep-warm cap) | **60.00** | 17.6 / 21.3 | **0** |
+| 120 windowed 1920x1080, 4 min | 0216 | **116.05** | 10.2 / 32.1 | 88 (same) |
+| 90, 4 min | final governor | **90.00** | 11.95 / 16.4 | **0** |
+| 60, VRR set Off (vblank mode), 4 min | 0216 | **59.99** | 17.9 / 42.1 | 10 |
 
-Original 30 (no interpolation, the game paced by its VI) at 4K Ultra: 18.5 fps with the present
-record on before 0216, 28.7 after (the same as with the record off: 28); vanilla 29.97 flat. What
-remains at Ultra is the original-30 path's own serialisation: the game's mid-frame GPU syncs (EFB
-copies read back by the CPU) make each frame wait for the enhanced passes so far, GPU 17.5 ms per
-game frame with the CPU waiting on it. The interpolated targets do not have it (the game runs
-decoupled); a 30 target through the interpolated path would hold 30, but would no longer be the
-unchanged original path.
+The A/B at 60 in one line: 55.27 -> 60.00 fps presented, intervals over 1.5x 2032 -> 2, p99
+41.8 -> 17.6 ms. At 120: 110.3 -> 116.3 (the VRR cap), 1357 -> 74. The 0216 fix also lowered the
+GPU time per frame at 120 (p50 8 -> 5.3 ms): the device lock had been stalling the render worker
+and the FIFO thread behind the GPU. No governor slowdown happened in any final run after the boot
+(one during the boot's loading screens, recovered within seconds).
+
+Original 30 (no interpolation, the game paced by its VI) at 4K Ultra: 18.5 fps whenever the
+present record was on before 0216 (LM_PACING_LOG, and now keep-warm, enable it), 28.7 after in the
+foyer (28 with the record off: its own limit), and in the mixed scenario gameplay seconds average
+30.0 (p10 29.9, min 28.0) with the menus at 60; vanilla 29.97 flat. What limits it at Ultra in the
+foyer is the original-30 path's serialisation: the game's mid-frame GPU syncs (EFB copies read back
+by the CPU) make each frame wait for the enhanced passes so far (GPU 17.5 ms per game frame with
+the CPU waiting on it). The interpolated targets do not have it (the game runs decoupled); a 30
+target through the interpolated path would hold 30, but would no longer be the unchanged original
+path.
+
+Remaining: at 120 with enhanced Ultra the first ~5-8 frames after a menu closes cost 15-20 ms of
+GPU time (the scene and its enhanced passes return; at 60 they fit the period), and a rare 37-80 ms
+gap between frames outside the frame itself (seen 1-4 times per 10 minutes; not a compile).
 
 ## Known limitations
 
