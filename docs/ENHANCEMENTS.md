@@ -157,6 +157,24 @@ An earlier per-draw rule (a 2D draw in the outer 30% of the frame moves to that 
 dialogue boxes from their text and treated the GBH map screen as HUD; an even earlier
 per-pane approach split menu layouts. Both were dropped.
 
+### Scenes fixed for widescreen
+
+Three places found in a full playthrough looked wrong at 16:9/21:9 and right at 4:3:
+
+| Scene | Cause | Fix |
+|-------|-------|-----|
+| Portrait gallery (map 6): a black slab beside the pillars while walking, and at 21:9 whole rooms missing at the sides | Portal culling. `fn_8001333C` computes each doorway's screen rectangle with the 4:3 projection*view matrix; the room behind it is then drawn with `GXSetScissor(rect)` (`fn_8001798C`), which the GX HLE passes on unchanged (stretched to the window) while the room itself is drawn Hor+. The scissor sat further out than the doorway, cutting off the inner part of the room behind it, and rooms visible only in the widened sides got an empty rectangle | `portal_fix.cpp`: while `fn_8001333C` runs, rows 0/1 of that matrix (`lbl_803A3C98 + 0x258`, read by nothing else) are scaled like the projection (`factor() * fovRatio`, `fovRatio`), so rectangles are in the drawn frame and the stretched scissor matches. Generic: every map's portals, also with the FOV slider. Not tied to the portal near-plane setting (docs/RENDERING.md) |
+| Gallery portrait screen / area clear ("Now you've caught: (Area n) ..."; event 79 `<GALLERY>`, game mode 6, draw `fn_8018721C`): the wall model (`/Nakamura/gallery.bin`) ends just outside the 4:3 view, so its edge showed | Hor+ shows more than the scene was built for | `fn_8018721C` runs in a `ws::Lock43Scope`: its full-screen 3D keeps the Hor+ projection but gets a scissor of the centered 4:3 frame (`prepareDraw` in `hle_gx.cpp`), so the sides stay black like the dark surroundings. Its 2D text is centered as usual |
+| Ending iris wipe on Mario (`fn_80055C54`, end of event 52): only the 4:3 frame was masked | The mask is a circle picture (`/ad_wipe_0.bti`) plus four `J2DFillBox` boxes reaching x = 0 and x = 640. Fills spanning the width were stretched, the side boxes were centered 4:3, so the scene showed beside them | `fn_80055C54` runs in a `ws::WipeScope`: every 2D draw in it is centered 4:3 (`classifyHeld`), and a `J2DFillBox` hook extends boxes touching the frame's left/right edge (or beyond it, negative widths once the circle outgrows the screen) to the display's edge. The circle stays round and centered |
+
+Verified with `LM_FRAME_DUMP` (16:9 and 21:9 against the unfixed build at the same frames, map
+6 walking left/right with `LM_START_MAP=6`, plaque 7 with `LM_TELEPORT=2025,0,-1750,20` +
+STICKLEFT + A, the iris with `LM_START_MAP=12` + A presses through event 52, frames
+2600-2760). 4:3 runs are pixel-identical to the unfixed build (the hall differs only where the
+vacuum dust differs between two runs of the same build). Not checked on the European base (the
+hooks are tagged `us pal`). The 21:9 view of the gallery hall can still see past the end of a
+room's outer wall at the far right (nothing is modelled there; the same with the fix off).
+
 ### Screenshots
 
 Captured with PrintWindow, so other windows on screen cannot leak into them. Files are
@@ -188,8 +206,9 @@ under `build/` and are not committed:
   vertex descriptor or VAT before an immediate 2D draw, `coversScreen()` gives up when
   the computed stride does not match, and the draw is treated as HUD. That fallback is
   safe.
-- **Other culling.** Room and portal visibility and per-actor distance culling have not
-  been audited. Nothing popped in the foyer or the exterior at 21:9.
+- **Other culling.** Room portal visibility follows the Hor+ frame ("Scenes fixed for
+  widescreen"). Per-actor distance culling has not been audited. Nothing popped in the foyer,
+  the exterior or the gallery at 21:9.
 
 ## 3. High frame rate: frame interpolation
 
