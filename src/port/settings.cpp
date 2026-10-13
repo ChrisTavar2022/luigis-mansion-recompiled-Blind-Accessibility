@@ -181,7 +181,6 @@ std::vector<Field> fields() {
         flag("audio", "sinc_resampler", a.sincResampler),
         flag("enhancements", "show_fps", e.showFps),
         flag("enhancements", "pause_on_focus_loss", e.pauseOnFocusLoss),
-        flag("enhancements", "skip_intro_logos", e.skipIntroLogos),
         flag("enhancements", "hidden_mansion_pal", e.hiddenMansionPal),
         num("enhancements", "pal_language", e.palLanguage),
         flag("enhancements", "gbh_camera", e.gbhCamera),
@@ -288,7 +287,31 @@ void sanitize() {
     clampTo(l.beamDensity, 0.0f, 3.0f);
     clampTo(l.beamDust, 0.0f, 2.0f);
     clampTo(l.shadowMapSize, 0, 2);
-    clampTo(sSettings.ghostLights.maxLights, 1, 16);
+    // The ranges of the F1 sliders (Visuals > Enhanced lighting).
+    clampTo(l.flashlightSoftness, 0.0f, 1.0f);
+    clampTo(l.flashlightSpecular, 0.0f, 2.0f);
+    clampTo(l.softShadowRadius, 0.25f, 6.0f);
+    clampTo(l.softShadowPenumbra, 0.0f, 20.0f);
+    clampTo(l.shadowDarkness, 0.0f, 1.5f);
+    clampTo(l.shadowAmbientKeep, 0.0f, 1.0f);
+    clampTo(l.extraLightIntensity, 0.0f, 3.0f);
+    clampTo(l.extraLightSaturation, 0.0f, 2.5f);
+    clampTo(l.volumetricIntensity, 0.0f, 3.0f);
+    clampTo(l.bloomIntensity, 0.0f, 2.0f);
+    clampTo(l.bloomThreshold, 0.0f, 1.0f);
+    clampTo(l.bloomRadius, 0.25f, 2.0f);
+    clampTo(l.bloomFlashlightSuppress, 0.0f, 1.0f);
+    clampTo(l.bloomScene, 0.0f, 1.0f);
+    clampTo(l.bloomEmissive, 0.0f, 2.0f);
+    clampTo(l.ssaoIntensity, 0.0f, 2.0f);
+    clampTo(l.ssaoRadius, 10.0f, 200.0f);
+    auto& gl = sSettings.ghostLights;
+    clampTo(gl.intensity, 0.0f, 4.0f);
+    clampTo(gl.radiusScale, 0.25f, 3.0f);
+    clampTo(gl.maxLights, 1, 64);
+    auto& wl = sSettings.worldLights;
+    clampTo(wl.masterIntensity, 0.0f, 3.0f);
+    for (float& i : wl.intensity) clampTo(i, 0.0f, 3.0f);
     auto& g = sSettings.gameplay;
     clampTo(g.ambientScale, 0.05f, 1.5f);
     clampTo(g.damageScale, 0.0f, 5.0f);

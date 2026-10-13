@@ -7,6 +7,7 @@
 #include "port/settings.h"
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
+#include "recomp/menu.h"
 #include "recomp/model_viewer.h"
 #include "recomp/version.h"
 #include "recomp/room_swap.h"
@@ -418,11 +419,8 @@ void drawOverlays() {
 
 namespace {
 
-void helpMarker(const char* text) {
-    ImGui::SameLine();
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", text);
-}
+// Tooltip of the option just drawn (also while it is greyed out), as everywhere else in the menu.
+void helpMarker(const char* text) { ImGui::SetItemTooltip("%s", text); }
 
 // One table of maps with "Go" buttons; `unusedOnly` limits it to the maps normal play never loads.
 void mapTable(const char* id, bool unusedOnly) {
@@ -431,7 +429,11 @@ void mapTable(const char* id, bool unusedOnly) {
     ImGui::BeginDisabled(!inGame);
     int n = 0;
     const MapInfo* m = maps(&n);
-    if (ImGui::BeginTable(id, 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+    // Button, then the map name with an "unused" tag; the note is the row's tooltip (a third column
+    // for it cut the longer names and notes off at the menu's default width).
+    if (ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
+        ImGui::TableSetupColumn("##go", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("##map", ImGuiTableColumnFlags_WidthStretch);
         for (int i = 0; i < n; i++) {
             if (unusedOnly && m[i].used) continue;
             ImGui::TableNextRow();
@@ -441,13 +443,14 @@ void mapTable(const char* id, bool unusedOnly) {
             ImGui::BeginDisabled(!m[i].loads);
             if (ImGui::SmallButton(label)) requestWarp(m[i].no, 0);
             ImGui::EndDisabled();
+            if (!m[i].loads) ImGui::SetItemTooltip("This map does not load.");
             ImGui::TableNextColumn();
             ImGui::Text("%2d  %s", m[i].no, m[i].name);
-            ImGui::TableNextColumn();
-            if (!m[i].used) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "unused");
-            if (m[i].note) {
+            if (m[i].note) ImGui::SetItemTooltip("%s", m[i].note);
+            if (!m[i].used) {
                 ImGui::SameLine();
-                ImGui::TextDisabled("%s", m[i].note);
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "unused");
+                if (m[i].note) ImGui::SetItemTooltip("%s", m[i].note);
             }
         }
         ImGui::EndTable();
@@ -468,7 +471,8 @@ void unusedSection() {
     mapTable("unusedmaps", true);
 
     ImGui::SeparatorText("Unused rooms");
-    ImGui::TextDisabled("Leftover room models. Go warps to the retail room and shows the old model for that visit only.");
+    ImGui::TextDisabled("Leftover room models. Go warps to the retail room and shows the old model\n"
+                        "for that visit only.");
     // Its hooks (Luigi's start position for the visited room) are written against the USA code.
     const bool roomsHere = !ver::pal();
     if (!roomsHere) ImGui::TextDisabled("(%s)", port::availNote(port::Avail::NotYet));
@@ -484,7 +488,7 @@ void unusedSection() {
             if (ImGui::SmallButton(label)) rooms::visit(i);
             ImGui::TableNextColumn();
             ImGui::Text("%s%s", lr[i].name, rooms::active() == i ? "  (showing)" : "");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nmap %d%s", lr[i].note, lr[i].map, lr[i].room >= 0 ? ", room swap" : "");
+            ImGui::SetItemTooltip("%s\nmap %d%s", lr[i].note, lr[i].map, lr[i].room >= 0 ? ", room swap" : "");
         }
         ImGui::EndTable();
     }
@@ -494,12 +498,17 @@ void unusedSection() {
 void debugSection() {
     auto& e = port::settings().enhancements;
     ImGui::TextDisabled("Debug features left in the retail game, plus port-side viewers. All off by default.");
+    ImGui::SeparatorText("Overlays and viewers");
     if (ImGui::Checkbox("Particle manager report (JUTReport)", &e.dbgParticleReport)) port::saveSettings();
     helpMarker("Emitter / particle / child counts and per-group usage printed by the game's particle\n"
                "manager with JUTReport (flag 0x804D8E04; retail never sets it nor creates the print queue).");
     ImGui::Checkbox("Info overlay (F3)", &sInfoOverlay);
     helpMarker("Port-side: current map, room and Luigi's position.");
-    if (ImGui::Button(viewer::isOpen() ? "Close model viewer (F4)" : "Model viewer (F4)")) viewer::setOpen(!viewer::isOpen());
+    // "###" keeps one ID while the label changes (the click lands on the same button).
+    if (ImGui::Button(viewer::isOpen() ? "Close model viewer (F4)###modelviewer" : "Model viewer (F4)###modelviewer"))
+        viewer::setOpen(!viewer::isOpen());
+    helpMarker("Port-side viewer for every model on the disc (and whole maps), drawn with the game's own\n"
+               "model code. F4 opens and closes it in game.");
 
     ImGui::SeparatorText("Debug modes (Action Replay codes)");
     bool dirty = false;
@@ -525,8 +534,9 @@ void debugSection() {
     ImGui::SameLine();
     dirty |= ImGui::Checkbox("Latin last line (PAL fix)", &e.dbgFontTestLatin);
     ImGui::EndDisabled();
-    if (ver::pal() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("The European version's font test already prints Latin lines.");
+    ImGui::SetItemTooltip("%s", ver::pal() ? "The European version's font test already prints Latin lines."
+                                           : "The font test's last line prints \"alphabet 123\" in Latin letters, as the\n"
+                                             "European version does. Needs \"Font test\".");
     if (dirty) port::saveSettings();
 
     ImGui::SeparatorText("Visit area");
@@ -537,6 +547,7 @@ void debugSection() {
                "Events started later by walking somewhere, talking (A) or story flags play as usual.\n"
                "Normal play is unchanged.");
     mapTable("allmaps", false);
+    recomp::menu::openTreesForCheck();
     if (ImGui::TreeNode("Mansion entry points")) {
         ImGui::BeginDisabled(!sStatus.inGame);
         int na = 0;

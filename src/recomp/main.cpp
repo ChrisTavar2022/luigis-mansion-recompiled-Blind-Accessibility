@@ -178,12 +178,12 @@ int main(int argc, char* argv[]) {
     // Linux: $XDG_CACHE_HOME/Luigi's Mansion PC (port::cacheDir; docs/LINUX.md).
     static const std::string sCacheDir = port::cacheDir().string();
     config.cachePath = sCacheDir.c_str();
-#ifndef _WIN32
-    // Memory cards (Aurora's userPath) in dataDir, which honours XDG_DATA_HOME like the rest
-    // (SDL_GetPrefPath does too, but this keeps every location defined in one place).
+    // Memory cards and imgui.ini (Aurora's userPath) in dataDir, which honours XDG_DATA_HOME /
+    // APPDATA like the rest. On Windows this is the same folder SDL_GetPrefPath gives for players,
+    // but SDL ignores the APPDATA variable, so test runs with a scratch APPDATA used to write
+    // imgui.ini into the real install.
     static const std::string sUserDir = port::dataDir().string() + "/";
     config.userPath = sUserDir.c_str();
-#endif
     if (const char* dir = std::getenv("LM_CACHE_DIR")) config.cachePath = dir;
     const port::Options& opts = port::options();
     config.startFullscreen = opts.fullscreen || port::settings().video.fullscreen;
