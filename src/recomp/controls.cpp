@@ -899,6 +899,7 @@ bool portsTab() {
                 }
                 ImGui::EndCombo();
             }
+            ImGui::SetItemTooltip("The controller (or the keyboard) that drives this GameCube port.");
             ImGui::TableNextColumn();
             ImGui::BeginDisabled(pc.device == "keyboard" || pc.device == "none");
             changed |= ImGui::Checkbox("##kb", &pc.keyboard);
@@ -908,8 +909,7 @@ bool portsTab() {
             ImGui::TableNextColumn();
             if (st.pad.id) {
                 ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.45f, 1), "%s%s", st.pad.name.c_str(), st.keyboard ? " + keys" : "");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Connected: %s (%s)", st.pad.name.c_str(), typeName(st.pad.type));
+                ImGui::SetItemTooltip("Connected: %s (%s)", st.pad.name.c_str(), typeName(st.pad.type));
             } else if (pc.device == "keyboard") {
                 ImGui::TextUnformatted("Keyboard");
             } else if (pc.device == "none") {
@@ -931,6 +931,7 @@ bool portsTab() {
         char label[16];
         std::snprintf(label, sizeof(label), "Port %d", port + 1);
         ImGui::RadioButton(label, &sTestPort, port);
+        ImGui::SetItemTooltip("Shows what the game reads from this port below.");
     }
     const auto& st = sPorts[sTestPort];
     if (!st.haveLast || st.last.err != PAD_ERR_NONE) {
@@ -1015,6 +1016,8 @@ void profilePicker(bool padsOnly) {
             }
         ImGui::EndCombo();
     }
+    ImGui::SetItemTooltip("Settings are kept per device: the keyboard, and each controller model (all\n"
+                          "controllers of one model share a profile).");
     std::string ports;
     for (int i = 0; i < PAD_MAX_CONTROLLERS; i++)
         if ((sSelProfile == "keyboard" && sPorts[i].keyboard) ||
@@ -1093,7 +1096,7 @@ bool bindingsTab() {
                     if (capturing) ImGui::PopStyleColor();
                     if (conflict) {
                         ImGui::PopStyleColor();
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Also bound to %s", with.c_str());
+                        ImGui::SetItemTooltip("Also bound to %s", with.c_str());
                     }
                     if (!sCap.active && ImGui::IsItemClicked(ImGuiMouseButton_Right) && prof->bind[t][slot]) {
                         prof->bind[t][slot] = {};
@@ -1110,11 +1113,13 @@ bool bindingsTab() {
         prof->bind = defaultsFor(*prof).bind;
         changed = true;
     }
+    ImGui::SetItemTooltip("Every binding of this profile back to its default.");
     ImGui::SameLine();
     if (ImGui::Button("Clear all")) {
         prof->bind = {};
         changed = true;
     }
+    ImGui::SetItemTooltip("Removes every binding of this profile (then bind each input yourself).");
     return changed;
 }
 
@@ -1140,25 +1145,32 @@ bool analogTab() {
         ImGui::PushID(s);
         ImGui::SeparatorText(s == 0 ? "Control stick" : "C-stick");
         pct("Dead zone", prof->deadzone[s], 0.0f, 0.5f);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Radial. The game adds the GameCube's own small dead zone (PADClamp) on top.");
+        ImGui::SetItemTooltip("Radial. The game adds the GameCube's own small dead zone (PADClamp) on top.");
         changed |= ImGui::SliderFloat("Sensitivity", &prof->sensitivity[s], 0.5f, 2.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Scales the stick's travel (1 = as the controller reports it). Above 1 the game's\n"
+                              "full deflection is reached before the stick's edge.");
         changed |= ImGui::Checkbox("Invert X", &prof->invertX[s]);
+        ImGui::SetItemTooltip("Left and right are swapped.");
         ImGui::SameLine();
         changed |= ImGui::Checkbox("Invert Y", &prof->invertY[s]);
+        ImGui::SetItemTooltip("Up and down are swapped.");
         ImGui::PopID();
     }
     ImGui::SeparatorText("Triggers");
     pct("L click at", prof->threshold[0], 0.05f, 1.0f);
+    ImGui::SetItemTooltip("How far the analog L trigger must be pulled to press L (click).");
     pct("R click at", prof->threshold[1], 0.05f, 1.0f);
+    ImGui::SetItemTooltip("How far the analog R trigger must be pulled to press R (click).");
     ImGui::TextDisabled("How far an analog trigger bound to L/R (click) must be pulled to press it.\n"
                         "Luigi's Mansion also reads the analog L/R values (Analog triggers bindings).");
     ImGui::SeparatorText("Rumble");
     changed |= ImGui::Checkbox("Rumble", &prof->rumble);
+    ImGui::SetItemTooltip("The controller vibrates when the game turns the GameCube rumble motor on.");
     const bool intensity = port >= 0 ? PADSupportsRumbleIntensity(u32(port)) != FALSE : prof->type != SDL_GAMEPAD_TYPE_GAMECUBE;
     ImGui::BeginDisabled(!prof->rumble || !intensity);
     pct("Strength", prof->rumbleStrength, 0.05f, 1.0f);
     ImGui::EndDisabled();
+    ImGui::SetItemTooltip("%s", intensity ? "Vibration strength." : "This controller's rumble is only on or off.");
     if (!intensity) {
         ImGui::SameLine();
         ImGui::TextDisabled("(on/off only)");
@@ -1173,6 +1185,8 @@ bool analogTab() {
         PADControlMotor(u32(port), PAD_MOTOR_RUMBLE);
     }
     ImGui::EndDisabled();
+    ImGui::SetItemTooltip("%s", port < 0 ? "Connect this controller and assign it to a port (Ports tab) to test."
+                                         : "Vibrates the controller for 0.6 s.");
     ImGui::Separator();
     if (ImGui::Button("Reset sticks, triggers and rumble")) {
         const Profile d = defaultsFor(*prof);
@@ -1181,6 +1195,8 @@ bool analogTab() {
         prof->bind = bind;
         changed = true;
     }
+    ImGui::SetItemTooltip("Dead zones, sensitivity, inversion, trigger points and rumble of this profile back\n"
+                          "to their defaults (bindings are kept).");
     return changed;
 }
 
@@ -1269,6 +1285,8 @@ ImGuiTabItemFlags subTabFlags(const char* name) {
 }
 
 }  // namespace
+
+void selectSubTab(const char* name) { sEnvSubTab = name; }
 
 bool drawTab() {
     std::lock_guard lk(sMutex);

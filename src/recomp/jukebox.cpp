@@ -133,8 +133,10 @@ void soundSection() {
         sStop = true;
         sNowPlaying = -1;
     }
+    ImGui::SetItemTooltip("Stops the sequenced music the jukebox (or the game) is playing.");
     ImGui::SameLine();
     ImGui::Checkbox("Only tracks not heard in retail", &sUnusedOnly);
+    ImGui::SetItemTooltip("Lists only the music the retail game never plays (USA version).");
     const bool us = !ver::pal();
     if (ImGui::BeginTable("jukebox", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
                           ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 14))) {

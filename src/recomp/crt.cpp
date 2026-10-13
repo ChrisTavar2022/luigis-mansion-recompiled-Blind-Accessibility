@@ -19,6 +19,7 @@
 #include "recomp/crt.h"
 
 #include "recomp/gx_bridge.h"
+#include "recomp/menu.h"
 
 #include "port/settings.h"
 
@@ -524,10 +525,14 @@ bool drawMenu() {
     using namespace port;
     auto& s = settings().crt;
     bool changed = ImGui::Checkbox("CRT filter", &s.enabled);
-    if (!s.enabled) return changed;
-    ImGui::SameLine();
-    if (!aurora_postfx_active()) ImGui::TextDisabled("(shader failed to compile, see log)");
-
+    ImGui::SetItemTooltip("Makes the picture look like a CRT television: scanlines, a phosphor mask, glow and\n"
+                          "screen curvature. One post-processing pass chain on the finished image.");
+    if (s.enabled && !aurora_postfx_active()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(shader failed to compile, see log)");
+    }
+    ImGui::BeginDisabled(!s.enabled);
+    ImGui::Indent();
     static const char* kPresets[] = {"Aperture grille (Royale-like)", "Slot mask", "Shadow mask", "Consumer TV",
                                      "Custom"};
     int preset = int(s.preset);
@@ -536,10 +541,15 @@ bool drawMenu() {
         s.preset = CrtPreset(preset);
         changed = true;
     }
+    ImGui::SetItemTooltip("Kind of tube: aperture grille (sharp vertical stripes, like a Trinitron), slot mask,\n"
+                          "shadow mask, or a soft consumer TV. Custom keeps the advanced values.");
     static const char* kLines[] = {"480 lines (progressive)", "240 lines (double strike)", "480i (interlaced fields)"};
     changed |= comboE("Scanlines", s.scanlines, kLines, 3);
+    ImGui::SetItemTooltip("480 lines: the game's progressive output. 240 lines: thick visible scanlines like a\n"
+                          "240p signal. 480i: alternating interlaced fields, as a TV shows the 480i signal.");
     bool custom = false;
 
+    recomp::menu::openTreesForCheck();
     if (ImGui::TreeNode("CRT advanced")) {
         ImGui::SeparatorText("Beam");
         custom |= sliderF("Min beam width", s.beamMinSigma, 0.05f, 0.6f);
@@ -551,16 +561,20 @@ bool drawMenu() {
         custom |= sliderF("Min beam shape", s.beamMinShape, 2.0f, 8.0f);
         ImGui::SetItemTooltip("Beam profile exponent for dark colors: 2 = gaussian, higher = flatter top, sharper edge");
         custom |= sliderF("Max beam shape", s.beamMaxShape, 2.0f, 8.0f);
+        ImGui::SetItemTooltip("Beam profile exponent for full brightness");
         custom |= sliderF("Beam shape response", s.beamShapePower, 0.1f, 4.0f);
+        ImGui::SetItemTooltip("How quickly the beam profile changes with brightness (power curve)");
         custom |= sliderF("Horizontal softness", s.horizontalSoftness, 0.0f, 2.0f, "%.2f px");
         ImGui::SetItemTooltip("Horizontal spot size (gaussian sigma) in game pixels");
 
         ImGui::SeparatorText("Phosphor mask");
         static const char* kMasks[] = {"Aperture grille", "Slot mask", "Shadow mask", "None"};
         custom |= comboE("Mask type", s.mask, kMasks, 4);
+        ImGui::SetItemTooltip("Pattern of the red, green and blue phosphors");
         custom |= sliderF("Mask size", s.maskSize, 1.0f, 12.0f, "%.1f px");
         ImGui::SetItemTooltip("Width of one RGB triad in output pixels (3 = one pixel per phosphor)");
         custom |= sliderF("Mask strength", s.maskStrength, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("How visible the phosphor pattern is (0 = none)");
 
         ImGui::SeparatorText("Glow");
         custom |= sliderF("Halation", s.halation, 0.0f, 0.5f, "%.3f");
@@ -568,25 +582,36 @@ bool drawMenu() {
         custom |= sliderF("Diffusion", s.diffusion, 0.0f, 0.5f, "%.3f");
         ImGui::SetItemTooltip("Wide haze from light diffused across the faceplate");
         custom |= sliderF("Bloom", s.bloom, 0.0f, 1.0f);
-        custom |= sliderF("Brightness boost", s.brightness, 0.5f, 3.0f);
+        ImGui::SetItemTooltip("Glow around bright parts of the picture");
+        custom |= sliderF("Brightness boost", s.brightness, 0.5f, 3.0f, "%.2fx");
+        ImGui::SetItemTooltip("Makes up for the light the scanlines and mask take away");
 
         ImGui::SeparatorText("Convergence (game pixels)");
-        custom |= ImGui::SliderFloat2("Red offset", &s.convergence[0], -2.0f, 2.0f, "%.2f");
-        custom |= ImGui::SliderFloat2("Green offset", &s.convergence[2], -2.0f, 2.0f, "%.2f");
-        custom |= ImGui::SliderFloat2("Blue offset", &s.convergence[4], -2.0f, 2.0f, "%.2f");
+        custom |= ImGui::SliderFloat2("Red offset", &s.convergence[0], -2.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Horizontal and vertical shift of the red beam (misconverged tubes)");
+        custom |= ImGui::SliderFloat2("Green offset", &s.convergence[2], -2.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Horizontal and vertical shift of the green beam");
+        custom |= ImGui::SliderFloat2("Blue offset", &s.convergence[4], -2.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+        ImGui::SetItemTooltip("Horizontal and vertical shift of the blue beam");
 
         ImGui::SeparatorText("Gamma and geometry");
         custom |= sliderF("CRT gamma", s.gammaIn, 1.8f, 3.0f);
         ImGui::SetItemTooltip("Gamma of the emulated tube (decodes the game image to linear light)");
         custom |= sliderF("Display gamma", s.gammaOut, 1.8f, 3.0f);
+        ImGui::SetItemTooltip("Gamma of your monitor (encodes the result for it)");
         custom |= sliderF("Curvature", s.curvature, 0.0f, 0.3f, "%.3f");
+        ImGui::SetItemTooltip("Bulge of the screen glass (0 = flat)");
         custom |= sliderF("Corner radius", s.cornerRadius, 0.0f, 0.2f, "%.3f");
+        ImGui::SetItemTooltip("Rounding of the picture's corners (0 = square)");
         if (ImGui::Button("Reset to preset")) {
             applyPreset(s, s.preset == CrtPreset::Custom ? CrtPreset::ApertureGrille : s.preset);
             changed = true;
         }
+        ImGui::SetItemTooltip("Puts the advanced values back to the chosen preset (Aperture grille if Custom)");
         ImGui::TreePop();
     }
+    ImGui::Unindent();
+    ImGui::EndDisabled();
     if (custom) s.preset = CrtPreset::Custom;
     return changed || custom;
 }

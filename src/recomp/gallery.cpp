@@ -288,7 +288,8 @@ void loadItem(GalleryItem& it) {
 }  // namespace
 
 void galleryButton() {
-    if (ImGui::Button(sGalleryOpen ? "Close gallery" : "Gallery (unused textures)")) sGalleryOpen = !sGalleryOpen;
+    if (ImGui::Button(sGalleryOpen ? "Close gallery###gallery" : "Gallery (unused textures)###gallery")) sGalleryOpen = !sGalleryOpen;
+    ImGui::SetItemTooltip("Opens a window with unused textures and pictures left on the disc.");
 }
 
 void galleryWindow() {

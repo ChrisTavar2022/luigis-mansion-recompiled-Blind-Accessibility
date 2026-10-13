@@ -29,7 +29,7 @@ std::mutex sExtraM;
 bool sDirty = false;
 
 void tip(const char* text) {
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", text);
+    ImGui::SetItemTooltip("%s", text);
 }
 void note(const char* text) {
     ImGui::SameLine();
@@ -126,23 +126,19 @@ void onFrame(Ctx& c) {
 
 void onModelLoaded(Ctx& c, u32 entry) { marioModelLoaded(c, entry); }
 
-void unusedSection() {
+void unusedSection(UnusedGroup group) {
     auto& u = port::settings().unused2;
-    ImGui::SeparatorText("Second batch");
-    sDirty |= ImGui::Checkbox("Play as Mario", &u.playAsMario);
-    tip("The player uses the unused Mario model left in the game (bmario: the character table has a\n"
-        "whole Mario player set that nothing places). Mario has Luigi's skeleton, so Luigi's\n"
-        "animations, Poltergust, flashlight and Game Boy Horror work unchanged. Mario's model has\n"
-        "no eye animations (he does not blink); the voice stays Luigi's (the game has no Mario\n"
-        "voice clips for these actions). Also used by the cutscene Luigis.");
-    note("next map load");
-    {
-        sDirty |= ImGui::Checkbox("Bordered view", &u.borderedView);
-        tip("The game's view setup has a third, unused layout: a fixed 560x400 3D view (40,30 to\n"
-            "560,430) with a black border, like a TV-safe window. The HUD stays where it is.");
-        sDirty |= ImGui::Checkbox("Ending pictures of Luigi", &u.endingPictures);
-        tip("The ending's rank screen shows one of three unused pictures of Luigi next to its\n"
-            "message: sitting with a flower (ranks H to D), one V sign (C, B) or two V signs (A).");
+    switch (group) {
+    case UnusedGroup::Player:
+        sDirty |= ImGui::Checkbox("Play as Mario", &u.playAsMario);
+        tip("The player uses the unused Mario model left in the game (bmario: the character table has a\n"
+            "whole Mario player set that nothing places). Mario has Luigi's skeleton, so Luigi's\n"
+            "animations, Poltergust, flashlight and Game Boy Horror work unchanged. Mario's model has\n"
+            "no eye animations (he does not blink); the voice stays Luigi's (the game has no Mario\n"
+            "voice clips for these actions). Also used by the cutscene Luigis.");
+        note("next map load");
+        break;
+    case UnusedGroup::Characters:
         sDirty |= ImGui::Checkbox("Unused ghost placements", &u.ghostPlacements);
         tip("Places ghosts on paths the mansion's map data has but no ghost uses: Slim Bankshot in the\n"
             "Hidden Room (hustler_01), two of Mr. Bones' skeletons in the Courtyard (skul_23_1/2), a\n"
@@ -159,9 +155,20 @@ void unusedSection() {
             "no rewards. This places them in five rooms that have none (chosen by the port) with rewards\n"
             "modelled on the retail ones. They appear like the others when the room's lights are off.");
         note("next mansion load");
+        break;
+    case UnusedGroup::Screens:
+        sDirty |= ImGui::Checkbox("Bordered view", &u.borderedView);
+        tip("The game's view setup has a third, unused layout: a fixed 560x400 3D view (40,30 to\n"
+            "560,430) with a black border, like a TV-safe window. The HUD stays where it is.");
+        sDirty |= ImGui::Checkbox("Ending pictures of Luigi", &u.endingPictures);
+        tip("The ending's rank screen shows one of three unused pictures of Luigi next to its\n"
+            "message: sitting with a flower (ranks H to D), one V sign (C, B) or two V signs (A).");
+        break;
+    case UnusedGroup::TwoPlayer:
         sDirty |= ImGui::Checkbox("Mario as player 2", &u.marioP2);
-        tip("In the 2-player mode (below), player 2 is Mario (the unused bmario model) instead of a\n"
+        tip("In the 2-player mode, player 2 is Mario (the unused bmario model) instead of a\n"
             "second Luigi. Needs \"2-player mode (unfinished)\".");
+        break;
     }
     if (sDirty) {
         port::saveSettings();
@@ -177,11 +184,15 @@ void gameplaySection() {
     tip("Touching a poison mushroom no longer shrinks Luigi. Instead he plays the unused poisoned\n"
         "animation (doku_lp, with the dark \"poisoned\" eyes), stands still and loses health slowly.\n"
         "The mushroom still takes 10 coins. Poison alone never takes Luigi's last point of health.");
-    if (u.poisonState) {
+    {
+        ImGui::BeginDisabled(!u.poisonState);
         ImGui::Indent();
-        sDirty |= ImGui::SliderFloat("Poison damage", &u.poisonDamage, 1.0f, 100.0f, "%.0f");
-        sDirty |= ImGui::SliderFloat("Poison duration", &u.poisonSeconds, 1.0f, 20.0f, "%.1f s");
+        sDirty |= ImGui::SliderFloat("Poison damage", &u.poisonDamage, 1.0f, 100.0f, "%.0f HP", ImGuiSliderFlags_AlwaysClamp);
+        tip("Total health the poison takes (it never takes Luigi's last point).");
+        sDirty |= ImGui::SliderFloat("Poison duration", &u.poisonSeconds, 1.0f, 20.0f, "%.1f s", ImGuiSliderFlags_AlwaysClamp);
+        tip("How long the poison lasts; the damage is spread over this time.");
         ImGui::Unindent();
+        ImGui::EndDisabled();
     }
     sDirty |= ImGui::Checkbox("Crawling fear", &u.crawlFear);
     tip("When a ghost startles Luigi from behind, he falls into the game's unused panic state:\n"
@@ -194,13 +205,19 @@ void gameplaySection() {
         "Luigi is burned (the game's own on-fire state) and the vacuum stops working until it\n"
         "has cooled to half; the meter shakes meanwhile. Not vacuuming cools it, holding L\n"
         "(blowing air or spraying) cools it faster.");
-    if (u.overheat) {
+    {
+        ImGui::BeginDisabled(!u.overheat);
         ImGui::Indent();
-        sDirty |= ImGui::SliderFloat("Time to overheat", &u.overheatFillSeconds, 5.0f, 120.0f, "%.0f s of vacuuming");
-        sDirty |= ImGui::SliderFloat("Cool-down time", &u.overheatCoolSeconds, 5.0f, 120.0f, "%.0f s (full to empty)");
-        sDirty |= ImGui::SliderFloat("Cooling while blowing (L)", &u.overheatBlowCool, 1.0f, 10.0f, "%.1fx faster");
-        sDirty |= ImGui::SliderInt("Burn damage", &u.overheatDamage, 0, 50);
+        sDirty |= ImGui::SliderFloat("Time to overheat", &u.overheatFillSeconds, 5.0f, 120.0f, "%.0f s of vacuuming", ImGuiSliderFlags_AlwaysClamp);
+        tip("Continuous vacuuming until the Poltergust overheats.");
+        sDirty |= ImGui::SliderFloat("Cool-down time", &u.overheatCoolSeconds, 5.0f, 120.0f, "%.0f s (full to empty)", ImGuiSliderFlags_AlwaysClamp);
+        tip("Time for a full meter to cool back to empty while not vacuuming.");
+        sDirty |= ImGui::SliderFloat("Cooling while blowing (L)", &u.overheatBlowCool, 1.0f, 10.0f, "%.1fx faster", ImGuiSliderFlags_AlwaysClamp);
+        tip("How much faster it cools while holding L (blowing air or spraying).");
+        sDirty |= ImGui::SliderInt("Burn damage", &u.overheatDamage, 0, 50, "%d HP", ImGuiSliderFlags_AlwaysClamp);
+        tip("Health Luigi loses when the Poltergust catches fire.");
         ImGui::Unindent();
+        ImGui::EndDisabled();
     }
     if (sDirty) {
         port::saveSettings();

@@ -10,6 +10,7 @@
 #include "port/install.h"
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
+#include "recomp/menu.h"
 #include "recomp/skip.h"
 #include "recomp/unused2.h"
 #include "recomp/version.h"
@@ -192,6 +193,7 @@ void startParticle(Ctx& c, const Particle& p) {
 }  // namespace
 
 void particleSection(bool inGame) {
+    recomp::menu::openTreesForCheck();
     if (!ImGui::TreeNode("Particle test (unused effects)")) return;
     ImGui::TextDisabled("Starts the effect 150 units in front of Luigi with the game's particle system.");
     ImGui::BeginDisabled(!inGame);
@@ -267,6 +269,7 @@ void spawnFrame(Ctx& c) {
 }
 
 void spawnSection(bool inGame) {
+    recomp::menu::openTreesForCheck();
     if (!ImGui::TreeNode("Spawn character (never placed in retail)")) return;
     ImGui::TextDisabled("Creates the character in front of Luigi with the game's own factory, without its map\n"
                         "data. Some only make sense in their scripted scene. Debug feature: may misbehave.");

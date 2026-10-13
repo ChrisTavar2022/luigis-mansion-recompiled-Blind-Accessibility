@@ -59,7 +59,9 @@ void placementsMapSetup(Ctx& c);
 void placementsFrame(Ctx& c);
 
 // ---- host thread (menu.cpp / dev_tools.cpp) ----
-void unusedSection();    // Enhancements > Unused content
+// Enhancements > Unused content, drawn in the matching groups of that tab.
+enum class UnusedGroup { Player, Characters, Screens, TwoPlayer };
+void unusedSection(UnusedGroup group);
 void gameplaySection();  // Enhancements > Gameplay
 void debugSection();     // Enhancements > Debug
 void soundSection();     // Sound > Jukebox
