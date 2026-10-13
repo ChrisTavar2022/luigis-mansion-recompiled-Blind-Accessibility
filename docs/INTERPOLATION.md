@@ -506,9 +506,13 @@ following), parts of Luigi (the flashlight) blink out, and the damage blink look
    a vanished one stays fully drawn and a new one hidden until alpha 1, the console's timing. A
    color channel that jumps by more than 96 levels in one game frame changes at the game frame
    too (a's value until alpha 1). Particles (many draws of one identity) keep their fades. The
-   damage blink (Luigi drawn solid and translucent on alternate frames, frames 3590-3650 of a hit
-   at 3512 in `LM_FRAME_DUMP` of the ghosts room) uses neither unpaired draws nor color jumps in
-   the measured runs, so it is shown as each frame's own state at every in-between.
+   damage blink is Luigi drawn solid and translucent on alternate game frames (Original 30
+   dumps of the ghosts room: frames 3590-3650 after a hit at 3512), done with color registers:
+   during the blink the trace counts 146 color switches per in-between. Test mode, ghosts room,
+   hit at frame 3546, Luigi's screen region at the half-way in-between of frames 3650-3653: mean
+   brightness 24.3 / 20.2 / 23.4 / 19.7 with the previous frame at 24.9 / 21.4 / 23.6 / 20.6 and
+   the next at 21.4 / 23.6 / 20.6 / 23.4 (mean abs. difference to the previous frame 2.5-4.6, to
+   the next 4.3-5.0): every in-between shows the previous frame's blink state, no half-states.
 5. **Lifetime**: the last replays' tapes are kept alive until their FIFO work is drained (a
    crash reading a vertex-array copy in `push_gx_draw` was seen twice under heavy load).
 
@@ -550,6 +554,12 @@ lower than on an idle machine; the comparison is fair):
 | old pacing, 0191 | 71.8 fps | 9.27 / 12.69 / 19.19 ms | 10 | 73 |
 | **new pacing, 0191** | 86.9 fps | **3.59 / 7.12 / 10.39 ms** | **0** | 3 |
 | new pacing, 0191, less load | 99.0 fps | 2.99 / 3.61 / 5.41 ms | 0 | 2 |
+| 144 target, VSync off, old pacing (run at the same time as the next) | 105.7 fps | 8.73 / 13.94 / 21.84 ms | 44 | 107 |
+| **144 target, VSync off, new pacing** | 101.0 fps | **3.22 / 3.64 / 4.59 ms** | **0** | 0 |
+
+The remaining step error is the host loop's own timing jitter (present intervals p50 9.6 ms, p99
+14.8 ms under this load); the presented rate is limited by the replay cost on a shared CPU (host
+replay 2.7-3.7 ms + FIFO drain), not by the pacing.
 
 Test mode (same scenarios as before; foyer and hit are new):
 
