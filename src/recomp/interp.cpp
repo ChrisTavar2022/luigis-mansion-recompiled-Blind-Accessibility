@@ -2121,30 +2121,88 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             sBlended++;
         }
     }
-    // Extra lights (enhanced lighting): position, color, radius and intensity blended by id;
-    // a light without a partner is shown as captured.
-    if (a && alpha < 1.0f && !a->lights.empty()) {
+    // Extra lights (enhanced lighting): position, color, radius and intensity blended by id.
+    // Their positions are in view space (the main camera at capture): like the scene's matrices
+    // they are blended in world space and seen from the blended main camera, and a light without
+    // a partner keeps its world place under the blended camera (it used to stay in b's view space:
+    // enhanced lighting's lights, and the realistic flashlight's anchors, stepped at the game
+    // frame while the scene moved).
+    if (a && alpha < 1.0f && !b.lights.empty()) {
         constexpr u32 kWords = GX_AURORA_EXTRA_LIGHT_WORDS;
         auto u32At = [](const u8* p) { return u32(p[0]) << 24 | u32(p[1]) << 16 | u32(p[2]) << 8 | p[3]; };
+        const ViewPair* mvp = nullptr;
+        {
+            std::unordered_map<u16, u32> n;
+            for (const Patch& p : b.patches)
+                if (p.kind == Kind::PosMtx && p.role == 0 && p.view < b.views.size()) n[p.view]++;
+            u16 best = 0xFFFF;
+            u32 cnt = 0;
+            for (const auto& [v, c] : n)
+                if (c > cnt) best = v, cnt = c;
+            if (best < sViewToA.size() && sViewToA[best] >= 0) {
+                mvp = viewPair(*a, u16(sViewToA[best]), b, best, alpha);
+                if (mvp && (!mvp->ok || mvp->cut)) mvp = nullptr;
+            }
+        }
+        const auto xform = [](const M34& m, const f32* v, f32* o) {
+            for (int r = 0; r < 3; r++) o[r] = m[4 * r] * v[0] + m[4 * r + 1] * v[1] + m[4 * r + 2] * v[2] + m[4 * r + 3];
+        };
+        const auto rotate = [](const M34& m, const f32* v, f32* o) {
+            for (int r = 0; r < 3; r++) o[r] = m[4 * r] * v[0] + m[4 * r + 1] * v[1] + m[4 * r + 2] * v[2];
+        };
         for (const auto& [offB, countB] : b.lights) {
             for (u32 i = 0; i < countB; i++) {
                 const u8* lb = b.bytes.data() + offB + i * kWords * 4;
                 const u32 id = u32At(lb + 36);
-                if (id == 0) continue;
-                const u8* la = nullptr;
-                for (const auto& [offA, countA] : a->lights)
-                    for (u32 j = 0; j < countA && !la; j++) {
-                        const u8* cand = a->bytes.data() + offA + j * kWords * 4;
-                        if (u32At(cand + 36) == id) la = cand;
-                    }
-                if (!la) continue;
-                const float jump = std::fabs(loadBE(la) - loadBE(lb)) + std::fabs(loadBE(la + 4) - loadBE(lb + 4)) +
-                                   std::fabs(loadBE(la + 8) - loadBE(lb + 8));
-                if (jump > 600.0f) continue;  // teleport / camera cut
                 u8* out = sReplay.data() + (lb - b.bytes.data());
+                const u8* la = nullptr;
+                if (id != 0)
+                    for (const auto& [offA, countA] : a->lights)
+                        for (u32 j = 0; j < countA && !la; j++) {
+                            const u8* cand = a->bytes.data() + offA + j * kWords * 4;
+                            if (u32At(cand + 36) == id) la = cand;
+                        }
+                f32 pb[3] = {loadBE(lb), loadBE(lb + 4), loadBE(lb + 8)}, wb[3] = {}, wa[3] = {};
+                if (mvp) {
+                    xform(mvp->ib, pb, wb);
+                    // The room box (relative to the position, view-space axes): b's box turned with
+                    // the camera, b's view -> world -> blended view.
+                    if (u32At(lb + 32) & 0x10u) {
+                        M34 q;  // vt x vb^-1, rotation part
+                        compose(mvp->vt.data(), mvp->ib.data(), q.data());
+                        for (int g = 0; g < 4; g++) {
+                            const f32 v[3] = {loadBE(lb + 40 + 12 * g), loadBE(lb + 44 + 12 * g), loadBE(lb + 48 + 12 * g)};
+                            f32 o[3];
+                            rotate(q, v, o);
+                            for (int c = 0; c < 3; c++) storeBE(out + 40 + 12 * g + 4 * c, o[c]);
+                        }
+                    }
+                }
+                bool paired = la != nullptr;
+                if (paired) {
+                    const f32 pa[3] = {loadBE(la), loadBE(la + 4), loadBE(la + 8)};
+                    if (mvp) xform(mvp->ia, pa, wa);
+                    const float jump = mvp ? std::fabs(wa[0] - wb[0]) + std::fabs(wa[1] - wb[1]) + std::fabs(wa[2] - wb[2])
+                                           : std::fabs(pa[0] - pb[0]) + std::fabs(pa[1] - pb[1]) + std::fabs(pa[2] - pb[2]);
+                    if (jump > 600.0f) paired = false;  // teleport / camera cut: b as is (below)
+                }
+                if (!paired) {
+                    if (mvp) {  // its world place, seen from the blended camera
+                        f32 o[3];
+                        xform(mvp->vt, wb, o);
+                        for (int c = 0; c < 3; c++) storeBE(out + 4 * c, o[c]);
+                    }
+                    continue;
+                }
                 for (int k = 0; k < 8; k++) {
                     const f32 va = loadBE(la + 4 * k), vb = loadBE(lb + 4 * k);
                     storeBE(out + 4 * k, va + (vb - va) * alpha);
+                }
+                if (mvp) {
+                    f32 w[3], o[3];
+                    for (int c = 0; c < 3; c++) w[c] = wa[c] + (wb[c] - wa[c]) * alpha;
+                    xform(mvp->vt, w, o);
+                    for (int c = 0; c < 3; c++) storeBE(out + 4 * c, o[c]);
                 }
                 // Shadow weight (flags bits 8..15, 0 = full when casting; bit 0 = casts a shadow)
                 // blended too, so a fading shadow fades smoothly at high frame rates.
@@ -2154,7 +2212,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     const u32 w = (f >> 8) & 0xFFu;
                     return w ? float(w) / 255.0f : 1.0f;
                 };
-                const float wa = weight(la), wb = weight(lb), w = wa + (wb - wa) * alpha;
+                const float swa = weight(la), swb = weight(lb), w = swa + (swb - swa) * alpha;
                 u32 fl = u32At(lb + 32) & ~0xFF01u;
                 if (w > 0.002f) fl |= 1u | (std::clamp(u32(w * 255.0f + 0.5f), 1u, 255u) << 8);
                 for (int k = 0; k < 4; k++) out[32 + k] = u8(fl >> (24 - 8 * k));
@@ -2554,6 +2612,24 @@ bool replay(bool final) {
                a && !final ? double(a->retrace) + alpha * double(b->retrace - a->retrace) : double(b->retrace),
                sPacer.d * 1000.0, sLastPresent.present, (unsigned long long)aurora_frame_counter());
     replayPair(final ? nullptr : a.get(), *b, alpha, nullptr);
+    if (sJudder && a && !final && alpha < 1.0f) {
+        // V present m[12]: the blended camera of b's main camera (most position matrices), the one
+        // static scenery is drawn with: tools/interp/judder.py --camera checks that a fixed point
+        // moves evenly against the frame time (interpolation math, apart from what the screen shows).
+        std::unordered_map<u16, u32> n;
+        for (const Patch& p : b->patches)
+            if (p.kind == Kind::PosMtx && p.role == 0 && p.view < b->views.size()) n[p.view]++;
+        u16 best = 0xFFFF;
+        u32 cnt = 0;
+        for (const auto& [v, c] : n)
+            if (c > cnt) best = v, cnt = c;
+        for (const ViewPair& vp : sViewPairs)
+            if (u16(vp.key) == best && vp.ok && !vp.cut) {
+                judderLine("V %u %.5f %.5f %.5f %.3f %.5f %.5f %.5f %.3f %.5f %.5f %.5f %.3f\n", sLastPresent.present, vp.vt[0], vp.vt[1],
+                           vp.vt[2], vp.vt[3], vp.vt[4], vp.vt[5], vp.vt[6], vp.vt[7], vp.vt[8], vp.vt[9], vp.vt[10], vp.vt[11]);
+                break;
+            }
+    }
     {
         // The FIFO thread reads these tapes' copies (arrays, textures) until the frame is drained in
         // aurora_end_frame, after replay() returned: keep the last few replays' tapes alive here,

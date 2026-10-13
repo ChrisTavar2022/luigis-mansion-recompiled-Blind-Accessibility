@@ -76,13 +76,12 @@ def scenario(name):
         env["LM_TELEPORT"] = "1800,0,-1400,100"
         inp = MENU + "," + strafe(2600, 60)
     elif name == "ghosts":
+        # gold ghosts room (2F): the game's own ghost AI, LM_GHOST_HUNT points the flashlight and
+        # the vacuum at them
         env.update({"LM_TELEPORT": "0,550,-3300,100", "LM_GHOST_HUNT": "9", "LM_GHOST_HUNT_BEAM": "89",
                     "LM_GHOST_HUNT_DMAX": "300", "LM_GHOST_HUNT_R": "0"})
-        for k in ("LM_START_MAP", "LM_START_APPEAR"):
-            env.pop(k)
-        env["LM_INPUT_CLOCK"] = "frames"
-        inp = "600:START*10,1000:A*6"
-        start = 3300
+        inp = MENU
+        start = 2700
     else:
         raise SystemExit(f"unknown scenario {name}")
     return env, inp, start
@@ -245,7 +244,7 @@ def run_game(a, args, env, out, start, lock):
         print(f"frame {start} reached, recording {a.secs} s", flush=True)
         if not a.no_capture:
             rec = subprocess.Popen([FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
-                                    f"ddagrab=output_idx={a.output_idx}:framerate=240:dup_frames=0:draw_mouse=0",
+                                    f"ddagrab=output_idx={a.output_idx}:framerate=1000:dup_frames=0:draw_mouse=0",
                                     "-t", str(a.secs), "-c:v", "hevc_nvenc", "-preset", "p1", "-rc", "constqp", "-qp", "20",
                                     "-fps_mode", "passthrough", "-video_track_timescale", "1000000", video],
                                    stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -270,6 +269,7 @@ def run_game(a, args, env, out, start, lock):
     jl = os.path.join(out, "judder.log")
     if os.path.exists(jl):
         subprocess.run([a.python, os.path.join(HERE, "judder.py"), jl, "--frames", f"{start},{start + 100000}"])
+        subprocess.run([a.python, os.path.join(HERE, "judder.py"), jl, "--camera"])
     if not a.keep_video and os.path.exists(video):
         os.remove(video)
     return 0

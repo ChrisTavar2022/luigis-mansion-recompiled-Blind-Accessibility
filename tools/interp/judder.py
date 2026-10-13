@@ -140,4 +140,64 @@ def main():
             print()
 
 
-main()
+def camera_check(path):
+    """V lines: the blended main camera per present. A fixed world point (800 units ahead of the
+    first camera) projected through each: its screen step per present against du (frame time)."""
+    import numpy as np
+    pres_u = {}
+    cams = []
+    for line in open(path, encoding="utf-8", errors="replace"):
+        p = line.split()
+        if p and p[0] == "R" and len(p) >= 8 and int(p[3]):
+            pres_u[int(p[7])] = int(p[3]) + float(p[4])
+        elif p and p[0] == "V" and len(p) == 14:
+            cams.append((int(p[1]), np.array([float(x) for x in p[2:]]).reshape(3, 4)))
+    pts = []
+    out = []
+    for pres, m in cams:
+        if pres not in pres_u:
+            continue
+        R, t = m[:, :3], m[:, 3]
+        if not pts:
+            for off in ((-300.0, 0.0), (0.0, 0.0), (300.0, 0.0)):
+                pv = np.array([off[0], off[1], -800.0])
+                pts.append(R.T @ (pv - t))
+        xs = []
+        for w in pts:
+            v = R @ w + t
+            xs.append(v[0] / -v[2] if v[2] < -1 else np.nan)
+        out.append((pres, pres_u[pres], np.nanmean(xs)))
+    if len(out) < 20:
+        print("camera check: too few V lines")
+        return
+    rat, place = [], {}
+    for k in range(1, len(out) - 1):
+        (p0, u0, x0), (p1, u1, x1) = out[k - 1], out[k]
+        if p1 != p0 + 1 or u1 - u0 <= 0.02:
+            continue
+        sp = (x1 - x0) / (u1 - u0)
+        nb = [(out[m][2] - out[m - 1][2]) / (out[m][1] - out[m - 1][1]) for m in range(max(1, k - 6), min(len(out), k + 7))
+              if m != k and out[m][0] == out[m - 1][0] + 1 and out[m][1] - out[m - 1][1] > 0.02]
+        if len(nb) < 4:
+            continue
+        ref = float(np.median(nb))
+        if abs(ref) < 1e-3:
+            continue
+        rat.append(sp / ref)
+        place.setdefault(0 if np.floor(u1) != np.floor(u0) else 1, []).append(sp / ref)
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from screen_judder import piecewise_ratios
+    steps = [(out[k - 1][1], out[k][1], out[k][2] - out[k - 1][2]) for k in range(1, len(out)) if out[k][0] == out[k - 1][0] + 1]
+    pw = piecewise_ratios(steps, min_speed=1e-4)
+    r = np.abs(np.array([x[0] for x in pw]) - 1)
+    cross = [x[0] for x in pw if x[1]]
+    inner = [x[0] for x in pw if not x[1]]
+    print(f"camera check (blended main camera, a fixed point) vs linear interpolation: |r-1| median {np.median(r):.4f} "
+          f"p95 {np.percentile(r, 95):.4f}; crossing a game frame {np.median(cross):.4f}, inside {np.median(inner):.4f}")
+
+
+if "--camera" in sys.argv:
+    camera_check(sys.argv[1])
+else:
+    main()

@@ -322,6 +322,38 @@ def main():
     return 0
 
 
+def piecewise_ratios(steps, min_speed=0.0):
+    """Interpolation moves things linearly between game frames: within game frame T (u in
+    (T-1, T]) at T's own speed. steps = [(u0, u1, dx)] between consecutive shown presents. Each
+    game frame's speed is the median over the steps that lie inside it; a step's expected motion
+    is the sum over the game frames it overlaps of overlap x speed. Returns [(dx / expected,
+    crosses a game frame)] (1 = exactly what linear interpolation gives; a jump at the game frame
+    shows on the crossing steps, an uneven blend on any)."""
+    speed = {}
+    for u0, u1, dx in steps:
+        if u1 - u0 > 0.02 and np.ceil(u0 + 1e-6) == np.ceil(u1 - 1e-6):
+            speed.setdefault(int(np.ceil(u1 - 1e-6)), []).append(dx / (u1 - u0))
+    med = {k: float(np.median(v)) for k, v in speed.items() if len(v) >= 1}
+    out = []
+    for u0, u1, dx in steps:
+        if u1 - u0 <= 0.02 or u1 - u0 > 2.0:
+            continue
+        exp = 0.0
+        ok = True
+        for T in range(int(np.ceil(u0 + 1e-6)), int(np.ceil(u1 - 1e-6)) + 1):
+            ov = min(u1, T) - max(u0, T - 1)
+            if ov <= 0:
+                continue
+            if T not in med:
+                ok = False
+                break
+            exp += ov * med[T]
+        if not ok or abs(exp) < 1e-9 or abs(exp) / (u1 - u0) < min_speed:
+            continue
+        out.append((dx / exp, bool(np.ceil(u0 + 1e-6) != np.ceil(u1 - 1e-6))))
+    return out
+
+
 def tag_report(rows, tg):
     """With LM_FRAME_TAG: which presents reached the screen, and whether the scenery moved by what
     their interpolation position u = tape + alpha says (blending) and when (pacing)."""
@@ -386,6 +418,15 @@ def tag_report(rows, tg):
     if pos:
         print("  speed by place in tape (vs the tape's median): " +
               "  ".join(f"#{n} {np.mean(v):.3f}" for n, v in sorted(pos.items()) if len(v) > 5))
+    steps = [(u[ok[k - 1]], u[ok[k]], st[ok[k]]) for k in range(1, len(ok)) if ok[k] == ok[k - 1] + 1]
+    pw = piecewise_ratios(steps, min_speed=6.0)
+    if pw:
+        r = np.abs(np.array([x[0] for x in pw]) - 1)
+        cross = [x[0] for x in pw if x[1]]
+        inner = [x[0] for x in pw if not x[1]]
+        print(f"  blending vs linear interpolation (each game frame's own speed): |r-1| mean {r.mean():.3f}  p95 "
+              f"{np.percentile(r, 95):.3f}; off by >25%: {100.0 * np.mean(r > 0.25):.1f}% of {len(r)}; "
+              f"crossing a game frame {np.mean(cross) if cross else 0:.3f}, inside {np.mean(inner) if inner else 0:.3f}")
     if ratios:
         r = np.abs(np.array(ratios) - 1)
         print(f"  blending: scenery step / (du x local px per game frame): |r-1| mean {r.mean():.3f}  p95 "
