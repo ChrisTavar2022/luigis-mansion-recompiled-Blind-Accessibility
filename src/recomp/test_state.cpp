@@ -14,7 +14,9 @@
 #include "recomp/runtime.h"
 #include "recomp/version.h"
 
+#include <algorithm>
 #include <bit>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -55,7 +57,42 @@ State parse() {
 
 }  // namespace
 
-void testStateFrame(Ctx&) {
+u32 copyDispCount();  // hle_gx.cpp
+
+void testStateFrame(Ctx& c) {
+    // LM_TEST_HIT=<frame>[,<period>[,<damage>]] (testing): from that frame on (LM_FRAME_DUMP
+    // numbering), every <period> frames (0: once), Luigi takes <damage> (default 5) through the
+    // game's own health setter fn_800B9488, the call every damage source makes, so the hurt
+    // reaction and the damage blink play (frame interpolation tests of the blink).
+    static u32 sHitAt = 0, sHitPeriod = 0, sHitDamage = 5;
+    static const bool sHitOn = [] {
+        const char* e = std::getenv("LM_TEST_HIT");
+        if (!e) return false;
+        std::sscanf(e, "%u,%u,%u", &sHitAt, &sHitPeriod, &sHitDamage);
+        return true;
+    }();
+    // LM_HEALTH_LOG=1 (testing): log Luigi's health whenever it changes, with the frame number.
+    static const bool sHealthLog = std::getenv("LM_HEALTH_LOG") != nullptr;
+    if (sHealthLog) {
+        static s32 sLast = -1;
+        const u32 l = rd32(kActorSlots);
+        if (l >= 0x80000000u && l < 0x81800000u) {
+            const s32 hp = s16(rd16(l + 0xFC));
+            if (hp != sLast) log("[test] Luigi health %d at frame %u", hp, copyDispCount());
+            sLast = hp;
+        }
+    }
+    if (sHitOn) {
+        const u32 f = copyDispCount();
+        const u32 l = rd32(kActorSlots);
+        if (f >= sHitAt && l >= 0x80000000u && l < 0x81800000u) {
+            const s32 hp = s16(rd16(l + 0xFC));
+            log("[test] LM_TEST_HIT: frame %u, Luigi health %d -> %d", f, hp, hp - s32(sHitDamage));
+            static const u32 sSetHealth = guestSymbol("fn_800B9488");
+            guestCall(c, sSetHealth, l, u32(std::max(1, hp - s32(sHitDamage))) & 0xFFFF);
+            sHitAt = sHitPeriod ? f + sHitPeriod : ~0u;
+        }
+    }
     // LM_TEST_SAVE=<n>[,<n>...] (testing): request the save screen n gameplay frames in, the way
     // the <SAVE> event command does (0x804D80C4 = 5, see skip.cpp), to test memory card saves.
     static const std::vector<u32> sSaveAt = [] {

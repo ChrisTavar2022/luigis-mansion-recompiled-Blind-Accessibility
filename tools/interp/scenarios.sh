@@ -16,6 +16,7 @@
 #   fire     nursery with the fire element: blowing fire, vacuum air stream, turns (2580-2920)
 #   water    as fire with the water element (2580-2920)
 #   foyer    foyer by the front door, strafing left/right, camera following (2600-2900)
+#   hit      nursery, Luigi hit every 60 frames (LM_TEST_HIT): hurt reaction, damage blink (2600-2760)
 #   ballroom ballroom (dancing ghosts, chairs, flashlight), turning (2580-2900)
 #   call     E. Gadd's Game Boy Horror call: call screen, portrait, message windows (2590-2900)
 #   pause    the pause screen and its pages, back to the game (2590-2880)
@@ -54,6 +55,9 @@ opening)
 foyer)  # foyer by the front door: strafing left/right with the camera following (candlesticks, door)
     nursery; export LM_TEST_STATE=poltergust LM_START_APPEAR=6; range=2600,2900; secs=700
     input="$menu,2600:STICKLEFT*45,2650:STICKRIGHT*45,2700:STICKLEFT*45,2750:STICKRIGHT*45,2800:STICKLEFT*30,2830:STICKUP*30,2860:STICKRIGHT*40" ;;
+hit)  # nursery: Luigi takes damage every 60 frames (LM_TEST_HIT) while walking: hurt reaction, damage blink
+    nursery; export LM_TEST_STATE=poltergust LM_TEST_HIT=2620,60,5; range=2600,2760; secs=700
+    input="$menu,2600:STICKUP*20,2630:STICKLEFT*30,2670:STICKRIGHT*30,2710:STICKDOWN*40" ;;
 ballroom)
     nursery; export LM_TEST_STATE=poltergust LM_TELEPORT=1800,0,-1400,100; range=2580,2900; secs=700
     input="$menu,2600:STICKLEFT*8,2612:STICKRIGHT*8,2624:STICKLEFT*8,2636:STICKRIGHT*8,2660:STICKUP*40,2720:CLEFT*20,2760:CRIGHT*20,2800:STICKDOWN*40" ;;

@@ -24,6 +24,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace recomp {
@@ -593,10 +594,17 @@ void findFades(const Tape& a, Tape& b) {
         if (ka < aToB.size() && aToB[ka] < 0) aToB[ka] = s32(kb);
     }
     const auto snapFlag = [](const Tape& t, u32 k) { return k < t.bundleCopy.size() && (t.bundleCopy[k] & 2) != 0; };
+    // A blink toggles a thing as a whole: no draw of that identity on the other side. Particles
+    // (many draws of one identity, born and dying all the time) keep their fades.
+    static std::unordered_set<u64> idsA, idsB;
+    idsA.clear();
+    idsB.clear();
+    idsA.insert(a.bundleIds.begin(), a.bundleIds.end());
+    idsB.insert(b.bundleIds.begin(), b.bundleIds.end());
     for (u32 k = 0; k < eB.size() && fadeIn; k++)
         if (eB[k] && !bPaired[k]) {
             b.spawns.push_back(k);
-            const bool blink = blinkCheck(b.bundleIds[k], b.seq);
+            const bool blink = !idsA.count(b.bundleIds[k]) && blinkCheck(b.bundleIds[k], b.seq);
             b.spawnSnap.push_back(u8(snapFlag(b, k) || blink));
             sBlinkSnaps += blink;
         }
@@ -613,7 +621,7 @@ void findFades(const Tape& a, Tape& b) {
         // (particles swap places) moves the vanished draws after it a little later in b.
         if (!b.dying.empty()) at = std::max(at, b.dying.back().second);
         b.dying.emplace_back(k, at);
-        const bool blink = blinkCheck(a.bundleIds[k], b.seq);
+        const bool blink = !idsB.count(a.bundleIds[k]) && blinkCheck(a.bundleIds[k], b.seq);
         b.dyingSnap.push_back(u8(snapFlag(a, k) || blink));
         sBlinkSnaps += blink;
     }
@@ -1655,7 +1663,7 @@ bool reexpress(const ViewPair& vp, bool fromA, const Patch& p, const f32* v, f32
 }
 
 std::vector<u8> sReplayA, sFaded;
-u32 sFadeIns = 0, sFadeOuts = 0;  // per replay (trace)
+u32 sFadeIns = 0, sFadeOuts = 0, sSnapIns = 0, sSnapOuts = 0, sColorSwitches = 0;  // per replay (trace): dithered / snapped
 
 void auroraCmd(std::vector<u8>& out, u16 sub, u8 arg) {
     out.push_back(0x50);
@@ -1669,7 +1677,7 @@ void auroraCmd(std::vector<u8>& out, u16 sub, u8 arg) {
 // b, fading out. Returns false if there is nothing to fade (sReplay is used as is).
 bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, const std::vector<s32>& viewToA,
                 const std::vector<s32>& viewToB) {
-    sFadeIns = sFadeOuts = 0;
+    sFadeIns = sFadeOuts = sSnapIns = sSnapOuts = 0;
     if (b.spawns.empty() && (b.dying.empty() || !haveAStart)) return false;
     const u8 qIn = u8(std::lround((1.0f - alpha) * 255.0f)), qOut = u8(std::lround(alpha * 255.0f));
     struct Ev {
@@ -1736,7 +1744,7 @@ bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, cons
         cursor = e.at;
         if (e.order == 2) {
             auroraCmd(sFaded, GX_AURORA_SET_FADE, snapIn[e.index] ? u8(255) : qIn);
-            sFadeIns++;
+            (snapIn[e.index] ? sSnapIns : sFadeIns)++;
         } else if (e.order == 0) {
             auroraCmd(sFaded, GX_AURORA_SET_FADE, 0);
         } else {
@@ -1754,7 +1762,7 @@ bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, cons
                 auroraCmd(sFaded, GX_AURORA_SET_FADE, 0);
                 auroraCmd(sFaded, GX_AURORA_SET_REPLAY_MASK, 1);
                 aCursor = r[1];
-                sFadeOuts++;
+                (snapOut ? sSnapOuts : sFadeOuts)++;
             }
             auroraCmd(sFaded, GX_AURORA_SET_REPLAY_MASK, 0);
             auroraCmd(sFaded, GX_AURORA_STATE_SAVE, 5);
@@ -1769,6 +1777,7 @@ bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, cons
 // Builds tape b with its values blended from a toward b (alpha 1 = b as captured) into
 // sReplay and submits it. `dump` redirects the LM_FRAME_DUMP copy (LM_INTERP_TEST).
 void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
+    sColorSwitches = sFadeIns = sFadeOuts = sSnapIns = sSnapOuts = 0;
     sReplay.assign(b.bytes.begin(), b.bytes.end());
     if (a && b.pairedWith != a) a = nullptr;  // not consecutive (a tape was dropped): no pairing
     if (a && b.cut) {
@@ -1903,6 +1912,20 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                             const auto rd = [](const u8* s) { return u32(s[0]) << 24 | u32(s[1]) << 16 | u32(s[2]) << 8 | s[3]; };
                 const u32 ca = rd(a->bytes.data() + q.offset), cb = rd(b.bytes.data() + p.offset);
                 u32 out = cb;
+                // A channel that jumps by more than 96 levels in one game frame is a switch, not a
+                // fade (a damage or invincibility blink toggling a material's alpha/color, a light
+                // switched on): it changes at the game frame, as on the console (a's value until
+                // alpha 1), instead of passing through half-states that neither frame shows.
+                int jump = 0;
+                const auto channelJump = [&](int shift, int bits, bool sign) {
+                    const u32 mask = (1u << bits) - 1;
+                    int x = int((ca >> shift) & mask), y = int((cb >> shift) & mask);
+                    if (sign) {
+                        if (x & (1 << (bits - 1))) x -= 1 << bits;
+                        if (y & (1 << (bits - 1))) y -= 1 << bits;
+                    }
+                    jump = std::max(jump, std::abs(y - x));
+                };
                 const auto lerp = [&](int shift, int bits, bool sign) {
                     const u32 mask = (1u << bits) - 1;
                     int x = int((ca >> shift) & mask), y = int((cb >> shift) & mask);
@@ -1910,9 +1933,21 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                         if (x & (1 << (bits - 1))) x -= 1 << bits;
                         if (y & (1 << (bits - 1))) y -= 1 << bits;
                     }
-                    const int v = int(std::lround(float(x) + float(y - x) * alpha));
+                    const int v = jump > 96 ? x : int(std::lround(float(x) + float(y - x) * alpha));
                     out = (out & ~(mask << shift)) | (u32(v) & mask) << shift;
                 };
+                if (p.posOffset == 0) {
+                    for (int s = 0; s < 32; s += 8) channelJump(s, 8, false);
+                } else if (p.posOffset == 1) {
+                    const bool konst = (cb >> 23) & 1;
+                    if (((ca >> 23) & 1) == u32(konst)) {
+                        channelJump(0, konst ? 8 : 11, !konst);
+                        channelJump(12, konst ? 8 : 11, !konst);
+                    }
+                } else {
+                    for (int s = 0; s < 24; s += 8) channelJump(s, 8, false);
+                }
+                if (jump > 96) sColorSwitches++;
                 if (p.posOffset == 0) {
                     for (int s = 0; s < 32; s += 8) lerp(s, 8, false);
                 } else if (p.posOffset == 1) {
@@ -2208,10 +2243,10 @@ bool testReplay() {
                 }
             }
         log("[interp] %s: snapped pos %u nrm %u tex %u proj %u light %u verts %u; unpaired pos %u nrm %u tex %u proj %u "
-            "light %u verts %u fadein %u fadeout %u%s",
+            "light %u verts %u fadein %u fadeout %u snapin %u snapout %u colorswitch %u%s",
             it.name.c_str(), sSnapKinds[0], sSnapKinds[1], sSnapKinds[2], sSnapKinds[3], sSnapKinds[4], sSnapKinds[5],
             unpaired[0], unpaired[1], unpaired[2], unpaired[3], unpaired[4], unpaired[5], sFadeIns, sFadeOuts,
-            it.b->cut ? " CUT" : "");
+            sSnapIns, sSnapOuts, sColorSwitches, it.b->cut ? " CUT" : "");
     }
     sLogSnaps = false;
     efbcopy::applyWritebacks();
@@ -2433,9 +2468,9 @@ bool replay(bool final) {
         static Clock::time_point last = Clock::now();
         const auto now = Clock::now();
         log("[interp] alpha %.3f dt %.1f ms tape %u%s, snapped pos %u nrm %u tex %u proj %u light %u verts %u, "
-            "unpaired %u",
+            "unpaired %u, color switches %u, snapped draws in %u out %u, faded in %u out %u",
             alpha, std::chrono::duration<double, std::milli>(now - last).count(), b->retrace, b->cut ? " (cut)" : "",
-            sSnapKinds[0], sSnapKinds[1], sSnapKinds[2], sSnapKinds[3], sSnapKinds[4], sSnapKinds[5], b->unpaired);
+            sSnapKinds[0], sSnapKinds[1], sSnapKinds[2], sSnapKinds[3], sSnapKinds[4], sSnapKinds[5], b->unpaired, sColorSwitches, sSnapIns, sSnapOuts, sFadeIns, sFadeOuts);
         last = now;
         std::fill(std::begin(sSnapKinds), std::end(sSnapKinds), 0u);
     }
