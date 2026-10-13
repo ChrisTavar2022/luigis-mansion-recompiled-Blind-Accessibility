@@ -148,6 +148,17 @@ room still drops out for the same 8 frames (the newly visible flashlight beam on
 makes the black block easy to miss). The other display-list gaps left in that cutscene are
 frames where the clipped doorway is genuinely off screen.
 
+**Widescreen / field of view.** The same wrapper also puts the portal rectangles in the Hor+
+frame (docs/ENHANCEMENTS.md, "Scenes fixed for widescreen"): rooms are drawn with the
+widened projection, but the rectangles came from the 4:3 projection*view matrix and were then
+used unchanged as the room's `GXSetScissor` (stretched to the window). Rooms seen through a
+doorway were cut off at a scissor edge shifted outwards from the doorway, which showed as a
+black slab next to pillars in the portrait gallery (map 6), and rooms visible only in the
+widened sides were culled. While `fn_8001333C` runs, rows 0 and 1 of the matrix at
+`lbl_803A3C98 + 0x258` are scaled like the projection (`ws::factor() * fovRatio` and
+`fovRatio`) and restored afterwards; nothing else reads that matrix. This part is not tied to
+the portal setting.
+
 **Debug aid.** `LM_DL_TRACE=<file>` writes one line per frame (`F<n>`) listing every
 `GXCallDisplayList` as `addr:size@caller<caller...` (guest stack back chain). Diffing the sets
 of consecutive frames finds draws that drop out for a few frames. `LM_DL_TRACE_FRAMES=<first>,<last>`
