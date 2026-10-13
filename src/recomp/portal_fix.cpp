@@ -19,8 +19,10 @@
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
 #include "recomp/version.h"
+#include "recomp/widescreen.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdlib>
 
@@ -36,12 +38,53 @@ void wrRect(u32 out, const s16 r[4]) {
     for (int i = 0; i < 4; i++) wr16(out + 2 * i, u16(r[i]));
 }
 
+void nearPlaneFix(Ctx& c, u32 portal, u32 out, u32 parent);
+
+// Widescreen / field of view (docs/ENHANCEMENTS.md, "Portal rooms in widescreen"): rooms are
+// drawn Hor+ (the projection's x row scaled by ws::factor(), both rows by the FOV ratio), but
+// the portal rectangles come from the camera's unmodified projection*view matrix. Each room is
+// drawn with GXSetScissor(rect) (fn_8001798C), and the GX HLE passes perspective scissors to
+// Aurora unchanged (stretched to the window). A doorway's rectangle was therefore wider and
+// shifted outwards relative to where the doorway is drawn: the part of the room behind it
+// between the two was cut off and the clear colour showed through (the black slab in the
+// gallery, map 6), and rooms visible only in the widened sides were culled (the rectangle was
+// clamped to the 4:3 screen). Scaling the same rows of the matrix while the game computes the
+// rectangle puts it in the drawn (Hor+) frame, which the stretched scissor matches exactly.
+struct HorPlusScope {
+    u32 mtx = 0;
+    u32 saved[8] = {};
+    explicit HorPlusScope(u32 m) {
+        if (!ws::adjusting()) return;
+        // The game camera (lbl_803A3820): full-screen viewport, as fn_80008D58's hook checks.
+        const u32 cam = VA(0x803A3820);
+        if (rd32(cam + VOFF(0x1EC, 0x1F8)) != 0 || rd32(cam + VOFF(0x1F4, 0x200)) < 640) return;
+        const float fovY = gu::rdf(cam + 0x90) * 3.14159265f / 180.0f;
+        const float r = fovY > 0.0f ? ws::fovRatio(1.0f / std::tan(fovY * 0.5f)) : 1.0f;
+        const float sx = ws::factor() * r;
+        if (sx == 1.0f && r == 1.0f) return;
+        mtx = m;
+        for (int j = 0; j < 8; j++) {
+            saved[j] = rd32(m + 4 * j);
+            gu::wrf(m + 4 * j, std::bit_cast<float>(saved[j]) * (j < 4 ? sx : r));
+        }
+    }
+    ~HorPlusScope() {
+        for (int j = 0; mtx && j < 8; j++) wr32(mtx + 4 * j, saved[j]);
+    }
+};
+
 }  // namespace
 
 // fn_8001333C(portal, out rect, parent rect): rects are s16 {x0, y0, x1, y1}.
 HLE(fn_8001333C) {
     const u32 portal = c.r[3], out = c.r[4], parent = c.r[5];
+    HorPlusScope horPlus(VA(0x803A3C98) + 0x258);
     callOriginal(c, "fn_8001333C");
+    nearPlaneFix(c, portal, out, parent);
+}
+
+namespace {
+void nearPlaneFix(Ctx& c, u32 portal, u32 out, u32 parent) {
     // LM_PORTAL_FIX=0/1 overrides the setting (A/B testing).
     static const char* env = std::getenv("LM_PORTAL_FIX");
     if (env ? env[0] == '0' : !port::settings().enhancements.portalClipFix) return;
@@ -106,5 +149,6 @@ HLE(fn_8001333C) {
     if (r[0] >= r[2] || r[1] >= r[3]) return wrRect(out, empty);
     wrRect(out, r);
 }
+}  // namespace
 
 }  // namespace recomp

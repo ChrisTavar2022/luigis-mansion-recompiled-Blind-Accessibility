@@ -185,10 +185,11 @@ void emitProjection(ProjMode mode) {
     sProjDirty = false;
 }
 
-void emitScissor(bool pillar) {
+// lock3D: a full-screen 3D draw in a scene kept at 4:3 (ws::lock43): centered, never anchored.
+void emitScissor(bool pillar, bool lock3D = false) {
     sScissorAnchor = 0;
     if (pillar) {
-        sScissorAnchor = sVpFollow ? sVpAnchor : hudAnchor();
+        sScissorAnchor = sVpFollow ? sVpAnchor : lock3D ? 0 : hudAnchor();
         const f32 l = std::max(0.0f, pillarX(f32(sScissor.x), sScissorAnchor));
         const f32 r = std::min(kLogicalWidth, pillarX(f32(sScissor.x + sScissor.w), sScissorAnchor));
         const u32 li = u32(std::max(0.0f, std::floor(l)));
@@ -236,9 +237,12 @@ void prepareDraw(ProjMode mode, const char* what = "draw") {
     const bool hud = mode == ProjMode::Scaled && sProj.type == GX_ORTHOGRAPHIC;
     if (sProjSet && (sProjDirty || mode != sProjEmitted || (hud && hudAnchor() != sProjEmittedAnchor)))
         emitProjection(mode);
-    const bool pillar = sVpFollow || (hud && (sScissor.x > 0 || sScissor.x + sScissor.w < 640));
-    const int anchor = sVpFollow ? sVpAnchor : hudAnchor();
-    if (pillar != sScissorPillar || (pillar && anchor != sScissorAnchor)) emitScissor(pillar);
+    // A scene kept at 4:3 (ws::lock43, e.g. the area-clear screen): its 3D keeps the Hor+
+    // projection but is scissored to the centered 4:3 frame, leaving black bars at the sides.
+    const bool lock3D = !sVpFollow && mode == ProjMode::Scaled && sProj.type == GX_PERSPECTIVE && ws::lock43();
+    const bool pillar = sVpFollow || lock3D || (hud && (sScissor.x > 0 || sScissor.x + sScissor.w < 640));
+    const int anchor = sVpFollow ? sVpAnchor : lock3D ? 0 : hudAnchor();
+    if (pillar != sScissorPillar || (pillar && anchor != sScissorAnchor)) emitScissor(pillar, lock3D);
 }
 
 // Mirror of the vertex layout state that immediate-mode 2D draws use, so a
@@ -381,6 +385,9 @@ bool coversScreen() {
 //  - anything else is HUD: centered 4:3 (moved to an edge with its HUD element's anchor).
 ProjMode classifyHeld() {
     sHeldDecoded = false;
+    // The iris wipe's boxes and circle picture all stay in the centered 4:3 frame (the boxes
+    // are extended to the display's edges in that frame, widescreen.cpp J2DFillBox).
+    if (ws::inWipe()) return ProjMode::Scaled;
     if (!coversScreen()) {
         if (sHeldAnchor == ws::kAnchorBySide) sHeldAnchor = !sHeldDecoded ? 0 : sHeldLo + sHeldHi < 0.0f ? -1 : 1;
         return ProjMode::Scaled;
@@ -452,6 +459,12 @@ void gx::applyAccuracySettings() {
     u32 flags = (r.integerTev ? GX_AURORA_ACCURACY_INT_TEV : 0) | (r.efbColorDepth ? GX_AURORA_ACCURACY_EFB_DEPTH : 0) |
                 (r.efbColorDepth && r.efbBlend6 ? GX_AURORA_ACCURACY_EFB_BLEND : 0) |
                 (r.earlyZAlphaDepth ? GX_AURORA_ACCURACY_EARLY_Z : 0) |
+                // Interpolated presentation replays every frame on the host after the fact: the
+                // per-draw early-Z split cost ~20 ms per replay in the foyer (presentation fell to
+                // ~35 fps); merged split pairs keep it at ~4 ms. Original 30 keeps the exact split.
+                (r.earlyZAlphaDepth && (port::settings().video.matchDisplay || port::settings().video.targetFps > port::kMinFps)
+                     ? GX_AURORA_ACCURACY_EARLY_Z_MERGE
+                     : 0) |
                 (r.textureCopyFilter ? GX_AURORA_ACCURACY_COPY_FILTER : 0);
     // Enhanced lighting turns the 6-bit EFB (and with it 6-bit blending, the dither and the
     // smoothing of 0190) off: its smooth per-pixel and colored-light gradients went through the
@@ -1021,6 +1034,7 @@ GXHLE(GXSetScissor) {
     HUD_TRACE("scissor %u %u %u %u %s", c.r[3], c.r[4], c.r[5], c.r[6], guestChain(c).c_str());
     sScissor = {c.r[3], c.r[4], c.r[5], c.r[6]};
     emitScissor(sVpFollow);
+    if (ws::lock43()) sRawCheck = true;  // raw FIFO 3D draws re-apply the 4:3 scissor
 }
 GXHLE(GXSetClipMode) { GXSetClipMode(GXClipMode(c.r[3])); }
 

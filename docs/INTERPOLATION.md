@@ -438,6 +438,139 @@ Results (same metrics as above; "before" = the interp-everything results):
   for the host); real-time nursery run at 120: alpha rises monotonically within a tape (5 of
   2,000 presents stepped back), tape close 1.7-4 ms on a machine shared with two other runs.
 
+## Pass 3: pacing, presentation cost, pairing, blinks (interp-pass-3, October 2026)
+
+User report after a full playthrough at high frame rates: "many things still judder frequently
+while moving" (easiest to see: the foyer candlesticks and door while Luigi strafes with the camera
+following), parts of Luigi (the flashlight) blink out, and the damage blink looks wrong.
+
+### What was wrong
+
+1. **Presentation collapsed in heavy rooms** (the static door and candlesticks judder). A replay is
+   processed by Aurora's FIFO thread inside `aurora_end_frame` (drain). In the foyer that took
+   ~25 ms per present, so a 120 target presented at ~36 fps: frames landed on alternating 3 and 4
+   refreshes of the 120 Hz display, and everything that moves on screen (the whole room under a
+   moving camera) juddered. The cause was the early-Z accuracy split (Aurora 0170/0179, F1 >
+   Visuals > Rendering "Early depth for cut-out textures"): ~16,000 draws per foyer frame were
+   split into a depth-only and a colour pass, each with two whole-config pipeline lookups, and the
+   0179 fix stopped consecutive draws from merging, so every triangle strip became two draw
+   commands. Measured (FIFO drain per present, foyer, 120 target): 25-30 ms with the split,
+   3.7-8 ms with it off.
+2. **Alpha from the guest's finish time** (`LM_INTERP_PACING=old`). alpha = (now - time tape b was
+   finished) / (b's stamp step): every in-between depended on when the game thread happened to
+   finish its frame (+-4 ms of work jitter), and the frame stamps (the retrace count at the
+   present) step 1 or 3 fields instead of 2 whenever a frame's work crosses a retrace (3-4% of
+   frames in the foyer): alpha then reached 1 after half the time and held (a stall), or jumped.
+3. **Luigi's draws lost their partners when he started moving.** The polish pass predicted where a
+   draw would be from its own motion in the previous frame (fast particles) and rejected partners
+   more than 12 units (+1% of the distance) away. That also applied to models drawn a few times per
+   frame (Luigi is drawn in several passes, so his draws are "many"): on his first walking frame
+   all 231 of his position matrices (body, Poltergust, hose, flashlight) were unpaired, vanished
+   and reappeared as a whole: the flashlight blinking out, and a stray flashlight cone across the
+   room in the in-betweens (his vanished draws re-expressed under the wrong camera: the camera of
+   a tape was mapped to the other tape's by the first paired value).
+4. **Blinks became fades.** Draws without a partner faded with a dither (polish pass) and color
+   registers were always blended, so anything the game switches on and off per frame passed
+   through half-states that neither frame shows.
+
+### What it does now
+
+1. **Aurora 0192** (`patches/aurora/0192-early-z-split-cache-merge.patch`): the split decision and
+   its two pipelines are cached with the draw cache, and while interpolating
+   (`GX_AURORA_ACCURACY_EARLY_Z_MERGE`, set by `gx::applyAccuracySettings` when the frame-rate
+   target is above 30) consecutive draws with the same state merge into one split pair (both halves
+   extended alike). Foyer FIFO drain per present: 25-30 ms -> ~11 ms (cache) -> **3.9 ms**
+   (merged). The merged pair differs from the per-draw order only where merged geometry overlaps
+   itself with alpha-rejected pixels: nursery test-mode dumps, merged vs exact, 578 px in 345
+   frames (edges of the Game Boy Horror hand, max 28 levels). Original 30 keeps the exact split.
+   `AURORA_EARLY_Z_MERGE=0/1/ab` overrides.
+2. **Presentation clock** (`interp.cpp`, `Pacer`, `pace()`). Tapes go into a queue; per present:
+   - a smoothed present clock (advances by the measured present period, pulled 10% toward the
+     real time, resynchronized when a present is more than 4 ms off: a missed refresh);
+   - a game timeline: each tape one nominal step (median of the recent stamp steps, 2 fields at 30
+     fps) after its predecessor, pulled 10% toward its stamp; a stamp more than 1.5 fields off (a
+     real slowdown, a load) is taken as is;
+   - the shown game time G = clock - D, where the delay D covers the slowest recent tape (finish
+     time minus its predecessor's game time, over 90 tapes, load hitches excluded) plus 1.5 ms;
+     G follows its target with at most +-5% speed changes, never runs backwards and never beyond
+     the newest tape (counted as a stall; 30 stalls in a row measure D afresh);
+   - the pair around G and alpha from their times. `LM_INTERP_PACING=old` restores the old rule.
+   The 5-second stats line reports the delay, stalls and resyncs.
+3. **Pairing**: groups of up to 8 draws of one thing pair nearest first without the motion limit
+   (it is for particle swarms; swarms accept their own or the common motion); draws left unpaired
+   are paired again by display-list content (FNV hash: a list that moved in memory); cameras are
+   mapped between tapes by majority vote of the paired values.
+4. **Switches stay switches**: draws in a *snap scope* (`interp::pushSnapScope`, LM: the actor draw
+   pass `fn_80060E70`, i.e. Luigi, ghosts and other characters) and draws whose identity vanishes
+   or appears as a whole and did so within the last 24 tapes (blink patterns) are never dithered:
+   a vanished one stays fully drawn and a new one hidden until alpha 1, the console's timing. A
+   color channel that jumps by more than 96 levels in one game frame changes at the game frame
+   too (a's value until alpha 1). Particles (many draws of one identity) keep their fades. The
+   damage blink is Luigi drawn solid and translucent on alternate game frames (Original 30
+   dumps of the ghosts room: frames 3590-3650 after a hit at 3512), done with color registers:
+   during the blink the trace counts 146 color switches per in-between. Test mode, ghosts room,
+   hit at frame 3546, Luigi's screen region at the half-way in-between of frames 3650-3653: mean
+   brightness 24.3 / 20.2 / 23.4 / 19.7 with the previous frame at 24.9 / 21.4 / 23.6 / 20.6 and
+   the next at 21.4 / 23.6 / 20.6 / 23.4 (mean abs. difference to the previous frame 2.5-4.6, to
+   the next 4.3-5.0): every in-between shows the previous frame's blink state, no half-states.
+5. **Lifetime**: the last replays' tapes are kept alive until their FIFO work is drained (a
+   crash reading a vertex-array copy in `push_gx_draw` was seen twice under heavy load).
+
+### Regression suite
+
+`tools/interp/scenarios.sh` (all runs muted: `LM_AUDIO=0` unless set) gained:
+
+| Scenario | What happens | Frames |
+|----------|--------------|--------|
+| foyer (`LM_START_APPEAR=6`) | foyer by the front door: strafing left/right with the camera following (candlesticks, door, stairs), turns | 2600-2900 |
+| hit (`LM_TEST_HIT=2620,60,5`) | nursery, Luigi hit every 60 frames through the game's health setter while walking (hurt sparkles, heart effects) | 2600-2760 |
+
+Steps `0` is now a **real-time judder run**: no dumps, `LM_INTERP_JUDDER=<run>/judder.log` (per tape:
+stamp, finish time, frame number; per present: the tapes and alpha shown, the delay; host-loop
+phase times), summarized by `tools/interp/judder.py <log> --frames first,last [--dump N]`:
+
+- *present interval*: mean / p50 / p99 / max time between presents;
+- *step error*: per present |du x P - dt|, u = a + alpha (the frame shown as a fractional tape
+  index), P the nominal frame period: how far one present's motion step is from the ideal (x an
+  object's screen speed = its judder in pixels);
+- *shown-time error*: |u x P - t| after a 1 s moving median: late/early frames, uneven alpha
+  (also counts the deliberate +-5% slews);
+- *stalls* (same frame shown twice), *reversals*, *alpha-1 presents* (waiting for the game) and the
+  tape stamp steps.
+
+Test-mode metrics (`metrics.py`) now also report dithered vs snapped fades and color switches.
+Test aids: `LM_TEST_HIT`, `LM_HEALTH_LOG=1` (Luigi's health changes with frame numbers),
+`LM_INTERP_PACING=old`, `AURORA_EARLY_Z_MERGE`.
+
+### Results
+
+Real time, foyer scenario frames 2600-2900, 120 target on a 120 Hz display with VSync, new and old
+pacing run at the same time on a machine shared with 2-4 other game instances (absolute rates are
+lower than on an idle machine; the comparison is fair):
+
+| | presented | step error p95 / p99 / max | stalls | alpha-1 presents |
+|---|---|---|---|---|
+| before (main: early-Z unmerged, old pacing; earlier run, 1 other instance) | 36 fps (27.8 ms intervals) | (pre-metric: G - t error p99 2.8 ms at 36 fps) | | 31 |
+| old pacing, 0192 | 71.8 fps | 9.27 / 12.69 / 19.19 ms | 10 | 73 |
+| **new pacing, 0192** | 86.9 fps | **3.59 / 7.12 / 10.39 ms** | **0** | 3 |
+| new pacing, 0192, less load | 99.0 fps | 2.99 / 3.61 / 5.41 ms | 0 | 2 |
+| 144 target, VSync off, old pacing (run at the same time as the next) | 105.7 fps | 8.73 / 13.94 / 21.84 ms | 44 | 107 |
+| **144 target, VSync off, new pacing** | 101.0 fps | **3.22 / 3.64 / 4.59 ms** | **0** | 0 |
+
+The remaining step error is the host loop's own timing jitter (present intervals p50 9.6 ms, p99
+14.8 ms under this load); the presented rate is limited by the replay cost on a shared CPU (host
+replay 2.7-3.7 ms + FIFO drain), not by the pacing.
+
+Test mode (same scenarios as before; foyer and hit are new):
+
+| | stale px | snap blobs | back-and-forth | snapped / in-between | unpaired / in-between | fades dithered in/out |
+|---|---|---|---|---|---|---|
+| foyer 2600-2700, before pass 3 | 0 | 21,425 / 55,349 | 163,665 (the stray flashlight cone) | 19.5 | 29.4 | 11.4 / 8.3 |
+| **foyer 2600-2700, after** | 0 | 26,598 / 22,642 | **31,913** | 21.0 (Luigi's instant 180-degree turns) | **9.1** | 6.5 / 3.5 |
+| foyer + enhanced lighting | 0 | 24,954 / 24,155 | 31,649 | 12.4 | 6.6 | 6.0 / 1.1 |
+| foyer, 16:9 | 0 | 16,915 / 15,773 | 18,511 | 12.5 | 6.6 | 6.0 / 1.1 |
+| hit 2600-2760 | 0 | 34,293 / 35,869 | 22,092 | 1.5 | 6.5 | 7.2 / 5.2 |
+
 ## Known limitations
 
 - On the test machine presentation never exceeded the display's 60 Hz even with VSync off
@@ -446,9 +579,16 @@ Results (same metrics as above; "before" = the interp-everything results):
   VSync in the GPU control panel); targets below the refresh rate are hit exactly (45 and 50 fps
   measured). `LM_BACKEND=d3d12|d3d11|vulkan` picks the backend for such tests.
 - Things the game snaps itself (Luigi's instant turns, a light switching on) stay snapped.
-- Spawns and despawns fade by dithering (see Polish); 2D elements, draws sampling EFB copies and
-  the shadow caster pass still appear/vanish at the first in-between frame. A draw that loses its
-  partner by mispairing crossfades between its two positions instead of jumping.
+- Spawns and despawns of particles and props fade by dithering (see Polish); characters and blink
+  patterns switch at the game frame (pass 3); 2D elements, draws sampling EFB copies and the
+  shadow caster pass still appear/vanish at the first in-between frame.
+- Original 30 is unchanged by construction (no capture, Aurora 0191 keeps the exact per-draw
+  split at 30), but it could not be shown pixel for pixel this time: two runs of the *same*
+  executable no longer give identical dumps (lightning timing, particles; 2.4 M px differ over 61
+  nursery frames, the same as between main's and this branch's executables, 2.2 M px).
+- Presentation rate depends on the replay cost (FIFO drain): heavy rooms with expensive accuracy
+  options may still present below the target on slower CPUs; the pacing then keeps motion even at
+  the reached rate (no stalls) instead of juddering.
 - 2D/HUD interpolation is verified for the GBH, health, element meter, room name, E. Gadd's call
   and its message windows, the pause screen and the ending caption; GBH map/inventory pages
   beyond the pause screen and the PAL GBH screens are untested.

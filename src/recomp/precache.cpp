@@ -99,8 +99,10 @@ void frame() {
     }
 
     // Small corner note while the background compile is still running (first launch without
-    // setup, after a driver update or a settings change that needs other shaders).
-    if (s.precacheDone < s.precacheTotal && now - start > std::chrono::seconds(1)) {
+    // setup, after a driver update or a settings change that needs other shaders). Loading the
+    // whole list from the shader cache takes about 1 s on every launch, so the note only appears
+    // once that is clearly exceeded, i.e. when shaders are really being compiled.
+    if (s.precacheDone < s.precacheTotal && now - start > std::chrono::seconds(4)) {
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 8, vp->WorkPos.y + vp->WorkSize.y - 8),
                                 ImGuiCond_Always, ImVec2(1, 1));

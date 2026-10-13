@@ -179,6 +179,47 @@ HLE(fn_80045BDC) {
     AnchorScope s(kAnchorBySide);
     callOriginal(c, "fn_80045BDC");
 }
+// ---- scenes kept at 4:3 / widened 2D (widescreen.h) ----
+namespace {
+int sLock43Depth = 0;
+int sWipeDepth = 0;
+}  // namespace
+Lock43Scope::Lock43Scope() { sLock43Depth++; }
+Lock43Scope::~Lock43Scope() { sLock43Depth--; }
+bool lock43() { return sLock43Depth > 0 && active(); }
+WipeScope::WipeScope() { sWipeDepth++; }
+WipeScope::~WipeScope() { sWipeDepth--; }
+bool inWipe() { return sWipeDepth > 0 && active(); }
+
+// Area-clear screen ("Now you've caught: (Area n) ..."): the game-mode 6 draw of the frame loop
+// (fn_8000BE20). Luigi shines the flashlight on the area's portraits on a wall
+// (/Nakamura/gallery.bin) that ends just outside the 4:3 view; Hor+ showed its edge. The scene
+// is kept at 4:3 with black bars; its 2D text is centered as everywhere else.
+HLE(fn_8018721C) {
+    Lock43Scope lock;
+    callOriginal(c, "fn_8018721C");
+}
+
+// J2DFillBox(x, y, w, h, color*): inside the iris wipe, a box touching the 4:3 frame's left or
+// right edge (or lying beyond it: the side boxes get a negative width once the circle is wider
+// than the screen) is extended to the display's edge. Widths stay as the game computed them
+// relative to the edge it does not touch, so the hole is unchanged.
+HLE(J2DFillBox__FiiiiQ28JUtility6TColor) {
+    if (inWipe()) {
+        const s32 ext = s32(std::ceil(320.0f / factor() - 320.0f)) + 2;
+        s32 x = s32(c.r[3]), w = s32(c.r[5]);
+        const s32 right = x + w;
+        if (x <= 0) {
+            w = right + ext;
+            x = -ext;
+        }
+        if (right >= 640) w = 640 + ext - x;
+        c.r[3] = u32(x);
+        c.r[5] = u32(w);
+    }
+    callOriginal(c, "J2DFillBox__FiiiiQ28JUtility6TColor");
+}
+
 // Health meter (bottom left). In the training room it shows over Luigi instead
 // (fn_80041214, a projected position): that call opens a centered scope.
 HLE(fn_800417F8) {

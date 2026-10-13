@@ -148,6 +148,17 @@ room still drops out for the same 8 frames (the newly visible flashlight beam on
 makes the black block easy to miss). The other display-list gaps left in that cutscene are
 frames where the clipped doorway is genuinely off screen.
 
+**Widescreen / field of view.** The same wrapper also puts the portal rectangles in the Hor+
+frame (docs/ENHANCEMENTS.md, "Scenes fixed for widescreen"): rooms are drawn with the
+widened projection, but the rectangles came from the 4:3 projection*view matrix and were then
+used unchanged as the room's `GXSetScissor` (stretched to the window). Rooms seen through a
+doorway were cut off at a scissor edge shifted outwards from the doorway, which showed as a
+black slab next to pillars in the portrait gallery (map 6), and rooms visible only in the
+widened sides were culled. While `fn_8001333C` runs, rows 0 and 1 of the matrix at
+`lbl_803A3C98 + 0x258` are scaled like the projection (`ws::factor() * fovRatio` and
+`fovRatio`) and restored afterwards; nothing else reads that matrix. This part is not tied to
+the portal setting.
+
 **Debug aid.** `LM_DL_TRACE=<file>` writes one line per frame (`F<n>`) listing every
 `GXCallDisplayList` as `addr:size@caller<caller...` (guest stack back chain). Diffing the sets
 of consecutive frames finds draws that drop out for a few frames. `LM_DL_TRACE_FRAMES=<first>,<last>`
@@ -265,6 +276,60 @@ bits 23..16 in the IA8 intensity byte and 15..8 in the alpha byte, which is how 
   off too). Frame numbers count GXCopyDisp calls; runs drift a few frames apart, so align by
   content when comparing.
 - `LM_EFB_RAM=0/1`, `LM_EFB_READBACK_ALL=1`.
+
+### Lock order: the Sealed Room / mirror-warp freeze (Aurora patch 0191)
+
+Reported in the first full playthrough (2026-10-12): the game froze ("not responding", Windows
+closed it: three `AppHang` events in the Application log, no crash dump) while loading the Sealed
+Room after dropping down the roof chimney, and when using a mirror to warp back to the foyer.
+
+Cause, from the all-thread stacks of a frozen run (`LM_HANG_DUMP=8`): a lock-order deadlock
+between efb_ram's mutex and Dawn's device lock (on since `ImplicitDeviceSynchronization`, Aurora
+0175, 2026-10-11).
+
+- Render worker: `Queue::Submit` (frame submit, `aurora.cpp`) holds the device lock; Dawn fires
+  the `AllowSpontaneous` MapAsync callback of an EFB-copy readback inside it, and the callback
+  locked `g_mutex` to queue the landed bytes.
+- GX FIFO thread: `resolve_texture` held `g_mutex` and called `new_conv_texture` (Dawn
+  `CreateTexture` → device lock) for a texture decoded from EFB copy memory for the first time.
+- Guest audio thread (JAudio `DspbufProcess` → `DCInvalidateRange` → `aurora_efb_ram_cpu_read`)
+  then waited for `g_mutex` while holding the guest CPU, so no guest thread ran again and the main
+  loop waited for a frame forever.
+
+Readbacks complete every frame (the two `DCInvalidateRange`'d screen buffers), so the callback side
+is always there; the trigger is the first decode of a new texture over copy memory, which special
+transitions do (the Sealed Room arrival decodes an 84x110 RGB565 texture over a 70x100 copy) and
+normal doors rarely do. Any Dawn object created or released under `g_mutex` (dropped copies,
+evicted copy textures, old decoded textures) was the same hazard.
+
+Fix (0191): the map callback takes only leaf locks (`g_landedMutex` for the landed list, the
+readback pool lock, whose new buffers are created after unlocking); `g_mutex` is never taken in a
+callback, and nothing is created or released under it (the decoded texture is created between two
+locked passes; dropped entries/textures and copy-texture evictions happen after unlocking). A
+guest thread in `DCInvalidateRange` therefore no longer waits behind the device lock (e.g. a
+pipeline compile) either. The comment at `g_mutex` in `lib/gfx/efb_ram.cpp` states the rule.
+
+Evidence: with a 400 ms sleep held under `g_mutex` at the first decode (temporary stress hook) and
+`LM_EFB_READBACK_ALL=1`, the unfixed build froze on the Sealed Room arrival with exactly the three
+stacks above; the fixed build ran on in the room (3 of 3 runs, 400/800 ms). The unstressed freeze
+was also seen once in about a dozen unfixed runs (same audio-thread stack in `LM_WATCHDOG`).
+Workaround for older builds: F1 > Visuals > Rendering, "EFB copies to RAM" off.
+
+Same pattern elsewhere: upstream `depth_peek.cpp` (GXPeekZ) creates buffers under its mutex
+(`ensure_slot`) and its spontaneous map callback takes that mutex; LM never peeks Z, but a port
+that does (SMS?) has the same deadlock.
+
+Regression test (US save with the roof open; `LM_CARD_DIR` scratch copy):
+`LM_START_APPEAR=3 LM_SKIP_TEST=1450:pos:2402,2300,-2566 LM_HANG_DUMP=8 LM_INPUT_CLOCK=frames
+--input "480:START*10,880:A,1000:A,1100:A,1200:A,1300:A,1400:A"` drops Luigi into the roof
+chimney (the real route: Sealed Room event, Luigi at 1910,550,-2770, room 37); mirror warps:
+stand in front of a mirror and press A (furniture `move` 22 in map2 jmp/furnitureinfo: foyer
+(420,0,-400), jmp rooms 17 (-1960,280,-4380), 38 Wardrobe Room (-1540,780,-3860), 42
+(-1960,830,-4380), 36 Sealed Room (3765,860,-2790)). Sweep on the fixed build (teleport in front,
+A in four facings, `LM_HANG_DUMP=8`): the foyer mirror warps (twice in a row, no stall); in the
+other four rooms nothing froze, but no warp happened either: with the test save they are still
+dark (ghosts appear), and a mirror only warps from a lit room. Re-test those with a save that has
+them cleared.
 
 ## Vertex snapshots (Luigi's mouth/hose flicker)
 
@@ -1892,3 +1957,113 @@ EFB color depth on: 52% (the banding).
 Coordination with "Smooth color banding" (`deband`, Aurora 0190): it smooths the 6-bit EFB; with the
 6-bit EFB off under enhanced lighting it does not apply there (greyed out), and the remaining
 quantization is the 8-bit target itself.
+
+### Realistic flashlight (branch `flashlight-beam`, Aurora 0196)
+
+User report: "the light cone on Luigi's flashlight barely looks different in our enhanced graphics
+mode". The previous enhanced beam was a haze ray-marched through the GX spot attenuation on top of
+the game's own cone mesh, with no occlusion, and the pool on the walls was the game's flat spot
+term. F1 > Visuals > Enhanced lighting > Atmosphere > **Realistic flashlight**
+(`realistic_flashlight` Off/Medium/High/Ultra, default High; `beam_density` 0..3, `beam_dust`
+0..2). It replaces the volumetric beam while on (that option is greyed out); with it Off, enhanced
+lighting renders as before (nursery frames match main's build apart from the random dust
+particles), and the plain renderer is untouched (nothing is sent with the master switch off).
+
+**The game's flashlight** (US, nursery; `AURORA_BEAM_LOG=1` logs it every scene end): GX light 7,
+colour (255, 220, 100), angular polynomial (0, -4.53, 5.53) = an edge at cos 0.819 (35 degrees),
+distance attenuation (1, 1e-5, 0), i.e. **no distance falloff at all**: the pool is equally bright
+at 200 and 1500 units, which is why it read as a flat tint. A white, wider light (edge cos 0.766)
+appears for ~90 frames at the start of some scenes. The ghost stun has no GX signature (the light
+does not change); see "Flare" below.
+
+**Parts** (`lib/gfx/enhanced.cpp` `fs_beam`, `lib/gfx/beam_profile.hpp`, `lib/gx/shader.cpp`):
+- **Light scattering against the flashlight's shadow map.** The game renders one Z16 shadow map per
+  frame, from the flashlight in dark rooms ("Shadows" above). Aurora takes it from the first
+  main-view receiver draw (TEV GR16 compare stage: shadow map texture, swap tables) and turns its
+  two projective POS texgens (map s,t,q and depth ramp s,q: texture matrix, post matrix and the
+  inverse of the draw's position matrix) into view space, so any point in the air is tested
+  exactly as the receivers test surfaces (receiver key floor(65536 s/q) > packed map key, 2x2
+  bilinear PCF). The map is used only when its centre of projection lies within 120 units of the
+  flashlight (lit rooms and lightning use another light; the haze is then unshadowed). Per pixel
+  of a half-resolution target the view ray is clipped to the cone (analytic ray-cone interval,
+  widened to the spill) and to 1500 units around the lens, then marched (20/32/48 steps, fixed
+  per-pixel jitter) with the reflector profile below, inverse-square falloff (regularised by a
+  40-unit lens), air extinction `exp(-r (0.0007 + 0.15 sigma))` (the beam fades within a few
+  metres; denser air fades faster), a Henyey-Greenstein phase (g 0.35 mixed with isotropic:
+  looking into the lens is brighter), a world-anchored drifting haze density (two octaves of
+  periodic value noise, 9 samples per ray, interpolated) and the shadow test. Luigi's hand, the
+  crib bars, the rocking horse, bears, furniture and ghosts cut visible shafts. A depth-aware
+  separable 9-tap blur removes the jitter; the composite upsamples depth-aware (4 taps weighted by
+  view depth) so the haze stops cleanly at silhouettes in front of it, and adds
+  `colour x (1 - exp(-v))` (a little whiter where dense) before the HUD.
+- **Dust motes**: one possible mote per 32-unit world cell (PCG hash; `beam_dust` sets the
+  density), found with a 3D DDA along the lit part of the ray within 900 units of the lens; each
+  drifts slowly inside its cell, twinkles, and is lit only by the beam (profile x falloff x shadow).
+- **Reflector footprint on surfaces** (enhanced shader variants, `enh_flags` bit 5, bright spot
+  cones of colour channels, per pixel): the GX angular term is replaced by
+  `enh_beam_profile(angle / edge angle)`: a hot centre (1.65 on the axis), a slightly darker ring
+  around it, an even corona (~0.75) with faint concentric reflector rings, a soft edge and a dim
+  spill just outside the game's cone; times an inverse-square falloff referenced to 650 units
+  (`(650^2 + 40^2) / (d^2 + 40^2)`, clamped to 0.25..2.2) and a gain of 1.2. The lit channel's
+  clamp turns the centre white-hot (the yellow light reaches (1, 1, 0.6)) while the corona keeps
+  the yellow; walls near Luigi are brightly lit, far walls dimmer. Alpha channels (the shadow
+  light's ALPHA1 mask) stay exact. The same profile shapes the scattering, so shafts and pool
+  match. Soft contact-hardening shadows on surfaces are the existing PCSS soft shadows.
+- **The game's cone mesh** (`handlight_ef`, additive, alpha from a colour-texgen lookup) is
+  **hidden** while the realistic beam is on (no double cone): its draw keeps only the EFB
+  **alpha** write, because the game's later full-screen passes read that alpha. Dropping the draw
+  entirely tinted the beam area with the room's blue darkening (found in the first A/B;
+  `AURORA_BEAM_NOHIDE=1` keeps the mesh for comparison). The lens sprite, the vacuum and the Game
+  Boy Horror are separate draws and unchanged.
+- **Flare**: the beam flares (scattering x(1 + 2.5 f), whiter; surface gain x(1 + 0.6 f); a lens
+  glare with core, halo and a faint horizontal streak, dimmed when something is in front of the
+  lens) and decays in ~0.4 s. Triggers: a ghost's AI receiving the "in the flashlight beam" message
+  (EnThought message 2, `fn_800C0F08` hook) for the first time after 45 frames, i.e. when the light
+  catches and stuns it (`aurora_enhanced_beam_flare`); the flashlight switched on after being off;
+  any jump of the light's brightness above its recent level.
+- **Interpolation**: everything comes from data frame interpolation already blends per presented
+  frame: the GX light (flashlight), the camera projection, the receivers' shadow texture matrices
+  (rebuilt from the blended light, `LM_SHADOW_SNAP=3`) and the world anchor, which the port sends
+  as three pseudo extra lights (`AURORA_EXTRA_LIGHT_ANCHOR`, ids `0xBEA0A000+k`: view positions of
+  the camera target snapped to 1024 units and of points 256 units along world X/Y; interp blends
+  them by id like lights, Aurora strips them from the light set). Dust and haze drift on
+  wall-clock time, so they move smoothly at any frame rate. Aspect ratios and render scales: the
+  pass works in render-target pixels with the game's projection; the target is half resolution
+  capped at 540/720/1080 lines (Medium/High/Ultra).
+
+**Verification** (images in `build/flashlight/`, not in the repo; 640x480 frame dumps of the
+nursery script with `LM_BEAM_AB=1`: even dump frames = previous enhanced beam, odd = realistic):
+`nursery_old_new.png` (door across the room, crib bars, near a wall, rocking horse, lightning),
+`nursery_beam_only_shafts.png` (`AURORA_BEAM_SHOW=1`: the scattering alone with the shafts of the
+crib bars and the horse), `nursery_turn_sequence.png` / `nursery_sweep_sequence.png` (consecutive
+frames turning and sweeping), `ballroom_old_new.png` (chairs, dancing ghosts in the beam),
+`lit_room_old_new.png` (`LM_ROOMS_LIT=1`: shadow map from the room light, unshadowed haze),
+`ghost_stun_flare.png` (gold ghost room: beam on the ghost, stun with heart, flare),
+`flare_sequence.png` (`LM_BEAM_FLARE_AT`), `presets_medium_high_ultra.png` / `presets_crop.png`
+(render scale 3), `ultrawide_21x9_old_new.png` (21:9, render scale 3).
+Interpolation at 120 fps (`LM_INTERP_TEST=4`, nursery frames 2590-2700,
+`AURORA_BEAM_FREEZE_TIME=1`, tools/interp/metrics.py): **0 stale pixels** (every late replay equals
+its 30 Hz frame); the "back-and-forth" count is higher than with the option off (42k vs 24k px over
+110 frames) because the narrow hot centre passes over a wall within one game interval as the beam
+sweeps (frame 2655: the pool slides across the wall in the in-between frames); no flicker between
+replays.
+
+**Cost** (GPU timestamps of the beam passes: `AURORA_ENH_GPU_TIMING=1` logs "flashlight GPU";
+nursery, 2560x1920 render target, RTX 3090 Ti shared with several other game instances at 100% GPU
+load, so upper bounds): previous volumetric beam 0.33 ms; Medium 0.5-0.9 ms, High 0.6-1.4 ms,
+Ultra 2-3 ms, depending on how much of the screen the beam covers; nothing while the flashlight is
+off. Dust 0 vs 1 at Ultra: within the noise. The footprint adds a few ALU ops per spot light in
+shaders that already evaluate it per pixel.
+
+**Test aids**: `LM_REALISTIC_FLASHLIGHT=<0..3>` (override), `LM_BEAM_AB=1` (realistic only on odd
+dump frames), `LM_BEAM_FLARE_AT=<dump frame>[,<period>]`, `LM_BEAM_LOG=1` (each flare with its dump
+frame), `LM_ENH_PERF_AB=<s>,beam`; Aurora `AURORA_BEAM_SHOW=1` (the scattering alone) / `=2` (the
+dust alone, amplified), `AURORA_BEAM_LOG=1` (flashlight light, cone edge, flare, shadow-map use,
+every scene end), `AURORA_BEAM_SIGMA=<x>` (scattering coefficient at density 1, default 1.4e-3),
+`AURORA_BEAM_FREEZE_TIME=1` (deterministic dust and haze for frame comparisons),
+`AURORA_BEAM_NOHIDE=1`, `AURORA_BEAM_NOPASS=1`.
+
+**Open**: the stun trigger is the first in-beam message (the light-bind that actually stuns is
+strategy-specific: gold ghost +0x590); element ghosts, bosses and cutscene lights with the beam on
+were not checked; dust and flare run on wall-clock time, so frame dumps of separate runs differ in
+them unless frozen.

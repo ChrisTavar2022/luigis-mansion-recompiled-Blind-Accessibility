@@ -24,6 +24,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace recomp {
@@ -100,14 +101,23 @@ struct Tape {
     std::vector<u8> bytes;
     std::vector<Patch> patches;
     std::vector<u64> bundleIds;  // per draw: what is drawn (display list, vertex layout)
+    // Per draw: a second identity that does not depend on where it is stored (a display list's
+    // content): draws left unpaired by bundleIds are paired by it (a model whose display lists
+    // moved in memory, e.g. when an allocation before them changed: Luigi when dust appears).
+    std::vector<u64> bundleAlt;
     std::vector<std::array<u32, 2>> bundleRange;  // per draw: its tape bytes (~0u: unknown)
     std::vector<u8> bundlePass;                    // per draw: the pass (0 main, 1 shadow casters)
-    std::vector<u8> bundleCopy;                    // per draw: an EFB copy is bound as a texture
+    // Per draw, bits: 1 an EFB copy is bound as a texture (never faded), 2 drawn in a snap scope
+    // (setSnapScope: characters, Luigi): appears/vanishes at the game frame, never faded.
+    std::vector<u8> bundleCopy;
     // Fades (pairTapes): draws of this tape without a partner fade in; draws of pairedWith
     // without a partner fade out, drawn from pairedWith's commands at `.second` (an offset
     // in this tape: after the draw paired with the closest earlier paired draw).
     std::vector<u32> spawns;
     std::vector<std::pair<u32, u32>> dying;
+    // Per spawn / dying entry: snapped instead of faded (blink patterns, characters): a spawned draw
+    // stays hidden and a vanished one stays fully drawn until alpha 1, the console's timing.
+    std::vector<u8> spawnSnap, dyingSnap;
     // Per draw: how far it moved since its partner in pairedWith (world space where the camera is
     // known), for predicting where it is next (fast particles: water spray, sparks).
     std::vector<std::array<float, 3>> drawVel;
@@ -152,6 +162,7 @@ u32 sBase = 0;            // start of the current capture segment in sScratch
 std::vector<Patch> sPatches;
 u32 sUngrouped = 0;  // patches from here on wait for their draw
 std::vector<u64> sBundleIds;
+std::vector<u64> sBundleAlt;
 std::vector<std::array<u32, 2>> sBundleRange;
 std::vector<u8> sBundlePass;
 std::vector<u8> sBundleCopy;
@@ -198,6 +209,9 @@ std::mutex sM;
 std::shared_ptr<const Tape> sNewest, sPrevious;
 // Tapes the FIFO may still be reading (their vertex-array copies) after being replaced.
 std::deque<std::shared_ptr<const Tape>> sRetired;
+// Every closed tape in capture order (the newest 8): the host picks the pair its presentation
+// clock falls between (Pacer), which is not always the newest two.
+std::deque<std::shared_ptr<const Tape>> sQueue;
 
 // --- host side ---
 std::vector<u8> sReplay;
@@ -209,6 +223,22 @@ u64 sPhaseUs[5] = {};
 // LM_INTERP_TRACE=1: per present, alpha, time since the last present and what
 // could not be blended (by kind).
 const bool sTrace = std::getenv("LM_INTERP_TRACE") != nullptr;
+// LM_INTERP_JUDDER=<file>: pacing log (interp.h hostMark, tools/interp/judder.py).
+FILE* const sJudder = [] {
+    const char* p = std::getenv("LM_INTERP_JUDDER");
+    return p ? std::fopen(p, "w") : nullptr;
+}();
+std::mutex sJudderM;
+const Clock::time_point sJudderT0 = Clock::now();
+double judderUs(Clock::time_point t) { return std::chrono::duration<double, std::micro>(t - sJudderT0).count(); }
+void judderLine(const char* fmt, ...) {
+    if (!sJudder) return;
+    std::lock_guard lk(sJudderM);
+    va_list ap;
+    va_start(ap, fmt);
+    std::vfprintf(sJudder, fmt, ap);
+    va_end(ap);
+}
 u32 sSnapKinds[kKinds];
 bool sLogSnaps = false;  // LM_INTERP_TEST + trace: log what one test replay snapped
 u32 sLoggedSnaps[kKinds];
@@ -336,6 +366,7 @@ struct Bundles {
     std::vector<u32> flat;     // patch indices, grouped by draw
     std::vector<Span> patches;  // per draw
     std::vector<u64> key;
+    std::vector<u64> alt;  // the same with bundleAlt
 };
 Bundles bundlesOf(const Tape& t) {
     Bundles out;
@@ -354,14 +385,18 @@ Bundles bundlesOf(const Tape& t) {
         if (t.patches[i].bundle < n && t.patches[i].kind != Kind::Color) out.flat[fill[t.patches[i].bundle]++] = i;
     out.patches.resize(n);
     out.key.resize(n);
+    out.alt.resize(n);
     for (size_t k = 0; k < n; k++) {
         out.patches[k] = {out.flat.data() + start[k], start[k + 1] - start[k]};
-        u64 h = t.bundleIds[k];
+        u64 h = t.bundleIds[k], g = k < t.bundleAlt.size() ? t.bundleAlt[k] : h;
         for (u32 i : out.patches[k]) {
             const Patch& p = t.patches[i];
-            h = mix(h ^ (u64(p.kind) << 48 | u64(p.count) << 32 | u64(p.stride) << 16 | p.posOffset));
+            const u64 sig = u64(p.kind) << 48 | u64(p.count) << 32 | u64(p.stride) << 16 | p.posOffset;
+            h = mix(h ^ sig);
+            g = mix(g ^ sig);
         }
         out.key[k] = h;
+        out.alt[k] = g;
     }
     return out;
 }
@@ -510,9 +545,27 @@ bool blendable(Kind kind, const f32* a, const f32* b, int n);
 // Draws that appear (no partner in a) fade in over the in-between frames, draws that are gone
 // (no partner in b) fade out. Only 3D draws of the main pass with a model-view matrix or
 // CPU-built vertices count; their tape bytes must be known.
+// Blink patterns: draw identities that appeared or vanished recently (tape seq of the last change).
+// One that changes again within kBlinkTapes is toggling (a damage blink, a flashing object) and is
+// snapped, as is anything drawn in a snap scope.
+std::unordered_map<u64, u64> sToggled;
+constexpr u64 kBlinkTapes = 24;
+u32 sBlinkSnaps = 0;  // stats
+bool blinkCheck(u64 id, u64 seq) {
+    auto [it, fresh] = sToggled.try_emplace(id, seq);
+    const bool recent = !fresh && seq - it->second <= kBlinkTapes;
+    it->second = seq;
+    return recent;
+}
+
 void findFades(const Tape& a, Tape& b) {
     b.spawns.clear();
     b.dying.clear();
+    b.spawnSnap.clear();
+    b.dyingSnap.clear();
+    if (sToggled.size() > 4096)
+        for (auto it = sToggled.begin(); it != sToggled.end();)
+            it = b.seq - it->second > kBlinkTapes ? sToggled.erase(it) : std::next(it);
     // LM_INTERP_FADES=0 (off), in, out: test aid.
     static const char* sMode = std::getenv("LM_INTERP_FADES") ? std::getenv("LM_INTERP_FADES") : "";
     if (sMode[0] == '0' || b.cut) return;
@@ -524,7 +577,7 @@ void findFades(const Tape& a, Tape& b) {
         for (u32 k = 0; k < out.size(); k++)
             if (k >= t.bundleRange.size() || t.bundleRange[k][0] == ~0u || t.bundleRange[k][1] == ~0u ||
                 t.bundleRange[k][1] <= t.bundleRange[k][0] || (k < t.bundlePass.size() && t.bundlePass[k] != 0) ||
-                (k < t.bundleCopy.size() && t.bundleCopy[k]))
+                (k < t.bundleCopy.size() && (t.bundleCopy[k] & 1)))
                 out[k] = 0;
     };
     static std::vector<u8> eA, eB;
@@ -540,8 +593,21 @@ void findFades(const Tape& a, Tape& b) {
         const u32 ka = a.patches[j].bundle;
         if (ka < aToB.size() && aToB[ka] < 0) aToB[ka] = s32(kb);
     }
+    const auto snapFlag = [](const Tape& t, u32 k) { return k < t.bundleCopy.size() && (t.bundleCopy[k] & 2) != 0; };
+    // A blink toggles a thing as a whole: no draw of that identity on the other side. Particles
+    // (many draws of one identity, born and dying all the time) keep their fades.
+    static std::unordered_set<u64> idsA, idsB;
+    idsA.clear();
+    idsB.clear();
+    idsA.insert(a.bundleIds.begin(), a.bundleIds.end());
+    idsB.insert(b.bundleIds.begin(), b.bundleIds.end());
     for (u32 k = 0; k < eB.size() && fadeIn; k++)
-        if (eB[k] && !bPaired[k]) b.spawns.push_back(k);
+        if (eB[k] && !bPaired[k]) {
+            b.spawns.push_back(k);
+            const bool blink = !idsA.count(b.bundleIds[k]) && blinkCheck(b.bundleIds[k], b.seq);
+            b.spawnSnap.push_back(u8(snapFlag(b, k) || blink));
+            sBlinkSnaps += blink;
+        }
     s32 lastB = -1;  // b draw paired with the closest earlier paired draw of a
     for (u32 k = 0; k < eA.size() && fadeOut; k++) {
         if (aToB[k] >= 0) {
@@ -555,6 +621,9 @@ void findFades(const Tape& a, Tape& b) {
         // (particles swap places) moves the vanished draws after it a little later in b.
         if (!b.dying.empty()) at = std::max(at, b.dying.back().second);
         b.dying.emplace_back(k, at);
+        const bool blink = !idsB.count(a.bundleIds[k]) && blinkCheck(a.bundleIds[k], b.seq);
+        b.dyingSnap.push_back(u8(snapFlag(a, k) || blink));
+        sBlinkSnaps += blink;
     }
 }
 
@@ -590,6 +659,8 @@ void pairTapes(const Tape& a, Tape& b) {
         const bool velA = a.drawVelOk.size() == wa.size();
         std::vector<s32> drawPartner(bb.key.size(), -1);
         std::vector<u8> drawUsed(ba.key.size(), 0);
+        auto pairGroups = [&](const std::unordered_map<u64, std::vector<u32>>& ga,
+                              const std::unordered_map<u64, std::vector<u32>>& gb) {
         for (const auto& [key, B] : gb) {
             const auto it = ga.find(key);
             if (it == ga.end()) continue;
@@ -724,21 +795,42 @@ void pairTapes(const Tape& a, Tape& b) {
                     }
                 continue;
             }
+            // A few draws of one thing (a model drawn in a couple of passes, a handful of
+            // identical furniture pieces): nearest first without the motion limit, which is for
+            // particle swarms; a model's limbs swing well past it (Luigi's arm starting to walk).
+            const bool swarm = A.size() > 8 || B.size() > 8;
             pairNearest(A, B, drawPartner, drawUsed, [&](u32 i, u32 j) {
-                if (many) {
+                if (many && swarm) {
                     if (wa[i].ok && wb[j].ok) {
+                        // Within the limit of where its own motion or the group's common motion
+                        // carries it: a model that starts or stops moving (Luigi starting to walk:
+                        // own motion 0, now 15+ units per frame) is still itself. With only its own
+                        // motion as the prediction, all of Luigi's draws lost their partners on the
+                        // first walking frame and were swapped as a whole (his flashlight vanished).
                         const float* pb = wb[j].p;
-                        float d2 = 0, r2 = 0;
+                        float d2 = 0, d2c = 0, r2 = 0;
                         for (int c = 0; c < 3; c++) {
-                            const float e = pb[c] - pred[i][c];
-                            d2 += e * e, r2 += pb[c] * pb[c];
+                            const float e = pb[c] - pred[i][c], ec = pb[c] - (wa[i].p[c] + common[c]);
+                            d2 += e * e, d2c += ec * ec, r2 += pb[c] * pb[c];
                         }
+                        d2 = std::min(d2, d2c);
                         const float lim = 12.0f + 0.01f * std::sqrt(r2);
                         if (d2 > lim * lim) return 1e30f;
                     }
                 }
                 return fullDistance(i, j);
             });
+        }
+        };
+        pairGroups(ga, gb);
+        // Second round: what is left, by the storage-independent identity (bundleAlt).
+        {
+            std::unordered_map<u64, std::vector<u32>> ra, rb;
+            for (u32 k = 0; k < ba.key.size(); k++)
+                if (!drawUsed[k] && !ba.patches[k].empty()) ra[ba.alt[k]].push_back(k);
+            for (u32 k = 0; k < bb.key.size(); k++)
+                if (drawPartner[k] < 0 && !bb.patches[k].empty()) rb[bb.alt[k]].push_back(k);
+            if (!ra.empty() && !rb.empty()) pairGroups(ra, rb);
         }
         b.drawVel.assign(wb.size(), {0, 0, 0});
         b.drawVelOk.assign(wb.size(), 0);
@@ -1013,6 +1105,7 @@ void beginTape() {
     sBase = 0;
     sPatches.clear();
     sBundleIds.clear();
+    sBundleAlt.clear();
     sBundleRange.clear();
     sBundlePass.clear();
     sBundleCopy.clear();
@@ -1054,6 +1147,8 @@ void endTape(u32 retraceCount) {
     sPatches = {};
     tape->bundleIds = std::move(sBundleIds);
     sBundleIds = {};
+    tape->bundleAlt = std::move(sBundleAlt);
+    sBundleAlt = {};
     tape->bundleRange = std::move(sBundleRange);
     sBundleRange = {};
     tape->bundlePass = std::move(sBundlePass);
@@ -1095,6 +1190,8 @@ void endTape(u32 retraceCount) {
         }
     tape->done = Clock::now();
     tape->guestUs = u32(std::chrono::duration_cast<std::chrono::microseconds>(tape->done - t0).count());
+    judderLine("T %llu %u %.1f %u %u %u\n", (unsigned long long)tape->seq, retraceCount, judderUs(tape->done), tape->guestUs,
+               tape->cut ? 1u : 0u, copyDispCount());
     sLastTape = tape;
     {
         std::lock_guard lk(sM);
@@ -1102,6 +1199,11 @@ void endTape(u32 retraceCount) {
         while (sRetired.size() > 6) sRetired.pop_front();
         sPrevious = std::move(sNewest);
         sNewest = tape;
+        sQueue.push_back(tape);
+        while (sQueue.size() > 8) {
+            sRetired.push_back(std::move(sQueue.front()));
+            sQueue.pop_front();
+        }
     }
     if (sTestSteps) {
         std::unique_lock lk(sTestM);
@@ -1209,15 +1311,21 @@ void detail::noteDrawColor(u32 at, u32 reg, u8 fmt) {
 }
 
 void setPass(u32 pass) { sPass = pass; }
+namespace {
+int sSnapScope = 0;
+}
+void pushSnapScope() { sSnapScope++; }
+void popSnapScope() { sSnapScope = sSnapScope > 0 ? sSnapScope - 1 : 0; }
 
 void detail::noteDraw(u64 id) {
     id = mix(id ^ u64(sPass) << 60);  // the same model drawn in another pass is another draw
     const u32 bundle = u32(sBundleIds.size());
     sBundleIds.push_back(id);
+    sBundleAlt.push_back(id);
     sBundleRange.push_back({~0u, ~0u});
     sBundlePass.push_back(u8(sPass));
     // Draws sampling an EFB copy (screen effects redrawing the frame, the GBH screen) never fade.
-    sBundleCopy.push_back(gx::samplesCopy());
+    sBundleCopy.push_back(u8((gx::samplesCopy() ? 1 : 0) | (sSnapScope > 0 ? 2 : 0)));
     sOpenDraw = -1;
     for (u32 i = sUngrouped; i < sPatches.size(); i++) {
         Patch& p = sPatches[i];
@@ -1228,6 +1336,11 @@ void detail::noteDraw(u64 id) {
     sUngrouped = u32(sPatches.size());
 }
 
+void detail::noteDrawAlt(u64 alt) {
+    if (!capturing() || sBundleAlt.empty()) return;
+    sBundleAlt.back() = mix(alt ^ u64(sPass) << 60 ^ 0xA17ull << 40);
+}
+
 void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id) {
     if (!capturing() || count == 0 || count > 0xFFFF) return;
     Patch p{at, u16(count), Kind::Verts, mix(u64(Kind::Verts) << 56 ^ id), 0, 0, 0, u16(stride), u16(posOffset)};
@@ -1236,9 +1349,10 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id) 
     // It belongs to the draw just begun (vtxBegin noted it), not to the next one.
     if (sBundleIds.empty()) {
         sBundleIds.push_back(id);
+        sBundleAlt.push_back(id);
         sBundleRange.push_back({~0u, ~0u});
         sBundlePass.push_back(u8(sPass));
-        sBundleCopy.push_back(gx::samplesCopy());
+        sBundleCopy.push_back(u8((gx::samplesCopy() ? 1 : 0) | (sSnapScope > 0 ? 2 : 0)));
     }
     p.bundle = u32(sBundleIds.size() - 1);
     const bool tail = sUngrouped == sPatches.size();
@@ -1549,7 +1663,7 @@ bool reexpress(const ViewPair& vp, bool fromA, const Patch& p, const f32* v, f32
 }
 
 std::vector<u8> sReplayA, sFaded;
-u32 sFadeIns = 0, sFadeOuts = 0;  // per replay (trace)
+u32 sFadeIns = 0, sFadeOuts = 0, sSnapIns = 0, sSnapOuts = 0, sColorSwitches = 0;  // per replay (trace): dithered / snapped
 
 void auroraCmd(std::vector<u8>& out, u16 sub, u8 arg) {
     out.push_back(0x50);
@@ -1563,7 +1677,7 @@ void auroraCmd(std::vector<u8>& out, u16 sub, u8 arg) {
 // b, fading out. Returns false if there is nothing to fade (sReplay is used as is).
 bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, const std::vector<s32>& viewToA,
                 const std::vector<s32>& viewToB) {
-    sFadeIns = sFadeOuts = 0;
+    sFadeIns = sFadeOuts = sSnapIns = sSnapOuts = 0;
     if (b.spawns.empty() && (b.dying.empty() || !haveAStart)) return false;
     const u8 qIn = u8(std::lround((1.0f - alpha) * 255.0f)), qOut = u8(std::lround(alpha * 255.0f));
     struct Ev {
@@ -1573,11 +1687,16 @@ bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, cons
     };
     static std::vector<Ev> evs;
     evs.clear();
-    if (qIn != 0)
-        for (u32 k : b.spawns) {
-            evs.push_back({b.bundleRange[k][0], 2, k});
-            evs.push_back({b.bundleRange[k][1], 0, k});
-        }
+    static std::unordered_map<u32, bool> snapIn;
+    snapIn.clear();
+    for (u32 i = 0; i < b.spawns.size(); i++) {
+        const u32 k = b.spawns[i];
+        const bool snap = i < b.spawnSnap.size() && b.spawnSnap[i];
+        if (qIn == 0) continue;
+        evs.push_back({b.bundleRange[k][0], 2, k});
+        evs.push_back({b.bundleRange[k][1], 0, k});
+        snapIn[k] = snap;
+    }
     if (haveAStart && qOut != 255) {
         // a's values of the dying draws, seen from the blended camera.
         sReplayA.assign(a.bytes.begin(), a.bytes.end());
@@ -1624,8 +1743,8 @@ bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, cons
         sFaded.insert(sFaded.end(), sReplay.begin() + cursor, sReplay.begin() + e.at);
         cursor = e.at;
         if (e.order == 2) {
-            auroraCmd(sFaded, GX_AURORA_SET_FADE, qIn);
-            sFadeIns++;
+            auroraCmd(sFaded, GX_AURORA_SET_FADE, snapIn[e.index] ? u8(255) : qIn);
+            (snapIn[e.index] ? sSnapIns : sFadeIns)++;
         } else if (e.order == 0) {
             auroraCmd(sFaded, GX_AURORA_SET_FADE, 0);
         } else {
@@ -1637,12 +1756,13 @@ bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, cons
                 if (r[0] < aCursor || r[1] > sReplayA.size()) continue;  // out of order: skipped
                 sFaded.insert(sFaded.end(), sReplayA.begin() + aCursor, sReplayA.begin() + r[0]);
                 auroraCmd(sFaded, GX_AURORA_SET_REPLAY_MASK, 0);
-                auroraCmd(sFaded, GX_AURORA_SET_FADE, qOut);
+                const bool snapOut = nextDying < b.dyingSnap.size() && b.dyingSnap[nextDying];
+                auroraCmd(sFaded, GX_AURORA_SET_FADE, snapOut ? u8(0) : qOut);
                 sFaded.insert(sFaded.end(), sReplayA.begin() + r[0], sReplayA.begin() + r[1]);
                 auroraCmd(sFaded, GX_AURORA_SET_FADE, 0);
                 auroraCmd(sFaded, GX_AURORA_SET_REPLAY_MASK, 1);
                 aCursor = r[1];
-                sFadeOuts++;
+                (snapOut ? sSnapOuts : sFadeOuts)++;
             }
             auroraCmd(sFaded, GX_AURORA_SET_REPLAY_MASK, 0);
             auroraCmd(sFaded, GX_AURORA_STATE_SAVE, 5);
@@ -1657,6 +1777,7 @@ bool buildFades(const Tape& a, const Tape& b, float alpha, bool haveAStart, cons
 // Builds tape b with its values blended from a toward b (alpha 1 = b as captured) into
 // sReplay and submits it. `dump` redirects the LM_FRAME_DUMP copy (LM_INTERP_TEST).
 void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
+    sColorSwitches = sFadeIns = sFadeOuts = sSnapIns = sSnapOuts = 0;
     sReplay.assign(b.bytes.begin(), b.bytes.end());
     if (a && b.pairedWith != a) a = nullptr;  // not consecutive (a tape was dropped): no pairing
     if (a && b.cut) {
@@ -1722,13 +1843,25 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
         // Which camera of a goes with which of b (for values without partner).
         sViewToA.assign(b.views.size(), -1);
         sViewToB.assign(a->views.size(), -1);
-        for (u32 i = 0; i < b.patches.size(); i++) {
-            const s32 j = b.partner[i];
-            if (j < 0) continue;
-            const u16 vb = b.patches[i].view, va = a->patches[j].view;
-            if (vb < sViewToA.size() && va < sViewToB.size()) {
-                if (sViewToA[vb] < 0) sViewToA[vb] = va;
-                if (sViewToB[va] < 0) sViewToB[va] = vb;
+        {
+            // By majority: a single value paired across two cameras (a pass drawn from another
+            // camera) must not decide where a whole camera's unpaired draws are placed (the first
+            // pair used to: vanished draws re-expressed under the wrong camera, far off).
+            static std::unordered_map<u32, u32> votes;
+            votes.clear();
+            for (u32 i = 0; i < b.patches.size(); i++) {
+                const s32 j = b.partner[i];
+                if (j < 0) continue;
+                const u16 vb = b.patches[i].view, va = a->patches[j].view;
+                if (vb < sViewToA.size() && va < sViewToB.size()) votes[u32(va) << 16 | vb]++;
+            }
+            static std::vector<u32> bestA, bestB;
+            bestA.assign(b.views.size(), 0);
+            bestB.assign(a->views.size(), 0);
+            for (const auto& [k, n] : votes) {
+                const u16 va = u16(k >> 16), vb = u16(k);
+                if (n > bestA[vb]) bestA[vb] = n, sViewToA[vb] = va;
+                if (n > bestB[va]) bestB[va] = n, sViewToB[va] = vb;
             }
         }
         for (u32 i = 0; i < b.patches.size(); i++) {
@@ -1779,6 +1912,20 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                             const auto rd = [](const u8* s) { return u32(s[0]) << 24 | u32(s[1]) << 16 | u32(s[2]) << 8 | s[3]; };
                 const u32 ca = rd(a->bytes.data() + q.offset), cb = rd(b.bytes.data() + p.offset);
                 u32 out = cb;
+                // A channel that jumps by more than 96 levels in one game frame is a switch, not a
+                // fade (a damage or invincibility blink toggling a material's alpha/color, a light
+                // switched on): it changes at the game frame, as on the console (a's value until
+                // alpha 1), instead of passing through half-states that neither frame shows.
+                int jump = 0;
+                const auto channelJump = [&](int shift, int bits, bool sign) {
+                    const u32 mask = (1u << bits) - 1;
+                    int x = int((ca >> shift) & mask), y = int((cb >> shift) & mask);
+                    if (sign) {
+                        if (x & (1 << (bits - 1))) x -= 1 << bits;
+                        if (y & (1 << (bits - 1))) y -= 1 << bits;
+                    }
+                    jump = std::max(jump, std::abs(y - x));
+                };
                 const auto lerp = [&](int shift, int bits, bool sign) {
                     const u32 mask = (1u << bits) - 1;
                     int x = int((ca >> shift) & mask), y = int((cb >> shift) & mask);
@@ -1786,9 +1933,21 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                         if (x & (1 << (bits - 1))) x -= 1 << bits;
                         if (y & (1 << (bits - 1))) y -= 1 << bits;
                     }
-                    const int v = int(std::lround(float(x) + float(y - x) * alpha));
+                    const int v = jump > 96 ? x : int(std::lround(float(x) + float(y - x) * alpha));
                     out = (out & ~(mask << shift)) | (u32(v) & mask) << shift;
                 };
+                if (p.posOffset == 0) {
+                    for (int s = 0; s < 32; s += 8) channelJump(s, 8, false);
+                } else if (p.posOffset == 1) {
+                    const bool konst = (cb >> 23) & 1;
+                    if (((ca >> 23) & 1) == u32(konst)) {
+                        channelJump(0, konst ? 8 : 11, !konst);
+                        channelJump(12, konst ? 8 : 11, !konst);
+                    }
+                } else {
+                    for (int s = 0; s < 24; s += 8) channelJump(s, 8, false);
+                }
+                if (jump > 96) sColorSwitches++;
                 if (p.posOffset == 0) {
                     for (int s = 0; s < 32; s += 8) lerp(s, 8, false);
                 } else if (p.posOffset == 1) {
@@ -2084,10 +2243,10 @@ bool testReplay() {
                 }
             }
         log("[interp] %s: snapped pos %u nrm %u tex %u proj %u light %u verts %u; unpaired pos %u nrm %u tex %u proj %u "
-            "light %u verts %u fadein %u fadeout %u%s",
+            "light %u verts %u fadein %u fadeout %u snapin %u snapout %u colorswitch %u%s",
             it.name.c_str(), sSnapKinds[0], sSnapKinds[1], sSnapKinds[2], sSnapKinds[3], sSnapKinds[4], sSnapKinds[5],
             unpaired[0], unpaired[1], unpaired[2], unpaired[3], unpaired[4], unpaired[5], sFadeIns, sFadeOuts,
-            it.b->cut ? " CUT" : "");
+            sSnapIns, sSnapOuts, sColorSwitches, it.b->cut ? " CUT" : "");
     }
     sLogSnaps = false;
     efbcopy::applyWritebacks();
@@ -2105,34 +2264,213 @@ bool testReplay() {
 
 }  // namespace
 
+// --- presentation clock (docs/INTERPOLATION.md "Pacing") ---------------------------------------
+// Each tape is placed on the game's own timeline: its frame stamp (fields of 1001/60000 s at its
+// present), smoothed (tapeTimes below). A present shows the game time G = (smoothed present time) - D,
+// interpolated between the two tapes around it, so motion advances by exactly the time between
+// presents. D, the delay, covers the slowest recent tape (a tape must be finished before G
+// reaches its predecessor); G follows its target with at most +-5% speed changes, never runs
+// backwards and never beyond the newest tape. The old rule (alpha from the time since the newest
+// tape was finished, over its stamp step) made every in-between frame depend on when the game
+// thread happened to finish a frame and on stamp steps of 1 and 3 fields: LM_INTERP_PACING=old.
+struct Pacer {
+    double clk = 0, prevClk = 0, period = 1.0 / 60, lastNow = -1;  // smoothed present clock (s)
+    double g = 0;                                      // shown game time (s)
+    bool haveG = false;
+    double d = 0.05;                                   // delay (s)
+    std::deque<double> samples;                        // per tape: finished - predecessor's game time
+    u64 lastSeq = 0;
+    u32 stalls = 0, snaps = 0, stallRun = 0;
+    // Smoothed tape times (s) by seq. The stamp of a frame is the retrace count at its present,
+    // so a frame whose work ends just after a retrace is stamped a field late and the next one a
+    // field early: steps of 1 and 3 fields in a steady 30 fps game (3-4% of frames in the foyer),
+    // where the console shows every frame for two fields. Each tape is placed one nominal step
+    // (the median of the recent stamp steps) after its predecessor, pulled 10% toward its stamp;
+    // a stamp more than 1.5 fields off (a real slowdown, a load) is taken as is.
+    std::deque<std::pair<u64, double>> times;
+    std::deque<u32> steps;
+    u64 lastTimed = 0;
+    u32 lastStamp = 0;
+};
+Pacer sPacer;
+const bool sOldPacing = [] {
+    const char* v = std::getenv("LM_INTERP_PACING");
+    return v && std::strcmp(v, "old") == 0;
+}();
+double tapeTime(const Tape& t) {
+    for (auto it = sPacer.times.rbegin(); it != sPacer.times.rend(); ++it)
+        if (it->first == t.seq) return it->second;
+    return double(t.retrace) * kRetrace;
+}
+void timeTapes(const std::vector<std::shared_ptr<const Tape>>& q) {
+    Pacer& p = sPacer;
+    for (const auto& t : q) {
+        if (t->seq <= p.lastTimed) continue;
+        const double raw = double(t->retrace) * kRetrace;
+        double time = raw;
+        if (p.lastTimed != 0 && t->seq == p.lastTimed + 1 && !p.times.empty()) {
+            const u32 step = t->retrace - p.lastStamp;
+            p.steps.push_back(step);
+            if (p.steps.size() > 15) p.steps.pop_front();
+            std::vector<u32> st(p.steps.begin(), p.steps.end());
+            std::nth_element(st.begin(), st.begin() + st.size() / 2, st.end());
+            const double nominal = double(std::clamp<u32>(st[st.size() / 2], 1, 6)) * kRetrace;
+            const double pred = p.times.back().second + nominal;
+            const double err = raw - pred;
+            time = std::fabs(err) > 1.5 * kRetrace ? raw : pred + err * 0.1;
+        } else {
+            p.steps.clear();
+        }
+        p.times.emplace_back(t->seq, time);
+        if (p.times.size() > 32) p.times.pop_front();
+        p.lastTimed = t->seq;
+        p.lastStamp = t->retrace;
+    }
+}
+double hostSec(Clock::time_point t) { return std::chrono::duration<double>(t - sJudderT0).count(); }
+
+// Picks the tapes (a, b) and alpha for this present from the queue `q` (consecutive tapes, oldest
+// first). Returns the index of b in q (a = q[i - 1]) or -1 when there is no pair (b = the newest).
+int pace(const std::vector<std::shared_ptr<const Tape>>& q, Clock::time_point nowTp, float& alpha) {
+    Pacer& p = sPacer;
+    const double now = hostSec(nowTp);
+    // Present clock: advance by the measured period, pulled gently toward the real time; a
+    // present that is off by more than 4 ms (a missed refresh, a hitch) resynchronizes.
+    if (p.lastNow < 0) {
+        p.clk = now;
+    } else {
+        const double dt = now - p.lastNow;
+        if (dt > 0 && dt < 0.1) p.period += (std::clamp(dt, 1.0 / 500, 1.0 / 15) - p.period) * 0.05;
+        const double pred = p.clk + p.period;
+        const double err = now - pred;
+        p.clk = std::fabs(err) > 0.004 ? now : pred + err * 0.1;
+    }
+    const double dClk = p.lastNow < 0 ? 0.0 : p.clk - p.prevClk;
+    p.prevClk = p.clk;
+    p.lastNow = now;
+    timeTapes(q);
+    // Delay: the slowest of the recent tapes (finish time - predecessor's game time) plus a margin.
+    for (size_t i = 1; i < q.size(); i++) {
+        if (q[i]->seq <= p.lastSeq) continue;
+        p.lastSeq = q[i]->seq;
+        if (q[i]->pairedWith != q[i - 1].get()) continue;
+        p.samples.push_back(hostSec(q[i]->done) - tapeTime(*q[i - 1]));
+        if (p.samples.size() > 90) p.samples.pop_front();
+    }
+    if (!p.samples.empty()) {
+        std::vector<double> s(p.samples.begin(), p.samples.end());
+        std::sort(s.begin(), s.end());
+        const double median = s[s.size() / 2];
+        double hi = median;
+        for (double v : s)
+            if (v <= median + 0.05) hi = std::max(hi, v);  // a load hitch is not the steady delay
+        p.d = hi + 0.0015;
+    }
+    const double target = p.clk - p.d;
+    const double newest = tapeTime(*q.back());
+    if (!p.haveG || std::fabs(target - (p.g + dClk)) > 0.1) {
+        if (p.haveG) p.snaps++;
+        p.g = target;
+        p.haveG = true;
+    } else {
+        const double next = p.g + dClk;
+        p.g = next + std::clamp((target - next) * 0.1, -0.05 * dClk, 0.05 * dClk);
+    }
+    if (p.g > newest) {
+        p.g = newest;
+        p.stalls++;
+        // Stalled for a quarter second (the timeline moved: a pause, the VI timer resynchronized):
+        // measure the delay afresh.
+        if (++p.stallRun > 30) {
+            p.samples.clear();
+            p.stallRun = 0;
+            p.haveG = false;
+        }
+    } else {
+        p.stallRun = 0;
+    }
+    if (p.g < tapeTime(*q.front()) - 0.1) p.haveG = false;  // behind every tape kept: resynchronize next time
+    // The pair around g.
+    alpha = 1.0f;
+    for (size_t i = 1; i < q.size(); i++) {
+        const double ta = tapeTime(*q[i - 1]), tb = tapeTime(*q[i]);
+        if (p.g > tb && i + 1 < q.size()) continue;
+        if (tb <= ta) return int(i);
+        // A step longer than 6 fields (a load hitch): hold a, then move over the last 2 fields.
+        const double start = tb - ta > 6 * kRetrace ? tb - 2 * kRetrace : ta;
+        alpha = float(std::clamp((p.g - start) / (tb - start), 0.0, 1.0));
+        return int(i);
+    }
+    return -1;
+}
+
 bool replay(bool final) {
     if (sTestSteps && !final) return testReplay();
     std::shared_ptr<const Tape> a, b;
-    {
-        std::lock_guard lk(sM);
-        a = sPrevious;
-        b = sNewest;
-    }
-    if (!b) return false;
-
-    // One game frame behind: blend from a (alpha 0) to b (alpha 1) over the time
-    // between the two game frames, starting when b was finished.
     float alpha = 1.0f;
-    if (a && !final) {
-        const double interval = std::clamp((b->retrace - a->retrace) * kRetrace, 0.008, 0.1);
-        const double since = std::chrono::duration<double>(Clock::now() - b->done).count();
-        alpha = float(std::clamp(since / interval, 0.0, 1.0));
-    }
     const auto r0 = Clock::now();
+    if (sOldPacing || final) {
+        {
+            std::lock_guard lk(sM);
+            a = sPrevious;
+            b = sNewest;
+        }
+        if (!b) return false;
+        // One game frame behind: blend from a (alpha 0) to b (alpha 1) over the time
+        // between the two game frames, starting when b was finished.
+        if (a && !final) {
+            const double interval = std::clamp((b->retrace - a->retrace) * kRetrace, 0.008, 0.1);
+            const double since = std::chrono::duration<double>(Clock::now() - b->done).count();
+            alpha = float(std::clamp(since / interval, 0.0, 1.0));
+        }
+    } else {
+        static std::vector<std::shared_ptr<const Tape>> q;
+        {
+            std::lock_guard lk(sM);
+            q.assign(sQueue.begin(), sQueue.end());
+        }
+        if (q.empty()) return false;
+        const int i = pace(q, r0, alpha);
+        if (i < 0) {
+            b = q.back();
+        } else {
+            b = q[i];
+            a = q[i - 1];
+            // Tapes before a are done with: retire them (the FIFO may still read their copies).
+            if (i > 1) {
+                std::lock_guard lk(sM);
+                while (!sQueue.empty() && sQueue.front()->seq < a->seq) {
+                    sRetired.push_back(std::move(sQueue.front()));
+                    sQueue.pop_front();
+                }
+                while (sRetired.size() > 6) sRetired.pop_front();
+            }
+        }
+        q.clear();
+    }
+    judderLine("R %.1f %llu %llu %.4f %.3f %.2f\n", judderUs(r0), (unsigned long long)b->seq,
+               (unsigned long long)(a && !final ? a->seq : 0), alpha,
+               a && !final ? double(a->retrace) + alpha * double(b->retrace - a->retrace) : double(b->retrace),
+               sPacer.d * 1000.0);
     replayPair(final ? nullptr : a.get(), *b, alpha, nullptr);
+    {
+        // The FIFO thread reads these tapes' copies (arrays, textures) until the frame is drained in
+        // aurora_end_frame, after replay() returned: keep the last few replays' tapes alive here,
+        // whatever the guest retires meanwhile (a stalled host could otherwise free them: a
+        // crash reading a vertex array copy in push_gx_draw under heavy load).
+        static std::deque<std::shared_ptr<const Tape>> sInFlight;
+        sInFlight.push_back(b);
+        if (a) sInFlight.push_back(a);
+        while (sInFlight.size() > 8) sInFlight.pop_front();
+    }
     sReplayUs += u64(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - r0).count());
     if (sTrace) {
         static Clock::time_point last = Clock::now();
         const auto now = Clock::now();
         log("[interp] alpha %.3f dt %.1f ms tape %u%s, snapped pos %u nrm %u tex %u proj %u light %u verts %u, "
-            "unpaired %u",
+            "unpaired %u, color switches %u, snapped draws in %u out %u, faded in %u out %u",
             alpha, std::chrono::duration<double, std::milli>(now - last).count(), b->retrace, b->cut ? " (cut)" : "",
-            sSnapKinds[0], sSnapKinds[1], sSnapKinds[2], sSnapKinds[3], sSnapKinds[4], sSnapKinds[5], b->unpaired);
+            sSnapKinds[0], sSnapKinds[1], sSnapKinds[2], sSnapKinds[3], sSnapKinds[4], sSnapKinds[5], b->unpaired, sColorSwitches, sSnapIns, sSnapOuts, sFadeIns, sFadeOuts);
         last = now;
         std::fill(std::begin(sSnapKinds), std::end(sSnapKinds), 0u);
     }
@@ -2156,7 +2494,7 @@ bool replay(bool final) {
         log("[interp] presented %.1f fps, game %.1f fps, tape %.0f KiB + arrays %.0f KiB + new texture copies %.0f KiB, "
             "per tape %.0f paired / %.0f "
             "unpaired; per present %u blended / %u snapped; %u cut presents; tape close %.2f ms (guest: arrays %.2f, "
-            "copy %.2f, draws %.2f, rest %.2f, cut %.2f), replay %.2f ms (host)",
+            "copy %.2f, draws %.2f, rest %.2f, cut %.2f), replay %.2f ms (host); pacing delay %.1f ms, %u stalls, %u resyncs",
             sPresented / elapsed, sTapes / elapsed, sTapes ? double(sTapeBytes) / sTapes / 1024.0 : 0.0,
             sTapes ? double(sArrayBytes) / sTapes / 1024.0 : 0.0, sTapes ? double(sTexBytes) / sTapes / 1024.0 : 0.0,
             sTapes ? double(sPairedSum) / sTapes : 0.0,
@@ -2165,13 +2503,27 @@ bool replay(bool final) {
             sTapes ? double(sPhaseUs[0]) / sTapes / 1000.0 : 0.0, sTapes ? double(sPhaseUs[1]) / sTapes / 1000.0 : 0.0,
             sTapes ? double(sPhaseUs[2]) / sTapes / 1000.0 : 0.0, sTapes ? double(sPhaseUs[3]) / sTapes / 1000.0 : 0.0,
             sTapes ? double(sPhaseUs[4]) / sTapes / 1000.0 : 0.0,
-            sPresented ? double(sReplayUs) / sPresented / 1000.0 : 0.0);
+            sPresented ? double(sReplayUs) / sPresented / 1000.0 : 0.0, sPacer.d * 1000.0, sPacer.stalls, sPacer.snaps);
+        sPacer.stalls = sPacer.snaps = 0;
         sPresented = sTapes = sBlended = sSnapped = sCuts = 0;
         sTapeBytes = sArrayBytes = sTexBytes = sPairedSum = sUnpairedSum = sGuestUs = sReplayUs = 0;
         std::fill(std::begin(sPhaseUs), std::end(sPhaseUs), 0ull);
         sStatsStart = Clock::now();
     }
     return true;
+}
+
+bool judderLogOn() { return sJudder != nullptr; }
+void hostMark(int phase) {
+    if (!sJudder) return;
+    judderLine("H %d %.1f\n", phase, judderUs(Clock::now()));
+    if (phase == 4) {
+        static u32 n = 0;
+        if (++n % 256 == 0) {
+            std::lock_guard lk(sJudderM);
+            std::fflush(sJudder);
+        }
+    }
 }
 
 void reset() {
@@ -2181,7 +2533,10 @@ void reset() {
     // The FIFO may still be reading the last replay's array copies.
     if (sPrevious) sRetired.push_back(std::move(sPrevious));
     if (sNewest) sRetired.push_back(std::move(sNewest));
+    for (auto& t : sQueue) sRetired.push_back(std::move(t));
+    sQueue.clear();
     while (sRetired.size() > 6) sRetired.pop_front();
+    sPacer = {};
 }
 
 }  // namespace recomp::interp

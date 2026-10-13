@@ -104,6 +104,47 @@ void addTestLights() {
 
 }  // namespace
 
+namespace enh {
+bool worldToView(const float world[3], float view[3]);
+// Realistic flashlight level in effect (setting, or the LM_REALISTIC_FLASHLIGHT=<0..3> override).
+int realisticLevel() {
+    static const int sReal = [] {
+        const char* v = std::getenv("LM_REALISTIC_FLASHLIGHT");
+        return v ? std::atoi(v) : -1;
+    }();
+    return std::clamp(sReal >= 0 ? sReal : port::settings().enhancedLighting.realisticFlashlight, 0, 3);
+}
+bool realisticOn() { return realisticLevel() != 0; }
+}
+
+namespace {
+// Realistic flashlight (Aurora 0196): three pseudo-lights carrying the view positions of a world
+// point and of points 256 units along world +X / +Y, so the beam's dust and haze stay put in the
+// world while the camera moves (frame interpolation blends them like lights, by id). The point is
+// the camera target snapped to 1024 units (Aurora's noise repeats every 1024), so it stays close
+// to the camera: under rotation a far point would move too far for interp's light pairing.
+// Takes the last slots when the set is full.
+uint32_t addBeamAnchor(aurora::gfx::ExtraLight* l, uint32_t count) {
+    if (!enh::realisticOn()) return count;
+    const u32 cam = VA(0x803A3820);
+    float o[3];
+    for (int k = 0; k < 3; k++) o[k] = std::round(rdf32(cam + kCamViewTarget + 4 * k) / 1024.0f) * 1024.0f;
+    if (!std::isfinite(o[0] + o[1] + o[2])) return count;
+    count = std::min(count, aurora::gfx::MaxExtraLights - 3);
+    for (int k = 0; k < 3; k++) {
+        float w[3] = {o[0], o[1], o[2]};
+        if (k == 1) w[0] += 256.0f;
+        if (k == 2) w[1] += 256.0f;
+        aurora::gfx::ExtraLight a{};
+        if (!enh::worldToView(w, a.pos)) return count;
+        a.flags = AURORA_EXTRA_LIGHT_ANCHOR;
+        a.id = AURORA_BEAM_ANCHOR_ID + u32(k);
+        l[count + k] = a;
+    }
+    return count + 3;
+}
+}  // namespace
+
 void submitExtraLights(const aurora::gfx::ExtraLight* lights, uint32_t count) {
     count = std::min<uint32_t>(count, kMaxCandidates - sPendingCount);
     std::memcpy(sPending.data() + sPendingCount, lights, count * sizeof(aurora::gfx::ExtraLight));
@@ -405,6 +446,13 @@ void applySettings() {
     c.volumetric = l.volumetricBeam;
     c.volumetricIntensity = l.volumetricIntensity;
     c.volumetricQuality = u32(std::clamp(l.volumetricQuality, 0, 2));
+    c.realisticFlashlight = u32(realisticLevel());  // test override LM_REALISTIC_FLASHLIGHT=<0..3>
+    // Test aid LM_BEAM_AB=1: realistic flashlight only on odd dump frames (consecutive
+    // LM_FRAME_DUMP frames compare the previous beam with the realistic one).
+    static const bool sBeamAb = std::getenv("LM_BEAM_AB") != nullptr;
+    if (sBeamAb && ((copyDispCount() + 1) & 1) == 0) c.realisticFlashlight = 0;
+    c.beamDensity = l.beamDensity;
+    c.beamDust = l.beamDust;
     c.bloom = l.bloom;
     c.bloomIntensity = l.bloomIntensity;
     c.bloomThreshold = l.bloomThreshold;
@@ -442,6 +490,7 @@ void applySettings() {
             if (part == "xl") c.extraLights = false;
             if (part == "xls") c.extraShadows = false;
             if (part == "vol") c.volumetric = false;
+            if (part == "beam") c.realisticFlashlight = 0;
             if (part == "bloom") c.bloom = false;
             if (part == "ssao") c.ssao = false;
             if (part == "map") sPerfNoMap = true;
@@ -532,8 +581,21 @@ void beginScene() {
     emitClass();
     emitMaterial();
     if (!active()) return;
+    // Test aid LM_BEAM_FLARE_AT=<dump frame>[,<period>]: the realistic flashlight flares as for a
+    // stunned ghost at that frame (and every <period> frames after it).
+    static const std::array<u32, 2> sFlareAt = [] {
+        std::array<u32, 2> v{0, 0};
+        if (const char* e = std::getenv("LM_BEAM_FLARE_AT")) std::sscanf(e, "%u,%u", &v[0], &v[1]);
+        return v;
+    }();
+    if (sFlareAt[0] != 0) {
+        const u32 f = copyDispCount() + 1;
+        if (f == sFlareAt[0] || (sFlareAt[1] != 0 && f > sFlareAt[0] && (f - sFlareAt[0]) % sFlareAt[1] == 0))
+            aurora_enhanced_beam_flare(0.85f);
+    }
+    const uint32_t sent = addBeamAnchor(sPending.data(), count);
     const u32 at = interp::mark();
-    aurora::gfx::set_extra_lights(sPending.data(), count);
+    aurora::gfx::set_extra_lights(sPending.data(), sent);
     interp::noteExtraLights(at, count);
 }
 
@@ -553,6 +615,20 @@ uint32_t shadowMapWidth() {
     if (sPerfNoMap) return 0;
     const int size = sForce >= 0 ? sForce : port::settings().enhancedLighting.shadowMapSize;
     return size == 1 ? 2048 : size == 2 ? 4096 : 0;
+}
+
+void onGhostInBeam(uint32_t actor) {
+    if (!active() || !realisticOn()) return;
+    static std::unordered_map<u32, u32> sLast;  // actor -> last frame it was in the beam
+    const u32 now = copyDispCount();
+    auto [it, fresh] = sLast.try_emplace(actor, now);
+    const bool rising = fresh || now - it->second > 45;
+    it->second = now;
+    if (sLast.size() > 256) sLast.clear();
+    if (!rising) return;
+    aurora_enhanced_beam_flare(0.85f);
+    static const bool sLog = std::getenv("LM_BEAM_LOG") != nullptr;  // test aid: dump frame of each flare
+    if (sLog) log("[beam] flare: ghost %08X in the beam, dump frame %u", actor, now + 1);
 }
 
 bool worldToView(const float world[3], float view[3]) {
