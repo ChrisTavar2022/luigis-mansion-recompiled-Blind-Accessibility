@@ -21,6 +21,7 @@ using Clock = std::chrono::steady_clock;
 
 // Host loop, interpolated presentation only (frame::interpolating()).
 void beforeFrame();  // before aurora_begin_frame: waits for this frame's scheduled start
+void afterBegin();   // after a successful aurora_begin_frame (LM_PACING_LOG)
 void afterFrame();   // after aurora_end_frame: frame cost bookkeeping
 // The time the frame being built is shown for (its scheduled start; the constant display latency
 // is absorbed by the interpolation delay). Clock::now() when not pacing.

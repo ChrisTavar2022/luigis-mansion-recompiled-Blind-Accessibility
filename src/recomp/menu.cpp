@@ -464,6 +464,14 @@ void renderingTab() {
         "a draw can pick up data the game already rewrote for a later draw: Luigi's mouth or\n"
         "the Poltergust hose flicker now and then. Off: saves the copies (about 0.2-0.3 ms CPU per frame).\n"
         "Above 30 fps (interpolation) vertex data is always snapshotted.");
+    sDirty |= ImGui::Checkbox("Keep GPU clocks up in menus", &r.gpuKeepWarm);
+    ImGui::SetItemTooltip(
+        "When a frame is much lighter than play (a menu over a still picture), the GPU drops to its\n"
+        "power-saving clocks within a second; the first frames of the full scene after the menu then\n"
+        "take several times longer (a stutter when closing the pause screen or the Game Boy Horror,\n"
+        "measured 45 ms instead of 6 at 4K with enhanced lighting). On: filler GPU work keeps the GPU\n"
+        "about as busy as in play while the frame is light. Costs GPU power in menus, never frame time.\n"
+        "Only active when recent frames were heavy (more than 3 ms of GPU work).");
     ImGui::SeparatorText("Shadows (flashlight and lightning)");
     sDirty |= ImGui::Checkbox("Shadow map at render resolution", &r.shadowRenderResolution);
     ImGui::SetItemTooltip(

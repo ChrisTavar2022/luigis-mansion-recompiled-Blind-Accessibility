@@ -752,6 +752,138 @@ frames; the start now falls back to the grid after one period: 59.9 fps presente
 shown intervals p95 19 ms (1 kHz capture timestamps), 94.4% even steps, display step error 0.67 /
 1.64 ms.
 
+## Pass 5: locked frame rates (fps-lock, October 2026)
+
+User report: RTX 3090 Ti, 4K 120 Hz G-SYNC TV, VSync on. A 60 fps target showed 50-56 fps and 120
+was low and uneven, with the GPU far from busy, while "Unlimited frame rate" ran 98-110 fps with
+the same settings (enhanced lighting Ultra, ghost/world lights, AO, realistic flashlight 3, CRT,
+smooth banding, 4K fullscreen).
+
+### Method
+
+- `LM_PACING_LOG=<file>` (pacing.cpp): one `F` line per presented frame with the time it entered
+  `beforeFrame`, its scheduled start, the end of the schedule wait and of the GPU wait,
+  `aurora_begin_frame` done, `aurora_end_frame` done, the render worker's submit, Present and the
+  GPU completion (Aurora 0197), the frame cost per stage, the governor's limit, the period, the
+  mode (G grid, V vblank, F swap-chain FIFO, U unlimited, L original 30), the shown and newest
+  game frame, stall flag and keep-warm units; an `S` summary line per second.
+- `tools/interp/pacing_stats.py <log> [--skip s] [--until s] [--dump] [--per-second]`: presented
+  fps from the Present and GPU-done times, interval percentiles, intervals over 1.5x the target
+  and which phase each one spent its time in (schedule wait = pacing chose a long period; worker =
+  render worker until Present, where compiles show; cpu; gpu wait), cost and limit.
+- `tools/interp/pacing_run.py <out> --scenario foyer|menus|mixed|... [--set k=v] [--fullscreen |
+  --window WxH] [--secs S] [--lock FILE]`: runs the game muted with a scratch APPDATA (copy of the
+  user's settings.ini + overrides), waits for the scenario's start frame, runs, prints the stats.
+  `mixed` cycles strafing, vacuuming with heavy dust, turning and the pause screen + Game Boy
+  Horror (60 Hz menu logic: the game rate switches 30 -> 60 -> 30 every cycle) for the whole run.
+- The user played 9 minutes on a logging build (old pacing) at 4K Ultra, 60 target, naming the
+  moments that felt bad (key pickup, Parlor scene, lab -> mansion, Toad's save menu, doors,
+  chandelier); nvidia-smi logged clocks during menu tests.
+
+### What was wrong
+
+1. **The cost estimate poisoned the schedule.** The period was max(target, p90 of the last 45
+   frames' cost x 1.08). One 100-670 ms frame (a first-time pipeline compile in the render worker)
+   or a few 35-60 ms frames (a scene switch) put the p90 at 35-85 ms: the schedule then ran at
+   12-30 fps for 2-10 s until the samples left the 45-frame window (longer the slower it ran) and
+   sped up 2% per frame. Every moment the user named had this signature. In the user's session:
+   618 intervals over 1.5x the target in 520 s, 576 of them chosen by the schedule itself.
+2. **Feedback through the GPU clocks.** While slowed down the GPU is mostly idle and clocks down;
+   the measured GPU time per frame rose from 9 ms (60 fps) to 20-27 ms (12 fps), which kept the
+   estimate above the target.
+3. **Compile hitches**: enhanced lighting draws known configs into its own render targets (the
+   depth pre-pass and light shadow-map casters, the glow buffer); the precache built every config
+   for the scene layout only, so these compiled on first use (64 MISSes in a 10-minute foyer run).
+4. **Idle-clocked GPU after menus.** The pause screen and the Game Boy Horror draw ~0.5 ms of GPU
+   work over a still picture; within half a second the GPU drops from P0 (1995/10501 MHz
+   core/memory) to P3/P5/P8 (345-1000 / 405-5001 MHz). The first 3-4 frames of the full scene
+   after the menu took 30-60 ms instead of 6 (at 120 fps: 20-28 ms for 5 frames): a stutter on
+   every menu exit, and with the old estimate a 2-second slowdown after it.
+5. **Present timing held Dawn's device lock.** Aurora 0197's waiter thread blocked in `WaitAny`
+   with a timeout, which with implicit device synchronization holds the device lock until the GPU
+   finishes: every other thread's Dawn call waited for the GPU. Interpolated modes hid it (the host
+   waits for the previous frame anyway); original 30 at 4K Ultra fell from 28 to 18.5 fps whenever
+   the record was on.
+6. **Measurement artefacts**: the `[interp]` line's "game N fps" counted distinct game frames
+   *shown* (never above the presented rate: "presented 14, game 13.9" looked like a guest
+   slowdown when the guest made 28-30); its "pacing delay ~1350 ms" mixed the host clock with the
+   VI retrace clock's epoch (not a latency). The FPS overlay itself was right.
+7. The grid wait (`SDL_DelayPrecise`) overslept by ~10 ms about once in 5 minutes; the vblank
+   mode's fallback used a condition-variable timeout (59.5 fps at a 60 target with VRR off).
+
+### What it does now
+
+- **Governor** (pacing.cpp): the target holds unless frames are actually late. A frame starting
+  more than 25% late is a miss; a single very late frame (> 3 periods: a load, a compile) only
+  restarts the grid. The rate is lowered only when a quarter of the last second's frames (at
+  least 4) missed, or when half of them were late by more than 8% (the PC a little too slow:
+  intervals alternating 8.6/10.7 ms are uneven motion on a VRR display), and then to the rate
+  actually achieved + 3%. After 1 s without misses it speeds up 2% per frame, not below a rate
+  that failed in the last 10 s. The overlay/F1 status says why: "(PC too slow for 120: GPU 9.8 ms
+  per frame)".
+- **Aurora 0214**: configs that are enhanced-lighting depth or caster variants (depthOnly /
+  lightDepth) are precached for the depth-only target (only), glow-shaped ones also for the glow
+  target. 64 -> 0 MISSes in the 10-minute mixed run.
+- **GPU keep-warm** (Aurora 0215, F1 > Visuals > Rendering "Keep GPU clocks up in menus", on):
+  while a frame is much lighter than recent play, a compute pass streams through a 64 MiB buffer
+  after the frame's own work so the GPU stays about as busy as in play (target min(recent play GPU
+  time, 90% of the period; at 120 fps 40%/60% caps still let the clocks drop: 69 -> 14 intervals
+  over 1.5x in 2 minutes of menu cycling with 90%); grows below 75% of it, eases off above 115%, stops at once above 160%
+  = the scene is back). ALU-only filler kept the core clock but the driver still dropped the
+  memory clock (P3). Menu-cycle test (120 s, 60 target): intervals over 1.5x 44 -> 1, worst 55.6 ->
+  29.7 ms. Costs GPU power in menus only; off for light settings (recent play under 3 ms).
+- **Aurora 0216**: the present-timing waiter polls with a zero timeout every ~0.25 ms.
+- Host thread at high priority; the vblank wait ends with a precise sleep.
+- `[interp]` stats: "game N fps (shown M)" = game frames made (shown); "shown X ms behind the
+  newest game frame" instead of the old delay figure.
+
+### Results
+
+4K (resolution x4) fullscreen 120 Hz G-SYNC, VSync on, the user's settings (enhanced Ultra etc.)
+unless noted, `mixed` scenario, one game instance (GAME_LOCK). "Over" = present intervals above
+1.5x the target period (loads and compiles included).
+
+| run | build | presented fps | p99 / max interval ms | over 1.5x |
+|---|---|---|---|---|
+| user's own 9-minute session, 60 | before (logging only) | 57.47 | 35.9 / 638 | 618 |
+| 60, 10 min | before | 55.27 | 41.8 / 76.2 | 2032 |
+| 60, 10 min | governor + 0214 | 59.72 | 17.8 / 72.6 | 148 (menu exits) |
+| 60, 10 min | + keep-warm | **60.00** | 18.1 / 27.7 | **2** |
+| 60 windowed 1920x1080, 10 min | + keep-warm | **60.00** | 18.2 / 37.0 | **2** |
+| 40, 4 min | + keep-warm | **39.98** | 26.2 / 62.0 | 5 (loads) |
+| 60 vanilla (enhanced/lights/CRT off), 10 min | + keep-warm | **60.00** | 18.0 / 33.2 | **1** |
+| 120 vanilla, 4 min | + keep-warm | **116.40** (VRR cap) | 9.6 / 12.3 | **0** |
+| 120, 10 min | before | 102.98 | 23.4 / 43.7 | 3459 (3289 chosen by the schedule) |
+| 120, 10 min | governor + keep-warm, before 0216 | 110.31 | 13.2 / 37.0 | 1357 |
+| 120, 10 min | + 0216 (present timing polled) | 116.04 | 9.6 / 81.4 | 208 |
+| **final build** (governor per-interval, keep-warm 90% cap): | | | | |
+| 60, 10 min | final | **60.00** | 17.6 / 50.0 | **2** (one 37 ms render-worker stall, not a compile: 0 MISSes) |
+| 120, 10 min | final | **116.32** (VRR cap 116.4) | 9.7 / 23.1 | 74 (GPU-bound frames right after a menu closes) |
+| 60, 4 min | final (90% keep-warm cap) | **60.00** | 17.6 / 21.3 | **0** |
+| 120 windowed 1920x1080, 4 min | 0216 | **116.05** | 10.2 / 32.1 | 88 (same) |
+| 90, 4 min | final governor | **90.00** | 11.95 / 16.4 | **0** |
+| 60, VRR set Off (vblank mode), 4 min | 0216 | **59.99** | 17.9 / 42.1 | 10 |
+
+The A/B at 60 in one line: 55.27 -> 60.00 fps presented, intervals over 1.5x 2032 -> 2, p99
+41.8 -> 17.6 ms. At 120: 102.98 -> 116.32 (the VRR cap), 3459 -> 74, p99 23.4 -> 9.7 ms. The 0216 fix also lowered the
+GPU time per frame at 120 (p50 8 -> 5.3 ms): the device lock had been stalling the render worker
+and the FIFO thread behind the GPU. No governor slowdown happened in any final run after the boot
+(one during the boot's loading screens, recovered within seconds).
+
+Original 30 (no interpolation, the game paced by its VI) at 4K Ultra: 18.5 fps whenever the
+present record was on before 0216 (LM_PACING_LOG, and now keep-warm, enable it), 28.7 after in the
+foyer (28 with the record off: its own limit), and in the mixed scenario gameplay seconds average
+30.0 (p10 29.9, min 28.0) with the menus at 60; vanilla 29.97 flat. What limits it at Ultra in the
+foyer is the original-30 path's serialisation: the game's mid-frame GPU syncs (EFB copies read back
+by the CPU) make each frame wait for the enhanced passes so far (GPU 17.5 ms per game frame with
+the CPU waiting on it). The interpolated targets do not have it (the game runs decoupled); a 30
+target through the interpolated path would hold 30, but would no longer be the unchanged original
+path.
+
+Remaining: at 120 with enhanced Ultra the first ~5-8 frames after a menu closes cost 15-20 ms of
+GPU time (the scene and its enhanced passes return; at 60 they fit the period), and a rare 37-80 ms
+gap between frames outside the frame itself (seen 1-4 times per 10 minutes; not a compile).
+
 ## Known limitations
 
 - On the test machine presentation never exceeded the display's 60 Hz even with VSync off

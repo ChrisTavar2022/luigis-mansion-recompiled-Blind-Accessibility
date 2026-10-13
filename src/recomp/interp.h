@@ -137,6 +137,12 @@ struct PresentInfo {
     u32 present = 0;
     u64 bSeq = 0;
     float alpha = 1.0f;
+    // Pacing log (pacing.cpp, LM_PACING_LOG): the newest game frame (tape) the host had at this
+    // present, when the guest finished it (steady clock seconds since its epoch), and whether the
+    // shown game time was held at that newest tape (no newer game frame yet: a stall).
+    u64 newestSeq = 0;
+    double newestDone = 0;
+    bool stalled = false;
 };
 PresentInfo lastPresent();
 

@@ -316,6 +316,7 @@ int main(int argc, char* argv[]) {
         pacing::beforeFrame();
         interp::hostMark(0);
         if (!aurora_begin_frame()) continue;
+        pacing::afterBegin();
         interp::hostMark(1);
         ws::beginFrame();
         const bool running = frame::hostFrame();
