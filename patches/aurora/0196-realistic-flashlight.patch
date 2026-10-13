@@ -1,8 +1,7 @@
 diff --git a/include/aurora/enhanced.h b/include/aurora/enhanced.h
-index ede775d..026b0e9 100644
 --- a/include/aurora/enhanced.h
 +++ b/include/aurora/enhanced.h
-@@ -90,8 +90,23 @@ typedef struct {
+@@ -90,8 +90,23 @@
    bool ssao;
    float ssaoIntensity;
    float ssaoRadius; // world units
@@ -26,7 +25,7 @@ index ede775d..026b0e9 100644
  // Replaces the configuration (any thread; takes effect at the next draw / scene end).
  void aurora_enhanced_set_config(const AuroraEnhancedConfig* config);
  
-@@ -106,6 +121,10 @@ void GXSetMaterialHintAurora(uint8_t hint);
+@@ -106,6 +121,10 @@
  // enhanced mode or all of its screen-space parts are off, or inside an offscreen pass.
  void GXSceneEndAurora(void);
  
@@ -39,7 +38,6 @@ index ede775d..026b0e9 100644
  uint32_t aurora_enhanced_last_light_count(void);
 diff --git a/lib/gfx/beam_profile.hpp b/lib/gfx/beam_profile.hpp
 new file mode 100644
-index 0000000..404cc7e
 --- /dev/null
 +++ b/lib/gfx/beam_profile.hpp
 @@ -0,0 +1,39 @@
@@ -83,7 +81,6 @@ index 0000000..404cc7e
 +)""";
 +} // namespace aurora::gfx
 diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
-index 1568405..2803b59 100644
 --- a/lib/gfx/enhanced.cpp
 +++ b/lib/gfx/enhanced.cpp
 @@ -2,6 +2,7 @@
@@ -94,7 +91,7 @@ index 1568405..2803b59 100644
  
  #include "encoding.hpp"
  #include "pipeline_cache.hpp"
-@@ -48,7 +49,8 @@ bool same(const AuroraEnhancedConfig& a, const AuroraEnhancedConfig& b) {
+@@ -48,7 +49,8 @@
           EQ(ssaoIntensity) && EQ(ssaoRadius) &&
           // 0031: the fields added after 0016 (changing only them did not reach the renderer)
           EQ(extraShadows) && EQ(extraShadowQuality) && EQ(extraShadowMode) && EQ(extraShadowLights) &&
@@ -104,7 +101,7 @@ index 1568405..2803b59 100644
  #undef EQ
  }
  
-@@ -71,6 +73,33 @@ struct Flashlight {
+@@ -71,6 +73,33 @@
  Flashlight g_flash;
  float g_flashDist2 = 0.f;
  
@@ -138,7 +135,7 @@ index 1568405..2803b59 100644
  // Vibrance: push a light color away from its gray (luma) by `sat`, keeping its brightest channel,
  // so every provider (ghost lights, test lights) gets one consistent saturated look.
  std::array<float, 3> vivid(const float c[3], float sat) noexcept {
-@@ -203,6 +232,7 @@ struct Fx {
+@@ -203,6 +232,7 @@
    bloom2: vec4f, // scene highlights amount, emissive amount, light glow amount, light count
    glowdepth: vec4f, // glow depth pass: source scale xy (glow -> target pixels), reversed z, bias
    xl: array<vec4f, 36>, // light shadows (0187: 16 lights): see fs_xlshadow / cube_occlusion
@@ -146,7 +143,7 @@ index 1568405..2803b59 100644
  };
  @group(0) @binding(0) var<uniform> fx: Fx;
  @group(0) @binding(1) var samp: sampler;
-@@ -725,6 +755,305 @@ fn fs_vol(in: VsOut) -> @location(0) vec4f {
+@@ -711,6 +741,305 @@
    return vec4f(fx.lcol.rgb * (1.0 - exp(-v)), 1.0);
  }
  
@@ -452,7 +449,7 @@ index 1568405..2803b59 100644
  // Ambient occlusion from the depth buffer (normal from depth, 12 hemisphere samples).
  @fragment
  fn fs_ao(in: VsOut) -> @location(0) vec4f {
-@@ -809,7 +1138,37 @@ fn fs_composite(in: VsOut) -> @location(0) vec4f {
+@@ -795,7 +1124,21 @@
    if ((mask & 1u) != 0u) {
      add = add + textureSampleLevel(t0, samp, in.uv, 0.0).rgb * fx.bloom.x;
    }
@@ -467,31 +464,15 @@ index 1568405..2803b59 100644
 +    let fl = fx.beam[7].w;
 +    let col = mix(fx.lcol.rgb, vec3f(1.0), clamp(v * 0.25 + fl * 0.4, 0.0, 0.6));
 +    add = add + col * (1.0 - exp(-v));
-+    // Flash: a glare around the lens (core, halo and a faint horizontal streak), hidden when
-+    // something stands in front of the lens.
-+    if (fl > 0.01) {
-+      let lp = fx.lpos.xyz;
-+      let w = -lp.z;
-+      if (w > 1.0) {
-+        let cx = (fx.proj.x * lp.x + fx.proj.z * lp.z + fx.projz.z) / w;
-+        let cy = (fx.proj.y * lp.y + fx.proj.w * lp.z + fx.projz.w) / w;
-+        let sp = vec2f(fx.vp.x + (cx * 0.5 + 0.5) * fx.vp.z, fx.vp.y + (0.5 - cy * 0.5) * fx.vp.w);
-+        let ld = load_depth(sp);
-+        let vis = select(1.0, 0.25, ld > fx.dr.x + 1e-7 && view_pos(sp, ld).z > lp.z + 25.0);
-+        let px = in.uv * fx.size.xy;
-+        let s = fx.vp.w / 480.0;
-+        let d = (px - sp) / s;
-+        let r2 = dot(d, d);
-+        let g = exp(-r2 / 90.0) * 1.6 + exp(-r2 / 2200.0) * 0.45 + exp(-abs(d.y) / 2.5 - abs(d.x) / 140.0) * 0.35;
-+        add = add + mix(fx.lcol.rgb, vec3f(1.0), 0.6) * (g * fl * vis);
-+      }
-+    }
++    // (No glare sprite at the lens: enhanced lighting never draws a halo or orb at a light's
++    // position, which showed as a ball behind Luigi's head when the lens was hidden. The flash
++    // brightens the beam itself; the game's own lens sprite glows through the glow buffer.)
 +    if ((mask & 64u) != 0u) { return vec4f(col * (1.0 - exp(-v)), 0.0); } // AURORA_BEAM_SHOW: the beam alone
 +  } else if ((mask & 2u) != 0u) {
      add = add + textureSampleLevel(t1, samp, in.uv, 0.0).rgb;
    }
    var ao = 1.0;
-@@ -838,8 +1197,9 @@ struct FxUniform {
+@@ -824,8 +1167,9 @@
    float bloom2[4];
    float glowdepth[4];
    float xl[36][4];
@@ -502,7 +483,7 @@ index 1568405..2803b59 100644
  
  constexpr uint32_t MaxBloomLevels = 6;
  constexpr auto HdrFormat = wgpu::TextureFormat::RGBA16Float;
-@@ -882,6 +1242,9 @@ struct Gpu {
+@@ -868,6 +1212,9 @@
    // 0186: raw occlusion before the 4x4 blur
    Tex maskAoRaw;
    wgpu::RenderPipeline aoBlur4Pipe;
@@ -512,7 +493,7 @@ index 1568405..2803b59 100644
  };
  Gpu g_gpu;
  
-@@ -936,7 +1299,9 @@ bool init_gpu() {
+@@ -922,7 +1269,9 @@
      return !g_gpu.failed;
    }
    g_gpu.initialized = true;
@@ -523,7 +504,7 @@ index 1568405..2803b59 100644
    const wgpu::ShaderModuleDescriptor moduleDesc{.nextInChain = &wgsl, .label = "Enhanced lighting effects"};
    g_gpu.module = webgpu::g_device.CreateShaderModule(&moduleDesc);
    std::array<wgpu::BindGroupLayoutEntry, 6> entries{};
-@@ -980,6 +1345,11 @@ bool init_gpu() {
+@@ -966,6 +1315,11 @@
    g_gpu.vol = make_pipeline("fs_vol", HdrFormat, 1, nullptr, all);
    g_gpu.ao = make_pipeline("fs_ao", HdrFormat, 1, nullptr, all);
    g_gpu.aoblur = make_pipeline("fs_aoblur", HdrFormat, 1, nullptr, all);
@@ -535,7 +516,7 @@ index 1568405..2803b59 100644
    if (!g_gpu.bright || !g_gpu.down || !g_gpu.up || !g_gpu.vol || !g_gpu.ao || !g_gpu.aoblur) {
      Log.error("Enhanced lighting effects failed to build; screen-space effects disabled");
      g_gpu.failed = true;
-@@ -1002,14 +1372,16 @@ wgpu::BindGroup bind(const Range& uniform, const wgpu::TextureView& a, const wgp
+@@ -988,14 +1342,16 @@
  }
  
  void run_pass(const wgpu::CommandEncoder& cmd, const char* label, const wgpu::TextureView& target,
@@ -554,7 +535,7 @@ index 1568405..2803b59 100644
    const auto pass = cmd.BeginRenderPass(&desc);
    pass.SetPipeline(pipeline);
    pass.SetBindGroup(0, bg);
-@@ -1029,12 +1401,16 @@ std::pair<uint32_t, uint32_t> bloom_base_size(uint32_t width, uint32_t height) n
+@@ -1015,12 +1371,16 @@
  }
  
  struct SceneJob {
@@ -572,7 +553,7 @@ index 1568405..2803b59 100644
  };
  
  // Glow buffer (bloom level 0 size). Emissive draws are re-rendered right after the EFB pass
-@@ -1475,6 +1851,83 @@ void encode_mask(const wgpu::CommandEncoder& cmd, const MaskJob& job) {
+@@ -1484,6 +1844,83 @@
    timing_end(cmd);
  }
  
@@ -656,7 +637,7 @@ index 1568405..2803b59 100644
  void encode_scene(const wgpu::CommandEncoder& cmd, const ScenePassTargets& t, const SceneJob& job) {
    if (!init_gpu()) {
      return;
-@@ -1515,7 +1968,23 @@ void encode_scene(const wgpu::CommandEncoder& cmd, const ScenePassTargets& t, co
+@@ -1524,7 +1961,23 @@
      bloomView = g_gpu.bloom[0].view;
    }
    wgpu::TextureView volView;
@@ -681,7 +662,7 @@ index 1568405..2803b59 100644
      // The haze is smooth: at most 540 (low) / 720 lines whatever the render resolution.
      uint32_t vw = std::max(t.width / job.volDiv, 1u), vh = std::max(t.height / job.volDiv, 1u);
      const uint32_t cap = job.volDiv >= 4 ? 540u : 720u;
-@@ -1524,7 +1993,14 @@ void encode_scene(const wgpu::CommandEncoder& cmd, const ScenePassTargets& t, co
+@@ -1533,7 +1986,14 @@
        vh = cap;
      }
      ensure_tex(g_gpu.volTex, vw, vh, HdrFormat, rt, "Enhanced volumetric");
@@ -697,7 +678,7 @@ index 1568405..2803b59 100644
      volView = g_gpu.volTex.view;
    }
    wgpu::TextureView aoView;
-@@ -1563,7 +2039,9 @@ void encode_scene(const wgpu::CommandEncoder& cmd, const ScenePassTargets& t, co
+@@ -1572,7 +2032,9 @@
                                                                                          : g_gpu.glow.view)
                                                   : bloomView,
                              volView, aoView,
@@ -708,7 +689,7 @@ index 1568405..2803b59 100644
    pass.Draw(3);
    pass.End();
  }
-@@ -1674,6 +2152,15 @@ DrawUniform draw_uniform() noexcept {
+@@ -1684,6 +2146,15 @@
      u.flashSoft = std::clamp(c.flashlightSoftness, 0.f, 1.f);
      u.flashSpec = std::clamp(c.flashlightSpecular, 0.f, 2.f);
    }
@@ -724,7 +705,7 @@ index 1568405..2803b59 100644
    // 0032: forward ambient occlusion in opaque (and alpha-tested) world surfaces only: nothing
    // translucent or additive in front of occluded geometry gets darker.
    const auto& gs = gx::g_gxState;
-@@ -1770,8 +2257,25 @@ void assign_shadow_slots() noexcept {
+@@ -1780,8 +2251,25 @@
  }
  } // namespace
  
@@ -752,7 +733,7 @@ index 1568405..2803b59 100644
    if (count == g_lightCount && std::memcmp(lights, g_lights.data(), count * sizeof(ExtraLight)) == 0) {
      return;
    }
-@@ -1861,6 +2365,128 @@ void note_glow_draw(const gx::PipelineConfig& config, const gx::DrawData& data)
+@@ -1871,6 +2359,128 @@
    g_glowDraws.push_back(g);
  }
  
@@ -881,7 +862,7 @@ index 1568405..2803b59 100644
  bool note_draw(const gx::PipelineConfig& config, uint8_t drawClass, uint32_t vtxCount, const gx::DrawData& data) noexcept {
    static const bool sHide = std::getenv("AURORA_ENH_HIDE_ADDITIVE") != nullptr;
    if (sHide && drawClass != AURORA_DRAW_CLASS_OTHER && is_emissive(config)) {
-@@ -1942,6 +2568,41 @@ bool note_draw(const gx::PipelineConfig& config, uint8_t drawClass, uint32_t vtx
+@@ -1952,6 +2562,41 @@
    if (drawClass == AURORA_DRAW_CLASS_OTHER || st.projType != GX_PERSPECTIVE) {
      return false;
    }
@@ -923,7 +904,7 @@ index 1568405..2803b59 100644
    const auto& p = st.proj;
    g_camera = {
        .valid = true,
-@@ -1953,7 +2614,7 @@ bool note_draw(const gx::PipelineConfig& config, uint8_t drawClass, uint32_t vtx
+@@ -1963,7 +2608,7 @@
    // is nearest to the camera (Luigi holds it; room spot lights are farther away).
    const auto& cc = config.shaderConfig.colorChannels[0];
    if (!cc.lightingEnabled || cc.attnFn != GX_AF_SPOT) {
@@ -932,7 +913,7 @@ index 1568405..2803b59 100644
    }
    const auto mask = st.colorChannelState[0].lightMask.to_ulong();
    for (int i = 0; i < 8; ++i) {
-@@ -1972,7 +2633,7 @@ bool note_draw(const gx::PipelineConfig& config, uint8_t drawClass, uint32_t vtx
+@@ -1982,7 +2627,7 @@
        g_flashDist2 = d2;
      }
    }
@@ -941,7 +922,7 @@ index 1568405..2803b59 100644
  }
  
  void flush_glow() noexcept {
-@@ -2177,6 +2838,7 @@ void flush_shadows() noexcept {
+@@ -2194,6 +2839,7 @@
  }
  
  void after_submit() noexcept {
@@ -949,7 +930,7 @@ index 1568405..2803b59 100644
    for (auto& t : g_tslots) {
      if (t.state.load() == 3) {
        const auto* ts = static_cast<const uint64_t*>(t.readback.GetConstMappedRange(0, TimingQueries * 8));
-@@ -2243,6 +2905,131 @@ void begin_frame() noexcept {
+@@ -2260,6 +2906,131 @@
    g_lightRangeValid = false;
    g_camera.valid = false;
    g_flash.valid = false;
@@ -1081,7 +1062,7 @@ index 1568405..2803b59 100644
  }
  
  void scene_end() noexcept {
-@@ -2271,6 +3058,24 @@ void scene_end() noexcept {
+@@ -2288,6 +3059,24 @@
    if (c.ssao && c.ssaoIntensity > 0.f && g_aoPost) { // 0032: otherwise forward (mask pass)
      job.mask |= 4u;
    }
@@ -1106,7 +1087,7 @@ index 1568405..2803b59 100644
    if (job.mask == 0) {
      return;
    }
-@@ -2355,7 +3160,17 @@ void scene_end() noexcept {
+@@ -2356,7 +3145,17 @@
    job.volDiv = q == 0 ? 4 : 2;
    u.ao[0] = c.ssaoIntensity;
    u.ao[1] = std::max(c.ssaoRadius, 1.f);
@@ -1124,7 +1105,7 @@ index 1568405..2803b59 100644
  
    // Per-pass uniforms: source texel sizes of the bloom chain and the upsample radius.
    if ((job.mask & 1u) != 0) {
-@@ -2421,6 +3236,13 @@ void aurora_enhanced_set_config(const AuroraEnhancedConfig* config) {
+@@ -2422,6 +3221,13 @@
    g_pendingGen.fetch_add(1, std::memory_order_release);
  }
  
@@ -1139,10 +1120,9 @@ index 1568405..2803b59 100644
    using namespace aurora::gfx::enhanced;
    if (lights != nullptr) {
 diff --git a/lib/gfx/enhanced.hpp b/lib/gfx/enhanced.hpp
-index e821f5d..35c3b73 100644
 --- a/lib/gfx/enhanced.hpp
 +++ b/lib/gfx/enhanced.hpp
-@@ -31,8 +31,13 @@ struct DrawUniform {
+@@ -31,8 +31,13 @@
    float shadowDark = 1.f;  // AuroraEnhancedConfig::shadowDarkness
    float shadowKeep = 0.f;  // AuroraEnhancedConfig::shadowAmbientKeep
    float material = 0.f;  // 1 = character (GX_AURORA_SET_MATERIAL_HINT)
@@ -1158,7 +1138,6 @@ index e821f5d..35c3b73 100644
  // --- FIFO thread ---
  // Takes a newly set configuration; true when it changed (pipelines must be re-derived).
 diff --git a/lib/gx/shader.cpp b/lib/gx/shader.cpp
-index 573b95f..dc1999d 100644
 --- a/lib/gx/shader.cpp
 +++ b/lib/gx/shader.cpp
 @@ -1,3 +1,4 @@
@@ -1166,7 +1145,7 @@ index 573b95f..dc1999d 100644
  #include "../gfx/hash.hpp"
  #include "../gfx/types.hpp"
  
-@@ -917,7 +918,18 @@ std::string enh_lighting_func(const ShaderConfig& config, const ColorChannelConf
+@@ -917,7 +918,18 @@
                cos_attn = mix(cos_attn, ca * ca * (3.0 - 2.0 * ca), ubuf.enh_flash_soft);
              }
              let dist_attn = gx_attn_poly(light.dist_att, dist);
@@ -1186,7 +1165,7 @@ index 573b95f..dc1999d 100644
    } else {
      const std::string dist_attn = cc.diffFn != GX_DF_NONE
                                        ? "max(0.0, dot(normalize(light.dist_att), vec3f(1.0, attn, attn * attn)))"
-@@ -1932,6 +1944,7 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -1946,6 +1958,7 @@
                                   "\n    var enh_s_xl = 0.0;",
                                   config.enhClass == 2 ? "true"sv : "false"sv);
      uniformPre += EnhHelpers;
@@ -1194,7 +1173,7 @@ index 573b95f..dc1999d 100644
    }
    // Color channels feeding a color texgen (GX_TG_SRTG: the flashlight beam's lookup) keep
    // their exact lighting result: extra lights would move the lookup.
-@@ -2498,7 +2511,13 @@ std::string build_shader_source(const ShaderConfig& config, DstAlphaMode dstAlph
+@@ -2512,7 +2525,13 @@
          "\n    enh_flash_spec: f32,"
          "\n    enh_shadow_dark: f32,"
          "\n    enh_shadow_keep: f32,"

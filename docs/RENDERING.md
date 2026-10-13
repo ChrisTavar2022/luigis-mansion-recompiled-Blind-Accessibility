@@ -2015,9 +2015,11 @@ does not change); see "Flare" below.
   entirely tinted the beam area with the room's blue darkening (found in the first A/B;
   `AURORA_BEAM_NOHIDE=1` keeps the mesh for comparison). The lens sprite, the vacuum and the Game
   Boy Horror are separate draws and unchanged.
-- **Flare**: the beam flares (scattering x(1 + 2.5 f), whiter; surface gain x(1 + 0.6 f); a lens
-  glare with core, halo and a faint horizontal streak, dimmed when something is in front of the
-  lens) and decays in ~0.4 s. Triggers: a ghost's AI receiving the "in the flashlight beam" message
+- **Flare**: the beam flares (scattering x(1 + 2.5 f), whiter; surface gain x(1 + 0.6 f)) and
+  decays in ~0.4 s. (The screen-space lens glare with core, halo and streak was removed in
+  `enh-fixes-2`: enhanced lighting never draws a halo at a light's position; with the lens hidden
+  behind Luigi it showed as a bright ball around his head. See "Enhanced lighting fixes, second
+  round".) Triggers: a ghost's AI receiving the "in the flashlight beam" message
   (EnThought message 2, `fn_800C0F08` hook) for the first time after 45 frames, i.e. when the light
   catches and stuns it (`aurora_enhanced_beam_flare`); the flashlight switched on after being off;
   any jump of the light's brightness above its recent level.
