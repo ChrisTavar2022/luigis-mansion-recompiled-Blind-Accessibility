@@ -63,7 +63,19 @@ constexpr int kAnchorBySide = 2;
 // Anchor of the innermost scope (-1/0/+1 or kAnchorBySide); 0 outside scopes or with
 // anchoring off.
 int hudAnchor();
-bool inHudScope();   // inside any scope (widescreen active)
+bool inHudScope();   // inside any scope (widescreen active), and not in a RenderToTextureScope
+
+// A render-to-texture pass run from inside a HUD element's scope (the event-scene renderer
+// fn_80114E18 draws the door knob's reflection into a 128x128 viewport at the EFB origin and
+// copies that rectangle with GXCopyTex). Its partial viewport must stay where the game put it,
+// like every render-to-texture viewport, or the copy reads a different rectangle and the pass
+// is left on screen: inside this scope viewports do not follow the HUD scope around it.
+struct RenderToTextureScope {
+    RenderToTextureScope();
+    ~RenderToTextureScope();
+    RenderToTextureScope(const RenderToTextureScope&) = delete;
+    RenderToTextureScope& operator=(const RenderToTextureScope&) = delete;
+};
 
 // Scenes kept at 4:3 (guest thread). Inside a Lock43Scope, full-screen 3D draws keep their
 // Hor+ projection but are scissored to the centered 4:3 frame, so the sides stay at the clear

@@ -159,12 +159,13 @@ per-pane approach split menu layouts. Both were dropped.
 
 ### Scenes fixed for widescreen
 
-Three places found in a full playthrough looked wrong at 16:9/21:9 and right at 4:3:
+Places found in play that looked wrong at 16:9/21:9 and right at 4:3:
 
 | Scene | Cause | Fix |
 |-------|-------|-----|
 | Portrait gallery (map 6): a black slab beside the pillars while walking, and at 21:9 whole rooms missing at the sides | Portal culling. `fn_8001333C` computes each doorway's screen rectangle with the 4:3 projection*view matrix; the room behind it is then drawn with `GXSetScissor(rect)` (`fn_8001798C`), which the GX HLE passes on unchanged (stretched to the window) while the room itself is drawn Hor+. The scissor sat further out than the doorway, cutting off the inner part of the room behind it, and rooms visible only in the widened sides got an empty rectangle | `portal_fix.cpp`: while `fn_8001333C` runs, rows 0/1 of that matrix (`lbl_803A3C98 + 0x258`, read by nothing else) are scaled like the projection (`factor() * fovRatio`, `fovRatio`), so rectangles are in the drawn frame and the stretched scissor matches. Generic: every map's portals, also with the FOV slider. Not tied to the portal near-plane setting (docs/RENDERING.md) |
 | Gallery portrait screen / area clear ("Now you've caught: (Area n) ..."; event 79 `<GALLERY>`, game mode 6, draw `fn_8018721C`): the wall model (`/Nakamura/gallery.bin`) ends just outside the 4:3 view, so its edge showed | Hor+ shows more than the scene was built for | `fn_8018721C` runs in a `ws::Lock43Scope`: its full-screen 3D keeps the Hor+ projection but gets a scissor of the centered 4:3 frame (`prepareDraw` in `hle_gx.cpp`), so the sides stay black like the dark surroundings. Its 2D text is centered as usual |
+| Door cutscenes (Luigi's hand on the knob, `/Ajioka/ADemo/{oo,co,ho,no}demoNN`): a dark shape floating above-left of the knob (the knob's reflection of the hand, drawn in the wrong place), and the knob's reflection texture partly cleared | Event scenes are drawn by `fn_80114E18`, which runs in an `AnchorScope` (its portraits sit in HUD viewports, e.g. on the GBH screen during E. Gadd's call). Inside it, `fn_801142C4` renders the scene's texture target: viewport (0,0,128,128) at the EFB origin (`fn_8011548C`), a clearing copy of that rectangle, the scene's models from the reflection camera, then `GXCopyTex` of (0,0,128,128) (`fn_801168A8`). In the scope the viewport "followed" the centered HUD (moved to x = 80 and narrowed at 16:9) while both copies kept the game's rectangle, so the pass stayed on screen right of the cleared 128 px (its depth hiding the door there) and the knob sampled a half-empty texture. Not interpolation, FOV or resolution related (same at 30 fps and scale 1) | `HLE(fn_801142C4)` runs in a `ws::RenderToTextureScope`, in which viewports never follow a HUD scope: the render-to-texture viewport stays where the game copies it from (stretched like any render-to-texture viewport, so the copy matches at every aspect and resolution). 4:3 is unaffected (no scope logic without widescreen) |
 | Ending iris wipe on Mario (`fn_80055C54`, end of event 52): only the 4:3 frame was masked | The mask is a circle picture (`/ad_wipe_0.bti`) plus four `J2DFillBox` boxes reaching x = 0 and x = 640. Fills spanning the width were stretched, the side boxes were centered 4:3, so the scene showed beside them | `fn_80055C54` runs in a `ws::WipeScope`: every 2D draw in it is centered 4:3 (`classifyHeld`), and a `J2DFillBox` hook extends boxes touching the frame's left/right edge (or beyond it, negative widths once the circle outgrows the screen) to the display's edge. The circle stays round and centered |
 
 Verified with `LM_FRAME_DUMP` (16:9 and 21:9 against the unfixed build at the same frames, map
@@ -174,6 +175,15 @@ STICKLEFT + A, the iris with `LM_START_MAP=12` + A presses through event 52, fra
 vacuum dust differs between two runs of the same build). Not checked on the European base (the
 hooks are tagged `us pal`). The 21:9 view of the gallery hall can still see past the end of a
 room's outer wall at the far right (nothing is modelled there; the same with the fix off).
+
+Door knob: the nursery's locked door (`LM_INPUT_CLOCK=frames LM_START_MAP=2 LM_START_APPEAR=1
+LM_TEST_STATE=poltergust`, the `nursery` scenario's input up to `2900:STICKUP*40` from
+tools/interp/scenarios.sh, then `2945:A*3,2975:A*3,3005:A*3`; the knob close-up runs from
+frame ~3010). `LM_HUD_TRACE=3038,3038` shows the 128x128 viewport marked `follow` before the
+fix. Dumps 3012-3100: at 16:9 the floating shape is gone (the only changed pixels, apart from
+the knob's faint reflection, which now matches the 4:3 frame more closely), in every fresh and
+interpolated frame at 60 fps with Enhanced lighting Ultra and render scale 4 too; 4:3 at 30 fps
+is byte-identical to the unfixed build (frames 2940-3140).
 
 ### Screenshots
 
