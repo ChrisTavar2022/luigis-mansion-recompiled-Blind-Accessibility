@@ -123,6 +123,7 @@ HLE(fn_80008D58) {
 namespace {
 int sAnchorStack[16];
 int sAnchorDepth = 0;
+int sRttDepth = 0;  // RenderToTextureScope nesting
 }  // namespace
 
 AnchorScope::AnchorScope(int anchor) {
@@ -136,7 +137,10 @@ int hudAnchor() {
     return sAnchorStack[std::min(sAnchorDepth, int(std::size(sAnchorStack))) - 1];
 }
 
-bool inHudScope() { return sAnchorDepth > 0 && active(); }
+bool inHudScope() { return sAnchorDepth > 0 && sRttDepth == 0 && active(); }
+
+RenderToTextureScope::RenderToTextureScope() { sRttDepth++; }
+RenderToTextureScope::~RenderToTextureScope() { sRttDepth--; }
 
 // Game Boy Horror (bottom right): frame, LEDs and the J2DScreen of whatever its screen
 // shows (money tally, E. Gadd's call, the cut E3 clock).
@@ -165,6 +169,18 @@ HLE(fn_800115F8) {
 HLE(fn_80114E18) {
     AnchorScope s(rd32(VA(0x804D846C)) == 3 ? 1 : 0);
     callOriginal(c, "fn_80114E18");
+}
+// The event scene's render-to-texture pass, called by fn_80114E18 between the scene and the
+// portrait draws: when the scene defines a texture target (door scenes: the reflection of
+// Luigi's hand on the brass knob) it sets the camera viewport to (0,0,w,h) (fn_8011548C), clears
+// that rectangle with a copy, draws the scene's models and copies (0,0,w,h) into the target
+// (fn_801168A8). Inside fn_80114E18's scope that viewport used to follow the centered HUD
+// (moved right and narrowed in widescreen) while the copies kept the game's rectangle: the
+// knob sampled a cleared texture, and the pass stayed on screen above-left of the knob, its
+// depth hiding the door there.
+HLE(fn_801142C4) {
+    RenderToTextureScope rtt;
+    callOriginal(c, "fn_801142C4");
 }
 // Game Boy Horror map screen (the frame loop's scene for it): the map is drawn into a viewport
 // over the GBH's screen (112,84 416x312, fn_8002AC8C), which the bezel overlaps in 4:3. Left

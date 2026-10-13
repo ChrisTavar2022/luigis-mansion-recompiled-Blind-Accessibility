@@ -100,6 +100,9 @@ fn_8003D634 us pal
 fn_8003BE9C us pal
 fn_800115F8 us pal
 fn_80114E18 us pal
+# ...except the event scene's render-to-texture pass inside it (door knob reflection): its
+# viewport stays where the game copies it from.
+fn_801142C4 us pal
 fn_80045BDC us pal
 fn_800417F8 us pal
 # Game Boy Horror map screen (its frame-loop scene): the map's viewport follows the centered
