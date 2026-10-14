@@ -195,6 +195,7 @@ void probeLine(const char* fmt, ...) {
 // identity paired different things (a wrong tag).
 struct IdentityTotals {
     u64 checked = 0, flagged = 0;
+    u64 vertsChecked = 0, vertsFlagged = 0;  // CPU-built vertex blocks (their centroid)
 } sIdTotals;
 std::array<s32, 10> sSlotPatch;
 std::vector<std::array<s32, 10>> sBundleSlots;
@@ -839,6 +840,41 @@ void checkIdentity(const Tape& t0, const Tape& t1, const Tape& t2) {
     }
     sIdTotals.checked += checked;
     sIdTotals.flagged += flagged;
+    // CPU-built geometry (hose quads, particles' quads, effect strips): a block followed by its
+    // identity over three frames; its centroid must not jump there and back (blocks paired with
+    // another part of the mesh). The detector's draw probe only judges matrix draws.
+    u32 vChecked = 0, vFlagged = 0;
+    const auto centroid = [](const Tape& t, const Patch& p, f32 c[3]) {
+        c[0] = c[1] = c[2] = 0;
+        for (u32 v = 0; v < p.count; v++)
+            for (int k = 0; k < 3; k++) c[k] += vtx(t, p, v, k);
+        for (int k = 0; k < 3; k++) c[k] /= float(std::max<u32>(p.count, 1));
+        return std::isfinite(c[0] + c[1] + c[2]);
+    };
+    for (u32 i = 0; i < t2.patches.size(); i++) {
+        const Patch& p2 = t2.patches[i];
+        if (p2.kind != Kind::Verts) continue;
+        const s32 j = t2.partner[i];
+        if (j < 0) continue;
+        const s32 k = t1.partner.empty() ? -1 : t1.partner[j];
+        if (k < 0) continue;
+        f32 c0[3], c1[3], c2[3];
+        if (!centroid(t0, t0.patches[k], c0) || !centroid(t1, t1.patches[j], c1) || !centroid(t2, p2, c2)) continue;
+        vChecked++;
+        float jerk = 0, s01 = 0, s12 = 0;
+        for (int c = 0; c < 3; c++) {
+            jerk += (c0[c] - 2 * c1[c] + c2[c]) * (c0[c] - 2 * c1[c] + c2[c]);
+            s01 += (c1[c] - c0[c]) * (c1[c] - c0[c]);
+            s12 += (c2[c] - c1[c]) * (c2[c] - c1[c]);
+        }
+        jerk = std::sqrt(jerk), s01 = std::sqrt(s01), s12 = std::sqrt(s12);
+        if (!(jerk > 20.0f && jerk > 1.5f * std::max(s01, s12))) continue;
+        if (vFlagged++ < 20)
+            probeLine("P %llu verts %s jerk %.1f steps %.1f %.1f key %016llX site %08X n %u at %.0f %.0f %.0f\n", (unsigned long long)t2.seq,
+                      kCatName[u32(p2.cat)], jerk, s01, s12, (unsigned long long)p2.key, p2.site, u32(p2.count), c2[0], c2[1], c2[2]);
+    }
+    sIdTotals.vertsChecked += vChecked;
+    sIdTotals.vertsFlagged += vFlagged;
 }
 }  // namespace
 
@@ -1869,9 +1905,9 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
             if (visible) sProbeTotals.visCause[cause]++, sProbeWindow.visCause[cause]++;
             static u64 sLastKey = 0;  // one S line per matrix (a draw reports many vertices' records)
             if (P.key != sLastKey) {
-                probeLine("S %u %llu %.3f %s cat %s key %016llX site %08X area %.0f %s why %.0f %.2f %.0f world %.0f %.0f %.0f\n", pr.present,
+                probeLine("S %u %llu %.3f %s cat %s key %016llX site %08X area %.0f %s why %.0f %.2f %.0f world %.0f %.0f %.0f src %08X\n", pr.present,
                           (unsigned long long)b.seq, pr.alpha, kCauseName[cause], kCatName[u32(P.cat)], (unsigned long long)P.key, P.site,
-                          area, visible ? "visible" : fullView ? "tiny" : "subview", whyRot, whyScale, whyJump, wb[0], wb[1], wb[2]);
+                          area, visible ? "visible" : fullView ? "tiny" : "subview", whyRot, whyScale, whyJump, wb[0], wb[1], wb[2], P.source);
                 // LM_JUDDER_MATRICES=1: both game frames' world matrices of the pair (orientation analysis).
                 static const bool sMats = std::getenv("LM_JUDDER_MATRICES") != nullptr;
                 if (sMats && j >= 0) {
@@ -2833,13 +2869,14 @@ bool replay(bool final) {
             log("[judder] %llu in-between frames, %llu tagged draws judged. DEFECTS (off the ideal by more than %.1f px): blend %llu, "
                 "camera %llu, other %llu; visible (full view, >= %.0f px2): blend %llu, camera %llu, other %llu. Game-frame switches "
                 "(policy): turn %llu, switch %llu, jump %llu (visible %llu / %llu / %llu). Worst %.1f px (visible %.1f); identity check: "
-                "%llu of %llu tagged matrices jumped there and back",
+                "%llu of %llu tagged matrices and %llu of %llu CPU-built blocks jumped there and back",
                 (unsigned long long)w.replays, (unsigned long long)w.judged, sProbeThresh, (unsigned long long)w.cause[0],
                 (unsigned long long)w.cause[2], (unsigned long long)w.cause[4], kVisiblePx2, (unsigned long long)w.visCause[0],
                 (unsigned long long)w.visCause[2], (unsigned long long)w.visCause[4], (unsigned long long)w.cause[1],
                 (unsigned long long)w.cause[5], (unsigned long long)w.cause[6], (unsigned long long)w.visCause[1],
                 (unsigned long long)w.visCause[5], (unsigned long long)w.visCause[6], w.maxErr, w.visMaxErr,
-                (unsigned long long)sIdTotals.flagged, (unsigned long long)sIdTotals.checked);
+                (unsigned long long)sIdTotals.flagged, (unsigned long long)sIdTotals.checked,
+                (unsigned long long)sIdTotals.vertsFlagged, (unsigned long long)sIdTotals.vertsChecked);
             sProbeWindow = {};
         }
         if (sXlPaired + sXlNew)
