@@ -203,6 +203,7 @@ struct TagFrame {
     TagCat cat;
     bool object;   // an object scope is open here or above (values inside are tagged)
     u64 structural;  // identity of the structural (View) scopes only: the camera's identity
+    bool ownCamera = false;  // inside a SubView: drawn with a camera other than the game camera
 };
 constexpr int kMaxTagDepth = 64;
 TagFrame sTagStack[kMaxTagDepth];
@@ -737,7 +738,7 @@ bool blendable(Kind kind, const f32* a, const f32* b, int n) {
 // --- guest ---------------------------------------------------------------------------
 
 namespace {
-const char* const kCatName[] = {"none", "view", "world", "object", "particle", "hud", "effect"};
+const char* const kCatName[] = {"none", "view", "world", "object", "particle", "hud", "effect", "subview"};
 bool worldOrigin(const Tape& t, const Patch& p, f32 o[3]) {
     if (p.view >= t.views.size() || p.count != 12) return false;
     const M34& v = t.views[p.view];
@@ -988,11 +989,13 @@ void pushTag(TagCat cat, u32 object, u32 type, u32 sub) {
     if (sCapturing) {
         const u64 base = scopeBase(parent ? parent->inst : rootInst(), cat, object, type, sub);
         f.inst = mix(base ^ u64(occurrence(sTagOcc, base)) << 44);
-        f.object = cat != TagCat::View || (parent && parent->object);
+        const bool structural = cat == TagCat::View || cat == TagCat::SubView;
+        f.object = !structural || (parent && parent->object);
+        f.ownCamera = cat == TagCat::SubView || (parent && parent->ownCamera);
         // The camera's identity follows the structural scopes only (a view, a sub-view or pass),
         // not the objects drawn in it.
         const u64 sp = parent ? parent->structural : rootInst();
-        f.structural = cat == TagCat::View ? mix(sp ^ mix(u64(object) << 8 ^ sub ^ 0x51E3ull << 48)) : sp;
+        f.structural = structural ? mix(sp ^ mix(u64(object) << 8 ^ sub ^ u64(cat) << 40 ^ 0x51E3ull << 48)) : sp;
     }
     sTagStack[sTagDepth++] = f;
 }
@@ -1042,6 +1045,7 @@ void gxCall(const Ctx& c) {
         sVirt.cat = s.cat;
         sVirt.object = true;
         sVirt.structural = parent ? parent->structural : rootInst();
+        sVirt.ownCamera = parent && parent->ownCamera;
         sVirtActive = true;
         break;
     }
@@ -1089,7 +1093,11 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     else if (sOrtho && kind != Kind::Projection) p.role = 2;
     if (sProbeOut && kind == Kind::PosMtx && nFloats == 12 && slot % 3 == 0 && slot / 3 < 10)
         sSlotPatch[slot / 3] = s32(sPatches.size());
-    if (p.role != 2 && (kind == Kind::PosMtx || kind == Kind::NrmMtx || kind == Kind::Light || p.role == 1)) p.view = sampleView();
+    // (Inside a SubView the game camera is not the one these values were built with: not factored.)
+    const TagFrame* tf = topTag();
+    const bool ownCamera = tf && tf->ownCamera;
+    if (!ownCamera && p.role != 2 && (kind == Kind::PosMtx || kind == Kind::NrmMtx || kind == Kind::Light || p.role == 1))
+        p.view = sampleView();
     if (sTagLogFrame != ~0ull)
         std::fprintf(sTagLog, "f%llu #%u %s %s key %016llX site %08X slot %u src %08X depth %d view %d t %.1f %.1f %.1f%s%s\n",
                      (unsigned long long)sTagLogFrame, u32(sPatches.size()),

@@ -9,6 +9,7 @@
     {0x800611C4u, 0x80063FA4u},  // fn_80060E70+0x354
     {0x800611D4u, 0x80063FB4u},  // fn_80060E70+0x364
     {0x80061278u, 0x80064058u},  // start of fn_80061278
+    {0x80114E18u, 0x80118280u},  // start of fn_80114E18
     {0x8012B6C4u, 0x8012EB40u},  // start of fn_8012B6C4
     {0x8012B918u, 0x8012ED94u},  // start of fn_8012B918
     {0x8012FD14u, 0x80133190u},  // start of fn_8012FD14

@@ -33,6 +33,8 @@ enum class TagCat : u8 {
     Particle,  // one particle of an emitter
     Hud,       // 2D element
     Effect,    // CPU-built or other effect geometry owned by an object
+    SubView,   // structural: a scene drawn with its OWN camera (event scenes: door close-ups, E. Gadd's
+               // call portrait): its values are not factored by the game camera (blended as they are)
 };
 // Opens a scope: `object` is the guest address of the thing drawn (actor, model instance, particle,
 // pane), `type` what it is (vtable, model data, type id; 0 = none), `sub` a part index. Nests; the

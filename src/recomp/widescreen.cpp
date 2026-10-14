@@ -4,6 +4,7 @@
 #include "port/options.h"
 #include "port/settings.h"
 #include "recomp/hle.h"
+#include "recomp/interp.h"
 #include "recomp/version.h"
 #include "recomp/coop.h"
 
@@ -167,6 +168,8 @@ HLE(fn_800115F8) {
 // Event portrait renderer (<PDEMO>): 3D drawn into its own viewport. During E. Gadd's call
 // (GBH screen mode lbl_804D846C = 3) that viewport is the GBH screen.
 HLE(fn_80114E18) {
+    // Frame interpolation: event scenes have their own camera (interp.h TagCat::SubView).
+    interp::TagScope subView(interp::TagCat::SubView, VA(0x80114E18), 0, c.r[3]);
     AnchorScope s(rd32(VA(0x804D846C)) == 3 ? 1 : 0);
     callOriginal(c, "fn_80114E18");
 }
