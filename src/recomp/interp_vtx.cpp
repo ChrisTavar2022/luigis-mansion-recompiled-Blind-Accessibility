@@ -238,6 +238,15 @@ u32 parse(const u8* p, u32 size, bool partial) {
             if ((be32(i + 1) & 0xFFFF) < 0x600) {  // matrix memory, not noted for blending
                 sStreamMtxLoads++;
                 detail::xfMatrixWritten(be32(i + 1) & 0xFFFF, ((be32(i + 1) >> 16) & 0xFFFF) + 1);
+            } else if (sParseTapeBase != ~0u && i + len <= size) {
+                // Channel ambient/material colours (0x100A-0x100D) and light colours written by a
+                // display list (material display lists): blended with its draw, like the BP colours.
+                const u32 addr = be32(i + 1) & 0xFFFF, n = ((be32(i + 1) >> 16) & 0xFFFF) + 1;
+                for (u32 k = 0; k < n; k++) {
+                    const u32 a = addr + k;
+                    if ((a >= 0x100A && a <= 0x100D) || (a >= 0x600 && a < 0x680 && (a & 0xF) == 3))
+                        detail::noteDrawColor(sParseTapeBase + i + 5 + 4 * k, a, 3);
+                }
             }
         } else if (op == 0x20 || op == 0x28 || op == 0x30 || op == 0x38) {  // LOAD_INDX_A..D
             len = 5;
