@@ -26,6 +26,9 @@ using interp::TagScope;
 
 // Furniture/object scopes open: bin models drawn inside are objects, outside them map geometry.
 int sObjectDepth = 0;
+// A stream item drawn with a shared S3D model (fn_800F3120 from fn_8011FB40): the model's group is
+// per item, not per model (u32 item address; 0: none).
+u32 sStreamItem = 0;
 struct ObjectDepth {
     ObjectDepth() { sObjectDepth++; }
     ~ObjectDepth() { sObjectDepth--; }
@@ -88,8 +91,34 @@ HLE(fn_80059C54) {
 HLE(fn_80059F6C) {
     registerSiteTags();
     TagScope t(TagCat::Object, c.r[3], rd32(c.r[3] + 4));
-    interp::tagGroup(c.r[3]);  // one instance: its matrices blend alike (interp.cpp, replayPair)
+    // One instance: its matrices blend alike (interp.cpp, replayPair). A shared model drawn once per
+    // stream item is one instance per item.
+    interp::tagGroup(sStreamItem ? sStreamItem : c.r[3]);
+    const u32 item = sStreamItem;
+    sStreamItem = 0;  // (not for models drawn further inside)
     callOriginal(c, "fn_80059F6C");
+    sStreamItem = item;
+}
+
+// The element streams' items (fn_8011FB40; water drops, fire and ice bits): two loops set ONE shared
+// S3D model's matrix from each item (fn_80059710) and draw it through fn_800F3120(holder) ->
+// fn_80059F6C(holder + 8). Without a scope per item the draws of all items were one model instance
+// paired by occurrence: drops swapped partners (random turns, shown at the game frame) and one
+// respawning drop switched all of them (~320 per frame in the Pipe Room) to 30 Hz (sweep A; the
+// water spray's shimmer). Loop 1 (call at 0x801201F4): items of 0x34 bytes at [r31 + 0x4C] + r27;
+// loop 2 (0x801202F8): items of 0x68 bytes at [r31 + 0x48] + r26.
+HLE(fn_800F3120) {
+    u32 item = 0;
+    if (c.lr == VA(0x801201F4)) item = rd32(c.r[31] + 0x4C) + c.r[27];
+    else if (c.lr == VA(0x801202F8)) item = rd32(c.r[31] + 0x48) + c.r[26];
+    if (!item) {
+        callOriginal(c, "fn_800F3120");
+        return;
+    }
+    TagScope t(TagCat::Particle, item, 0x11FB40);
+    sStreamItem = item;
+    callOriginal(c, "fn_800F3120");
+    sStreamItem = 0;
 }
 HLE(fn_8005A280) {  // shadow casters
     registerSiteTags();
@@ -151,6 +180,15 @@ HLE(fn_80015CF4) {
     TagScope t(sObjectDepth > 0 || c.r[4] != 0 ? TagCat::Object : TagCat::World, c.r[3], c.r[4], c.r[5] & 0xFF);
     callOriginal(c, "fn_80015CF4");
 }
+// fn_80015BDC(room lighting r3, ambient colour r4), from the room loop fn_80011824: loads the room's
+// lights and its ambient colour (GXSetChanAmbColor at 0x80015C88). Untagged, the ambient fades
+// (arriving in the foyer, a room's lights coming on, lit/dark changes: ~10/255 per game frame)
+// stepped at 30 Hz (sweep C: 94% of the foyer's ramp at the tape change).
+HLE(fn_80015BDC) {
+    TagScope t(TagCat::World, c.r[3], 0x15BDC);
+    callOriginal(c, "fn_80015BDC");
+}
+
 HLE(fn_80015844) {  // one node (r6) of the model being drawn, recursive
     const TagCat cat = sObjectDepth > 0 ? TagCat::Object : TagCat::World;
     TagScope t(cat, 0, 0x15844, c.r[6] & 0xFFFF);

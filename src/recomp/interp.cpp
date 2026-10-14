@@ -138,6 +138,11 @@ struct Tape {
     // Per patch (host, set by the replays from pairedWith): how far the model matrix moved in world
     // space since pairedWith (-1: not known). A pair that keeps moving fast is motion, not a jump.
     std::unique_ptr<std::atomic<float>[]> worldStep;
+    // Per patch (host, likewise): how far its world rotation turned since pairedWith, in degrees (-1:
+    // not known), about which axis, and for how many more game frames it counts as tumbling (noteTurn).
+    std::unique_ptr<std::atomic<float>[]> worldTurn;
+    std::unique_ptr<std::atomic<float>[]> worldAxis;  // x, y, z per patch
+    std::unique_ptr<std::atomic<u8>[]> worldTumble;
     // Per patch (host, set by each replay from pairedWith): 1 when its model instance has a matrix
     // that cannot blend, so the whole instance is shown as b (the detector judges it as a switch).
     std::unique_ptr<std::atomic<u8>[]> groupSnap;
@@ -518,7 +523,7 @@ bool blendSpin(const f32* a, const f32* b, float t, f32* out) {
     return true;
 }
 
-bool blendable(Kind kind, const f32* a, const f32* b, int n);
+bool blendable(Kind kind, const f32* a, const f32* b, int n, float prevTurn = -1.0f);
 
 // Camera position of a rigid view matrix (eye = -R^T t) and the view direction (row 2).
 void eyeOf(const M34& v, float e[3]) {
@@ -544,11 +549,17 @@ void pairTapes(const Tape& a, Tape& b) {
     b.pairedWith = &a;
     b.partner.assign(b.patches.size(), -1);
     b.worldStep.reset(new std::atomic<float>[b.patches.size()]);
+    b.worldTurn.reset(new std::atomic<float>[b.patches.size()]);
+    b.worldAxis.reset(new std::atomic<float>[3 * b.patches.size()]);
+    b.worldTumble.reset(new std::atomic<u8>[b.patches.size()]);
     b.groupSnap.reset(new std::atomic<u8>[b.patches.size()]);
     b.vertStep.reset(new std::atomic<float>[3 * b.patches.size()]);
     for (u32 i = 0; i < 3 * b.patches.size(); i++) b.vertStep[i].store(std::nanf(""), std::memory_order_relaxed);
     for (u32 i = 0; i < b.patches.size(); i++) {
         b.worldStep[i].store(-1.0f, std::memory_order_relaxed);
+        b.worldTurn[i].store(-1.0f, std::memory_order_relaxed);
+        b.worldTumble[i].store(0, std::memory_order_relaxed);
+        for (int c = 0; c < 3; c++) b.worldAxis[3 * i + c].store(0.0f, std::memory_order_relaxed);
         b.groupSnap[i].store(0, std::memory_order_relaxed);
     }
     static std::unordered_map<u64, s32> byKey;
@@ -776,7 +787,11 @@ bool untwist(f32* wa, const f32* wb, int cols = 4) {
 
 // `prevStep`: how far the same identity moved over the game frame before (-1: unknown); a pair that
 // moves at most about as far again is fast motion (Chauncey's swoops, a boss charging), not a jump.
-bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -1.0f) {
+// prevTurn (noteTurn) above this: the identity spins or tumbles, so a turn over ~150 degrees in one
+// game frame blends the short way instead of switching.
+constexpr float kSpinnerTurn = 60.0f;
+
+bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -1.0f, float prevTurn = -1.0f) {
     Rigid ra, rb;
     if (!decompose(wa, 4, ra) || !decompose(wb, 4, rb)) {
         for (int i = 0; i < 12; i++)
@@ -792,7 +807,9 @@ bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -
         }
     } else {
         if ((ra.u[2][2] < 0) != (rb.u[2][2] < 0)) return false;
-        if (std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]) < 0.26f) return false;
+        if (!(prevTurn > kSpinnerTurn) &&
+            std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]) < 0.26f)
+            return false;
         for (int k = 0; k < 3; k++) {
             const float sa = std::fabs(ra.u[k][k]), sb = std::fabs(rb.u[k][k]);
             if (std::max(sa, sb) > 0.05f && (sb > 16.0f * sa + 1e-4f || sa > 16.0f * sb + 1e-4f)) return false;
@@ -830,6 +847,45 @@ bool resolveFlip(const f32* a, f32* b, int cols) {
     }
     return false;
 }
+// Records how patch i of b turned since its partner j in a (world matrices wa -> wb, before flip or
+// twist resolution: angle, axis) and returns the prevTurn argument of blendableWorld / blendable:
+// above kSpinnerTurn when the identity spins (it turned by over 60 degrees in the game frame before:
+// Chauncey, rolling balls, 150-175 degrees per game frame about one axis, blend the short way, which
+// is their direction under 180) or tumbles (two turns in a row over 20 degrees about axes more than
+// 45 degrees apart; the evidence holds for 8 game frames, since a tumbler's turn is sometimes small).
+// The element streams' drops (fn_8011FB40's items, one shared S3D model) take a random orientation
+// every game frame (35-180 degrees about any axis): the turns over 150 were shown at the game frame
+// while the rest blended, and the water spray shimmered at 30 Hz (user report; LM_TWIST_LOG). Luigi
+// turns about one axis by 20-25 degrees per game frame: his instant turns stay switches.
+float noteTurn(const Tape* a, s32 j, const Tape& b, u32 i, const f32* wa, const f32* wb, int cols) {
+    Rigid ra, rb;
+    if (!decompose(wa, cols, ra) || !decompose(wb, cols, rb)) return -1.0f;
+    // r = qb * conj(qa): the turn in world space.
+    const float* x = rb.q;
+    const float y[4] = {-ra.q[0], -ra.q[1], -ra.q[2], ra.q[3]};
+    float r[4] = {x[3] * y[0] + x[0] * y[3] + x[1] * y[2] - x[2] * y[1], x[3] * y[1] - x[0] * y[2] + x[1] * y[3] + x[2] * y[0],
+                  x[3] * y[2] + x[0] * y[1] - x[1] * y[0] + x[2] * y[3], x[3] * y[3] - x[0] * y[0] - x[1] * y[1] - x[2] * y[2]};
+    if (r[3] < 0)
+        for (float& v : r) v = -v;
+    const float deg = 2.0f * std::acos(std::min(r[3], 1.0f)) * 57.2958f;
+    const float len = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+    const float axis[3] = {len > 1e-6f ? r[0] / len : 0.0f, len > 1e-6f ? r[1] / len : 0.0f, len > 1e-6f ? r[2] / len : 0.0f};
+    if (!b.worldTurn || !b.worldAxis || !b.worldTumble) return -1.0f;
+    for (int c = 0; c < 3; c++) b.worldAxis[3 * i + c].store(axis[c], std::memory_order_relaxed);
+    b.worldTurn[i].store(deg, std::memory_order_relaxed);
+    if (!a || j < 0 || !a->worldTurn || !a->worldAxis || !a->worldTumble) return -1.0f;
+    const float prev = a->worldTurn[j].load(std::memory_order_relaxed);
+    const u8 prevTumble = a->worldTumble[j].load(std::memory_order_relaxed);
+    u8 tumble = prevTumble > 0 ? u8(prevTumble - 1) : 0;
+    if (prev > 20.0f && deg > 20.0f && len > 1e-6f) {
+        float d = 0;
+        for (int c = 0; c < 3; c++) d += axis[c] * a->worldAxis[3 * j + c].load(std::memory_order_relaxed);
+        if (std::fabs(d) < 0.7071f) tumble = 8;
+    }
+    b.worldTumble[i].store(tumble, std::memory_order_relaxed);
+    if (prev > kSpinnerTurn) return prev;
+    return prevTumble > 0 || tumble == 8 ? 1000.0f : -1.0f;
+}
 u32 sFlips = 0;  // pairs blended through an equivalent flipped orientation (stats)
 u32 sFlatBlends = 0;  // squashed-flat model matrices blended entrywise in world space (stats)
 u32 sUntwists = 0;    // pairs whose fast twist was taken from b (stats)
@@ -842,7 +898,7 @@ u32 sGroupForced = 0; // model instances blended linearly as a whole (stats)
 // (groupSnap 2): entrywise in world space, no flip or twist resolution.
 bool sLinearBlend = false;
 
-bool blendable(Kind kind, const f32* a, const f32* b, int n) {
+bool blendable(Kind kind, const f32* a, const f32* b, int n, float prevTurn) {
     switch (kind) {
     case Kind::PosMtx:
     case Kind::NrmMtx: {
@@ -858,7 +914,8 @@ bool blendable(Kind kind, const f32* a, const f32* b, int n) {
             return true;
         }
         if ((ra.u[2][2] < 0) != (rb.u[2][2] < 0)) return false;
-        if (std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]) < 0.26f)
+        if (!(prevTurn > kSpinnerTurn) &&
+            std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]) < 0.26f)
             return false;  // cos(angle / 2) < 0.26: more than ~150 degrees, no telling which way
         for (int k = 0; k < 3; k++) {
             const float sa = std::fabs(ra.u[k][k]), sb = std::fabs(rb.u[k][k]);
@@ -1996,7 +2053,9 @@ void probeCallback(const AuroraDrawProbe* p) {
     std::memcpy(r.ndcMax, p->ndcMax, sizeof(r.ndcMax));
     std::memcpy(r.viewport, p->viewport, sizeof(r.viewport));
     std::lock_guard lk(sProbeM);
-    if (sProbeIn.size() < (1u << 20)) sProbeIn.push_back(r);
+    // (Capped at 2^18 records, ~50 MB: unjudged draws piled up to 1M records and the doubling vector
+    // failed to allocate under memory pressure, sweep A.)
+    if (sProbeIn.size() < (1u << 18)) sProbeIn.push_back(r);
 }
 struct ProbeReplay {
     u32 id;
@@ -2168,12 +2227,13 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 M34 Wa, Wb, Wt;
                 compose(iq.data(), ma, Wa.data());
                 compose(ib.data(), m, Wb.data());
+                const float prevTurn = noteTurn(a, j, b, pb, Wa.data(), Wb.data(), 4);
                 resolveFlip(Wa.data(), Wb.data(), 4);
                 untwist(Wa.data(), Wb.data());
                 const u8 groupPolicy = b.groupSnap ? b.groupSnap[pb].load(std::memory_order_relaxed) : 0;
                 if (groupPolicy != 2 &&
                     !blendableWorld(Wa.data(), Wb.data(), std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]),
-                                    a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f)) {
+                                    a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f, prevTurn)) {
                     cause = 1;
                     Rigid ra, rb;
                     if (decompose(Wa.data(), 4, ra) && decompose(Wb.data(), 4, rb)) {
@@ -2447,6 +2507,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 // (Recorded here too: a switched instance skips the per-matrix path that records it.)
                 if (b.worldStep && b.worldStep[i].load(std::memory_order_relaxed) < 0.0f)
                     b.worldStep[i].store(step, std::memory_order_relaxed);
+                const float prevTurn = noteTurn(a, j, b, i, wa.data(), wb.data(), 4);
                 // An erratic member (it already moved by more than a quarter of its distance from the
                 // camera, and over 150 units, in the game frame before) has no say for the instance:
                 // the nursery's floating teddy bears (one J3D model) have one draw matrix that lands
@@ -2455,8 +2516,8 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 // whole bear to 30 Hz about one game frame in 11 (sweep B). It is still blended or
                 // switched on its own below.
                 if (prev > 150.0f && prev > 0.25f * dist) continue;
-                const bool near = blendableWorld(wa.data(), wb.data(), dist, prev);
-                const bool anyDist = blendableWorld(wa.data(), wb.data(), 1e9f);
+                const bool near = blendableWorld(wa.data(), wb.data(), dist, prev, prevTurn);
+                const bool anyDist = blendableWorld(wa.data(), wb.data(), 1e9f, -1.0f, prevTurn);
                 if (!near && anyDist) {  // only the place jumped
                     snapGroups.insert(p.group);
                     continue;
@@ -2517,8 +2578,10 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 // game frames; tint check, water.)
                 // A light's colour (noteColor `light`): its light must pair with the partner's light.
                 const bool lightOk = p.slot && qc.slot && p.slot - 1 < b.patches.size() && b.partner[p.slot - 1] == s32(qc.slot - 1);
+                // World scopes (a room's lighting, fn_80015BDC) are their own identity: no draw check.
                 if (p.slot ? !lightOk
-                           : p.bundle >= sBundleToA.size() || sBundleToA[p.bundle] < 0 || s32(qc.bundle) != sBundleToA[p.bundle]) {
+                           : p.cat != TagCat::World &&
+                                 (p.bundle >= sBundleToA.size() || sBundleToA[p.bundle] < 0 || s32(qc.bundle) != sBundleToA[p.bundle])) {
                     sColorsSwitched++;
                     continue;
                 }
@@ -2664,12 +2727,13 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     M34 wa, wb;
                     compose(vp->ia.data(), va, wa.data());
                     compose(vp->ib.data(), vb, wb.data());
+                    const float prevTurn = noteTurn(a, j, b, i, wa.data(), wb.data(), 4);
                     resolveFlip(wa.data(), wb.data(), 4);
                     untwist(wa.data(), wb.data());
                     const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
                     if (b.worldStep) b.worldStep[i].store(step, std::memory_order_relaxed);
                     const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
-                    ok = forced || blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev);
+                    ok = forced || blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev, prevTurn);
                 } else {
                     ok = blendable(p.kind, va, vb, p.count);
                 }
@@ -2683,9 +2747,10 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                             na[3 * r + c2] = vp->va[r] * va[c2] + vp->va[4 + r] * va[3 + c2] + vp->va[8 + r] * va[6 + c2];
                             nb[3 * r + c2] = vp->vb[r] * vb[c2] + vp->vb[4 + r] * vb[3 + c2] + vp->vb[8 + r] * vb[6 + c2];
                         }
+                    const float prevTurn = noteTurn(a, j, b, i, na, nb, 3);
                     resolveFlip(na, nb, 3);
                     untwist(na, nb, 3);
-                    ok = forced || blendable(Kind::NrmMtx, na, nb, 9);
+                    ok = forced || blendable(Kind::NrmMtx, na, nb, 9, prevTurn);
                 } else {
                     ok = blendable(p.kind, va, vb, p.count);
                 }
