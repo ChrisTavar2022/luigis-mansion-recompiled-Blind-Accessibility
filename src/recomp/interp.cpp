@@ -97,6 +97,7 @@ struct Patch {
     u8 role = 0;        // 1: a shadow receiver's texture matrix (noteShadowLight), 2: 2D (orthographic)
     TagCat cat = TagCat::None;  // category of the innermost object scope (policy)
     bool inScope = false;       // noted inside any tag scope (a view at least): untagged values outside are left as captured
+    bool ownCamera = false;     // noted in a SubView (its own camera: blended as drawn)
     u32 site = 0;       // guest call site (logs)
 };
 
@@ -1104,6 +1105,7 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     // (Inside a SubView the game camera is not the one these values were built with: not factored.)
     const TagFrame* tf = topTag();
     const bool ownCamera = tf && tf->ownCamera;
+    p.ownCamera = ownCamera;
     if (!ownCamera && p.role != 2 && (kind == Kind::PosMtx || kind == Kind::NrmMtx || kind == Kind::Light || p.role == 1))
         p.view = sampleView();
     if (sTagLogFrame != ~0ull)
@@ -2068,6 +2070,13 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 } else {
                     ok = blendable(p.kind, va, vb, p.count);
                 }
+            } else if (p.ownCamera && p.kind == Kind::PosMtx && p.count == 12) {
+                // A scene with its own camera (event portraits, door close-ups): the camera is static or
+                // slow, so a model that moves by more than a tenth of its distance in one game frame was
+                // placed anew (the call portrait parked off screen as the call closes): switch.
+                const float d = std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]);
+                const float j = std::hypot(va[3] - vb[3], va[7] - vb[7], va[11] - vb[11]);
+                ok = blendable(p.kind, va, vb, p.count) && j <= std::max(20.0f, 0.1f * d);
             } else if (p.bundle < b.bundlePass.size() && b.bundlePass[p.bundle] == 1 && sLightPair.ok) {
                 // The shadow caster pass, while its light blends: everything in it blends with the
                 // light (the receivers use the blended light; a caster shown as captured would sit a
