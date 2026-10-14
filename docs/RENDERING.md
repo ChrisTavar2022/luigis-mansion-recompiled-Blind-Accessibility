@@ -2358,7 +2358,8 @@ come from the flashlight light: the bright spot light within 400 units of the le
 floors, scripted scenes: the scene is lit by other lights and the flashlight is only the mesh) the
 realistic beam is skipped and the game's cone mesh is drawn as in the original (decided from the
 previous frame, since the mesh is drawn before all lights are known). Without a cone mesh in the
-frame (cutscene lights such as the opening's) the previous choice is kept. The cone mesh is lit by a
+frame (cutscene lights such as the opening's) the previous choice was kept; since 0220 there is no
+beam then (see "The white wedge in the foyer" below). The cone mesh is lit by a
 dummy light 7 at (0, 0, 10000), so its own lighting cannot identify the flashlight. The shadow-map
 check compares the map's eye with the flashlight light (not the mesh), so a trailing light keeps
 its shafts. The beam's inverse-square term is capped at 4x the reference level, so a camera looking
@@ -2377,6 +2378,56 @@ open/close, quick turns; the lens-to-light distance in every scene end of gamepl
 Test aids: `AURORA_BEAM_NOCONE=1` (first version's choice) / `=2` (on every other scene end,
 logged), `AURORA_BEAM_LOG=1` (cone lens, spot lights, match distance and angle), `LM_BEAM_LOG=1`
 (port: dump frame of each main view, to pair with the Aurora lines).
+
+#### The white wedge in the foyer (Aurora 0220)
+
+User video: in the foyer Luigi stands by the pillar right of the web-covered door and the beam
+shows as a huge, flat, hard-edged white wedge over the left of the picture, "detached from the
+flashlight", identical at Original 30. Reproduced with the integrator's wander script (map 2 =
+foyer, `LM_TEST_STATE=poltergust+water`, the user's Ultra settings, `AURORA_BEAM_FREEZE_TIME=1`):
+dump frames 2133 and 2203-2207.
+
+**Cause: the beam was drawn from a light that is not the flashlight.** Those are the frames where
+Luigi walks into the electrified barrier: the game turns the flashlight off (no `handlight_ef`
+cone mesh is drawn; vanilla shows no beam at all) and lights Luigi with a white, wide spot light
+(colour 1/1/1, angular edge cos 0.766, distance term k1 = 1/1900) at his position, pointing back
+at the camera. Without a cone mesh `resolve_flash` kept the frame's nearest bright spot light, so
+the realistic beam was ray-marched from that light: white, unshadowed (the game's shadow map is not
+rendered from it), its apex hidden behind the pillar so it seemed to start in mid-air, and boosted
+about 2x by the switch-on flare (the flashlight had been off for over 0.4 s). This is also the
+"white, wider light at the start of some scenes" noted above. The shader itself was not at fault:
+the march is clamped to the scene depth (the pillar is not painted over by air behind it), the
+shadow test and the Henyey-Greenstein phase (at most 3.2 at g = 0.35) are bounded.
+
+**Fix:** a frame without the cone mesh has no flashlight: no realistic (or volumetric) beam, and
+it counts as "off" for the switch-on flare (`resolve_flash` now runs before anything reads
+`g_flash`). Gameplay never relied on the fallback (an opening-to-foyer run had no beam frame
+without the mesh; the wander run had only these 6).
+
+**Looking into the beam.** With the real flashlight aimed at the camera (Luigi walking toward it in
+the nursery, frames 2672-2792 of the nursery script; foyer frame 2140, camera 20 degrees off the
+axis, i.e. inside the cone, 1440 units from the lens) the view ray runs lengthwise through the
+bright part near the lens and the haze it gathers grows like 1/sin(angle to the axis); the
+picture was a full-screen yellow wash. `fs_beam` now scales the scattering of a ray within the
+cone's half angle of the way back to the lens by `min(sqrt(sin^2(angle) / sin^2(half angle) + 0.36), 1)`
+(0.6 straight into the lens): the glow stays centred on the lens and the room stays readable.
+Rays at larger angles (every side or back view of the beam) are unchanged, bit for bit.
+
+**The yellow patch on the upper wall** after the shock (dump frames 2208-2213) is the flashlight's
+own pool: Luigi aims it up and slightly away (axis about (-0.07, 0.98, -0.17) in view space), and
+vanilla lights the same patch (same outline: the balcony above, the pillar's silhouette in front).
+The enhanced footprint is brighter near Luigi (inverse square) as designed; not an artefact.
+
+**Verification** (640x480 frame dumps, Original 30, images in the agent scratchpad, not in the
+repo): foyer before/after (2133, 2203, 2205, 2207, 2140): the wedges are gone (frames as vanilla
+plus the room's enhanced lighting), 2140 a softer lens glow; frames where the flashlight is on and
+not facing the camera are identical, the rest differ by at most 23 levels where the flare history
+changed (the shock no longer counts as switching the flashlight on). Nursery script (Ultra, every
+4th frame 2580-2960): identical except the 19 frames where Luigi faces the camera. Vanilla
+(enhanced lighting off) 2190-2240: byte-identical to main.
+
+Test aid: `AURORA_BEAM_SHOW=3` shows the scattering amount v as a heat map (red 0..2, green 2..6,
+blue 8..16) instead of the picture.
 
 ## GPU cost (branch `gpu-opt`, Aurora 0210-0213)
 
