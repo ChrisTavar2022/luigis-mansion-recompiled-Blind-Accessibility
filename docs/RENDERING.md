@@ -1213,19 +1213,34 @@ shipped list, one game at a time (`--lock`), per F1 preset:
 |----|----|----|----|----|
 | User's settings (Ultra, ghost/world lights, AO, realistic flashlight 3, shadow maps, smooth banding, CRT) | opening, tour, ghost room, lab, event 9, event 5, Chauncey, Bogmire, ending | opening 62, tour 147 | **1** (tour; the other 8 routes 0) | 77-86 s (8969 pipelines) |
 | Default (Enhanced lighting off) | the same 9 | opening 62, tour 110 | **1** (tour; the other 8 routes 0) | 19-23 s (3043) |
-| Enhanced Low | opening, tour, event 9, Bogmire | | 1 (tour) over opening, tour, event 9; Bogmire pending | 72-79 s (8165) |
-| Enhanced High | the same 4 | | pending | |
-| Enhanced Ultra (+ ghost/world lights, AO, realistic flashlight 3) | the same 4 | | pending | |
+| Enhanced Low | opening, tour, event 9, Bogmire | | 1 (tour) over opening, tour, event 9; Bogmire **0** (4387 list) | 72-79 s (8165); 3 threads on a loaded machine: 298 s (8180) |
+| Enhanced High | the same 4 | | **0** on all 4 (4387 list) | 3 threads, loaded machine: 233-374 s (8180) |
+| Enhanced Ultra (+ ghost/world lights, AO, realistic flashlight 3) | the same 4 | | **0** on all 4 (4387 list) | 3 threads, loaded machine: 203-325 s (8984) |
+| Enhanced Ultra at 120 fps (interpolated, `enh_ultra_120`) | tour | | **0** (4387 list) | 278 s (8984) |
 
-**Still to run** (postponed to the end of the project): Enhanced Low on Bogmire, and Enhanced High
-and Ultra on all 4 routes (opening, tour, event9, boss13). They use the 4387-config list, so a
-miss in them is a new gap. Run them like this (one game at a time, `--resume` keeps finished runs,
-`--lock` is the shared game-window lock file if one is in use), then fill in the three rows above:
+The Enhanced High/Ultra and Low-on-Bogmire runs (2026-10-14, main 3c6c4c7 with Aurora 0219, the High opening on c0a8041; the
+4387-config list) ran every route to its end with no MISS; their caches added nothing to the list
+(their 28 recorded rows were all in it already: still 4387 configs). Frame interpolation at 120 fps
+(tagged interpolation, presented 90-117 fps) needs no pipeline of its own: it replays the recorded
+draws with blended uniforms. The startup times are not comparable with the earlier rows: the
+machine ran up to six other games and `LM_PIPELINE_THREADS=3` (with 8 threads next to them the shader
+compiler ran out of memory). Run them like this (one game at a time, `--resume` keeps finished runs,
+`--lock` is the shared game-window lock file if one is in use):
 
 ```
 python tools/pipelines/verify.py --work <scratch>/vfy --data-root <checkout with orig/> --resume ^
-    --presets enh_low,enh_high,enh_ultra --routes opening,tour,event9,boss13 [--lock <GAME_LOCK file>]
+    --presets enh_low,enh_high,enh_ultra,enh_ultra_120 --routes opening,tour,event9,boss13 ^
+    --startup-seconds 6000 [--lock <GAME_LOCK file>]
 ```
+
+A run ends at the route's last guest frame (the input script is timed in presented frames), when
+the time limit (route length x 1.4 + `--startup-seconds`) runs out, or after `--stall-seconds`
+(600) without log output (a hang; set `LM_HANG_DUMP=120` for the thread stacks). `result.json`
+says `"complete": false` when it ended before the route's end: a MISS count of 0 then means
+nothing for the rest of the route. Every `<preset>` has a `<preset>_120` twin at 120 fps.
+Two runs on c0a8041 hung in the opening (main loop idle, a Dawn thread waiting for a Dawn mutex:
+probably the readback-callback / present-timing deadlock Aurora 0219 `9de041b` fixes); none on the
+build with 0219.
 
 The miss left in the tour (the same material in every preset) is a COLOR1 material whose
 material colour comes from the vertex (no vertex colour: constant white) where every recorded
