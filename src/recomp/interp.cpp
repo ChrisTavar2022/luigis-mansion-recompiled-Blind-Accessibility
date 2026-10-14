@@ -1359,20 +1359,34 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
 // (kColorBp, kColorFog, kColorRgba8) so only the same register pairs.
 constexpr u16 kColorBp = 1, kColorFog = 2, kColorRgba8 = 3;
 
-void noteColor(u32 off, u16 format, u32 reg) {
+// `light`: index + 1 of the Light value (GXLoadLightObjImm) this colour word belongs to (0: none).
+void noteColor(u32 off, u16 format, u32 reg, u32 light = 0) {
     Patch p{off, 1, Kind::Color};
     p.stride = format;
     p.source = reg;
     p.site = sCallLr;
-    p.key = valueKey(Kind::Color, reg, 0, p.cat);
+    if (light && sPatches[light - 1].key) {
+        // A light's colour is part of that light (the light object + slot, its own identity even
+        // outside any object scope): Bogmire's arena lightning fades the scene light's colour from
+        // white to black over a second, loaded untagged per view; keyed by scope it was key 0 and
+        // stepped at 30 Hz (sweep C).
+        p.key = mix(sPatches[light - 1].key ^ 0xC01015C01015ull ^ u64(reg) << 20);
+        p.cat = sPatches[light - 1].cat;
+        p.slot = light;
+    } else {
+        p.key = valueKey(Kind::Color, reg, 0, p.cat);
+    }
     if (sOrtho) p.role = 2;  // 2D layout: as captured
     p.inScope = sTagDepth > 0 || sVirtActive;
     sPatches.push_back(p);
 }
 
-void noteColors(u32 at) {
+void noteColors(u32 at, u32 lightObj) {
     if (at == ~0u || !capturing() || sNoBlend > 0) return;
     const u32 end = sBase + AuroraCapturePos();
+    u32 light = 0;  // the Light value just noted for lightObj (index + 1)
+    if (lightObj && !sPatches.empty() && sPatches.back().kind == Kind::Light && sPatches.back().source == lightObj)
+        light = u32(sPatches.size());
     for (u32 i = at; i < end;) {
         const u8 op = sScratch[i];
         if (op == 0x61 && i + 5 <= end) {  // BP write
@@ -1387,7 +1401,7 @@ void noteColors(u32 at) {
             for (u32 k = 0; k < n; k++) {
                 const u32 a = addr + k;
                 if ((a >= 0x100A && a <= 0x100D) || (a >= 0x600 && a < 0x680 && (a & 0xF) == 3))
-                    noteColor(i + 5 + 4 * k, kColorRgba8, a);
+                    noteColor(i + 5 + 4 * k, kColorRgba8, a, a >= 0x600 && a < 0x680 ? light : 0);
             }
             i += 5 + 4 * n;
         } else if (op == 0x08 && i + 6 <= end) {  // CP write
@@ -2428,7 +2442,20 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 // (No flip or twist resolution here: done per matrix it breaks a skinned mesh, whose
                 // envelope matrices are weighted sums of its joints.)
                 const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
-                const bool near = blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev);
+                const float dist = std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]);
+                const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
+                // (Recorded here too: a switched instance skips the per-matrix path that records it.)
+                if (b.worldStep && b.worldStep[i].load(std::memory_order_relaxed) < 0.0f)
+                    b.worldStep[i].store(step, std::memory_order_relaxed);
+                // An erratic member (it already moved by more than a quarter of its distance from the
+                // camera, and over 150 units, in the game frame before) has no say for the instance:
+                // the nursery's floating teddy bears (one J3D model) have one draw matrix that lands
+                // 500-1000 units elsewhere every game frame (unused, or weighted zero) while the bear
+                // moves a few units; when its step outgrew the continuity allowance it switched the
+                // whole bear to 30 Hz about one game frame in 11 (sweep B). It is still blended or
+                // switched on its own below.
+                if (prev > 150.0f && prev > 0.25f * dist) continue;
+                const bool near = blendableWorld(wa.data(), wb.data(), dist, prev);
                 const bool anyDist = blendableWorld(wa.data(), wb.data(), 1e9f);
                 if (!near && anyDist) {  // only the place jumped
                     snapGroups.insert(p.group);
@@ -2488,7 +2515,10 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 // item loop calls has no item tag: keyed by occurrence under the emitter, the n-th
                 // bubble's colour paired with another bubble's and the bubbles dimmed between
                 // game frames; tint check, water.)
-                if (p.bundle >= sBundleToA.size() || sBundleToA[p.bundle] < 0 || s32(qc.bundle) != sBundleToA[p.bundle]) {
+                // A light's colour (noteColor `light`): its light must pair with the partner's light.
+                const bool lightOk = p.slot && qc.slot && p.slot - 1 < b.patches.size() && b.partner[p.slot - 1] == s32(qc.slot - 1);
+                if (p.slot ? !lightOk
+                           : p.bundle >= sBundleToA.size() || sBundleToA[p.bundle] < 0 || s32(qc.bundle) != sBundleToA[p.bundle]) {
                     sColorsSwitched++;
                     continue;
                 }

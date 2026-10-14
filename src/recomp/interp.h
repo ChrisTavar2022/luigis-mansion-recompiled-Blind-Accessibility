@@ -101,7 +101,9 @@ void noteExtraLights(u32 at, u32 count);
 // written from tape offset `at` to now: each register is a value of its tag scope, blended with
 // the same identity's register in the previous game frame unless it jumps (a blink, a flash, an
 // on/off switch: shown at the game frame). 2D (HUD) colors are never blended.
-void noteColors(u32 at);
+// `lightObj`: the colours come from GXLoadLightObjImm of that light object (noted as a Light value
+// just before): a light's colour takes the light's identity and blends while the light pairs.
+void noteColors(u32 at, u32 lightObj = 0);
 
 // Camera factoring: position/normal matrices and lights are view x world; they are blended as
 // a blended camera times a blended world transform (objects move with the scene as one rigid

@@ -900,6 +900,13 @@ GXHLE(GXBegin) {
 }
 
 GXHLE(GXCallDisplayList) {
+    // A list outside guest memory (a corrupt pointer: the console's GPU would read garbage) would
+    // crash the host reading it (Aurora, the vertex snapshots, interpolation's parse): skipped.
+    if ((c.r[3] >> 28) != 0xE && ((c.r[3] & kHostMemMask) + u64(c.r[4]) > kHostMemSize || c.r[4] > (16u << 20))) {
+        static int sLogged = 0;
+        if (sLogged++ < 8) log("[gx] GXCallDisplayList(%08X, %X) outside guest memory, skipped (lr %08X)", c.r[3], c.r[4], c.lr);
+        return;
+    }
     if (FILE* f = dlTraceFile()) {
         std::fprintf(f, " %08X:%X@%08X", c.r[3], c.r[4], c.lr);
         u32 sp = c.r[1];
@@ -1105,7 +1112,7 @@ GXHLE(GXLoadLightObjImm) {
         }
     }
     interp::note(at, interp::Kind::Light, c.r[3], std::countr_zero(c.r[4] | 0x100u), 6, 10);
-    interp::noteColors(at);
+    interp::noteColors(at, c.r[3]);
 }
 
 // --- textures ------------------------------------------------------------------------------
