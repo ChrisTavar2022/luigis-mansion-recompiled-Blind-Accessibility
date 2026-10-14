@@ -91,6 +91,16 @@ A value of game frame b pairs with the value of frame a that has the same key an
   camera alone made nearby things "jump"). A turn over ~150 degrees is first tried against b turned
   180 degrees about each of its own axes: within 45 degrees of a, that equivalent is blended (matrices
   built from direction vectors, e.g. the Poltergust hose's segments, flip their roll between frames).
+- Fast twists: a pair that turns by more than 75 degrees in one game frame mostly about one of its own
+  axes (that axis turning by less than 35 degrees, the part scaled alike across it) takes the twist
+  from b at once and blends only the rest (`untwist`). The Poltergust hose's envelope matrices are
+  rebuilt from the hose direction every frame and their roll changes by up to ~150 degrees between
+  game frames: blending spun the ribs around the tube.
+- Model instances switch as a whole: when one position matrix of a J3D model (its shape packets share
+  the matrix buffer at packet +0x14: `tagGroup`) cannot blend, every matrix of that model is shown as
+  b for that interval. A skinned mesh whose envelope matrices were partly blended and partly
+  switched tore apart: the hose stretched into long sticks across Luigi in the in-betweens of a
+  swing (test mode, vacuum scenario frame 2607). The detector counts those as switches.
 - Fast motion is not a jump: a pair that moves at most 2x + 60 units of what the same identity moved
   over the game frame before (`Tape::worldStep`, recorded by the replays) blends however far it goes
   (Chauncey's swoops, ~500 units per game frame, were snapped at 30 Hz).
@@ -132,15 +142,16 @@ A value of game frame b pairs with the value of frame a that has the same key an
 | Object | `fn_8001F098`, `fn_8001F138` (furniture draw) | furniture object |
 | World / Object | `fn_80015CF4` (bin model draw: rooms, furniture models) | model, node matrices, pass; World unless inside furniture or animated |
 | World / Object | `fn_80015844` (bin model node, recursive) | node index |
-| Object | `draw__12J3DMatPacketFv`, `draw__14J3DShapePacketFv` (J3D) | the packet (per model instance and shape/material) |
+| Object | `draw__12J3DMatPacketFv`, `draw__14J3DShapePacketFv` (J3D) | the packet (per model instance and shape/material); group: the model's matrix buffer (packet +0x14) |
 | Object | `J3DShapeMtx::loadMtxIndx_PNGP/PCPU/NCPU/PNCPU` | joint index (J3D skips loads already in place, so the n-th load is not always the same joint) |
-| Effect | `fn_80091A70` (Poltergust segments, from `fn_8008E580`) | object, mode |
+| Effect | `fn_80091A70` (a cloth sheet: 16x16 world-space grid, from `fn_8008E580`; not the hose, which is a J3D model) | object, mode; cell by call-site tag |
 | Particle | call-site tag in `fn_8012FD14` (dust groups, `fn_801304B0`) | particle r30, group r29; generation on link/unlink (`fn_80127A74`, `fn_80127AA8`) |
 | Particle | call-site tag in `fn_8012B6C4` (second particle draw, `fn_8012CB74`) | particle r29, group r28, birth stamp from the remaining life at +0x24 (counts down) |
 | Particle | call-site tag in `fn_801796EC` (45 fixed slots, `fn_80162AE8`) | slot offset r28, array r25 |
 | Particle | call-site tag in `fn_8016169C` (JPA-style emitters, `fn_801604FC`) | particle r19, renderer r30, birth stamp from the age at +0x32 (counts up) |
 | Particle | call-site tags in `fn_801620AC` (particle r19, renderer r26, age +0x32) and `fn_801611CC` (child item r30, owner r29): the other JPA-style renderers (Bowser's flames, boss arenas) | as listed |
 | Object | `fn_8005E110` (one CPU-built quad per ghost, from `fn_80061690`'s loop over the ghost list 0x803D48A0; large in Bogmire's arena) | the ghost (its position pointer r5 - 8) |
+| Particle | `fn_80120C30` (one GX point per call: the water spray's and other element streams' points, from `fn_8011FB40` / `fn_80120514`) | the point (24-byte entry) |
 | Effect | `fn_80118E44` (CPU-built strips of 0xA8-byte items, from `fn_80118D3C`) | the item |
 | Hud | `draw__7J2DPaneFiiPC14J2DGrafContextb` | the pane |
 | (lights) | GX light objects (`GXLoadLightObjImm`) | light object address + slot, in the current scope |
@@ -155,6 +166,10 @@ of the identity (found with `LM_TAG_PEEK=<words>`: 98-100% of particles step by 
 
 ### Tools
 
+- `LM_TWIST_LOG=<file>`: model matrices turning by over 30 degrees in one game frame and how far each
+  local axis turned. `LM_MTX_DUMP=<lo>,<hi>`: world matrices a, b and the blend for sources in that
+  range. `LM_ARRAY_LOG=<file>`: every tagged position array per tape, its partner and how far it
+  moved.
 - `LM_TAG_LOG=<file>,<first>[,<last>]`: every value noted in those game frames with its key,
   category, call site, scope depth and view, and for untagged values the guest call chain; per tape
   the paired / unpaired / untagged counts by kind and the views with their keys. Finding the next

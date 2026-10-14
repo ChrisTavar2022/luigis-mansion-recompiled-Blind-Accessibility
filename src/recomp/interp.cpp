@@ -99,6 +99,7 @@ struct Patch {
     bool inScope = false;       // noted inside any tag scope (a view at least): untagged values outside are left as captured
     bool ownCamera = false;     // noted in a SubView (its own camera: blended as drawn)
     u32 site = 0;       // guest call site (logs)
+    u64 group = 0;      // TagFrame::group: values of one model instance switch together
 };
 
 using M34 = std::array<f32, 12>;
@@ -135,6 +136,9 @@ struct Tape {
     // Per patch (host, set by the replays from pairedWith): how far the model matrix moved in world
     // space since pairedWith (-1: not known). A pair that keeps moving fast is motion, not a jump.
     std::unique_ptr<std::atomic<float>[]> worldStep;
+    // Per patch (host, set by each replay from pairedWith): 1 when its model instance has a matrix
+    // that cannot blend, so the whole instance is shown as b (the detector judges it as a switch).
+    std::unique_ptr<std::atomic<u8>[]> groupSnap;
     std::vector<s32> viewToA;  // per view: the view of pairedWith with the same key, or -1
     u16 mainView = 0xFFFF;     // the main camera (most 3D model matrices of the main pass)
     bool cut = false;          // the main camera jumped since pairedWith (or appeared): shown as is
@@ -210,6 +214,7 @@ struct TagFrame {
     bool object;   // an object scope is open here or above (values inside are tagged)
     u64 structural;  // identity of the structural (View) scopes only: the camera's identity
     bool ownCamera = false;  // inside a SubView: drawn with a camera other than the game camera
+    u64 group = 0;  // the model instance it belongs to (tagGroup: a J3D model's skinned meshes), 0: none
 };
 constexpr int kMaxTagDepth = 64;
 TagFrame sTagStack[kMaxTagDepth];
@@ -534,7 +539,11 @@ void pairTapes(const Tape& a, Tape& b) {
     b.pairedWith = &a;
     b.partner.assign(b.patches.size(), -1);
     b.worldStep.reset(new std::atomic<float>[b.patches.size()]);
-    for (u32 i = 0; i < b.patches.size(); i++) b.worldStep[i].store(-1.0f, std::memory_order_relaxed);
+    b.groupSnap.reset(new std::atomic<u8>[b.patches.size()]);
+    for (u32 i = 0; i < b.patches.size(); i++) {
+        b.worldStep[i].store(-1.0f, std::memory_order_relaxed);
+        b.groupSnap[i].store(0, std::memory_order_relaxed);
+    }
     static std::unordered_map<u64, s32> byKey;
     byKey.clear();
     byKey.reserve(a.patches.size() * 2);
@@ -595,6 +604,43 @@ void pairTapes(const Tape& a, Tape& b) {
                 a.arrays[q.snap].size() != b.arrays[r.snap].size())
                 continue;
             b.arrayPartner[i] = it->second;
+        }
+        // LM_ARRAY_LOG=<file> (test aid): every tagged position array of each tape, its partner and how
+        // far its positions moved (max over coordinates).
+        static FILE* sArrLog = [] {
+            const char* p = std::getenv("LM_ARRAY_LOG");
+            return p && *p ? std::fopen(p, "w") : nullptr;
+        }();
+        if (sArrLog) {
+            for (u32 i = 0; i < b.arrayRecs.size(); i++) {
+                const detail::ArrayRec& r = b.arrayRecs[i];
+                const s32 j = b.arrayPartner[i];
+                float jump = -1;
+                static constexpr u32 kSz[] = {1, 1, 2, 2, 4};
+                const u32 cs = r.type <= GX_F32 ? kSz[r.type] : 0;
+                if (j >= 0 && cs && r.stride >= 3 * cs && a.arrays[a.arrayRecs[j].snap].size() == b.arrays[r.snap].size()) {
+                    const std::vector<u8>& da = a.arrays[a.arrayRecs[j].snap];
+                    const std::vector<u8>& db = b.arrays[r.snap];
+                    const float sc = r.type == GX_F32 ? 1.0f : float(1u << r.frac);
+                    const auto rd = [&](const u8* p) -> float {
+                        u32 v = 0;
+                        for (u32 k = 0; k < cs; k++) v = v << 8 | p[k];
+                        switch (r.type) {
+                        case GX_F32: return std::bit_cast<f32>(v);
+                        case GX_S16: return float(s16(v)) / sc;
+                        case GX_U16: return float(u16(v)) / sc;
+                        case GX_S8: return float(s8(v)) / sc;
+                        default: return float(u8(v)) / sc;
+                        }
+                    };
+                    jump = 0;
+                    for (u32 o = 0; o + 3 * cs <= db.size(); o += r.stride)
+                        for (u32 c = 0; c < 3; c++) jump = std::max(jump, std::fabs(rd(da.data() + o + c * cs) - rd(db.data() + o + c * cs)));
+                }
+                std::fprintf(sArrLog, "%llu %u key %016llX bytes %u stride %u type %u partner %d jump %.2f\n", (unsigned long long)b.seq, i,
+                             (unsigned long long)r.key, u32(b.arrays[r.snap].size()), r.stride, r.type, j, jump);
+            }
+            std::fprintf(sArrLog, "%llu end %u records\n", (unsigned long long)b.seq, u32(b.arrayRecs.size()));
         }
     }
     b.phaseUs[2] = usSince(tp);
@@ -672,6 +718,56 @@ bool flatMatrix(const f32* m) {
     return vol > 0 && std::isfinite(det) && std::fabs(det) < 0.1f * vol;
 }
 
+// A pair that turns mostly about one of its own axes by more than 75 degrees in one game frame (a
+// twist, while that axis itself turns by less than 35 degrees): the Poltergust hose's segments are
+// rebuilt from the hose direction every frame and their roll about the tube changes by up to ~150
+// degrees from one game frame to the next, so blending spun every rib around the hose (and the
+// slerp pulled the tube off its line): the hose looked jumpy at 120 and right at 30. The twist is
+// taken from b at once (a is turned about that axis by it) and only the rest of the turn blends;
+// a ring looks the same either way, and a real spin that fast cannot be followed at 30 Hz anyway.
+// `wa` is changed in place; returns whether it was.
+bool invertAffine(const f32* m, f32* out);
+
+bool untwist(f32* wa, const f32* wb, int cols = 4) {
+    // The turn from a to b in a's local frame: Ma^-1 Mb (3x3 parts).
+    f32 a34[12] = {}, ia[12];
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) a34[4 * r + c] = wa[cols * r + c];
+    if (!invertAffine(a34, ia)) return false;
+    f32 rel[9];
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) rel[3 * r + c] = ia[4 * r] * wb[c] + ia[4 * r + 1] * wb[cols + c] + ia[4 * r + 2] * wb[2 * cols + c];
+    Rigid q;
+    if (!decompose(rel, 3, q) || q.u[2][2] < 0) return false;
+    float w = q.q[3], v[3] = {q.q[0], q.q[1], q.q[2]};
+    if (w < 0) w = -w, v[0] = -v[0], v[1] = -v[1], v[2] = -v[2];
+    const float total = 2.0f * std::acos(std::min(w, 1.0f)) * 57.2958f;
+    if (total < 75.0f) return false;
+    int k = 0;
+    for (int i = 1; i < 3; i++)
+        if (std::fabs(v[i]) > std::fabs(v[k])) k = i;
+    const float phi = 2.0f * std::atan2(v[k], w);  // the twist about local axis k (radians)
+    if (std::fabs(phi) * 57.2958f < 75.0f) return false;
+    // The swing left after the twist: q * twist^-1; its angle from the scalar part.
+    const float hc = std::cos(0.5f * phi), hs = std::sin(0.5f * phi);
+    const float swingW = w * hc + v[k] * hs;  // scalar part of q * conj(twist)
+    if (2.0f * std::acos(std::min(std::fabs(swingW), 1.0f)) * 57.2958f > 35.0f) return false;
+    // a turned about its own axis k by phi: Ma * T (T rotates the local frame about e_k). Only when it
+    // is scaled alike across that axis (a twist mixes those two axes: a flattened part would stretch).
+    const int i1 = (k + 1) % 3, i2 = (k + 2) % 3;
+    float l1 = 0, l2 = 0;
+    for (int r = 0; r < 3; r++) l1 += wa[cols * r + i1] * wa[cols * r + i1], l2 += wa[cols * r + i2] * wa[cols * r + i2];
+    l1 = std::sqrt(l1), l2 = std::sqrt(l2);
+    if (!(std::fabs(l1 - l2) <= 0.1f * std::max(l1, l2))) return false;
+    const float c = std::cos(phi), s = std::sin(phi);
+    for (int r = 0; r < 3; r++) {
+        const float x = wa[cols * r + i1], y = wa[cols * r + i2];
+        wa[cols * r + i1] = c * x + s * y;
+        wa[cols * r + i2] = -s * x + c * y;
+    }
+    return true;
+}
+
 // `prevStep`: how far the same identity moved over the game frame before (-1: unknown); a pair that
 // moves at most about as far again is fast motion (Chauncey's swoops, a boss charging), not a jump.
 bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -1.0f) {
@@ -729,7 +825,9 @@ bool resolveFlip(const f32* a, f32* b, int cols) {
     return false;
 }
 u32 sFlips = 0;  // pairs blended through an equivalent flipped orientation (stats)
-u32 sFlatBlends = 0;  // squashed-flat model matrices blended entrywise in world space (stats)
+u32 sFlatBlends = 0;
+u32 sUntwists = 0;
+u32 sGroupSnaps = 0;  // model instances switched as a whole (stats)  // pairs whose fast twist was taken from b (stats)  // squashed-flat model matrices blended entrywise in world space (stats)
 
 bool blendable(Kind kind, const f32* a, const f32* b, int n) {
     switch (kind) {
@@ -1120,6 +1218,7 @@ void pushTag(TagCat cat, u32 object, u32 type, u32 sub) {
         // not the objects drawn in it.
         const u64 sp = parent ? parent->structural : rootInst();
         f.structural = structural ? mix(sp ^ mix(u64(object) << 8 ^ sub ^ u64(cat) << 40 ^ 0x51E3ull << 48)) : sp;
+        f.group = parent ? parent->group : 0;  // set by tagGroup (J3D models), inherited
     }
     sTagStack[sTagDepth++] = f;
 }
@@ -1138,6 +1237,10 @@ void tagFreed(u32 addr, u32 size) {
 }
 
 void addSiteTag(const SiteTag& t) { sSiteTags.push_back(t); }
+
+void tagGroup(u32 id) {
+    if (sCapturing && sTagDepth > 0 && sTagDepth <= kMaxTagDepth) sTagStack[sTagDepth - 1].group = mix(u64(id) ^ 0x6A0Full << 48);
+}
 
 void gxCall(const Ctx& c) {
     sCallLr = c.lr;
@@ -1170,6 +1273,7 @@ void gxCall(const Ctx& c) {
         sVirt.object = true;
         sVirt.structural = parent ? parent->structural : rootInst();
         sVirt.ownCamera = parent && parent->ownCamera;
+        sVirt.group = parent ? parent->group : 0;
         sVirtActive = true;
         break;
     }
@@ -1212,6 +1316,7 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     p.slot = slot;
     p.site = sCallLr;
     p.key = valueKey(kind, source, slot, p.cat);
+    if (const TagFrame* g = topTag(); g && p.key) p.group = g->group;
     p.inScope = sTagDepth > 0 || sVirtActive;
     if (kind == Kind::TexMtx && sShadowRecv > 0) p.role = 1;
     else if (sOrtho && kind != Kind::Projection) p.role = 2;
@@ -1576,10 +1681,52 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
         compose(vp->ia.data(), va, wa.data());
         compose(vp->ib.data(), vb, wb.data());
         if (resolveFlip(wa.data(), wb.data(), 4)) sFlips++;
+        if (untwist(wa.data(), wb.data())) sUntwists++;
+        // LM_TWIST_LOG=<file> (test aid): model matrices that turn by over 30 degrees in one game
+        // frame, with how far each local axis turned (a turn about a barely moving axis is a twist).
+        static FILE* sTwistLog = [] {
+            const char* f = std::getenv("LM_TWIST_LOG");
+            return f && *f ? std::fopen(f, "w") : nullptr;
+        }();
+        if (sTwistLog && alpha < 0.3f) {
+            float ax[3];
+            float total = 0;
+            Rigid ra, rb;
+            if (decompose(wa.data(), 4, ra) && decompose(wb.data(), 4, rb)) {
+                const float d = std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]);
+                total = 2.0f * std::acos(std::min(d, 1.0f)) * 57.2958f;
+            }
+            for (int k = 0; k < 3; k++) {
+                float ca[3], cb[3], la = 0, lb = 0, dt = 0;
+                for (int r = 0; r < 3; r++) ca[r] = wa[4 * r + k], cb[r] = wb[4 * r + k], la += ca[r] * ca[r], lb += cb[r] * cb[r], dt += ca[r] * cb[r];
+                ax[k] = std::acos(std::clamp(dt / std::sqrt(std::max(la * lb, 1e-12f)), -1.0f, 1.0f)) * 57.2958f;
+            }
+            if (total > 30.0f)
+                std::fprintf(sTwistLog, "%llu site %08X src %08X key %016llX turn %.0f axes %.0f %.0f %.0f move %.1f at %.0f %.0f %.0f\n",
+                             (unsigned long long)b.seq, p.site, p.source, (unsigned long long)p.key, total, ax[0], ax[1], ax[2],
+                             std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]), wb[3], wb[7], wb[11]);
+        }
         if ((flatMatrix(wa.data()) || flatMatrix(wb.data())) || !blendRigid(wa.data(), wb.data(), 4, alpha, wt.data())) {
             // Squashed flat (or mirrored against its partner): entrywise in world space.
             for (int k = 0; k < 12; k++) wt[k] = wa[k] + (wb[k] - wa[k]) * alpha;
             sFlatBlends++;
+        }
+        // LM_MTX_DUMP=<lo>,<hi> (test aid): world matrices a, b and the blend for sources in [lo, hi).
+        static const std::pair<u32, u32> sDump = [] {
+            const char* v = std::getenv("LM_MTX_DUMP");
+            u32 lo = 0, hi = 0;
+            if (v) std::sscanf(v, "%x,%x", &lo, &hi);
+            return std::pair<u32, u32>{lo, hi};
+        }();
+        if (p.source >= sDump.first && p.source < sDump.second) {
+            const auto row = [](const char* tag, const f32* m) {
+                log("[mtx]   %s %7.3f %7.3f %7.3f %8.1f | %7.3f %7.3f %7.3f %8.1f | %7.3f %7.3f %7.3f %8.1f", tag, m[0], m[1], m[2], m[3], m[4],
+                    m[5], m[6], m[7], m[8], m[9], m[10], m[11]);
+            };
+            log("[mtx] seq %llu alpha %.3f src %08X key %016llX", (unsigned long long)b.seq, alpha, p.source, (unsigned long long)p.key);
+            row("A", wa.data());
+            row("B", wb.data());
+            row("T", wt.data());
         }
         compose(vp->vt.data(), wt.data(), out);
         return true;
@@ -1601,6 +1748,7 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
             for (int r = 0; r < 3; r++) na[3 * r + c] = wa[r], nb[3 * r + c] = wb[r];
         }
         resolveFlip(na, nb, 3);
+        untwist(na, nb, 3);
         if (!blendRigid(na, nb, 3, alpha, nt)) return false;
         for (int c = 0; c < 3; c++) {
             const f32 cw[3] = {nt[c], nt[3 + c], nt[6 + c]};
@@ -1889,6 +2037,7 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 compose(iq.data(), ma, Wa.data());
                 compose(ib.data(), m, Wb.data());
                 resolveFlip(Wa.data(), Wb.data(), 4);
+                untwist(Wa.data(), Wb.data());
                 if (!blendableWorld(Wa.data(), Wb.data(), std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]),
                                     a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f)) {
                     cause = 1;
@@ -1906,6 +2055,7 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                     whyJump = std::hypot(Wa[3] - Wb[3], Wa[7] - Wb[7], Wa[11] - Wb[11]);
                     cause = whyScale < 0 || whyScale > 16.0f ? 5 : whyRot > 150.0f ? 1 : whyJump > 200.0f ? 6 : 5;
                 }
+                if (cause == 0 && b.groupSnap && b.groupSnap[pb].load(std::memory_order_relaxed)) cause = 5;  // its instance switched
                 const bool flat = flatMatrix(Wa.data()) || flatMatrix(Wb.data());  // entrywise, as the replay
                 if (cause == 0 && !flat && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) xform34(Wt.data(), r.pos, wt);
                 else if (cause != 0) std::copy(wb, wb + 3, wt);  // shown at the game frame's place (policy)
@@ -2120,9 +2270,48 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             }
             placeUnderCamera(*a, b, p, alpha);
         };
+        // A model instance (skinned mesh) whose matrices are partly blended and partly switched tears
+        // apart in the in-betweens (the Poltergust hose as it is swung out: its envelope matrices
+        // turn by 100+ degrees while their neighbours blend; the skin between them stretched into
+        // sticks). One matrix of an instance that cannot blend switches the whole instance.
+        {
+            static std::unordered_set<u64> snapGroups;
+            snapGroups.clear();
+            for (u32 i = 0; i < b.patches.size(); i++) {
+                const Patch& p = b.patches[i];
+                const s32 j = b.partner[i];
+                if (!p.group || j < 0 || p.kind != Kind::PosMtx || p.count != 12 || p.role != 0 || p.ownCamera || p.cat == TagCat::World)
+                    continue;
+                if (p.bundle < b.bundlePass.size() && b.bundlePass[p.bundle] == 1 && sLightPair.ok) continue;  // caster pass: blends
+                if (!(p.view < sViewToA.size() && sViewToA[p.view] == s32(a->patches[j].view))) continue;
+                const ViewPair* vp = viewPair(*a, a->patches[j].view, b, p.view, alpha);
+                if (!vp || !vp->ok || vp->cut) continue;
+                f32 va[12], vb[12];
+                for (int k = 0; k < 12; k++) va[k] = val(*a, a->patches[j], k), vb[k] = val(b, p, k);
+                M34 wa, wb;
+                compose(vp->ia.data(), va, wa.data());
+                compose(vp->ib.data(), vb, wb.data());
+                resolveFlip(wa.data(), wb.data(), 4);
+                untwist(wa.data(), wb.data());
+                const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
+                if (!blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev))
+                    snapGroups.insert(p.group);
+            }
+            for (u32 i = 0; i < b.patches.size(); i++)
+                if (b.groupSnap) b.groupSnap[i].store(b.patches[i].group && snapGroups.count(b.patches[i].group) ? 1 : 0, std::memory_order_relaxed);
+            sGroupSnaps += u32(snapGroups.size());
+        }
         for (u32 i = 0; i < b.patches.size(); i++) {
             const Patch& p = b.patches[i];
             if (p.kind == Kind::Color) continue;  // never blended
+            if (b.groupSnap && b.groupSnap[i].load(std::memory_order_relaxed) &&
+                (p.kind == Kind::PosMtx || p.kind == Kind::NrmMtx) && b.partner[i] >= 0) {
+                f32 va[16], vb[16];
+                const Patch& q = a->patches[b.partner[i]];
+                for (int k = 0; k < p.count && k < 16; k++) va[k] = val(*a, q, k), vb[k] = val(b, p, k);
+                snap(p, va, vb);
+                continue;
+            }
             const s32 j = b.partner[i];
             // Static world geometry: only the camera moves it.
             const bool cameraOnly = p.cat == TagCat::World && (p.kind == Kind::PosMtx || p.kind == Kind::NrmMtx);
@@ -2213,6 +2402,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     compose(vp->ia.data(), va, wa.data());
                     compose(vp->ib.data(), vb, wb.data());
                     resolveFlip(wa.data(), wb.data(), 4);
+                    untwist(wa.data(), wb.data());
                     const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
                     if (b.worldStep) b.worldStep[i].store(step, std::memory_order_relaxed);
                     const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
@@ -2231,6 +2421,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                             nb[3 * r + c2] = vp->vb[r] * vb[c2] + vp->vb[4 + r] * vb[3 + c2] + vp->vb[8 + r] * vb[6 + c2];
                         }
                     resolveFlip(na, nb, 3);
+                    untwist(na, nb, 3);
                     ok = blendable(Kind::NrmMtx, na, nb, 9);
                 } else {
                     ok = blendable(p.kind, va, vb, p.count);

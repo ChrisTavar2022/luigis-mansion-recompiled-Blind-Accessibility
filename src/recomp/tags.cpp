@@ -12,7 +12,12 @@
 #include "recomp/interp.h"
 #include "recomp/version.h"
 
+#include <cstdio>
+#include <cstdlib>
+
 namespace recomp {
+
+u32 copyDispCount();  // hle_gx.cpp
 
 namespace {
 
@@ -40,9 +45,10 @@ void registerSiteTags() {
     interp::addSiteTag({VA(0x8012B6C4), VA(0x8012B918), TagCat::Particle, 29, 28, 0x24, -1});
     // fn_80162AE8 -> fn_801796EC: 45 fixed slots of 0x18 bytes (array at [r25]), slot offset in r28.
     interp::addSiteTag({VA(0x801796EC), VA(0x8017996C), TagCat::Particle, 28, 25});
-    // The Poltergust hose (fn_80091A70): a tube drawn as a grid of quads, one GXBegin per cell from
+    // fn_80091A70: a cloth sheet (16x16 grid in world space) drawn as one GXBegin quad per cell from
     // four grid points (column r27, row offset r29); cells whose points are not valid are skipped, so
-    // the n-th quad is not always the same cell (quads swapped places: the hose "freaked out").
+    // the n-th quad is not always the same cell. (Not the Poltergust hose, which is a J3D model:
+    // see draw__14J3DShapePacketFv below.)
     interp::addSiteTag({VA(0x80091EF4), VA(0x80092110), TagCat::Effect, 27, 29});
     // JPA-style emitters (fn_801604FC -> renderer -> fn_8016169C(renderer, view)): one particle per
     // iteration in r19 (list via +0x5C), its renderer in r30; CPU-built quads.
@@ -149,10 +155,11 @@ HLE(fn_80015844) {  // one node (r6) of the model being drawn, recursive
     callOriginal(c, "fn_80015844");
 }
 
-// --- Luigi's effects -----------------------------------------------------------------------------
-// fn_8008E580(object, pass) -> fn_80091A70(object, mode): CPU-built segments drawn for the
-// Poltergust (hundreds of vertex blocks per frame): segment n pairs with segment n of the same
-// object and mode (and only with the same vertex count).
+// --- cloth ---------------------------------------------------------------------------------------
+// fn_8008E580(object, pass) -> fn_80091A70(object, mode): a cloth sheet (a 16x16 grid of world-space
+// points, CPU-built quads): cell n pairs with cell n of the same object and mode. (It was taken for
+// the Poltergust hose at first; the hose is a J3D model, its envelope matrices switch as one model:
+// draw__14J3DShapePacketFv.)
 HLE(fn_80091A70) {
     TagScope t(TagCat::Effect, c.r[3], 0x91A70, c.r[4]);
     callOriginal(c, "fn_80091A70");
@@ -174,6 +181,15 @@ HLE(fn_80118E44) {
     callOriginal(c, "fn_80118E44");
 }
 
+// The water spray (and the other element streams): fn_8011FB40 / fn_80120514 walk each stream's
+// points (24 bytes each: position first) and draw every one as a GX point with fn_80120C30(point,
+// size, colour). Untagged, the points were shown at the game frame's places while everything around
+// them blended: the spray flickered.
+HLE(fn_80120C30) {
+    TagScope t(TagCat::Particle, c.r[3], 0x120C30);
+    callOriginal(c, "fn_80120C30");
+}
+
 // --- particles ---------------------------------------------------------------------------------
 // A particle slot linked into or out of a group: its next use is another particle.
 HLE(fn_80127A74) {
@@ -191,6 +207,8 @@ HLE(fn_80127AA8) {
 // Shape packets belong to one model instance and one shape: the packet is the identity.
 HLE(draw__14J3DShapePacketFv) {
     TagScope t(TagCat::Object, c.r[3], 0x13D);
+    // The packets of one model share its matrix buffer (+0x14): one instance for switching.
+    interp::tagGroup(rd32(c.r[3] + 0x14));
     callOriginal(c, "draw__14J3DShapePacketFv");
 }
 
