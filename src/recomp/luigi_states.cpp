@@ -364,6 +364,24 @@ namespace recomp {
 HLE(fn_80045F58) {
     int value = 0;
     bool hot = false;
+    // Test aids: LM_METER_LOG=1 logs the meter object and player 0's status block on change;
+    // LM_METER_FORCE=<n> sets the status block's level (+0x52), which the update passes to the
+    // draw. With no element the fill is drawn with vertex alpha 0 (invisible on hardware).
+    static const bool sLog = std::getenv("LM_METER_LOG") != nullptr || std::getenv("LM_METER_FORCE") != nullptr;
+    if (sLog) {
+        const u32 obj = c.r[3], r13 = c.r[13];
+        const u32 s = gu::call(c, GU_SYM("fn_800AD39C"), {0});
+        c.r[3] = obj;
+        static std::string sLast;
+        char b[256];
+        std::snprintf(b, sizeof b, "obj %08X +4 %u +5 %u +10 %d +14 %d +1E %d | st+52 %d st+58 %d | hudA %u y %d",
+                      obj, rd8(obj + 4), rd8(obj + 5), s32(rd32(obj + 0x10)), s32(rd32(obj + 0x14)),
+                      s16(rd16(obj + 0x1E)), gu::inMem1(s) ? s16(rd16(s + 0x52)) : -1,
+                      gu::inMem1(s) ? s32(rd32(s + 0x58)) : -1, rd8(r13 - 0x7A32), s16(rd16(VA(0x804D8434))));
+        if (sLast != b) log("[meter] %s", b), sLast = b;
+        static const char* sForce = std::getenv("LM_METER_FORCE");
+        if (sForce && gu::inMem1(s)) wr16(s + 0x52, u16(std::atoi(sForce)));
+    }
     const u32 st = unused2::overheatMeter(&value, &hot) ? gu::call(c, GU_SYM("fn_800AD39C"), {0}) : 0;
     if (!gu::inMem1(st)) {
         callOriginal(c, "fn_80045F58");
