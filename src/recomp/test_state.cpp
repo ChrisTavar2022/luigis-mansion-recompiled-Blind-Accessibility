@@ -115,9 +115,16 @@ void testStateFrame(Ctx& c) {
                 wr32(VA(0x804D80C4), 5);
             }
     }
+}
+
+// The LM_TEST_STATE presets are applied from Luigi's own per-frame update (dev::noteLuigi), to the
+// actor being updated. They were written once per frame through actor slot 0 from the HUD update:
+// in the nursery door event (A at the door, Luigi not updated for ~10 s) that slot held a freed
+// actor, and the stores corrupted whatever reused the memory (a model's node tree looping in
+// fn_8005B660, garbage display-list and audio callback pointers: hangs and crashes).
+void testStateLuigi(u32 l) {
     static const State s = parse();
     if (!s.poltergust && s.element < 0) return;
-    const u32 l = rd32(kActorSlots);
     if (l < 0x80000000u || l >= 0x81800000u) return;
     static bool sLogged = false;
     if (s.poltergust) wr16(l + kLuigiFlags, rd16(l + kLuigiFlags) | 0xC);

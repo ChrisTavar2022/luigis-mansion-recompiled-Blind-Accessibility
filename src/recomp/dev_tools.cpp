@@ -28,6 +28,7 @@
 
 namespace recomp {
 void unusedModelsMapSetup();  // unused_models.cpp: unused model variants chosen per map
+void testStateLuigi(u32 actor);  // test_state.cpp: LM_TEST_STATE presets, from Luigi's update
 }
 
 namespace recomp::dev {
@@ -147,6 +148,7 @@ int currentMap() { return sStatus.map; }
 // had is put back when the option is turned off.
 void noteLuigi(unsigned guestActor) {
     sLuigi = guestActor;
+    testStateLuigi(guestActor);
     static u32 sActor = 0;
     static u8 sSaved = 0;
     const bool on = port::settings().enhancements.dbgLuigiFlags || envInt("LM_DEV_LUIGI_FLAGS", 0) != 0;
