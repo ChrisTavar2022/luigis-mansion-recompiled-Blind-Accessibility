@@ -261,29 +261,29 @@ fn_8000E050 us pal
 
 # Frame interpolation identity tags (src/recomp/tags.cpp, docs/INTERPOLATION.md "Tagged
 # interpolation"): the game's draw entry points open a tag scope around what they draw.
-fn_8006033C
-fn_80059C54
-fn_80059F6C
-fn_8005A280
-fn_800597C0
-fn_800598E0
-fn_800599E8
-fn_80058A60
-fn_800595B8
-fn_80057F90
-fn_800581E8
-fn_8001F098
-fn_8001F138
-fn_80015CF4
-fn_80015844
-fn_80127A74
-fn_80127AA8
-draw__14J3DShapePacketFv
-draw__12J3DMatPacketFv
-loadMtxIndx_PNGP__11J3DShapeMtxCFiUs
-loadMtxIndx_PCPU__11J3DShapeMtxCFiUs
-loadMtxIndx_NCPU__11J3DShapeMtxCFiUs
-loadMtxIndx_PNCPU__11J3DShapeMtxCFiUs
-fn_80091A70
-draw__7J2DPaneFiiPC14J2DGrafContextb
-free__10JKRExpHeapFPv
+fn_8006033C us pal
+fn_80059C54 us pal
+fn_80059F6C us pal
+fn_8005A280 us pal
+fn_800597C0 us pal
+fn_800598E0 us pal
+fn_800599E8 us pal
+fn_80058A60 us pal
+fn_800595B8 us pal
+fn_80057F90 us pal
+fn_800581E8 us pal
+fn_8001F098 us pal
+fn_8001F138 us pal
+fn_80015CF4 us pal
+fn_80015844 us pal
+fn_80127A74 us pal
+fn_80127AA8 us pal
+draw__14J3DShapePacketFv us pal
+draw__12J3DMatPacketFv us pal
+loadMtxIndx_PNGP__11J3DShapeMtxCFiUs us pal
+loadMtxIndx_PCPU__11J3DShapeMtxCFiUs us pal
+loadMtxIndx_NCPU__11J3DShapeMtxCFiUs us pal
+loadMtxIndx_PNCPU__11J3DShapeMtxCFiUs us pal
+fn_80091A70 us pal
+draw__7J2DPaneFiiPC14J2DGrafContextb us pal
+free__10JKRExpHeapFPv us pal
