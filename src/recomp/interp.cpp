@@ -117,6 +117,8 @@ struct Tape {
     std::vector<u64> bundleKey;  // per draw: its tag scope instance (0: untagged)
     std::vector<std::array<u32, 2>> bundleRange;  // per draw: its tape bytes (~0u: unknown)
     std::vector<u8> bundlePass;                    // per draw: the pass (0 main, 1 shadow casters)
+    // Per draw: the centre of the bounding box of its indexed positions (model space; x NaN: unknown).
+    std::vector<std::array<f32, 3>> bundleCentre;
     // Per draw (judder detector only): which noted position matrix each PNMTX slot held (-1: unknown).
     std::vector<std::array<s32, 10>> bundleSlots;
     std::vector<M34> views;    // camera view matrices the values were noted under
@@ -143,6 +145,7 @@ struct Tape {
     std::unique_ptr<std::atomic<float>[]> worldTurn;
     std::unique_ptr<std::atomic<float>[]> worldAxis;  // x, y, z per patch
     std::unique_ptr<std::atomic<u8>[]> worldTumble;
+    std::unique_ptr<std::atomic<u8>[]> worldErratic;  // game frames left of erratic-step evidence (instance pass)
     // Per patch (host, set by each replay from pairedWith): 1 when its model instance has a matrix
     // that cannot blend, so the whole instance is shown as b (the detector judges it as a switch).
     std::unique_ptr<std::atomic<u8>[]> groupSnap;
@@ -182,6 +185,7 @@ std::vector<u64> sBundleIds;
 std::vector<u64> sBundleKey;
 std::vector<std::array<u32, 2>> sBundleRange;
 std::vector<u8> sBundlePass;
+std::vector<std::array<f32, 3>> sBundleCentre;
 s32 sOpenDraw = -1;  // immediate-mode draw whose end is not known yet
 std::vector<M34> sViews;
 std::vector<u64> sViewKeys;
@@ -552,6 +556,7 @@ void pairTapes(const Tape& a, Tape& b) {
     b.worldTurn.reset(new std::atomic<float>[b.patches.size()]);
     b.worldAxis.reset(new std::atomic<float>[3 * b.patches.size()]);
     b.worldTumble.reset(new std::atomic<u8>[b.patches.size()]);
+    b.worldErratic.reset(new std::atomic<u8>[b.patches.size()]);
     b.groupSnap.reset(new std::atomic<u8>[b.patches.size()]);
     b.vertStep.reset(new std::atomic<float>[3 * b.patches.size()]);
     for (u32 i = 0; i < 3 * b.patches.size(); i++) b.vertStep[i].store(std::nanf(""), std::memory_order_relaxed);
@@ -559,6 +564,7 @@ void pairTapes(const Tape& a, Tape& b) {
         b.worldStep[i].store(-1.0f, std::memory_order_relaxed);
         b.worldTurn[i].store(-1.0f, std::memory_order_relaxed);
         b.worldTumble[i].store(0, std::memory_order_relaxed);
+        b.worldErratic[i].store(0, std::memory_order_relaxed);
         for (int c = 0; c < 3; c++) b.worldAxis[3 * i + c].store(0.0f, std::memory_order_relaxed);
         b.groupSnap[i].store(0, std::memory_order_relaxed);
     }
@@ -895,14 +901,19 @@ float noteTurn(const Tape* a, s32 j, const Tape& b, u32 i, const f32* wa, const 
     const float prev = a->worldTurn[j].load(std::memory_order_relaxed);
     const u8 prevTumble = a->worldTumble[j].load(std::memory_order_relaxed);
     u8 tumble = prevTumble > 0 ? u8(prevTumble - 1) : 0;
+    bool axisEvidence = false;
     if (prev > 20.0f && deg > 20.0f && len > 1e-6f) {
         float d = 0;
         for (int c = 0; c < 3; c++) d += axis[c] * a->worldAxis[3 * j + c].load(std::memory_order_relaxed);
-        if (std::fabs(d) < 0.7071f) tumble = 8;
+        axisEvidence = std::fabs(d) < 0.7071f;
     }
+    // A turn over 150 degrees is evidence too, for the game frames after it (a drop whose random
+    // turns alternate small and large never showed two large ones in a row: sweep A, room 5's stream);
+    // it is itself a switch unless the identity already counted as a tumbler.
+    if (axisEvidence || deg > 150.0f) tumble = 8;
     b.worldTumble[i].store(tumble, std::memory_order_relaxed);
     if (prev > kSpinnerTurn) return prev;
-    return prevTumble > 0 || tumble == 8 ? 1000.0f : -1.0f;
+    return prevTumble > 0 || axisEvidence ? 1000.0f : -1.0f;
 }
 u32 sFlips = 0;  // pairs blended through an equivalent flipped orientation (stats)
 u32 sFlatBlends = 0;  // squashed-flat model matrices blended entrywise in world space (stats)
@@ -1068,7 +1079,7 @@ void checkIdentity(const Tape& t0, const Tape& t1, const Tape& t2) {
     };
     for (u32 i = 0; i < t2.patches.size(); i++) {
         const Patch& p2 = t2.patches[i];
-        if (p2.kind != Kind::Verts) continue;
+        if (p2.kind != Kind::Verts || p2.role == 2) continue;  // (2D blocks: colours only)
         const s32 j = t2.partner[i];
         if (j < 0) continue;
         const s32 k = t1.partner.empty() ? -1 : t1.partner[j];
@@ -1158,6 +1169,8 @@ void endTape(u32 retraceCount) {
     sBundleRange = {};
     tape->bundlePass = std::move(sBundlePass);
     sBundlePass = {};
+    tape->bundleCentre = std::move(sBundleCentre);
+    sBundleCentre = {};
     tape->bundleSlots = std::move(sBundleSlots);
     sBundleSlots = {};
     tape->views = std::move(sViews);
@@ -1562,6 +1575,7 @@ void detail::noteDraw(u64 id) {
     sBundleKey.push_back(t && t->object ? t->inst : 0);
     sBundleRange.push_back({~0u, ~0u});
     sBundlePass.push_back(u8(sPass));
+    sBundleCentre.push_back({std::nanf(""), 0.0f, 0.0f});
     if (sProbeOut) sBundleSlots.push_back(sSlotPatch);
     sOpenDraw = -1;
     for (u32 i = sUngrouped; i < sPatches.size(); i++) {
@@ -1570,6 +1584,10 @@ void detail::noteDraw(u64 id) {
         p.bundle = bundle;
     }
     sUngrouped = u32(sPatches.size());
+}
+
+void detail::noteDrawCentre(const float c[3]) {
+    if (!sBundleCentre.empty()) sBundleCentre.back() = {c[0], c[1], c[2]};
 }
 
 u64 detail::arrayKey() {
@@ -1584,18 +1602,26 @@ TagCat sVertsCat = TagCat::None;
 u32 sVertsSite = 0;
 std::string sVertsChain;
 }  // namespace
-void detail::vertsBegin() {
+void detail::vertsBegin(bool ortho) {
     if (!capturing()) return;
     sVertsSite = sCallLr;
     sVertsKey = valueKey(Kind::Verts, 0, 0, sVertsCat);
+    if (!sVertsKey && ortho) {
+        // An untagged 2D quad (a fade, a full-screen picture): the structural scope, call site and
+        // occurrence; its colours blend only while its positions are identical (replayPair).
+        const TagFrame* t = topTag();
+        const u64 k = mix((t ? t->structural : rootInst()) ^ u64(Kind::Verts) << 56 ^ u64(sCallLr) << 16 ^ 0x2D2Dull);
+        sVertsKey = mix(k ^ u64(occurrence(sValOcc, k) + 1) << 40);
+    }
     if (sTagLogFrame != ~0ull) sVertsChain = sTagChain;
 }
 
-void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, u32 clrOffset, u32 clrBytes) {
+void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, u32 clrOffset, u32 clrBytes, u32 posBytes2D) {
     if (!capturing() || count == 0 || count > 0xFFFF) return;
     Patch p{at, u16(count), Kind::Verts};
     p.stride = u16(stride);
     p.posOffset = u16(posOffset);
+    if (posBytes2D) p.role = 2, p.source = posBytes2D;  // 2D: colours only (positions as captured)
     if (clrBytes && clrOffset + clrBytes <= stride) p.clrOffset = u16(clrOffset), p.clrBytes = u8(clrBytes);
     // The key was taken at GXBegin (vertsBegin): the scope may have closed by the time the draw's
     // vertices are complete (noted at the next GX call).
@@ -1614,6 +1640,7 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, 
         sBundleKey.push_back(0);
         sBundleRange.push_back({~0u, ~0u});
         sBundlePass.push_back(u8(sPass));
+        sBundleCentre.push_back({std::nanf(""), 0.0f, 0.0f});
         if (sProbeOut) sBundleSlots.push_back(sSlotPatch);
     }
     p.bundle = u32(sBundleIds.size() - 1);
@@ -2277,7 +2304,21 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 }
                 if (cause == 0 && groupPolicy == 1) cause = 5;  // its instance switched
                 const bool flat = flatMatrix(Wa.data()) || flatMatrix(Wb.data());  // entrywise, as the replay
-                if (cause == 0 && !flat && groupPolicy != 2 && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) xform34(Wt.data(), r.pos, wt);
+                if (cause == 0 && !flat && groupPolicy != 2 && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) {
+                    // (A spinner / tumbler: its drawn centre moves in a straight line, as replayed.)
+                    if (prevTurn > kSpinnerTurn && P.bundle < b.bundleCentre.size() && std::isfinite(b.bundleCentre[P.bundle][0])) {
+                        const f32* c = b.bundleCentre[P.bundle].data();
+                        M34 ra, rb;
+                        compose(iq.data(), ma, ra.data());
+                        compose(ib.data(), m, rb.data());
+                        f32 pa[3], pbw[3], have[3];
+                        xform34(ra.data(), c, pa);
+                        xform34(rb.data(), c, pbw);
+                        xform34(Wt.data(), c, have);
+                        for (int rr = 0; rr < 3; rr++) Wt[4 * rr + 3] += pa[rr] + (pbw[rr] - pa[rr]) * pr.alpha - have[rr];
+                    }
+                    xform34(Wt.data(), r.pos, wt);
+                }
                 else if (cause != 0) std::copy(wb, wb + 3, wt);  // shown at the game frame's place (policy)
                 else
                     for (int c = 0; c < 3; c++) wt[c] = wa[c] + (wb[c] - wa[c]) * pr.alpha;
@@ -2511,6 +2552,21 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             forceGroups.clear();
             fastGroups.clear();
             skinGroups.clear();
+            // The members, their world matrices in a and b, and per instance the median place of its
+            // members in b: a member far from all the others (more than 4x the instance's median
+            // spread and 250 units) skins nothing visible of it and has no say (the nursery bears' one
+            // erratic draw matrix lands 400-900 units from the bear's joints every game frame; its
+            // previous step was not always large, sweep B).
+            struct Member {
+                u32 i;
+                s32 j;
+                M34 wa, wb;
+                float dist;
+            };
+            static std::vector<Member> members;
+            members.clear();
+            static std::unordered_map<u64, std::vector<u32>> byGroup;
+            byGroup.clear();
             for (u32 i = 0; i < b.patches.size(); i++) {
                 const Patch& p = b.patches[i];
                 const s32 j = b.partner[i];
@@ -2522,29 +2578,85 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 if (!vp || !vp->ok || vp->cut) continue;
                 f32 va[12], vb[12];
                 for (int k = 0; k < 12; k++) va[k] = val(*a, a->patches[j], k), vb[k] = val(b, p, k);
-                M34 wa, wb;
-                compose(vp->ia.data(), va, wa.data());
-                compose(vp->ib.data(), vb, wb.data());
+                Member m{i, j};
+                compose(vp->ia.data(), va, m.wa.data());
+                compose(vp->ib.data(), vb, m.wb.data());
+                m.dist = std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]);
+                byGroup[p.group].push_back(u32(members.size()));
+                members.push_back(m);
+            }
+            static std::vector<u8> outlier;
+            outlier.assign(members.size(), 0);
+            static std::vector<float> groupStep;  // per member: the median step of its instance's members
+            groupStep.assign(members.size(), 1e9f);
+            for (auto& [g, idx] : byGroup) {
+                {
+                    static std::vector<float> st;
+                    st.clear();
+                    for (const u32 m : idx) {
+                        const M34& x = members[m].wa;
+                        const M34& y = members[m].wb;
+                        st.push_back(std::hypot(x[3] - y[3], x[7] - y[7], x[11] - y[11]));
+                    }
+                    std::nth_element(st.begin(), st.begin() + st.size() / 2, st.end());
+                    if (idx.size() >= 4)
+                        for (const u32 m : idx) groupStep[m] = st[st.size() / 2];
+                }
+                if (idx.size() < 4) continue;
+                static std::vector<float> xs[3], ds;
+                f32 med[3];
+                for (int c = 0; c < 3; c++) {
+                    xs[c].clear();
+                    for (const u32 m : idx) xs[c].push_back(members[m].wb[4 * c + 3]);
+                    std::nth_element(xs[c].begin(), xs[c].begin() + xs[c].size() / 2, xs[c].end());
+                    med[c] = xs[c][xs[c].size() / 2];
+                }
+                ds.clear();
+                for (const u32 m : idx)
+                    ds.push_back(std::hypot(members[m].wb[3] - med[0], members[m].wb[7] - med[1], members[m].wb[11] - med[2]));
+                std::vector<float> sorted = ds;
+                std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2, sorted.end());
+                const float spread = sorted[sorted.size() / 2];
+                for (size_t k = 0; k < idx.size(); k++)
+                    if (ds[k] > std::max(250.0f, 4.0f * spread)) outlier[idx[k]] = 1;
+            }
+            for (size_t mi = 0; mi < members.size(); mi++) {
+                const u32 i = members[mi].i;
+                const s32 j = members[mi].j;
+                const Patch& p = b.patches[i];
+                const M34& wa = members[mi].wa;
+                const M34& wb = members[mi].wb;
                 // (No flip or twist resolution here: done per matrix it breaks a skinned mesh, whose
                 // envelope matrices are weighted sums of its joints.)
                 const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
-                const float dist = std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]);
+                const float dist = members[mi].dist;
                 const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
                 // (Recorded here too: a switched instance skips the per-matrix path that records it.)
                 if (b.worldStep && b.worldStep[i].load(std::memory_order_relaxed) < 0.0f)
                     b.worldStep[i].store(step, std::memory_order_relaxed);
                 const float prevTurn = noteTurn(a, j, b, i, wa.data(), wb.data(), 4);
-                // An erratic member (it already moved by more than a quarter of its distance from the
-                // camera, and over 150 units, in the game frame before) has no say for the instance:
-                // the nursery's floating teddy bears (one J3D model) have one draw matrix that lands
-                // 500-1000 units elsewhere every game frame (unused, or weighted zero) while the bear
-                // moves a few units; when its step outgrew the continuity allowance it switched the
-                // whole bear to 30 Hz about one game frame in 11 (sweep B). It is still blended or
-                // switched on its own below.
-                if (prev > 150.0f && prev > 0.25f * dist) continue;
+                if (outlier[mi]) continue;
+                // An erratic member has no say for the instance (it is still blended or switched on its
+                // own below): one that moves by over 150 units, a quarter of its camera distance and three
+                // times its instance's median step (+60) in one game frame, or did so in the last 16 game
+                // frames. The nursery's floating teddy bears (one J3D model, 49 matrices) carry draw
+                // matrices that land 800-1000 units elsewhere every few game frames (unused or weighted
+                // zero) while the bears move a few units, with runs of small steps in between: they
+                // switched all the bears to 30 Hz (sweep B). A whole instance moving fast (Chauncey's
+                // swoops) moves alike and keeps its say.
+                {
+                    const u8 held = a->worldErratic ? a->worldErratic[j].load(std::memory_order_relaxed) : 0;
+                    const bool now = step > 150.0f && step > 0.25f * dist && step > 3.0f * groupStep[mi] + 60.0f;
+                    if (b.worldErratic) b.worldErratic[i].store(now ? 16 : held > 0 ? u8(held - 1) : 0, std::memory_order_relaxed);
+                    if (held > 0 || now) continue;
+                }
                 const bool near = blendableWorld(wa.data(), wb.data(), dist, prev, prevTurn);
                 const bool anyDist = blendableWorld(wa.data(), wb.data(), 1e9f, -1.0f, prevTurn);
                 if (!near && anyDist) {  // only the place jumped
+                    if (sTrace && snapGroups.insert(p.group).second)
+                        log("[interp] tape %llu: instance %016llX switched by key %016llX site %08X step %.0f prev %.0f dist %.0f (%zu members)",
+                            (unsigned long long)b.seq, (unsigned long long)p.group, (unsigned long long)p.key, p.site, step, prev, dist,
+                            byGroup.count(p.group) ? byGroup[p.group].size() : 0);
                     snapGroups.insert(p.group);
                     continue;
                 }
@@ -2593,9 +2705,11 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             const Patch& p = b.patches[i];
             if (p.kind == Kind::Color) {
                 // Blended with the same register of the same identity (tagged), unless it jumped;
-                // 2D (HUD) colours and untagged ones stay as captured.
+                // untagged ones stay as captured. 2D (HUD) colours blend too, under the same draw
+                // check (a static HUD blends identical colours to themselves; the HUD fading in with
+                // the room on arrival stepped at 30 Hz, sweep C).
                 const s32 jc = b.partner[i];
-                if (jc < 0 || p.role == 2 || p.cat == TagCat::Hud) continue;
+                if (jc < 0) continue;
                 const Patch& qc = a->patches[jc];
                 // Only for the same thing drawn: the draw this colour belongs to must pair with the
                 // draw of its partner by its own matrices or vertices. (A colour set in a helper the
@@ -2649,6 +2763,33 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             const Patch& q = a->patches[j];
             if (sNoBlendKinds & (1u << u32(p.kind))) {
                 placeUnderCamera(*a, b, p, alpha);
+                continue;
+            }
+            if (p.kind == Kind::Verts && p.role == 2) {
+                // A 2D block: its direct colours blend while its positions are identical in both game
+                // frames (a fade or a fading HUD quad), else it stays as captured.
+                if (q.role != 2 || q.source != p.source || !p.clrBytes || q.clrBytes != p.clrBytes || q.clrOffset != p.clrOffset)
+                    continue;
+                bool same = true;
+                for (u32 v = 0; v < p.count && same; v++)
+                    same = std::memcmp(a->bytes.data() + q.offset + v * q.stride + q.posOffset,
+                                       b.bytes.data() + p.offset + v * p.stride + p.posOffset, p.source) == 0;
+                if (!same) continue;
+                bool jumped = false;
+                for (u32 v = 0; v < p.count && !jumped; v++)
+                    for (u32 c = 0; c < p.clrBytes; c++)
+                        if (std::abs(int(a->bytes[q.offset + v * q.stride + q.clrOffset + c]) - int(b.bytes[p.offset + v * p.stride + p.clrOffset + c])) > 96)
+                            jumped = true;
+                if (jumped) {
+                    sColorsSwitched++;
+                    continue;
+                }
+                for (u32 v = 0; v < p.count; v++)
+                    for (u32 c = 0; c < p.clrBytes; c++) {
+                        const int x = a->bytes[q.offset + v * q.stride + q.clrOffset + c], y = b.bytes[p.offset + v * p.stride + p.clrOffset + c];
+                        sReplay[p.offset + v * p.stride + p.clrOffset + c] = u8(std::lround(x + (y - x) * alpha));
+                    }
+                sColorsBlended++;
                 continue;
             }
             if (p.kind == Kind::Verts) {
@@ -2747,6 +2888,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 continue;
             }
             bool ok;
+            const ViewPair* pivotVp = nullptr;  // a spinner / tumbler: its drawn centre is moved in a straight line
             if (p.kind == Kind::PosMtx && p.count == 12 && p.role == 0 && p.view < sViewToA.size() && sViewToA[p.view] == s32(q.view)) {
                 const ViewPair* vp = viewPair(*a, q.view, b, p.view, alpha);
                 if (vp && vp->ok && !vp->cut) {
@@ -2754,6 +2896,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     compose(vp->ia.data(), va, wa.data());
                     compose(vp->ib.data(), vb, wb.data());
                     const float prevTurn = noteTurn(a, j, b, i, wa.data(), wb.data(), 4);
+                    if (prevTurn > kSpinnerTurn && !forced) pivotVp = vp;
                     resolveFlip(wa.data(), wb.data(), 4);
                     untwist(wa.data(), wb.data());
                     const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
@@ -2811,6 +2954,23 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                          (p.kind == Kind::TexMtx && p.count == 8 && blendSpin(va, vb, alpha, out))))
                 for (int k = 0; k < p.count; k++)
                     out[k] = std::isfinite(va[k]) && std::isfinite(vb[k]) ? va[k] + (vb[k] - va[k]) * alpha : vb[k];
+            // A spinner or tumbler turned about its matrix origin: geometry off that origin swings
+            // along an arc (the water spray's chunks, rotated 150-180 degrees about an origin outside
+            // the mesh, sat above both of their game-frame places mid-interval: sweep C, blips.py).
+            // Its drawn centre (the draw's position bounding box) moves in a straight line instead.
+            if (pivotVp && p.bundle < b.bundleCentre.size() && std::isfinite(b.bundleCentre[p.bundle][0])) {
+                const f32* c = b.bundleCentre[p.bundle].data();
+                M34 wa, wb;
+                compose(pivotVp->ia.data(), va, wa.data());
+                compose(pivotVp->ib.data(), vb, wb.data());
+                f32 pa[3], pb[3], pw[3], want[3], have[3];
+                xform34(wa.data(), c, pa);
+                xform34(wb.data(), c, pb);
+                for (int k = 0; k < 3; k++) pw[k] = pa[k] + (pb[k] - pa[k]) * alpha;
+                xform34(pivotVp->vt.data(), pw, want);
+                xform34(out, c, have);
+                for (int r = 0; r < 3; r++) out[4 * r + 3] += want[r] - have[r];
+            }
             if (p.kind == Kind::Light) {  // keep the direction's length (spot cone falloff)
                 const float la = std::sqrt(va[3] * va[3] + va[4] * va[4] + va[5] * va[5]);
                 const float lb = std::sqrt(vb[3] * vb[3] + vb[4] * vb[4] + vb[5] * vb[5]);

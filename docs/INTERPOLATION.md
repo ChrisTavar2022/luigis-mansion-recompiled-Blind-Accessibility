@@ -87,8 +87,13 @@ A value of game frame b pairs with the value of frame a that has the same key an
   CPU-built blocks are blended between values with the identical tag (noteColors: Kind::Color, one
   tape word each) when the draw they belong to pairs with its partner's draw by its own matrices or
   vertices (a colour set in a helper the item loop calls has no item tag and would pair with another
-  item's). Exceptions, shown as the newest game frame: 2D/HUD colours (static HUD stays
-  pixel-identical), a channel that jumps by more than 96 of 255 in one game frame (blinks, on/off,
+  item's). 2D/HUD colours blend under the same draw check since f45cd1e (static HUD colours blend
+  to themselves; the HUD fading in with a room stepped at 30 Hz). 2D immediate-mode quads with direct
+  positions and direct RGB(A)8 vertex colours (HUD fades, full-screen fade quads) are noted as 2D
+  blocks (role 2, `posBytes2D`): only their colours blend, and only while every vertex position is
+  byte-identical in both game frames; untagged ones are keyed by structural scope + call site +
+  occurrence (87f2ea6). Exceptions, shown as the newest
+  game frame: a channel that jumps by more than 96 of 255 in one game frame (blinks, on/off,
   the hit flash), a register of another type (colour vs konst). Texture swaps (another texture
   object) switch. A GX light's colour (XF 0x600 + 16 n + 3, from GXLoadLightObjImm) takes the
   identity of the Light value of the same call (light object + slot, tagged even outside object
@@ -123,11 +128,15 @@ A value of game frame b pairs with the value of frame a that has the same key an
   flip and twist resolution chosen per matrix) neighbours took different paths and the hose's skin
   stretched into long straight sticks (user clip with LM_FRAME_TAG: tape 160 alpha 0.05 and 0.34,
   tape 165 alpha 0.67); switching the whole model detached it from Luigi's hand (2f69188).
-  An erratic member (its world step in the game frame before was over 150 units and over a quarter
-  of its camera distance) has no say in the instance's policy and is blended or switched on its own:
-  the nursery's floating teddy bears (one J3D model) carry one draw matrix that lands 500-1000 units
-  elsewhere every game frame (unused or zero-weighted) and switched the whole bear about one game
-  frame in 11 (sweep B). Earlier
+  An erratic member has no say in the instance's policy and is blended or switched on its own: one
+  that moves by over 150 units, a quarter of its camera distance and three times its instance's
+  median step (+60) in a game frame, or did so in the last 16 game frames (`Tape::worldErratic`), or
+  sits more than 4x the instance's spread (and 250 units) from the median place of its members. The
+  nursery's floating teddy bears (one J3D model, 49 matrices) carry draw matrices that land 800-1000
+  units elsewhere every few game frames (unused or zero-weighted), with runs of small steps in
+  between, and switched all the bears to 30 Hz (sweep B: 1.1-1.9k switches per 5 s near them, 0
+  after). A whole instance moving fast (Chauncey's swoops) moves alike and keeps its say.
+  `LM_INTERP_TRACE=1` logs which member switched an instance. Earlier
   attempts tagged fn_80091A70 (a cloth sheet) and J3D models only, which never reached the hose.
 - Present hold (pacing::beforeEnd): on an even grid (VRR or VSync off) a frame built faster than
   usual is held until the usual time after its scheduled start (90th percentile of the last 60
@@ -147,6 +156,12 @@ A value of game frame b pairs with the value of frame a that has the same key an
   the water spray shimmered at 30 Hz (user report). Water spray, Luigi standing: 10-18k such
   switches per 5 s before, 1.4-2.9k after (drops in their first game frames, no history yet).
   Luigi turns about one axis (20-25 degrees per game frame), so his instant turns stay switches.
+  A turn over 150 degrees also counts as evidence for the 8 game frames after it (drops whose random
+  turns alternate small and large): 0.1-0.45k switches per 5 s left. A spinner / tumbler's blended
+  matrix is then translated so the centre of its draw's position bounding box (sampled from the
+  indexed positions when the display list is parsed, `Tape::bundleCentre`) moves in a straight line:
+  turned 150-180 degrees about an origin outside the mesh, the spray's chunks swung along an arc and
+  sat above both game-frame places mid-interval (sweep C, blips.py). The detector's ideal does the same.
 - Squashed-flat matrices (columns nearly coplanar: |det| < 0.1 x the product of the column lengths;
   Chauncey's squash-and-stretch bones) have no meaningful rotation or mirroring (their Gram-Schmidt
   frame flips between frames): only the axis lengths (16x) and the place are checked, and they blend

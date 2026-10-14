@@ -21,6 +21,8 @@
 #include <dolphin/gx.h>
 
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -131,6 +133,49 @@ u32 vertexSize(int fmt) {
     return size;
 }
 
+// Bounding box of the indexed positions of the display list being parsed (vtxDisplayList): its centre
+// is the draw's pivot for tumbling things (interp.cpp, replayPair).
+bool sBoxOn = false;
+f32 sBoxLo[3], sBoxHi[3];
+bool sBoxAny = false;
+void boxPositions(int fmt, const u8* v, u32 count, u32 vtxSize, u32 offset, u32 idxSize) {
+    const Binding& b = sBind[0];
+    if (!b.valid || !inMem1(b.guest) || b.stride == 0) return;
+    u8 cnt = 0, type = 0, frac = 0;
+    if (!gx::vtxAttrFormat(fmt, GX_VA_POS, cnt, type, frac)) return;
+    static constexpr u32 kSize[] = {1, 1, 2, 2, 4};
+    if (type > 4) return;
+    const u32 cs = kSize[type], nc = cnt == GX_POS_XYZ ? 3 : 2;
+    const float scale = type == GX_F32 ? 1.0f : 1.0f / float(1u << frac);
+    const u32 step = std::max(1u, count / 64);  // a sample is enough for a centre
+    for (u32 i = 0; i < count; i += step) {
+        const u8* p = v + i * vtxSize + offset;
+        const u32 idx = idxSize == 2 ? u32(p[0] << 8 | p[1]) : p[0];
+        if (idx == (idxSize == 2 ? 0xFFFFu : 0xFFu)) continue;
+        const u32 phys = (b.guest & 0x01FFFFFF) + idx * b.stride;
+        if (phys + cs * nc > kMem1Size) continue;
+        const u8* e = hostp(0x80000000u | phys);
+        for (u32 c = 0; c < 3; c++) {
+            float f = 0.0f;
+            if (c < nc) {
+                u32 raw = 0;
+                for (u32 k = 0; k < cs; k++) raw = raw << 8 | e[c * cs + k];
+                switch (type) {
+                case GX_F32: f = std::bit_cast<float>(raw); break;
+                case GX_S16: f = float(s16(raw)) * scale; break;
+                case GX_U16: f = float(u16(raw)) * scale; break;
+                case GX_S8: f = float(s8(raw)) * scale; break;
+                default: f = float(u8(raw)) * scale; break;
+                }
+            }
+            if (!std::isfinite(f)) return;
+            if (!sBoxAny) sBoxLo[c] = sBoxHi[c] = f;
+            sBoxLo[c] = std::min(sBoxLo[c], f), sBoxHi[c] = std::max(sBoxHi[c], f);
+        }
+        sBoxAny = true;
+    }
+}
+
 // The indexed attributes of `count` vertices at `v`: extents of the arrays they read.
 void scanVertices(int fmt, const u8* v, u32 count, u32 vtxSize) {
     sScanFmt = fmt;
@@ -153,6 +198,7 @@ void scanVertices(int fmt, const u8* v, u32 count, u32 vtxSize) {
                     any = true;
                 }
             }
+            if (any && a == GX_VA_POS && sBoxOn && !sSnapParse) boxPositions(fmt, v, count, vtxSize, offset, idxSize);
             if (any) {
                 const int slot = a - GX_VA_POS;
                 // Up to one element past the last index start: 36 bytes covers any element
@@ -259,6 +305,7 @@ struct {
     u32 at = ~0u, bytes = 0, count = 0, stride = 0, posOffset = 0;
     u64 id = 0;
     u32 clrOffset = 0xFFFF, clrBytes = 0;  // a direct RGB8/RGBX8/RGBA8 colour (CLR0) in each vertex
+    u32 posBytes2D = 0;  // a 2D quad (orthographic, direct positions of this size, direct colours): colours only
 } sDirect;
 
 // The immediate-mode draw opened by GXBegin: its vertices are scanned once complete, with the
@@ -276,7 +323,8 @@ void finishDirect() {
     if (!sDirect.active) return;
     sDirect.active = false;
     if (sDirect.at != ~0u && sDirect.stride && sDirect.bytes == sDirect.count * sDirect.stride)
-        detail::noteVertices(sDirect.at, sDirect.count, sDirect.stride, sDirect.posOffset, sDirect.id, sDirect.clrOffset, sDirect.clrBytes);
+        detail::noteVertices(sDirect.at, sDirect.count, sDirect.stride, sDirect.posOffset, sDirect.id, sDirect.clrOffset, sDirect.clrBytes,
+                             sDirect.posBytes2D);
 }
 
 void flushPending() {
@@ -352,6 +400,22 @@ void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective) {
             }
         }
         detail::vertsBegin();
+    } else if (!perspective && gx::vtxDesc(GX_VA_POS) == GX_DIRECT && gx::vtxDesc(GX_VA_CLR0) == GX_DIRECT &&
+               gx::vtxAttrSize(int(fmt), GX_VA_POS) > 0 && nVerts <= 64) {
+        // A 2D quad with direct vertex colours (HUD fades, full-screen fade pictures): its colours
+        // blend while its positions stay put (the HUD fading in with the room on arrival stepped at
+        // 30 Hz, sweep C).
+        u8 cnt, type, frac;
+        if (gx::vtxAttrFormat(int(fmt), GX_VA_CLR0, cnt, type, frac) && (type == GX_RGB8 || type == GX_RGBX8 || type == GX_RGBA8)) {
+            u32 posOffset = 0, off = 0;
+            for (int a = GX_VA_PNMTXIDX; a < GX_VA_POS; a++) posOffset += u32(std::max(0, gx::vtxAttrSize(int(fmt), a)));
+            for (int a = GX_VA_PNMTXIDX; a < GX_VA_CLR0; a++) off += u32(std::max(0, gx::vtxAttrSize(int(fmt), a)));
+            sDirect = {true, ~0u, 0, nVerts, vertexSize(int(fmt)), posOffset, detail::mix(id ^ nVerts ^ 0x2D00ull)};
+            sDirect.clrOffset = off;
+            sDirect.clrBytes = type == GX_RGBA8 ? 4 : 3;
+            sDirect.posBytes2D = u32(gx::vtxAttrSize(int(fmt), GX_VA_POS));
+            detail::vertsBegin(true);
+        }
     }
     const u32 vs = vertexSize(int(fmt));
     sImm.active = vs != 0 && nVerts != 0;
@@ -399,7 +463,14 @@ void vtxDisplayList(u32 guestAddr, const u8* data, u32 size) {
     const u32 end = mark();
     sParseTapeBase = end != ~0u && end >= size ? end - size : ~0u;
     if (sParseTapeBase != ~0u) detail::drawRange(sParseTapeBase, end);
+    sBoxOn = true;
+    sBoxAny = false;
     parse(data, size, false);
+    sBoxOn = false;
+    if (sBoxAny) {
+        const f32 c[3] = {0.5f * (sBoxLo[0] + sBoxHi[0]), 0.5f * (sBoxLo[1] + sBoxHi[1]), 0.5f * (sBoxLo[2] + sBoxHi[2])};
+        detail::noteDrawCentre(c);
+    }
     sParseTapeBase = ~0u;
 }
 
