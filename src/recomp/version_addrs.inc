@@ -16,8 +16,12 @@
     {0x8012B918u, 0x8012ED94u},  // start of fn_8012B918
     {0x8012FD14u, 0x80133190u},  // start of fn_8012FD14
     {0x8012FE84u, 0x80133300u},  // start of fn_8012FE84
+    {0x801611CCu, 0x80164664u},  // start of fn_801611CC
+    {0x80161618u, 0x80164AB0u},  // start of fn_80161618
     {0x8016169Cu, 0x80164B34u},  // start of fn_8016169C
     {0x80161ECCu, 0x80165364u},  // start of fn_80161ECC
+    {0x801620ACu, 0x80165544u},  // start of fn_801620AC
+    {0x801628E4u, 0x80165D7Cu},  // start of fn_801628E4
     {0x801796ECu, 0x8017CB84u},  // start of fn_801796EC
     {0x8017996Cu, 0x8017CE04u},  // start of fn_8017996C
     {0x8021DB68u, 0x80222CA0u},  // pointed at by sSceneTable+0x8 (sSceneTable+0x8 (object moved by +0x50c8))

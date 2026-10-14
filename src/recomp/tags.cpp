@@ -48,6 +48,10 @@ void registerSiteTags() {
     // iteration in r19 (list via +0x5C), its renderer in r30; CPU-built quads.
     // Its age (+1 per frame, every particle) is the u16 at +0x32.
     interp::addSiteTag({VA(0x8016169C), VA(0x80161ECC), TagCat::Particle, 19, 30, 0x32, 1});
+    // The other JPA-style renderers: fn_801620AC (particle r19, renderer r26, age +0x32) and
+    // fn_801611CC (child items r30 via +0x24, owner r29): Bowser's flames, the boss arenas' skies.
+    interp::addSiteTag({VA(0x801620AC), VA(0x801628E4), TagCat::Particle, 19, 26, 0x32, 1});
+    interp::addSiteTag({VA(0x801611CC), VA(0x80161618), TagCat::Particle, 30, 29});
 }
 
 }  // namespace
@@ -152,6 +156,22 @@ HLE(fn_80015844) {  // one node (r6) of the model being drawn, recursive
 HLE(fn_80091A70) {
     TagScope t(TagCat::Effect, c.r[3], 0x91A70, c.r[4]);
     callOriginal(c, "fn_80091A70");
+}
+
+// --- ghosts' quads ---------------------------------------------------------------------------------
+// fn_80061690 loops over the ghost list (0x803D48A0) and draws one CPU-built quad per ghost with
+// fn_8005E110(.., ghost + 8 = its position, ..): its identity is the ghost (Bogmire's shadow ghosts,
+// Chauncey's arena). Untagged, they were shown at the game frame's place.
+HLE(fn_8005E110) {
+    TagScope t(TagCat::Object, c.r[5] - 8, 0x5E110);
+    callOriginal(c, "fn_8005E110");
+}
+
+// fn_80118D3C walks a table of 0xA8-byte items (five layers) and draws each one's CPU-built strip
+// with fn_80118E44(item): the item is its identity.
+HLE(fn_80118E44) {
+    TagScope t(TagCat::Effect, c.r[3], 0x118E44);
+    callOriginal(c, "fn_80118E44");
 }
 
 // --- particles ---------------------------------------------------------------------------------

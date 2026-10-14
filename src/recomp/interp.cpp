@@ -132,6 +132,9 @@ struct Tape {
     const Tape* pairedWith = nullptr;
     u64 seq = 0;  // capture order (consecutive tapes differ by 1); replay state slots
     std::vector<s32> partner;  // per patch: index into pairedWith->patches, or -1
+    // Per patch (host, set by the replays from pairedWith): how far the model matrix moved in world
+    // space since pairedWith (-1: not known). A pair that keeps moving fast is motion, not a jump.
+    std::unique_ptr<std::atomic<float>[]> worldStep;
     std::vector<s32> viewToA;  // per view: the view of pairedWith with the same key, or -1
     u16 mainView = 0xFFFF;     // the main camera (most 3D model matrices of the main pass)
     bool cut = false;          // the main camera jumped since pairedWith (or appeared): shown as is
@@ -530,6 +533,8 @@ void pairTapes(const Tape& a, Tape& b) {
     auto tp = Clock::now();
     b.pairedWith = &a;
     b.partner.assign(b.patches.size(), -1);
+    b.worldStep.reset(new std::atomic<float>[b.patches.size()]);
+    for (u32 i = 0; i < b.patches.size(); i++) b.worldStep[i].store(-1.0f, std::memory_order_relaxed);
     static std::unordered_map<u64, s32> byKey;
     byKey.clear();
     byKey.reserve(a.patches.size() * 2);
@@ -656,22 +661,45 @@ bool blendTexWrap(const f32* a, const f32* b, int n, float t, f32* out) {
     return true;
 }
 
-bool blendableWorld(const f32* wa, const f32* wb, float dist) {
+// A matrix whose 3x3 part is nearly flat (squashed to almost no volume: its columns nearly
+// coplanar): its rotation and mirroring are meaningless (the Gram-Schmidt frame of a squashed axis
+// flips from one game frame to the next). Chauncey's squash-and-stretch bones.
+bool flatMatrix(const f32* m) {
+    float len[3];
+    for (int j = 0; j < 3; j++) len[j] = std::sqrt(m[j] * m[j] + m[4 + j] * m[4 + j] + m[8 + j] * m[8 + j]);
+    const float det = m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) + m[2] * (m[4] * m[9] - m[5] * m[8]);
+    const float vol = len[0] * len[1] * len[2];
+    return vol > 0 && std::isfinite(det) && std::fabs(det) < 0.1f * vol;
+}
+
+// `prevStep`: how far the same identity moved over the game frame before (-1: unknown); a pair that
+// moves at most about as far again is fast motion (Chauncey's swoops, a boss charging), not a jump.
+bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -1.0f) {
     Rigid ra, rb;
     if (!decompose(wa, 4, ra) || !decompose(wb, 4, rb)) {
         for (int i = 0; i < 12; i++)
             if (std::fabs(wa[i] - wb[i]) > ((i & 3) == 3 ? 400.0f : 0.35f)) return false;
         return true;
     }
-    if ((ra.u[2][2] < 0) != (rb.u[2][2] < 0)) return false;
-    if (std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]) < 0.26f) return false;
-    for (int k = 0; k < 3; k++) {
-        const float sa = std::fabs(ra.u[k][k]), sb = std::fabs(rb.u[k][k]);
-        if (std::max(sa, sb) > 0.05f && (sb > 16.0f * sa + 1e-4f || sa > 16.0f * sb + 1e-4f)) return false;
+    if (flatMatrix(wa) || flatMatrix(wb)) {
+        // Squashed flat: only its axes' lengths (appearing/vanishing by scale) and place count.
+        for (int k = 0; k < 3; k++) {
+            const float sa = std::sqrt(wa[k] * wa[k] + wa[4 + k] * wa[4 + k] + wa[8 + k] * wa[8 + k]);
+            const float sb = std::sqrt(wb[k] * wb[k] + wb[4 + k] * wb[4 + k] + wb[8 + k] * wb[8 + k]);
+            if (std::max(sa, sb) > 0.05f && (sb > 16.0f * sa + 1e-4f || sa > 16.0f * sb + 1e-4f)) return false;
+        }
+    } else {
+        if ((ra.u[2][2] < 0) != (rb.u[2][2] < 0)) return false;
+        if (std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]) < 0.26f) return false;
+        for (int k = 0; k < 3; k++) {
+            const float sa = std::fabs(ra.u[k][k]), sb = std::fabs(rb.u[k][k]);
+            if (std::max(sa, sb) > 0.05f && (sb > 16.0f * sa + 1e-4f || sa > 16.0f * sb + 1e-4f)) return false;
+        }
     }
     float dd = 0;
     for (int r = 0; r < 3; r++) dd += (wa[4 * r + 3] - wb[4 * r + 3]) * (wa[4 * r + 3] - wb[4 * r + 3]);
-    return std::sqrt(dd) <= std::max(200.0f, 0.5f * dist);
+    const float limit = std::max({200.0f, 0.5f * dist, prevStep >= 0 ? 2.0f * prevStep + 60.0f : 0.0f});
+    return std::sqrt(dd) <= limit;
 }
 
 // Orientation ambiguity: a matrix built from direction vectors (a hose segment's frame, look-at
@@ -701,6 +729,7 @@ bool resolveFlip(const f32* a, f32* b, int cols) {
     return false;
 }
 u32 sFlips = 0;  // pairs blended through an equivalent flipped orientation (stats)
+u32 sFlatBlends = 0;  // squashed-flat model matrices blended entrywise in world space (stats)
 
 bool blendable(Kind kind, const f32* a, const f32* b, int n) {
     switch (kind) {
@@ -1547,7 +1576,11 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
         compose(vp->ia.data(), va, wa.data());
         compose(vp->ib.data(), vb, wb.data());
         if (resolveFlip(wa.data(), wb.data(), 4)) sFlips++;
-        if (!blendRigid(wa.data(), wb.data(), 4, alpha, wt.data())) return false;
+        if ((flatMatrix(wa.data()) || flatMatrix(wb.data())) || !blendRigid(wa.data(), wb.data(), 4, alpha, wt.data())) {
+            // Squashed flat (or mirrored against its partner): entrywise in world space.
+            for (int k = 0; k < 12; k++) wt[k] = wa[k] + (wb[k] - wa[k]) * alpha;
+            sFlatBlends++;
+        }
         compose(vp->vt.data(), wt.data(), out);
         return true;
     }
@@ -1856,7 +1889,8 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 compose(iq.data(), ma, Wa.data());
                 compose(ib.data(), m, Wb.data());
                 resolveFlip(Wa.data(), Wb.data(), 4);
-                if (!blendableWorld(Wa.data(), Wb.data(), std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]))) {
+                if (!blendableWorld(Wa.data(), Wb.data(), std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]),
+                                    a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f)) {
                     cause = 1;
                     Rigid ra, rb;
                     if (decompose(Wa.data(), 4, ra) && decompose(Wb.data(), 4, rb)) {
@@ -1872,7 +1906,8 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                     whyJump = std::hypot(Wa[3] - Wb[3], Wa[7] - Wb[7], Wa[11] - Wb[11]);
                     cause = whyScale < 0 || whyScale > 16.0f ? 5 : whyRot > 150.0f ? 1 : whyJump > 200.0f ? 6 : 5;
                 }
-                if (cause == 0 && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) xform34(Wt.data(), r.pos, wt);
+                const bool flat = flatMatrix(Wa.data()) || flatMatrix(Wb.data());  // entrywise, as the replay
+                if (cause == 0 && !flat && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) xform34(Wt.data(), r.pos, wt);
                 else if (cause != 0) std::copy(wb, wb + 3, wt);  // shown at the game frame's place (policy)
                 else
                     for (int c = 0; c < 3; c++) wt[c] = wa[c] + (wb[c] - wa[c]) * pr.alpha;
@@ -2178,7 +2213,10 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     compose(vp->ia.data(), va, wa.data());
                     compose(vp->ib.data(), vb, wb.data());
                     resolveFlip(wa.data(), wb.data(), 4);
-                    ok = blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]));
+                    const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
+                    if (b.worldStep) b.worldStep[i].store(step, std::memory_order_relaxed);
+                    const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
+                    ok = blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev);
                 } else {
                     ok = blendable(p.kind, va, vb, p.count);
                 }

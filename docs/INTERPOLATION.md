@@ -91,6 +91,14 @@ A value of game frame b pairs with the value of frame a that has the same key an
   camera alone made nearby things "jump"). A turn over ~150 degrees is first tried against b turned
   180 degrees about each of its own axes: within 45 degrees of a, that equivalent is blended (matrices
   built from direction vectors, e.g. the Poltergust hose's segments, flip their roll between frames).
+- Fast motion is not a jump: a pair that moves at most 2x + 60 units of what the same identity moved
+  over the game frame before (`Tape::worldStep`, recorded by the replays) blends however far it goes
+  (Chauncey's swoops, ~500 units per game frame, were snapped at 30 Hz).
+- Squashed-flat matrices (columns nearly coplanar: |det| < 0.1 x the product of the column lengths;
+  Chauncey's squash-and-stretch bones) have no meaningful rotation or mirroring (their Gram-Schmidt
+  frame flips between frames): only the axis lengths (16x) and the place are checked, and they blend
+  entrywise in world space (`flatMatrix`). Rolling balls and Chauncey's spin (150-175 degrees per game
+  frame) stay switches: the turn direction is not knowable from two frames.
 - Projections: 2D (orthographic) ones are layout and never blended (the HUD anchors each element with
   its own projection; paired by order they slid HUD elements in the in-betweens); perspective ones
   blend only with one of the same aspect, except the shadow caster pass, which blends with its light.
@@ -131,6 +139,9 @@ A value of game frame b pairs with the value of frame a that has the same key an
 | Particle | call-site tag in `fn_8012B6C4` (second particle draw, `fn_8012CB74`) | particle r29, group r28, birth stamp from the remaining life at +0x24 (counts down) |
 | Particle | call-site tag in `fn_801796EC` (45 fixed slots, `fn_80162AE8`) | slot offset r28, array r25 |
 | Particle | call-site tag in `fn_8016169C` (JPA-style emitters, `fn_801604FC`) | particle r19, renderer r30, birth stamp from the age at +0x32 (counts up) |
+| Particle | call-site tags in `fn_801620AC` (particle r19, renderer r26, age +0x32) and `fn_801611CC` (child item r30, owner r29): the other JPA-style renderers (Bowser's flames, boss arenas) | as listed |
+| Object | `fn_8005E110` (one CPU-built quad per ghost, from `fn_80061690`'s loop over the ghost list 0x803D48A0; large in Bogmire's arena) | the ghost (its position pointer r5 - 8) |
+| Effect | `fn_80118E44` (CPU-built strips of 0xA8-byte items, from `fn_80118D3C`) | the item |
 | Hud | `draw__7J2DPaneFiiPC14J2DGrafContextb` | the pane |
 | (lights) | GX light objects (`GXLoadLightObjImm`) | light object address + slot, in the current scope |
 | (extra lights) | enhanced lighting's ExtraLight ids (ghost actor, world-light emitter, fixed sources) | id + the object's generation |
