@@ -95,6 +95,7 @@ struct Patch {
     u16 view = 0xFFFF;  // index into Tape::views: the camera it was noted under
     u8 role = 0;        // 1: a shadow receiver's texture matrix (noteShadowLight), 2: 2D (orthographic)
     TagCat cat = TagCat::None;  // category of the innermost object scope (policy)
+    bool inScope = false;       // noted inside any tag scope (a view at least): untagged values outside are left as captured
     u32 site = 0;       // guest call site (logs)
 };
 
@@ -1062,6 +1063,7 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     p.slot = slot;
     p.site = sCallLr;
     p.key = valueKey(kind, source, slot, p.cat);
+    p.inScope = sTagDepth > 0 || sVirtActive;
     if (kind == Kind::TexMtx && sShadowRecv > 0) p.role = 1;
     else if (sOrtho && kind != Kind::Projection) p.role = 2;
     if (sProbeOut && kind == Kind::PosMtx && nFloats == 12 && slot % 3 == 0 && slot / 3 < 10)
@@ -1773,6 +1775,9 @@ void auroraCmd(std::vector<u8>& out, u16 sub, u8 arg) {
 // counterpart are left as captured.
 bool placeUnderCamera(const Tape& a, const Tape& b, const Patch& p, float alpha) {
     if (p.role != 0 || p.count > 16 || p.view >= sViewToA.size() || sViewToA[p.view] < 0) return false;
+    // Untagged values outside every scope (frame setup, J3D's default matrices) are not things in the
+    // 3D view: as captured.
+    if (!p.key && !p.inScope) return false;
     if (p.kind != Kind::PosMtx && p.kind != Kind::NrmMtx && p.kind != Kind::Light) return false;
     const ViewPair* vp = viewPair(a, u16(sViewToA[p.view]), b, p.view, alpha);
     if (!vp) return false;
