@@ -145,6 +145,7 @@ struct Tape {
     std::unique_ptr<std::atomic<float>[]> worldTurn;
     std::unique_ptr<std::atomic<float>[]> worldAxis;  // x, y, z per patch
     std::unique_ptr<std::atomic<u8>[]> worldTumble;
+    std::unique_ptr<std::atomic<u8>[]> worldErratic;  // game frames left of erratic-step evidence (instance pass)
     // Per patch (host, set by each replay from pairedWith): 1 when its model instance has a matrix
     // that cannot blend, so the whole instance is shown as b (the detector judges it as a switch).
     std::unique_ptr<std::atomic<u8>[]> groupSnap;
@@ -555,6 +556,7 @@ void pairTapes(const Tape& a, Tape& b) {
     b.worldTurn.reset(new std::atomic<float>[b.patches.size()]);
     b.worldAxis.reset(new std::atomic<float>[3 * b.patches.size()]);
     b.worldTumble.reset(new std::atomic<u8>[b.patches.size()]);
+    b.worldErratic.reset(new std::atomic<u8>[b.patches.size()]);
     b.groupSnap.reset(new std::atomic<u8>[b.patches.size()]);
     b.vertStep.reset(new std::atomic<float>[3 * b.patches.size()]);
     for (u32 i = 0; i < 3 * b.patches.size(); i++) b.vertStep[i].store(std::nanf(""), std::memory_order_relaxed);
@@ -562,6 +564,7 @@ void pairTapes(const Tape& a, Tape& b) {
         b.worldStep[i].store(-1.0f, std::memory_order_relaxed);
         b.worldTurn[i].store(-1.0f, std::memory_order_relaxed);
         b.worldTumble[i].store(0, std::memory_order_relaxed);
+        b.worldErratic[i].store(0, std::memory_order_relaxed);
         for (int c = 0; c < 3; c++) b.worldAxis[3 * i + c].store(0.0f, std::memory_order_relaxed);
         b.groupSnap[i].store(0, std::memory_order_relaxed);
     }
@@ -2549,6 +2552,21 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             forceGroups.clear();
             fastGroups.clear();
             skinGroups.clear();
+            // The members, their world matrices in a and b, and per instance the median place of its
+            // members in b: a member far from all the others (more than 4x the instance's median
+            // spread and 250 units) skins nothing visible of it and has no say (the nursery bears' one
+            // erratic draw matrix lands 400-900 units from the bear's joints every game frame; its
+            // previous step was not always large, sweep B).
+            struct Member {
+                u32 i;
+                s32 j;
+                M34 wa, wb;
+                float dist;
+            };
+            static std::vector<Member> members;
+            members.clear();
+            static std::unordered_map<u64, std::vector<u32>> byGroup;
+            byGroup.clear();
             for (u32 i = 0; i < b.patches.size(); i++) {
                 const Patch& p = b.patches[i];
                 const s32 j = b.partner[i];
@@ -2560,29 +2578,85 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 if (!vp || !vp->ok || vp->cut) continue;
                 f32 va[12], vb[12];
                 for (int k = 0; k < 12; k++) va[k] = val(*a, a->patches[j], k), vb[k] = val(b, p, k);
-                M34 wa, wb;
-                compose(vp->ia.data(), va, wa.data());
-                compose(vp->ib.data(), vb, wb.data());
+                Member m{i, j};
+                compose(vp->ia.data(), va, m.wa.data());
+                compose(vp->ib.data(), vb, m.wb.data());
+                m.dist = std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]);
+                byGroup[p.group].push_back(u32(members.size()));
+                members.push_back(m);
+            }
+            static std::vector<u8> outlier;
+            outlier.assign(members.size(), 0);
+            static std::vector<float> groupStep;  // per member: the median step of its instance's members
+            groupStep.assign(members.size(), 1e9f);
+            for (auto& [g, idx] : byGroup) {
+                {
+                    static std::vector<float> st;
+                    st.clear();
+                    for (const u32 m : idx) {
+                        const M34& x = members[m].wa;
+                        const M34& y = members[m].wb;
+                        st.push_back(std::hypot(x[3] - y[3], x[7] - y[7], x[11] - y[11]));
+                    }
+                    std::nth_element(st.begin(), st.begin() + st.size() / 2, st.end());
+                    if (idx.size() >= 4)
+                        for (const u32 m : idx) groupStep[m] = st[st.size() / 2];
+                }
+                if (idx.size() < 4) continue;
+                static std::vector<float> xs[3], ds;
+                f32 med[3];
+                for (int c = 0; c < 3; c++) {
+                    xs[c].clear();
+                    for (const u32 m : idx) xs[c].push_back(members[m].wb[4 * c + 3]);
+                    std::nth_element(xs[c].begin(), xs[c].begin() + xs[c].size() / 2, xs[c].end());
+                    med[c] = xs[c][xs[c].size() / 2];
+                }
+                ds.clear();
+                for (const u32 m : idx)
+                    ds.push_back(std::hypot(members[m].wb[3] - med[0], members[m].wb[7] - med[1], members[m].wb[11] - med[2]));
+                std::vector<float> sorted = ds;
+                std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2, sorted.end());
+                const float spread = sorted[sorted.size() / 2];
+                for (size_t k = 0; k < idx.size(); k++)
+                    if (ds[k] > std::max(250.0f, 4.0f * spread)) outlier[idx[k]] = 1;
+            }
+            for (size_t mi = 0; mi < members.size(); mi++) {
+                const u32 i = members[mi].i;
+                const s32 j = members[mi].j;
+                const Patch& p = b.patches[i];
+                const M34& wa = members[mi].wa;
+                const M34& wb = members[mi].wb;
                 // (No flip or twist resolution here: done per matrix it breaks a skinned mesh, whose
                 // envelope matrices are weighted sums of its joints.)
                 const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
-                const float dist = std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]);
+                const float dist = members[mi].dist;
                 const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
                 // (Recorded here too: a switched instance skips the per-matrix path that records it.)
                 if (b.worldStep && b.worldStep[i].load(std::memory_order_relaxed) < 0.0f)
                     b.worldStep[i].store(step, std::memory_order_relaxed);
                 const float prevTurn = noteTurn(a, j, b, i, wa.data(), wb.data(), 4);
-                // An erratic member (it already moved by more than a quarter of its distance from the
-                // camera, and over 150 units, in the game frame before) has no say for the instance:
-                // the nursery's floating teddy bears (one J3D model) have one draw matrix that lands
-                // 500-1000 units elsewhere every game frame (unused, or weighted zero) while the bear
-                // moves a few units; when its step outgrew the continuity allowance it switched the
-                // whole bear to 30 Hz about one game frame in 11 (sweep B). It is still blended or
-                // switched on its own below.
-                if (prev > 150.0f && prev > 0.25f * dist) continue;
+                if (outlier[mi]) continue;
+                // An erratic member has no say for the instance (it is still blended or switched on its
+                // own below): one that moves by over 150 units, a quarter of its camera distance and three
+                // times its instance's median step (+60) in one game frame, or did so in the last 16 game
+                // frames. The nursery's floating teddy bears (one J3D model, 49 matrices) carry draw
+                // matrices that land 800-1000 units elsewhere every few game frames (unused or weighted
+                // zero) while the bears move a few units, with runs of small steps in between: they
+                // switched all the bears to 30 Hz (sweep B). A whole instance moving fast (Chauncey's
+                // swoops) moves alike and keeps its say.
+                {
+                    const u8 held = a->worldErratic ? a->worldErratic[j].load(std::memory_order_relaxed) : 0;
+                    const bool now = step > 150.0f && step > 0.25f * dist && step > 3.0f * groupStep[mi] + 60.0f;
+                    if (b.worldErratic) b.worldErratic[i].store(now ? 16 : held > 0 ? u8(held - 1) : 0, std::memory_order_relaxed);
+                    if (held > 0 || now) continue;
+                }
                 const bool near = blendableWorld(wa.data(), wb.data(), dist, prev, prevTurn);
                 const bool anyDist = blendableWorld(wa.data(), wb.data(), 1e9f, -1.0f, prevTurn);
                 if (!near && anyDist) {  // only the place jumped
+                    if (sTrace && snapGroups.insert(p.group).second)
+                        log("[interp] tape %llu: instance %016llX switched by key %016llX site %08X step %.0f prev %.0f dist %.0f (%zu members)",
+                            (unsigned long long)b.seq, (unsigned long long)p.group, (unsigned long long)p.key, p.site, step, prev, dist,
+                            byGroup.count(p.group) ? byGroup[p.group].size() : 0);
                     snapGroups.insert(p.group);
                     continue;
                 }
