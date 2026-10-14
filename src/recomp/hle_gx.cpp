@@ -770,6 +770,7 @@ void hw::fifoWrite(u32 v, int size) {
     HLE(name) {                                           \
         frame::gxWaitForGuestTurn();                      \
         gx::endPendingDraw();                             \
+        interp::gxCall(c);                                \
         gxImpl_##name(c);                                 \
     }                                                     \
     static void gxImpl_##name([[maybe_unused]] ::recomp::Ctx& c)

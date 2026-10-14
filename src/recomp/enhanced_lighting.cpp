@@ -717,8 +717,15 @@ void limitToRoom(aurora::gfx::ExtraLight& l, int room, const float world[3]) {
 // scene draw fn_8000BCE8 before the screen copy and the HUD. r3 != 0 selects a reduced pass
 // (rooms and some actors only), which is left alone. The European function is identical apart
 // from relocations.
+namespace tags {
+void init();  // tags.cpp
+}
 HLE(fn_8000BB98) {
     const bool main = c.r[3] == 0;
+    // Frame interpolation: everything drawn in this view is under the view's tag scope (its camera's
+    // identity; tags.cpp, docs/INTERPOLATION.md "Tagged interpolation").
+    tags::init();
+    interp::TagScope viewTag(interp::TagCat::View, VA(0x8000BB98), 0, c.r[3]);
     if (main) ghostlights::onMainView(c);  // ghost_lights.cpp: this frame's ghost lights
     if (main) worldlights::onMainView(c);  // world_lights.cpp: candles, fires, lamps, sprays
     if (main) enh::beginScene();

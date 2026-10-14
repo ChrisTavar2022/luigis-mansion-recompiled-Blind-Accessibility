@@ -258,3 +258,32 @@ patch 51 800B742C 2C00007F
 patch 51 800BA7B8 2C00007F pal
 # Ending scene draw (gallery.cpp): the unused Luigi pictures by rank.
 fn_8000E050 us pal
+
+# Frame interpolation identity tags (src/recomp/tags.cpp, docs/INTERPOLATION.md "Tagged
+# interpolation"): the game's draw entry points open a tag scope around what they draw.
+fn_8006033C
+fn_80059C54
+fn_80059F6C
+fn_8005A280
+fn_800597C0
+fn_800598E0
+fn_800599E8
+fn_80058A60
+fn_800595B8
+fn_80057F90
+fn_800581E8
+fn_8001F098
+fn_8001F138
+fn_80015CF4
+fn_80015844
+fn_80127A74
+fn_80127AA8
+draw__14J3DShapePacketFv
+draw__12J3DMatPacketFv
+loadMtxIndx_PNGP__11J3DShapeMtxCFiUs
+loadMtxIndx_PCPU__11J3DShapeMtxCFiUs
+loadMtxIndx_NCPU__11J3DShapeMtxCFiUs
+loadMtxIndx_PNCPU__11J3DShapeMtxCFiUs
+fn_80091A70
+draw__7J2DPaneFiiPC14J2DGrafContextb
+free__10JKRExpHeapFPv

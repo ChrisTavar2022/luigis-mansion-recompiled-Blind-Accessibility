@@ -182,7 +182,10 @@ u32 parse(const u8* p, u32 size, bool partial) {
                 break;
             }
             len = 5 + 4 * (((be32(i + 1) >> 16) & 0xFFFF) + 1);
-            if ((be32(i + 1) & 0xFFFF) < 0x600) sStreamMtxLoads++;  // matrix memory, not noted for blending
+            if ((be32(i + 1) & 0xFFFF) < 0x600) {  // matrix memory, not noted for blending
+                sStreamMtxLoads++;
+                detail::xfMatrixWritten(be32(i + 1) & 0xFFFF, ((be32(i + 1) >> 16) & 0xFFFF) + 1);
+            }
         } else if (op == 0x20 || op == 0x28 || op == 0x30 || op == 0x38) {  // LOAD_INDX_A..D
             len = 5;
             if (i + len <= size) {
@@ -190,6 +193,7 @@ u32 parse(const u8* p, u32 size, bool partial) {
                 const u32 idx = be16(i + 1), n = (be16(i + 3) >> 12) + 1;
                 use(slot, idx, idx, n * 4);
                 sStreamIndexedLoads++;
+                if (op == 0x20) detail::xfMatrixWritten(be16(i + 3) & 0xFFF, n);
             }
         } else if (op == 0x40) {  // CALL_DL (Aurora ignores nested calls)
             len = 9;
@@ -329,6 +333,7 @@ void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective) {
         u32 posOffset = 0;
         for (int a = GX_VA_PNMTXIDX; a < GX_VA_POS; a++) posOffset += u32(std::max(0, gx::vtxAttrSize(int(fmt), a)));
         sDirect = {true, ~0u, 0, nVerts, vertexSize(int(fmt)), posOffset, detail::mix(id ^ nVerts)};
+        detail::vertsBegin();
     }
     const u32 vs = vertexSize(int(fmt));
     sImm.active = vs != 0 && nVerts != 0;
