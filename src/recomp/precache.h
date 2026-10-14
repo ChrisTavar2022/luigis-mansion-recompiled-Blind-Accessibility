@@ -20,4 +20,13 @@ struct Progress {
     float fraction() const { return total ? float(done) / float(total) : 1.0f; }
 };
 Progress progress();
+
+// Host thread, once per main-loop iteration: true while the game must not run because the
+// pipelines a rebuild of the known set queued (startup: the whole list; later: the variants a
+// settings change needs, Aurora 0217) are still compiling. The game starts only after them, so
+// the boot logos and the title never stutter on a compile; a settings change pauses the game
+// with a progress overlay instead of stuttering in play. Test override: LM_PRECACHE_WAIT=0
+// (start at once, compile in the background as before).
+bool holdGame();
+void drawHold();  // inside the ImGui frame while holdGame(): "Preparing shaders... n / m"
 }  // namespace recomp::precache
