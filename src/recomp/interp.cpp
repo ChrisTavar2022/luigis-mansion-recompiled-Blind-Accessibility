@@ -825,9 +825,10 @@ bool resolveFlip(const f32* a, f32* b, int cols) {
     return false;
 }
 u32 sFlips = 0;  // pairs blended through an equivalent flipped orientation (stats)
-u32 sFlatBlends = 0;
-u32 sUntwists = 0;
-u32 sGroupSnaps = 0;  // model instances switched as a whole (stats)  // pairs whose fast twist was taken from b (stats)  // squashed-flat model matrices blended entrywise in world space (stats)
+u32 sFlatBlends = 0;  // squashed-flat model matrices blended entrywise in world space (stats)
+u32 sUntwists = 0;    // pairs whose fast twist was taken from b (stats)
+u32 sGroupSnaps = 0;  // model instances switched as a whole (stats)
+u32 sGroupForced = 0; // model instances whose every matrix blended although some turned too far (stats)
 
 bool blendable(Kind kind, const f32* a, const f32* b, int n) {
     switch (kind) {
@@ -2038,7 +2039,9 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 compose(ib.data(), m, Wb.data());
                 resolveFlip(Wa.data(), Wb.data(), 4);
                 untwist(Wa.data(), Wb.data());
-                if (!blendableWorld(Wa.data(), Wb.data(), std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]),
+                const u8 groupPolicy = b.groupSnap ? b.groupSnap[pb].load(std::memory_order_relaxed) : 0;
+                if (groupPolicy != 2 &&
+                    !blendableWorld(Wa.data(), Wb.data(), std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]),
                                     a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f)) {
                     cause = 1;
                     Rigid ra, rb;
@@ -2055,7 +2058,7 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                     whyJump = std::hypot(Wa[3] - Wb[3], Wa[7] - Wb[7], Wa[11] - Wb[11]);
                     cause = whyScale < 0 || whyScale > 16.0f ? 5 : whyRot > 150.0f ? 1 : whyJump > 200.0f ? 6 : 5;
                 }
-                if (cause == 0 && b.groupSnap && b.groupSnap[pb].load(std::memory_order_relaxed)) cause = 5;  // its instance switched
+                if (cause == 0 && groupPolicy == 1) cause = 5;  // its instance switched
                 const bool flat = flatMatrix(Wa.data()) || flatMatrix(Wb.data());  // entrywise, as the replay
                 if (cause == 0 && !flat && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) xform34(Wt.data(), r.pos, wt);
                 else if (cause != 0) std::copy(wb, wb + 3, wt);  // shown at the game frame's place (policy)
@@ -2271,12 +2274,20 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             placeUnderCamera(*a, b, p, alpha);
         };
         // A model instance (skinned mesh) whose matrices are partly blended and partly switched tears
-        // apart in the in-betweens (the Poltergust hose as it is swung out: its envelope matrices
-        // turn by 100+ degrees while their neighbours blend; the skin between them stretched into
-        // sticks). One matrix of an instance that cannot blend switches the whole instance.
+        // apart in the in-betweens (the Poltergust hose as Luigi raises or lowers the nozzle: its
+        // envelope matrices turn by 100+ degrees in a game frame while their neighbours blend; the
+        // skin between them stretched into sticks). So an instance is handled as one:
+        //  - a matrix that jumps (moves farther than blending allows: a respawn, a teleport) switches
+        //    the whole instance (groupSnap 1);
+        //  - one that only turns or scales too far for blending (the hose's segments as the nozzle
+        //    swings, Bogmire's squash and stretch) does not: the whole instance blends, those
+        //    matrices too (groupSnap 2). Switching the whole instance for those (2f69188) showed the
+        //    hose at the newest frame while Luigi's hand blended: a long arc from the tank to the
+        //    nozzle's next place, and Bogmire stepped at 30 Hz in a fifth of the frames.
         {
-            static std::unordered_set<u64> snapGroups;
+            static std::unordered_set<u64> snapGroups, forceGroups;
             snapGroups.clear();
+            forceGroups.clear();
             for (u32 i = 0; i < b.patches.size(); i++) {
                 const Patch& p = b.patches[i];
                 const s32 j = b.partner[i];
@@ -2294,18 +2305,25 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 resolveFlip(wa.data(), wb.data(), 4);
                 untwist(wa.data(), wb.data());
                 const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
-                if (!blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev))
-                    snapGroups.insert(p.group);
+                if (blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev)) continue;
+                // (Blendable at any distance: only the place jumped.)
+                if (blendableWorld(wa.data(), wb.data(), 1e9f)) snapGroups.insert(p.group);
+                else forceGroups.insert(p.group);
             }
-            for (u32 i = 0; i < b.patches.size(); i++)
-                if (b.groupSnap) b.groupSnap[i].store(b.patches[i].group && snapGroups.count(b.patches[i].group) ? 1 : 0, std::memory_order_relaxed);
+            for (u32 i = 0; i < b.patches.size(); i++) {
+                const u64 g = b.patches[i].group;
+                const u8 v = !g ? 0 : snapGroups.count(g) ? 1 : forceGroups.count(g) ? 2 : 0;
+                if (b.groupSnap) b.groupSnap[i].store(v, std::memory_order_relaxed);
+            }
             sGroupSnaps += u32(snapGroups.size());
+            sGroupForced += u32(forceGroups.size());
         }
         for (u32 i = 0; i < b.patches.size(); i++) {
             const Patch& p = b.patches[i];
             if (p.kind == Kind::Color) continue;  // never blended
-            if (b.groupSnap && b.groupSnap[i].load(std::memory_order_relaxed) &&
-                (p.kind == Kind::PosMtx || p.kind == Kind::NrmMtx) && b.partner[i] >= 0) {
+            const u8 groupPolicy = b.groupSnap ? b.groupSnap[i].load(std::memory_order_relaxed) : 0;
+            const bool forced = groupPolicy == 2 && (p.kind == Kind::PosMtx || p.kind == Kind::NrmMtx);
+            if (groupPolicy == 1 && (p.kind == Kind::PosMtx || p.kind == Kind::NrmMtx) && b.partner[i] >= 0) {
                 f32 va[16], vb[16];
                 const Patch& q = a->patches[b.partner[i]];
                 for (int k = 0; k < p.count && k < 16; k++) va[k] = val(*a, q, k), vb[k] = val(b, p, k);
@@ -2406,7 +2424,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
                     if (b.worldStep) b.worldStep[i].store(step, std::memory_order_relaxed);
                     const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
-                    ok = blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev);
+                    ok = forced || blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev);
                 } else {
                     ok = blendable(p.kind, va, vb, p.count);
                 }
@@ -2422,7 +2440,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                         }
                     resolveFlip(na, nb, 3);
                     untwist(na, nb, 3);
-                    ok = blendable(Kind::NrmMtx, na, nb, 9);
+                    ok = forced || blendable(Kind::NrmMtx, na, nb, 9);
                 } else {
                     ok = blendable(p.kind, va, vb, p.count);
                 }

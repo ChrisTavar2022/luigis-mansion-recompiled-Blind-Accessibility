@@ -183,6 +183,7 @@ struct FrameRec {
     bool stalled = false;
     double gpuCost = 0;
     u32 warm = 0;  // GPU keep-warm units when the frame was built
+    double held = 0;  // s: beforeEnd's hold
 };
 FrameRec sCur;  // the frame being built
 std::deque<FrameRec> sFrames;     // recent frames, oldest first
@@ -645,6 +646,37 @@ void beforeFrame() {
 }
 
 void afterBegin() { sCur.opened = Clock::now(); }
+
+namespace {
+std::deque<double> sLeads;  // recent frames' time from their scheduled start to beforeEnd (s)
+}
+
+void beforeEnd() {
+    static const bool sOff = [] { const char* e = std::getenv("LM_PRESENT_HOLD"); return e && *e == '0'; }();
+    if (sOff || !sPacing || sMode != Mode::Grid) {
+        sLeads.clear();
+        return;
+    }
+    const auto now = Clock::now();
+    const double lead = secs(now - sFrameTime);
+    if (lead < 0 || lead > 4.0 * sPeriod) {  // a hitch (load, compile): start over
+        sLeads.clear();
+        return;
+    }
+    // The usual lead: the 90th percentile of the last ~half second; at most 85% of the period (the
+    // next frame's start must not wait for this one), and a frame later than that goes at once.
+    if (sLeads.size() >= 16) {
+        std::vector<double> v(sLeads.begin(), sLeads.end());
+        std::nth_element(v.begin(), v.begin() + v.size() * 9 / 10, v.end());
+        const double target = std::min(v[v.size() * 9 / 10], 0.85 * sPeriod);
+        if (lead < target) {
+            SDL_DelayPrecise(u64((target - lead) * 1e9));
+            sCur.held = target - lead;
+        }
+    }
+    sLeads.push_back(lead);
+    while (sLeads.size() > 60) sLeads.pop_front();
+}
 
 void afterFrame() {
     if (!sPacing && !sLog && !port::settings().rendering.gpuKeepWarm) return;

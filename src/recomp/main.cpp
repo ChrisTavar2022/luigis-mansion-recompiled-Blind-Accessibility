@@ -345,6 +345,7 @@ int main(int argc, char* argv[]) {
         interp::hostMark(2);
         menu::draw();
         precache::frame();
+        pacing::beforeEnd();
         aurora_end_frame();
         pacing::afterFrame();
         interp::hostMark(3);
