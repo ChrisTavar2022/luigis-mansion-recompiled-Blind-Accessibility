@@ -87,8 +87,9 @@ A value of game frame b pairs with the value of frame a that has the same key an
   CPU-built blocks are blended between values with the identical tag (noteColors: Kind::Color, one
   tape word each) when the draw they belong to pairs with its partner's draw by its own matrices or
   vertices (a colour set in a helper the item loop calls has no item tag and would pair with another
-  item's). Exceptions, shown as the newest game frame: 2D/HUD colours (static HUD stays
-  pixel-identical), a channel that jumps by more than 96 of 255 in one game frame (blinks, on/off,
+  item's). 2D/HUD colours blend under the same draw check since f45cd1e (static HUD colours blend
+  to themselves; the HUD fading in with a room stepped at 30 Hz). Exceptions, shown as the newest
+  game frame: a channel that jumps by more than 96 of 255 in one game frame (blinks, on/off,
   the hit flash), a register of another type (colour vs konst). Texture swaps (another texture
   object) switch. A GX light's colour (XF 0x600 + 16 n + 3, from GXLoadLightObjImm) takes the
   identity of the Light value of the same call (light object + slot, tagged even outside object
@@ -147,6 +148,12 @@ A value of game frame b pairs with the value of frame a that has the same key an
   the water spray shimmered at 30 Hz (user report). Water spray, Luigi standing: 10-18k such
   switches per 5 s before, 1.4-2.9k after (drops in their first game frames, no history yet).
   Luigi turns about one axis (20-25 degrees per game frame), so his instant turns stay switches.
+  A turn over 150 degrees also counts as evidence for the 8 game frames after it (drops whose random
+  turns alternate small and large): 0.1-0.45k switches per 5 s left. A spinner / tumbler's blended
+  matrix is then translated so the centre of its draw's position bounding box (sampled from the
+  indexed positions when the display list is parsed, `Tape::bundleCentre`) moves in a straight line:
+  turned 150-180 degrees about an origin outside the mesh, the spray's chunks swung along an arc and
+  sat above both game-frame places mid-interval (sweep C, blips.py). The detector's ideal does the same.
 - Squashed-flat matrices (columns nearly coplanar: |det| < 0.1 x the product of the column lengths;
   Chauncey's squash-and-stretch bones) have no meaningful rotation or mirroring (their Gram-Schmidt
   frame flips between frames): only the axis lengths (16x) and the place are checked, and they blend
