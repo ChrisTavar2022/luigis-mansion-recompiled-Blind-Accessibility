@@ -1188,7 +1188,7 @@ gaps from them.
   depth-only/caster, EFB format, blend, depth, cull, dst alpha).
 - New list: the canonical union of every config recorded on the development machine (all sweeps
   and test runs of both releases since the config version 15, the user's play sessions
-  `out/play1`/`play2`): **4333 configs** (77 KB). `LM_PIPELINE_EXPORT=<file>` writes the canonical
+  `out/play1`/`play2`): 4333 configs; with the verification runs below merged in **4387** (78 KB). `LM_PIPELINE_EXPORT=<file>` writes the canonical
   known set (with `LM_PRECACHE_WAIT=0 LM_PIPELINE_EXPORT_EXIT=1` on the first frame and exits):
   `pipelines.py build -o data/pipelines.bin <export>`.
 
@@ -1209,7 +1209,27 @@ GBH, ghost captures until the room is clear with the hunting aid, the lab, the K
 balcony entry events, Chauncey, Bogmire, the ending), each with a fresh cache and only the
 shipped list, one game at a time (`--lock`), per F1 preset:
 
-VERIFY_TABLE
+| Preset | Routes | MISS (main before 0217, old list) | MISS (0217, 4333-config list; before merging these runs) | Startup, cold |
+|----|----|----|----|----|
+| User's settings (Ultra, ghost/world lights, AO, realistic flashlight 3, shadow maps, smooth banding, CRT) | opening, tour, ghost room, lab, event 9, event 5, Chauncey, Bogmire, ending | opening 62, tour 147 | **1** (tour; the other 8 routes 0) | 77-86 s (8969 pipelines) |
+| Default (Enhanced lighting off) | the same 9 | opening 62, tour 110 | **1** (tour; the other 8 routes 0) | 19-23 s (3043) |
+| Enhanced Low | opening, tour, event 9, Bogmire | | 1 (tour) over opening, tour, event 9; Bogmire pending | 72-79 s (8165) |
+| Enhanced High | the same 4 | | pending | |
+| Enhanced Ultra (+ ghost/world lights, AO, realistic flashlight 3) | the same 4 | | pending | |
+
+The miss left in the tour (the same material in every preset) is a COLOR1 material whose
+material colour comes from the vertex (no vertex colour: constant white) where every recorded
+draw of it used the register: a state no recorded run had reached. The verification runs' own
+caches were merged into the list afterwards (4387 configs), which covers it.
+Turning Enhanced lighting on in play (`LM_SETTINGS_AT`, from the default settings): the game
+held 65 s for 7250 pipelines (cold cache) with the overlay, then resumed with 0 misses; a later
+change of the shadow mode needed none. After the startup hold, no draw waited for a pipeline in
+any run ("stalled draws 0"); the longest frames left at boot are the guest's own start (0.36 s
+before the first picture) and the opening scene's load (0.6 s), not shaders.
+
+Not exercised by the routes: ghost captures and the room-clear treasure (the hunting aid stuns
+the gold ghosts but did not capture one in these runs), the key-get pose; their configs come from
+the user's play sessions in the list.
 
 **Not covered yet** (these compile on first use, without dropping draws): boss fights past
 their first phase (Bowser, Chauncey: blind input does not play them), the credits after the

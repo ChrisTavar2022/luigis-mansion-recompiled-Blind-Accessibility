@@ -77,6 +77,7 @@ int sHoldFrames = 0;
 Clock::time_point sHoldStart{};
 bool sHolding = false;
 uint32_t sHoldMax = 0;  // most pending pipelines seen in this hold (the bar's total)
+bool sSettingsHold = false;  // the current hold is for a settings change (not the startup one)
 }  // namespace
 
 bool holdGame() {
@@ -110,8 +111,9 @@ bool holdGame() {
     if (hold && !sHolding) {
         sHoldStart = Clock::now();
         sHoldMax = 0;
+        sSettingsHold = sStartupDone;
         if (sStartupDone) log("[precache] settings change: game held for %u pipelines", s.rebuildPending);
-    } else if (!hold && sHolding && sStartupDone && sHoldFrames > 0) {
+    } else if (!hold && sHolding && sSettingsHold) {
         log("[precache] resumed after %.2f s", std::chrono::duration<double>(Clock::now() - sHoldStart).count());
     }
     sHolding = hold;
