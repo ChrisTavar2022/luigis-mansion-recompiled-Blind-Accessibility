@@ -134,6 +134,7 @@ struct Tape {
     std::vector<s32> viewToA;  // per view: the view of pairedWith with the same key, or -1
     u16 mainView = 0xFFFF;     // the main camera (most 3D model matrices of the main pass)
     bool cut = false;          // the main camera jumped since pairedWith (or appeared): shown as is
+    float camMove = 0, camTurn = 0;  // the main camera's eye move / turn (degrees) since pairedWith
     u32 paired = 0, unpaired = 0, untagged = 0;
     std::vector<std::pair<u32, u32>> lights;  // extra-light commands: offset of the first light, count
     std::vector<u64> lightKeys;               // per extra light (flattened, command order): identity, 0 none
@@ -609,8 +610,15 @@ void pairTapes(const Tape& a, Tape& b) {
         const s32 qa = b.viewToA[b.mainView];
         float moved = 0, turned = 0;
         if (qa < 0) b.cut = true;
-        else if (rigidView(a.views[qa].data()) && rigidView(b.views[b.mainView].data()))
-            b.cut = cameraJump(a.views[qa], b.views[b.mainView], &moved, &turned);
+        else if (rigidView(a.views[qa].data()) && rigidView(b.views[b.mainView].data())) {
+            cameraJump(a.views[qa], b.views[b.mainView], &moved, &turned);
+            b.camMove = moved, b.camTurn = turned;
+            // A cut is a discontinuity: far beyond what the camera did the frame before. A fast camera
+            // (a boss fight's, Bogmire's graveyard) moves or turns a lot every frame and is not a cut:
+            // treating it as one showed whole game frames without interpolation (the background
+            // hitched).
+            b.cut = (moved > 250.0f && moved > 3.0f * a.camMove + 60.0f) || (turned > 30.0f && turned > 3.0f * a.camTurn + 8.0f);
+        }
         if (sTrace && b.cut)
             log("[interp] tape %llu: camera cut (%s; eye moved %.0f, turned %.0f degrees)", (unsigned long long)b.seq,
                 qa < 0 ? "no main camera before" : "jump", moved, turned);
@@ -1303,6 +1311,8 @@ const ViewPair* viewPair(const Tape& a, u16 qa, const Tape& b, u16 qb, float alp
             de += (ea[c] - eb[c]) * (ea[c] - eb[c]);
         }
         vp.cut = std::sqrt(de) > 250.0f || dot < 0.866f;
+        // The main camera: its cut decision is the tape's (continuity, pairTapes).
+        if (qb == b.mainView && b.viewToA.size() > qb && b.viewToA[qb] == s32(qa)) vp.cut = b.cut;
         if (sLogSnaps)
             log("[interp]   view pair a%u b%u: eye moved %.0f, turned %.1f deg%s", qa, qb, std::sqrt(de),
                 std::acos(std::clamp(dot, -1.0f, 1.0f)) * 57.2958f, vp.cut ? " CUT" : "");
