@@ -139,6 +139,9 @@ struct Tape {
     // Per patch (host, set by each replay from pairedWith): 1 when its model instance has a matrix
     // that cannot blend, so the whole instance is shown as b (the detector judges it as a switch).
     std::unique_ptr<std::atomic<u8>[]> groupSnap;
+    // Per CPU-built block (host, set by the replays from pairedWith): how its centre moved since
+    // pairedWith (x, y, z; NaN: not known). A block that turns back is another particle in that slot.
+    std::unique_ptr<std::atomic<float>[]> vertStep;
     std::vector<s32> viewToA;  // per view: the view of pairedWith with the same key, or -1
     u16 mainView = 0xFFFF;     // the main camera (most 3D model matrices of the main pass)
     bool cut = false;          // the main camera jumped since pairedWith (or appeared): shown as is
@@ -540,6 +543,8 @@ void pairTapes(const Tape& a, Tape& b) {
     b.partner.assign(b.patches.size(), -1);
     b.worldStep.reset(new std::atomic<float>[b.patches.size()]);
     b.groupSnap.reset(new std::atomic<u8>[b.patches.size()]);
+    b.vertStep.reset(new std::atomic<float>[3 * b.patches.size()]);
+    for (u32 i = 0; i < 3 * b.patches.size(); i++) b.vertStep[i].store(std::nanf(""), std::memory_order_relaxed);
     for (u32 i = 0; i < b.patches.size(); i++) {
         b.worldStep[i].store(-1.0f, std::memory_order_relaxed);
         b.groupSnap[i].store(0, std::memory_order_relaxed);
@@ -828,6 +833,7 @@ u32 sFlips = 0;  // pairs blended through an equivalent flipped orientation (sta
 u32 sFlatBlends = 0;  // squashed-flat model matrices blended entrywise in world space (stats)
 u32 sUntwists = 0;    // pairs whose fast twist was taken from b (stats)
 u32 sGroupSnaps = 0;  // model instances switched as a whole (stats)
+u32 sReversals = 0;   // CPU-built blocks shown as captured because they turned back (another particle)
 u32 sGroupForced = 0; // model instances whose every matrix blended although some turned too far (stats)
 
 bool blendable(Kind kind, const f32* a, const f32* b, int n) {
@@ -2362,6 +2368,28 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 if (!(jump <= 200.0f)) {
                     snap(p, nullptr, nullptr);
                     continue;
+                }
+                // A slot reused by another particle (the water spray's points: a stream's slots are
+                // refilled from the nozzle): its centre turns back against the way it was going.
+                // Blending it drew the new droplet flying backwards from the old one's place (the
+                // detector's identity check: 377 points there and back in 400 game frames of
+                // spraying). Shown at the game frame's place instead.
+                {
+                    f32 ca[3] = {}, cb[3] = {};
+                    for (u32 v = 0; v < p.count; v++)
+                        for (int c = 0; c < 3; c++) ca[c] += vtx(*a, q, v, c), cb[c] += vtx(b, p, v, c);
+                    f32 d[3], pd[3], dd = 0, pp = 0, dp = 0;
+                    for (int c = 0; c < 3; c++) {
+                        d[c] = (cb[c] - ca[c]) / float(std::max<u32>(p.count, 1));
+                        pd[c] = a->vertStep ? a->vertStep[3 * j + c].load(std::memory_order_relaxed) : std::nanf("");
+                        if (b.vertStep) b.vertStep[3 * i + c].store(d[c], std::memory_order_relaxed);
+                        dd += d[c] * d[c], pp += pd[c] * pd[c], dp += d[c] * pd[c];
+                    }
+                    if (std::isfinite(pp) && dd > 16.0f && pp > 1.0f && dp < -0.25f * std::sqrt(dd * pp)) {
+                        sReversals++;
+                        snap(p, nullptr, nullptr);
+                        continue;
+                    }
                 }
                 for (u32 v = 0; v < p.count; v++)
                     for (int c = 0; c < 3; c++) {
