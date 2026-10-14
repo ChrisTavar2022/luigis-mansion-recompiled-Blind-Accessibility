@@ -90,7 +90,11 @@ A value of game frame b pairs with the value of frame a that has the same key an
   item's). Exceptions, shown as the newest game frame: 2D/HUD colours (static HUD stays
   pixel-identical), a channel that jumps by more than 96 of 255 in one game frame (blinks, on/off,
   the hit flash), a register of another type (colour vs konst). Texture swaps (another texture
-  object) switch. (Until b28a8fd colours were never blended: the water's bubbles and the shadow
+  object) switch. A GX light's colour (XF 0x600 + 16 n + 3, from GXLoadLightObjImm) takes the
+  identity of the Light value of the same call (light object + slot, tagged even outside object
+  scopes) and blends while that light pairs: Bogmire's arena lightning fades the scene light from
+  white to black over ~1 s, loaded untagged per view, and stepped at 30 Hz (sweep C: 75-91% of each
+  fade's change at the tape change, 33-34% after, the linear value). (Until b28a8fd colours were never blended: the water's bubbles and the shadow
   ghosts' shimmer stepped at 30 Hz.) Enhanced lighting's extra lights
   (the port's own lights) blend position, radius, colour and intensity by id; flags and shadow
   weight are b's (ghost glows, dramatic flares and flicker change every game frame: at b's values big
@@ -118,7 +122,12 @@ A value of game frame b pairs with the value of frame a that has the same key an
   on/off its matrices turn by 150-178 degrees in one game frame. Blended one by one (some switched,
   flip and twist resolution chosen per matrix) neighbours took different paths and the hose's skin
   stretched into long straight sticks (user clip with LM_FRAME_TAG: tape 160 alpha 0.05 and 0.34,
-  tape 165 alpha 0.67); switching the whole model detached it from Luigi's hand (2f69188). Earlier
+  tape 165 alpha 0.67); switching the whole model detached it from Luigi's hand (2f69188).
+  An erratic member (its world step in the game frame before was over 150 units and over a quarter
+  of its camera distance) has no say in the instance's policy and is blended or switched on its own:
+  the nursery's floating teddy bears (one J3D model) carry one draw matrix that lands 500-1000 units
+  elsewhere every game frame (unused or zero-weighted) and switched the whole bear about one game
+  frame in 11 (sweep B). Earlier
   attempts tagged fn_80091A70 (a cloth sheet) and J3D models only, which never reached the hose.
 - Present hold (pacing::beforeEnd): on an even grid (VRR or VSync off) a frame built faster than
   usual is held until the usual time after its scheduled start (90th percentile of the last 60

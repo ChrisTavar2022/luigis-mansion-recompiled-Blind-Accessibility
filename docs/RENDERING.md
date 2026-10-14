@@ -331,6 +331,28 @@ other four rooms nothing froze, but no warp happened either: with the test save 
 dark (ghosts appear), and a mirror only warps from a lit room. Re-test those with a save that has
 them cleared.
 
+### No Dawn calls in map callbacks: the render-loop freeze (Aurora patch 0219)
+
+Seen in long frame-interpolation runs (Bogmire's arena, after 2.5-5 min; also Original 30): the
+picture stopped for good while the process lived. `LM_HANG_DUMP=6` stacks:
+
+- main thread: `aurora::gfx::acquire_frame_slot` -> `wait_for_gpu_progress` (forever);
+- render worker: inside Dawn (from the frame's end_frame lambda), waiting on a Dawn condition variable;
+- present-timing waiter (`present_timing::waiter`, Aurora 0197/0216, always on: pacing.cpp enables it):
+  `Instance::WaitAny(future, 0)` -> Dawn fires the EFB readback's `AllowSpontaneous` map callback ->
+  the callback's `Unmap` / `GetConstMappedRange` -> Dawn `Mtx_lock` (device lock), blocked;
+- game thread: `VISetNextFrameBuffer` (frame::present), waiting for the host.
+
+The waiter polls every ~0.25 ms, so spontaneous callbacks often run on it; a callback that calls back
+into Dawn while another thread holds the device lock and waits for that event deadlocks inside Dawn.
+Rule: **a spontaneous callback makes no Dawn call** (it records a status and queues work, leaf locks
+only). 0219: the readback callback queues the readback in `g_mapped`; `efb_ram::finish_maps` copies
+the bytes out and unmaps, holding no lock, on the render worker after each frame (`gfx::after_submit`)
+and in `aurora_efb_ram_apply`. The readback pool stores each buffer's size (no `GetSize` under the
+pool lock). Same scenario on the fix: 15 min, and Bogmire -> death -> game over -> title twice
+(10 min each, judder log on/off): no stall. (efb_blend6's `AURORA_EFB_BLEND6_TIMING` callback and
+upstream depth_peek still call Dawn in callbacks; both off in LM.)
+
 ## Vertex snapshots (Luigi's mouth/hose flicker)
 
 **Cause.** The game passes its vertex arrays to `GXSetArray` as pointers into main memory, and Aurora's
