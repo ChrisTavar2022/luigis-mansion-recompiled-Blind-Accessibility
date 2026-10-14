@@ -218,6 +218,8 @@ void drawStart(u32 start);
 void drawEnd(u32 end);
 // A draw with identity `id`: values noted since the previous draw belong to it.
 void noteDraw(u64 id);
+// The draw just noted reads indexed positions whose bounding box has centre `c` (model space).
+void noteDrawCentre(const float c[3]);
 // (unused since tagged interpolation; kept for interp_vtx.cpp)
 inline void noteDrawAlt(u64) {}
 // Immediate-mode vertices with direct f32 XYZ positions: `count` vertices of `stride`

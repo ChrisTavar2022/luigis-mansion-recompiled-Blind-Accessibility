@@ -21,6 +21,8 @@
 #include <dolphin/gx.h>
 
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -131,6 +133,49 @@ u32 vertexSize(int fmt) {
     return size;
 }
 
+// Bounding box of the indexed positions of the display list being parsed (vtxDisplayList): its centre
+// is the draw's pivot for tumbling things (interp.cpp, replayPair).
+bool sBoxOn = false;
+f32 sBoxLo[3], sBoxHi[3];
+bool sBoxAny = false;
+void boxPositions(int fmt, const u8* v, u32 count, u32 vtxSize, u32 offset, u32 idxSize) {
+    const Binding& b = sBind[0];
+    if (!b.valid || !inMem1(b.guest) || b.stride == 0) return;
+    u8 cnt = 0, type = 0, frac = 0;
+    if (!gx::vtxAttrFormat(fmt, GX_VA_POS, cnt, type, frac)) return;
+    static constexpr u32 kSize[] = {1, 1, 2, 2, 4};
+    if (type > 4) return;
+    const u32 cs = kSize[type], nc = cnt == GX_POS_XYZ ? 3 : 2;
+    const float scale = type == GX_F32 ? 1.0f : 1.0f / float(1u << frac);
+    const u32 step = std::max(1u, count / 64);  // a sample is enough for a centre
+    for (u32 i = 0; i < count; i += step) {
+        const u8* p = v + i * vtxSize + offset;
+        const u32 idx = idxSize == 2 ? u32(p[0] << 8 | p[1]) : p[0];
+        if (idx == (idxSize == 2 ? 0xFFFFu : 0xFFu)) continue;
+        const u32 phys = (b.guest & 0x01FFFFFF) + idx * b.stride;
+        if (phys + cs * nc > kMem1Size) continue;
+        const u8* e = hostp(0x80000000u | phys);
+        for (u32 c = 0; c < 3; c++) {
+            float f = 0.0f;
+            if (c < nc) {
+                u32 raw = 0;
+                for (u32 k = 0; k < cs; k++) raw = raw << 8 | e[c * cs + k];
+                switch (type) {
+                case GX_F32: f = std::bit_cast<float>(raw); break;
+                case GX_S16: f = float(s16(raw)) * scale; break;
+                case GX_U16: f = float(u16(raw)) * scale; break;
+                case GX_S8: f = float(s8(raw)) * scale; break;
+                default: f = float(u8(raw)) * scale; break;
+                }
+            }
+            if (!std::isfinite(f)) return;
+            if (!sBoxAny) sBoxLo[c] = sBoxHi[c] = f;
+            sBoxLo[c] = std::min(sBoxLo[c], f), sBoxHi[c] = std::max(sBoxHi[c], f);
+        }
+        sBoxAny = true;
+    }
+}
+
 // The indexed attributes of `count` vertices at `v`: extents of the arrays they read.
 void scanVertices(int fmt, const u8* v, u32 count, u32 vtxSize) {
     sScanFmt = fmt;
@@ -153,6 +198,7 @@ void scanVertices(int fmt, const u8* v, u32 count, u32 vtxSize) {
                     any = true;
                 }
             }
+            if (any && a == GX_VA_POS && sBoxOn && !sSnapParse) boxPositions(fmt, v, count, vtxSize, offset, idxSize);
             if (any) {
                 const int slot = a - GX_VA_POS;
                 // Up to one element past the last index start: 36 bytes covers any element
@@ -399,7 +445,14 @@ void vtxDisplayList(u32 guestAddr, const u8* data, u32 size) {
     const u32 end = mark();
     sParseTapeBase = end != ~0u && end >= size ? end - size : ~0u;
     if (sParseTapeBase != ~0u) detail::drawRange(sParseTapeBase, end);
+    sBoxOn = true;
+    sBoxAny = false;
     parse(data, size, false);
+    sBoxOn = false;
+    if (sBoxAny) {
+        const f32 c[3] = {0.5f * (sBoxLo[0] + sBoxHi[0]), 0.5f * (sBoxLo[1] + sBoxHi[1]), 0.5f * (sBoxLo[2] + sBoxHi[2])};
+        detail::noteDrawCentre(c);
+    }
     sParseTapeBase = ~0u;
 }
 

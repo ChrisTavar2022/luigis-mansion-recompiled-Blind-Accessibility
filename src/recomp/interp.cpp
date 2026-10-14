@@ -117,6 +117,8 @@ struct Tape {
     std::vector<u64> bundleKey;  // per draw: its tag scope instance (0: untagged)
     std::vector<std::array<u32, 2>> bundleRange;  // per draw: its tape bytes (~0u: unknown)
     std::vector<u8> bundlePass;                    // per draw: the pass (0 main, 1 shadow casters)
+    // Per draw: the centre of the bounding box of its indexed positions (model space; x NaN: unknown).
+    std::vector<std::array<f32, 3>> bundleCentre;
     // Per draw (judder detector only): which noted position matrix each PNMTX slot held (-1: unknown).
     std::vector<std::array<s32, 10>> bundleSlots;
     std::vector<M34> views;    // camera view matrices the values were noted under
@@ -182,6 +184,7 @@ std::vector<u64> sBundleIds;
 std::vector<u64> sBundleKey;
 std::vector<std::array<u32, 2>> sBundleRange;
 std::vector<u8> sBundlePass;
+std::vector<std::array<f32, 3>> sBundleCentre;
 s32 sOpenDraw = -1;  // immediate-mode draw whose end is not known yet
 std::vector<M34> sViews;
 std::vector<u64> sViewKeys;
@@ -895,14 +898,19 @@ float noteTurn(const Tape* a, s32 j, const Tape& b, u32 i, const f32* wa, const 
     const float prev = a->worldTurn[j].load(std::memory_order_relaxed);
     const u8 prevTumble = a->worldTumble[j].load(std::memory_order_relaxed);
     u8 tumble = prevTumble > 0 ? u8(prevTumble - 1) : 0;
+    bool axisEvidence = false;
     if (prev > 20.0f && deg > 20.0f && len > 1e-6f) {
         float d = 0;
         for (int c = 0; c < 3; c++) d += axis[c] * a->worldAxis[3 * j + c].load(std::memory_order_relaxed);
-        if (std::fabs(d) < 0.7071f) tumble = 8;
+        axisEvidence = std::fabs(d) < 0.7071f;
     }
+    // A turn over 150 degrees is evidence too, for the game frames after it (a drop whose random
+    // turns alternate small and large never showed two large ones in a row: sweep A, room 5's stream);
+    // it is itself a switch unless the identity already counted as a tumbler.
+    if (axisEvidence || deg > 150.0f) tumble = 8;
     b.worldTumble[i].store(tumble, std::memory_order_relaxed);
     if (prev > kSpinnerTurn) return prev;
-    return prevTumble > 0 || tumble == 8 ? 1000.0f : -1.0f;
+    return prevTumble > 0 || axisEvidence ? 1000.0f : -1.0f;
 }
 u32 sFlips = 0;  // pairs blended through an equivalent flipped orientation (stats)
 u32 sFlatBlends = 0;  // squashed-flat model matrices blended entrywise in world space (stats)
@@ -1158,6 +1166,8 @@ void endTape(u32 retraceCount) {
     sBundleRange = {};
     tape->bundlePass = std::move(sBundlePass);
     sBundlePass = {};
+    tape->bundleCentre = std::move(sBundleCentre);
+    sBundleCentre = {};
     tape->bundleSlots = std::move(sBundleSlots);
     sBundleSlots = {};
     tape->views = std::move(sViews);
@@ -1562,6 +1572,7 @@ void detail::noteDraw(u64 id) {
     sBundleKey.push_back(t && t->object ? t->inst : 0);
     sBundleRange.push_back({~0u, ~0u});
     sBundlePass.push_back(u8(sPass));
+    sBundleCentre.push_back({std::nanf(""), 0.0f, 0.0f});
     if (sProbeOut) sBundleSlots.push_back(sSlotPatch);
     sOpenDraw = -1;
     for (u32 i = sUngrouped; i < sPatches.size(); i++) {
@@ -1570,6 +1581,10 @@ void detail::noteDraw(u64 id) {
         p.bundle = bundle;
     }
     sUngrouped = u32(sPatches.size());
+}
+
+void detail::noteDrawCentre(const float c[3]) {
+    if (!sBundleCentre.empty()) sBundleCentre.back() = {c[0], c[1], c[2]};
 }
 
 u64 detail::arrayKey() {
@@ -1614,6 +1629,7 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, 
         sBundleKey.push_back(0);
         sBundleRange.push_back({~0u, ~0u});
         sBundlePass.push_back(u8(sPass));
+        sBundleCentre.push_back({std::nanf(""), 0.0f, 0.0f});
         if (sProbeOut) sBundleSlots.push_back(sSlotPatch);
     }
     p.bundle = u32(sBundleIds.size() - 1);
@@ -2277,7 +2293,21 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 }
                 if (cause == 0 && groupPolicy == 1) cause = 5;  // its instance switched
                 const bool flat = flatMatrix(Wa.data()) || flatMatrix(Wb.data());  // entrywise, as the replay
-                if (cause == 0 && !flat && groupPolicy != 2 && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) xform34(Wt.data(), r.pos, wt);
+                if (cause == 0 && !flat && groupPolicy != 2 && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) {
+                    // (A spinner / tumbler: its drawn centre moves in a straight line, as replayed.)
+                    if (prevTurn > kSpinnerTurn && P.bundle < b.bundleCentre.size() && std::isfinite(b.bundleCentre[P.bundle][0])) {
+                        const f32* c = b.bundleCentre[P.bundle].data();
+                        M34 ra, rb;
+                        compose(iq.data(), ma, ra.data());
+                        compose(ib.data(), m, rb.data());
+                        f32 pa[3], pbw[3], have[3];
+                        xform34(ra.data(), c, pa);
+                        xform34(rb.data(), c, pbw);
+                        xform34(Wt.data(), c, have);
+                        for (int rr = 0; rr < 3; rr++) Wt[4 * rr + 3] += pa[rr] + (pbw[rr] - pa[rr]) * pr.alpha - have[rr];
+                    }
+                    xform34(Wt.data(), r.pos, wt);
+                }
                 else if (cause != 0) std::copy(wb, wb + 3, wt);  // shown at the game frame's place (policy)
                 else
                     for (int c = 0; c < 3; c++) wt[c] = wa[c] + (wb[c] - wa[c]) * pr.alpha;
@@ -2593,9 +2623,11 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             const Patch& p = b.patches[i];
             if (p.kind == Kind::Color) {
                 // Blended with the same register of the same identity (tagged), unless it jumped;
-                // 2D (HUD) colours and untagged ones stay as captured.
+                // untagged ones stay as captured. 2D (HUD) colours blend too, under the same draw
+                // check (a static HUD blends identical colours to themselves; the HUD fading in with
+                // the room on arrival stepped at 30 Hz, sweep C).
                 const s32 jc = b.partner[i];
-                if (jc < 0 || p.role == 2 || p.cat == TagCat::Hud) continue;
+                if (jc < 0) continue;
                 const Patch& qc = a->patches[jc];
                 // Only for the same thing drawn: the draw this colour belongs to must pair with the
                 // draw of its partner by its own matrices or vertices. (A colour set in a helper the
@@ -2747,6 +2779,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 continue;
             }
             bool ok;
+            const ViewPair* pivotVp = nullptr;  // a spinner / tumbler: its drawn centre is moved in a straight line
             if (p.kind == Kind::PosMtx && p.count == 12 && p.role == 0 && p.view < sViewToA.size() && sViewToA[p.view] == s32(q.view)) {
                 const ViewPair* vp = viewPair(*a, q.view, b, p.view, alpha);
                 if (vp && vp->ok && !vp->cut) {
@@ -2754,6 +2787,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     compose(vp->ia.data(), va, wa.data());
                     compose(vp->ib.data(), vb, wb.data());
                     const float prevTurn = noteTurn(a, j, b, i, wa.data(), wb.data(), 4);
+                    if (prevTurn > kSpinnerTurn && !forced) pivotVp = vp;
                     resolveFlip(wa.data(), wb.data(), 4);
                     untwist(wa.data(), wb.data());
                     const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
@@ -2811,6 +2845,23 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                          (p.kind == Kind::TexMtx && p.count == 8 && blendSpin(va, vb, alpha, out))))
                 for (int k = 0; k < p.count; k++)
                     out[k] = std::isfinite(va[k]) && std::isfinite(vb[k]) ? va[k] + (vb[k] - va[k]) * alpha : vb[k];
+            // A spinner or tumbler turned about its matrix origin: geometry off that origin swings
+            // along an arc (the water spray's chunks, rotated 150-180 degrees about an origin outside
+            // the mesh, sat above both of their game-frame places mid-interval: sweep C, blips.py).
+            // Its drawn centre (the draw's position bounding box) moves in a straight line instead.
+            if (pivotVp && p.bundle < b.bundleCentre.size() && std::isfinite(b.bundleCentre[p.bundle][0])) {
+                const f32* c = b.bundleCentre[p.bundle].data();
+                M34 wa, wb;
+                compose(pivotVp->ia.data(), va, wa.data());
+                compose(pivotVp->ib.data(), vb, wb.data());
+                f32 pa[3], pb[3], pw[3], want[3], have[3];
+                xform34(wa.data(), c, pa);
+                xform34(wb.data(), c, pb);
+                for (int k = 0; k < 3; k++) pw[k] = pa[k] + (pb[k] - pa[k]) * alpha;
+                xform34(pivotVp->vt.data(), pw, want);
+                xform34(out, c, have);
+                for (int r = 0; r < 3; r++) out[4 * r + 3] += want[r] - have[r];
+            }
             if (p.kind == Kind::Light) {  // keep the direction's length (spot cone falloff)
                 const float la = std::sqrt(va[3] * va[3] + va[4] * va[4] + va[5] * va[5]);
                 const float lb = std::sqrt(vb[3] * vb[3] + vb[4] * vb[4] + vb[5] * vb[5]);
