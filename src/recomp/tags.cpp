@@ -14,6 +14,8 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
+#include <unordered_map>
 
 namespace recomp {
 
@@ -226,6 +228,47 @@ HLE(fn_80118E44) {
 // size, colour). Untagged, the points were shown at the game frame's places while everything around
 // them blended: the spray flickered.
 HLE(fn_80120C30) {
+    // LM_POINT_PEEK=<n> (test aid): log the 6 words of the first n points drawn per frame (finding an
+    // age / birth field for the identity).
+    static const int sPeek = std::getenv("LM_POINT_PEEK") ? std::atoi(std::getenv("LM_POINT_PEEK")) : 0;
+    if (sPeek > 0) {
+        static u32 frame = ~0u;
+        static int n = 0;
+        if (copyDispCount() != frame) frame = copyDispCount(), n = 0;
+        if (n++ < sPeek)
+            log("[point] f%u %08X lr %08X %08X %08X %08X %08X %08X %08X", frame, c.r[3], c.lr, rd32(c.r[3]), rd32(c.r[3] + 4),
+                rd32(c.r[3] + 8), rd32(c.r[3] + 12), rd32(c.r[3] + 16), rd32(c.r[3] + 20));
+    }
+    // A point slot refilled from the nozzle is another particle: each point is position (+0) and
+    // velocity (+12), moved by its velocity every game frame. A point that is not where its last
+    // frame's position + velocity puts it (or was not drawn in the game frame before) was born anew:
+    // new generation, so it never pairs with the slot's previous occupant (the idle ice mist's points
+    // paired across rebirths and were shown at the game frame by the turn-back rule; sweep A/B).
+    if (interp::capturing()) {
+        struct Last {
+            u32 frame;
+            float p[3], v[3];
+        };
+        static std::unordered_map<u32, Last> last;
+        const u32 frame = copyDispCount();
+        float p[3], v[3];
+        for (int k = 0; k < 3; k++) p[k] = flt(rd32(c.r[3] + 4 * k)), v[k] = flt(rd32(c.r[3] + 12 + 4 * k));
+        auto it = last.find(c.r[3]);
+        if (it == last.end() || it->second.frame != frame) {  // (once per game frame: a point drawn in several views)
+            bool reborn = it == last.end() || it->second.frame + 1 != frame;
+            if (!reborn) {
+                float d2 = 0, v2 = 0;
+                for (int k = 0; k < 3; k++) {
+                    const float e = p[k] - (it->second.p[k] + it->second.v[k]);
+                    d2 += e * e, v2 += it->second.v[k] * it->second.v[k];
+                }
+                reborn = !(d2 <= std::max(25.0f, 0.25f * v2));
+            }
+            if (reborn && it != last.end()) interp::tagGeneration(c.r[3]);
+            if (last.size() > 8192) last.clear();
+            last[c.r[3]] = {frame, {p[0], p[1], p[2]}, {v[0], v[1], v[2]}};
+        }
+    }
     TagScope t(TagCat::Particle, c.r[3], 0x120C30);
     callOriginal(c, "fn_80120C30");
 }
