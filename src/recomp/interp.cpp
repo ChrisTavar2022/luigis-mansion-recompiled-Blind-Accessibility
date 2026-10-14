@@ -1076,7 +1076,7 @@ void checkIdentity(const Tape& t0, const Tape& t1, const Tape& t2) {
     };
     for (u32 i = 0; i < t2.patches.size(); i++) {
         const Patch& p2 = t2.patches[i];
-        if (p2.kind != Kind::Verts) continue;
+        if (p2.kind != Kind::Verts || p2.role == 2) continue;  // (2D blocks: colours only)
         const s32 j = t2.partner[i];
         if (j < 0) continue;
         const s32 k = t1.partner.empty() ? -1 : t1.partner[j];
@@ -1599,18 +1599,26 @@ TagCat sVertsCat = TagCat::None;
 u32 sVertsSite = 0;
 std::string sVertsChain;
 }  // namespace
-void detail::vertsBegin() {
+void detail::vertsBegin(bool ortho) {
     if (!capturing()) return;
     sVertsSite = sCallLr;
     sVertsKey = valueKey(Kind::Verts, 0, 0, sVertsCat);
+    if (!sVertsKey && ortho) {
+        // An untagged 2D quad (a fade, a full-screen picture): the structural scope, call site and
+        // occurrence; its colours blend only while its positions are identical (replayPair).
+        const TagFrame* t = topTag();
+        const u64 k = mix((t ? t->structural : rootInst()) ^ u64(Kind::Verts) << 56 ^ u64(sCallLr) << 16 ^ 0x2D2Dull);
+        sVertsKey = mix(k ^ u64(occurrence(sValOcc, k) + 1) << 40);
+    }
     if (sTagLogFrame != ~0ull) sVertsChain = sTagChain;
 }
 
-void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, u32 clrOffset, u32 clrBytes) {
+void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, u32 clrOffset, u32 clrBytes, u32 posBytes2D) {
     if (!capturing() || count == 0 || count > 0xFFFF) return;
     Patch p{at, u16(count), Kind::Verts};
     p.stride = u16(stride);
     p.posOffset = u16(posOffset);
+    if (posBytes2D) p.role = 2, p.source = posBytes2D;  // 2D: colours only (positions as captured)
     if (clrBytes && clrOffset + clrBytes <= stride) p.clrOffset = u16(clrOffset), p.clrBytes = u8(clrBytes);
     // The key was taken at GXBegin (vertsBegin): the scope may have closed by the time the draw's
     // vertices are complete (noted at the next GX call).
@@ -2681,6 +2689,33 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             const Patch& q = a->patches[j];
             if (sNoBlendKinds & (1u << u32(p.kind))) {
                 placeUnderCamera(*a, b, p, alpha);
+                continue;
+            }
+            if (p.kind == Kind::Verts && p.role == 2) {
+                // A 2D block: its direct colours blend while its positions are identical in both game
+                // frames (a fade or a fading HUD quad), else it stays as captured.
+                if (q.role != 2 || q.source != p.source || !p.clrBytes || q.clrBytes != p.clrBytes || q.clrOffset != p.clrOffset)
+                    continue;
+                bool same = true;
+                for (u32 v = 0; v < p.count && same; v++)
+                    same = std::memcmp(a->bytes.data() + q.offset + v * q.stride + q.posOffset,
+                                       b.bytes.data() + p.offset + v * p.stride + p.posOffset, p.source) == 0;
+                if (!same) continue;
+                bool jumped = false;
+                for (u32 v = 0; v < p.count && !jumped; v++)
+                    for (u32 c = 0; c < p.clrBytes; c++)
+                        if (std::abs(int(a->bytes[q.offset + v * q.stride + q.clrOffset + c]) - int(b.bytes[p.offset + v * p.stride + p.clrOffset + c])) > 96)
+                            jumped = true;
+                if (jumped) {
+                    sColorsSwitched++;
+                    continue;
+                }
+                for (u32 v = 0; v < p.count; v++)
+                    for (u32 c = 0; c < p.clrBytes; c++) {
+                        const int x = a->bytes[q.offset + v * q.stride + q.clrOffset + c], y = b.bytes[p.offset + v * p.stride + p.clrOffset + c];
+                        sReplay[p.offset + v * p.stride + p.clrOffset + c] = u8(std::lround(x + (y - x) * alpha));
+                    }
+                sColorsBlended++;
                 continue;
             }
             if (p.kind == Kind::Verts) {

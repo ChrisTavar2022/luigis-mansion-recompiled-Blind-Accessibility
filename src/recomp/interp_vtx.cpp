@@ -305,6 +305,7 @@ struct {
     u32 at = ~0u, bytes = 0, count = 0, stride = 0, posOffset = 0;
     u64 id = 0;
     u32 clrOffset = 0xFFFF, clrBytes = 0;  // a direct RGB8/RGBX8/RGBA8 colour (CLR0) in each vertex
+    u32 posBytes2D = 0;  // a 2D quad (orthographic, direct positions of this size, direct colours): colours only
 } sDirect;
 
 // The immediate-mode draw opened by GXBegin: its vertices are scanned once complete, with the
@@ -322,7 +323,8 @@ void finishDirect() {
     if (!sDirect.active) return;
     sDirect.active = false;
     if (sDirect.at != ~0u && sDirect.stride && sDirect.bytes == sDirect.count * sDirect.stride)
-        detail::noteVertices(sDirect.at, sDirect.count, sDirect.stride, sDirect.posOffset, sDirect.id, sDirect.clrOffset, sDirect.clrBytes);
+        detail::noteVertices(sDirect.at, sDirect.count, sDirect.stride, sDirect.posOffset, sDirect.id, sDirect.clrOffset, sDirect.clrBytes,
+                             sDirect.posBytes2D);
 }
 
 void flushPending() {
@@ -398,6 +400,22 @@ void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective) {
             }
         }
         detail::vertsBegin();
+    } else if (!perspective && gx::vtxDesc(GX_VA_POS) == GX_DIRECT && gx::vtxDesc(GX_VA_CLR0) == GX_DIRECT &&
+               gx::vtxAttrSize(int(fmt), GX_VA_POS) > 0 && nVerts <= 64) {
+        // A 2D quad with direct vertex colours (HUD fades, full-screen fade pictures): its colours
+        // blend while its positions stay put (the HUD fading in with the room on arrival stepped at
+        // 30 Hz, sweep C).
+        u8 cnt, type, frac;
+        if (gx::vtxAttrFormat(int(fmt), GX_VA_CLR0, cnt, type, frac) && (type == GX_RGB8 || type == GX_RGBX8 || type == GX_RGBA8)) {
+            u32 posOffset = 0, off = 0;
+            for (int a = GX_VA_PNMTXIDX; a < GX_VA_POS; a++) posOffset += u32(std::max(0, gx::vtxAttrSize(int(fmt), a)));
+            for (int a = GX_VA_PNMTXIDX; a < GX_VA_CLR0; a++) off += u32(std::max(0, gx::vtxAttrSize(int(fmt), a)));
+            sDirect = {true, ~0u, 0, nVerts, vertexSize(int(fmt)), posOffset, detail::mix(id ^ nVerts ^ 0x2D00ull)};
+            sDirect.clrOffset = off;
+            sDirect.clrBytes = type == GX_RGBA8 ? 4 : 3;
+            sDirect.posBytes2D = u32(gx::vtxAttrSize(int(fmt), GX_VA_POS));
+            detail::vertsBegin(true);
+        }
     }
     const u32 vs = vertexSize(int(fmt));
     sImm.active = vs != 0 && nVerts != 0;

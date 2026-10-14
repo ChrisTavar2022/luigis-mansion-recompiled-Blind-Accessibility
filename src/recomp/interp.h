@@ -224,8 +224,9 @@ void noteDrawCentre(const float c[3]);
 inline void noteDrawAlt(u64) {}
 // Immediate-mode vertices with direct f32 XYZ positions: `count` vertices of `stride`
 // bytes starting at tape offset `at`, position at `posOffset` in each.
-void noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, u32 clrOffset = 0xFFFF, u32 clrBytes = 0);
-void vertsBegin();  // at GXBegin of such a draw: its identity (tag scope, call site)
+void noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, u32 clrOffset = 0xFFFF, u32 clrBytes = 0,
+                  u32 posBytes2D = 0);  // posBytes2D: a 2D (orthographic) block of positions that size: colours only
+void vertsBegin(bool ortho = false);  // at GXBegin of such a draw: its identity (tag scope, call site)
 u64 mix(u64 h);
 // A display list or stream wrote XF matrix memory directly (judder detector's slot table).
 void xfMatrixWritten(u32 addr, u32 words);
