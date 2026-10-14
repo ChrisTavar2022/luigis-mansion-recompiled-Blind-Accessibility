@@ -1463,6 +1463,15 @@ void noteColor(u32 off, u16 format, u32 reg, u32 light = 0) {
         p.slot = light;
     } else {
         p.key = valueKey(Kind::Color, reg, 0, p.cat);
+        if (!p.key && sOrtho) {
+            // An untagged 2D colour (a full-screen fade overlay, a fill box): the structural scope, call
+            // site, register and occurrence; it blends only with a draw of the same kind (replayPair).
+            const TagFrame* t = topTag();
+            const u64 k = mix((t ? t->structural : rootInst()) ^ u64(Kind::Color) << 56 ^ u64(sCallLr) << 16 ^ u64(reg) ^ 0x2DC0ull << 40);
+            p.key = mix(k ^ u64(occurrence(sValOcc, k) + 1) << 40);
+            p.slot = 0;
+            p.posOffset = 1;  // (marks an untagged 2D colour)
+        }
     }
     if (sOrtho) p.role = 2;  // 2D layout: as captured
     p.inScope = sTagDepth > 0 || sVirtActive;
@@ -1505,7 +1514,7 @@ void noteColors(u32 at, u32 lightObj) {
 namespace detail {
 void noteDrawColor(u32 at, u32 reg, u8 type) {
     if (at == ~0u || !capturing() || sNoBlend > 0 || at + 4 > sBase + AuroraCapturePos()) return;
-    noteColor(at, type == 2 ? kColorFog : kColorBp, reg);
+    noteColor(at, type == 3 ? kColorRgba8 : type == 2 ? kColorFog : kColorBp, reg);
 }
 }  // namespace detail
 
@@ -2719,7 +2728,11 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 // A light's colour (noteColor `light`): its light must pair with the partner's light.
                 const bool lightOk = p.slot && qc.slot && p.slot - 1 < b.patches.size() && b.partner[p.slot - 1] == s32(qc.slot - 1);
                 // World scopes (a room's lighting, fn_80015BDC) are their own identity: no draw check.
-                if (p.slot ? !lightOk
+                // An untagged 2D colour: the draw it belongs to must be the same kind of draw.
+                const bool flatOk = p.posOffset == 1 && p.bundle < b.bundleIds.size() && qc.bundle < a->bundleIds.size() &&
+                                    b.bundleIds[p.bundle] == a->bundleIds[qc.bundle];
+                if (p.posOffset == 1 ? !flatOk
+                    : p.slot ? !lightOk
                            : p.cat != TagCat::World &&
                                  (p.bundle >= sBundleToA.size() || sBundleToA[p.bundle] < 0 || s32(qc.bundle) != sBundleToA[p.bundle])) {
                     sColorsSwitched++;

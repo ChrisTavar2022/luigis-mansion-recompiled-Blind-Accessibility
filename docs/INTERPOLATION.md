@@ -92,7 +92,13 @@ A value of game frame b pairs with the value of frame a that has the same key an
   positions and direct RGB(A)8 vertex colours (HUD fades, full-screen fade quads) are noted as 2D
   blocks (role 2, `posBytes2D`): only their colours blend, and only while every vertex position is
   byte-identical in both game frames; untagged ones are keyed by structural scope + call site +
-  occurrence (87f2ea6). Exceptions, shown as the newest
+  occurrence (87f2ea6). XF colours written inside display lists (0x100A-0x100D, light colours) are
+  noted like the lists' BP colour writes, and untagged 2D colour registers are keyed by structural
+  scope + call site + register + occurrence and blend with a draw of the same kind (8d11727).
+  Still open: the scene fade-in on arriving in the foyer / returning from the save screen steps at 30
+  Hz (sweep C: ~90% of the ramp at the tape change). It is none of these colour paths, nor a light's
+  attenuation (tested: no light changes its attenuation then); candidates left are an EFB copy drawn
+  back over the scene or vertex colours of 3D CPU-built blocks. Exceptions, shown as the newest
   game frame: a channel that jumps by more than 96 of 255 in one game frame (blinks, on/off,
   the hit flash), a register of another type (colour vs konst). Texture swaps (another texture
   object) switch. A GX light's colour (XF 0x600 + 16 n + 3, from GXLoadLightObjImm) takes the
@@ -212,7 +218,7 @@ A value of game frame b pairs with the value of frame a that has the same key an
 | Object | `fn_8005E110` (one CPU-built quad per ghost, from `fn_80061690`'s loop over the ghost list 0x803D48A0; large in Bogmire's arena) | the ghost (its position pointer r5 - 8) |
 | Particle | `fn_800F3120` called from `fn_8011FB40`'s item loops (0x801201F4: items of 0x34 bytes at [r31+0x4C]+r27; 0x801202F8: 0x68 bytes at [r31+0x48]+r26): the element streams' drops, one shared S3D model drawn per item; `fn_80059F6C` inside groups by item | the item |
 | World | `fn_80015BDC(room lighting, ambient colour)` from the room loop `fn_80011824`: the room's lights and ambient colour (0x100A); World-scope colours blend without the draw check | r3 |
-| Particle | `fn_80120C30` (one GX point per call: the water spray's and other element streams' points, from `fn_8011FB40` / `fn_80120514`) | the point (24-byte entry) |
+| Particle | `fn_80120C30` (one GX point per call: the water spray's and other element streams' points, from `fn_8011FB40` / `fn_80120514`) | the point (24-byte entry: position, velocity); a new generation when it is not at its last position + velocity or was not drawn the game frame before (refilled from the nozzle: idle ice mist identity flags 538 -> 27 per run; `LM_POINT_PEEK=<n>`) |
 | Effect | `fn_80118E44` (CPU-built strips of 0xA8-byte items, from `fn_80118D3C`) | the item |
 | Hud | `draw__7J2DPaneFiiPC14J2DGrafContextb` | the pane |
 | (lights) | GX light objects (`GXLoadLightObjImm`) | light object address + slot, in the current scope |
