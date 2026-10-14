@@ -148,6 +148,46 @@ of the identity (found with `LM_TAG_PEEK=<words>`: 98-100% of particles step by 
 - `tools/interp/tagstats.py <tag log>`: values by kind/category and the most frequent untagged chains.
 - `LM_INTERP_NOBLEND=<mask>` gained bit 7: enhanced lighting's extra lights shown as captured.
 
+### Enhanced lighting
+
+- Extra lights (world candles/fires/lamps/sprays/lightning, ghost lights, test lights) pair by the
+  providing code's id plus the generation of the object behind it (ghost actor, particle emitter); a
+  pair whose world position jumps by more than 200 units is another light (b's place). Only position
+  and radius blend: colour, intensity, flags and the shadow weight are always b's, so the yellow-tint
+  class (a light's colour carried to another light's place) cannot happen.
+- Ghost lights appear and vanish at the game frame (no partner: b's world place under the in-between
+  camera; gone: not drawn).
+- The light shadow maps, the flashlight's shadow map, AO, bloom/glow and the volumetric beam are
+  computed by Aurora from each replayed (blended) scene, so they follow the blended casters, lights
+  and camera. GX light directions are slerped (the flashlight's light stays on its cone's axis, which
+  is blended by rotation); the realistic flashlight's anchors are world points blended by id.
+- Not interpolation: the realistic flashlight's flare (Aurora `enhanced.cpp`, `g_flare`) follows
+  wall-clock time between presents; in `LM_INTERP_TEST` runs (replays out of order) it makes
+  in-betweens brighter than both game frames (identical numbers on main). Use
+  `AURORA_BEAM_FREEZE_TIME=1` for comparable dumps.
+
+### Results (first build, October 2026)
+
+Test mode (`LM_INTERP_TEST=3`, 640x480 dumps; metrics.py and tint.py; "before" = the heuristic design):
+
+| scenario | stale px | snap blobs start / end | back-and-forth | tint (in-betweens outside both neighbours) | detector |
+|---|---|---|---|---|---|
+| foyer strafing 2600-2700 | 0 | 28,368 / 28,083 (before 26,598 / 22,642) | **18,080** (before 31,913) | 7 of 198 (tiles only: Luigi's instant turn moves the lit area) | 0 blend errors; 36 snapped (instant turns) |
+| foyer, enhanced lighting Ultra | 0 | 56,269 / 78,840 | 27,981 | flare frames (see above) | 0 blend errors; 54 snapped |
+| vacuum, heavy dust 2655-2662 | 0 | 0 / 0 | 0 | 0 of 12 | 0 |
+| nursery 2600-2780 (lightning) | 0 | 765,857 / 84,985 (lightning, lights on) | **54,247** (before 63,749) | lightning frames | |
+| Boolossus (map 11) 2600-2700 | 0 | 9,765 / 2,546 | 20,040 | 6 of 198 (tiles) | 0 blend errors; snapped: joints flipping >150 degrees |
+
+Live (judder detector every 3rd in-between, 120 target): vacuum scene 0 of ~1.27 M judged draws per
+5 s off by more than 1.5 px; gold ghosts room with fire and enhanced lighting Ultra (9 min): 0 blend
+errors. Original 30: 41 foyer frames byte-identical to main. Pacing (hidden window): 60.00 fps at 60,
+116.40 at 120 (as main); tape close 0.6 ms (before 1.4-2.6 ms).
+
+User session 1 (4K, 120 Hz, enhanced lighting Ultra): "things were looking exceptionally smooth, I
+didn't notice anything looking wrong or juddering". Fixed after the sessions: hook overhead
+(`callOriginal` cached: the game logic had dropped to 18-25 Hz in heavy scenes), HUD judder (2D
+projections were paired by order and blended across HUD elements; now never blended).
+
 ## History: the heuristic design (passes 1-5)
 
 The sections below describe the design that tagged interpolation replaced. Their pairing,
