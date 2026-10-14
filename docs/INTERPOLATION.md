@@ -88,7 +88,11 @@ A value of game frame b pairs with the value of frame a that has the same key an
   tape word each) when the draw they belong to pairs with its partner's draw by its own matrices or
   vertices (a colour set in a helper the item loop calls has no item tag and would pair with another
   item's). 2D/HUD colours blend under the same draw check since f45cd1e (static HUD colours blend
-  to themselves; the HUD fading in with a room stepped at 30 Hz). Exceptions, shown as the newest
+  to themselves; the HUD fading in with a room stepped at 30 Hz). 2D immediate-mode quads with direct
+  positions and direct RGB(A)8 vertex colours (HUD fades, full-screen fade quads) are noted as 2D
+  blocks (role 2, `posBytes2D`): only their colours blend, and only while every vertex position is
+  byte-identical in both game frames; untagged ones are keyed by structural scope + call site +
+  occurrence (87f2ea6). Exceptions, shown as the newest
   game frame: a channel that jumps by more than 96 of 255 in one game frame (blinks, on/off,
   the hit flash), a register of another type (colour vs konst). Texture swaps (another texture
   object) switch. A GX light's colour (XF 0x600 + 16 n + 3, from GXLoadLightObjImm) takes the
