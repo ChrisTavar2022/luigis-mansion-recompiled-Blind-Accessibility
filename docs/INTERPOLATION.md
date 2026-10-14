@@ -128,11 +128,15 @@ A value of game frame b pairs with the value of frame a that has the same key an
   flip and twist resolution chosen per matrix) neighbours took different paths and the hose's skin
   stretched into long straight sticks (user clip with LM_FRAME_TAG: tape 160 alpha 0.05 and 0.34,
   tape 165 alpha 0.67); switching the whole model detached it from Luigi's hand (2f69188).
-  An erratic member (its world step in the game frame before was over 150 units and over a quarter
-  of its camera distance) has no say in the instance's policy and is blended or switched on its own:
-  the nursery's floating teddy bears (one J3D model) carry one draw matrix that lands 500-1000 units
-  elsewhere every game frame (unused or zero-weighted) and switched the whole bear about one game
-  frame in 11 (sweep B). Earlier
+  An erratic member has no say in the instance's policy and is blended or switched on its own: one
+  that moves by over 150 units, a quarter of its camera distance and three times its instance's
+  median step (+60) in a game frame, or did so in the last 16 game frames (`Tape::worldErratic`), or
+  sits more than 4x the instance's spread (and 250 units) from the median place of its members. The
+  nursery's floating teddy bears (one J3D model, 49 matrices) carry draw matrices that land 800-1000
+  units elsewhere every few game frames (unused or zero-weighted), with runs of small steps in
+  between, and switched all the bears to 30 Hz (sweep B: 1.1-1.9k switches per 5 s near them, 0
+  after). A whole instance moving fast (Chauncey's swoops) moves alike and keeps its say.
+  `LM_INTERP_TRACE=1` logs which member switched an instance. Earlier
   attempts tagged fn_80091A70 (a cloth sheet) and J3D models only, which never reached the hose.
 - Present hold (pacing::beforeEnd): on an even grid (VRR or VSync off) a frame built faster than
   usual is held until the usual time after its scheduled start (90th percentile of the last 60

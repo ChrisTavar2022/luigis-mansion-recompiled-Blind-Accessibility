@@ -60,6 +60,7 @@
 - Test a feature where it naturally belongs: general features (ghost rendering, vacuum, HUD, lighting) in an ordinary mansion room with ordinary ghosts after Luigi has the Poltergust/GBH (LM_TEST_STATE presets), not in boss arenas such as Boolossus (map 11) — use boss maps only for boss-specific work.
 - Always test with a scratch APPDATA and LM_CARD_DIR, never the user's real settings/saves.
 - Runs with --input (or LM_BACKGROUND=1) never pause on focus loss, so several instances can run at once; use one of them for every automated run.
+- Automated runs must not show a window: set LM_OFFSCREEN=1 (moves the window outside every display; it keeps rendering). Start-Process -WindowStyle Hidden / SW_SHOWNOACTIVATE do NOT hide SDL's window, and a truly hidden window pauses the game.
 
 ## Gotchas
 - Don't write C/C++ with `\n` escapes through bash heredocs/python-in-bash: escapes get mangled. Use the Write/Edit tools.
