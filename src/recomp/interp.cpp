@@ -619,6 +619,28 @@ void pairTapes(const Tape& a, Tape& b) {
 
 // Whether a and b are close enough to blend; a jump (teleport, texture scroll wrapping,
 // a spawn reusing a slot) shows b as is.
+// A model matrix pair in WORLD space (wa, wb: the matrices with their cameras taken out): blendable
+// unless it turns by more than ~150 degrees, changes scale 16x or jumps by more than half its
+// distance from the camera (`dist`; at least 200 units). In view space (blendable) a fast camera
+// move alone made static things nearby "jump" (the opening's crane shots: snapped every frame).
+bool blendableWorld(const f32* wa, const f32* wb, float dist) {
+    Rigid ra, rb;
+    if (!decompose(wa, 4, ra) || !decompose(wb, 4, rb)) {
+        for (int i = 0; i < 12; i++)
+            if (std::fabs(wa[i] - wb[i]) > ((i & 3) == 3 ? 400.0f : 0.35f)) return false;
+        return true;
+    }
+    if ((ra.u[2][2] < 0) != (rb.u[2][2] < 0)) return false;
+    if (std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]) < 0.26f) return false;
+    for (int k = 0; k < 3; k++) {
+        const float sa = std::fabs(ra.u[k][k]), sb = std::fabs(rb.u[k][k]);
+        if (std::max(sa, sb) > 0.05f && (sb > 16.0f * sa + 1e-4f || sa > 16.0f * sb + 1e-4f)) return false;
+    }
+    float dd = 0;
+    for (int r = 0; r < 3; r++) dd += (wa[4 * r + 3] - wb[4 * r + 3]) * (wa[4 * r + 3] - wb[4 * r + 3]);
+    return std::sqrt(dd) <= std::max(200.0f, 0.5f * dist);
+}
+
 bool blendable(Kind kind, const f32* a, const f32* b, int n) {
     switch (kind) {
     case Kind::PosMtx:
@@ -1713,13 +1735,14 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 for (int e = 0; e < 12; e++) ma[e] = val(*a, Q, e);
                 xform34(ma, r.pos, va);
                 xform34(iq.data(), va, wa);
-                cause = blendable(Kind::PosMtx, ma, m, 12) ? 0 : 1;
+                cause = 0;
                 // The ideal motion of a rigid part: its world transform blended (rotation slerped
                 // about its origin, origin moved linearly), so a turning part's vertices follow an arc.
                 // A pair too far apart to blend (an instant turn) is judged against the straight line.
                 M34 Wa, Wb, Wt;
                 compose(iq.data(), ma, Wa.data());
                 compose(ib.data(), m, Wb.data());
+                if (!blendableWorld(Wa.data(), Wb.data(), std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]))) cause = 1;
                 if (cause == 0 && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) xform34(Wt.data(), r.pos, wt);
                 else
                     for (int c = 0; c < 3; c++) wt[c] = wa[c] + (wb[c] - wa[c]) * pr.alpha;
@@ -1979,7 +2002,21 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             }
             const bool jump2D = p.role == 2 && p.kind == Kind::PosMtx && p.count == 12 &&
                                 std::fabs(va[3] - vb[3]) + std::fabs(va[7] - vb[7]) + std::fabs(va[11] - vb[11]) > 96.0f;
-            if (jump2D || !blendable(p.kind, va, vb, p.count)) {
+            bool ok;
+            if (p.kind == Kind::PosMtx && p.count == 12 && p.role == 0 && p.view < sViewToA.size() && sViewToA[p.view] == s32(q.view)) {
+                const ViewPair* vp = viewPair(*a, q.view, b, p.view, alpha);
+                if (vp && vp->ok && !vp->cut) {
+                    M34 wa, wb;
+                    compose(vp->ia.data(), va, wa.data());
+                    compose(vp->ib.data(), vb, wb.data());
+                    ok = blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]));
+                } else {
+                    ok = blendable(p.kind, va, vb, p.count);
+                }
+            } else {
+                ok = blendable(p.kind, va, vb, p.count);
+            }
+            if (jump2D || !ok) {
                 snap(p, va, vb);
                 continue;
             }
