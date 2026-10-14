@@ -96,11 +96,21 @@ A value of game frame b pairs with the value of frame a that has the same key an
   from b at once and blends only the rest (`untwist`). The Poltergust hose's envelope matrices are
   rebuilt from the hose direction every frame and their roll changes by up to ~150 degrees between
   game frames: blending spun the ribs around the tube.
-- Model instances switch as a whole: when one position matrix of a J3D model (its shape packets share
-  the matrix buffer at packet +0x14: `tagGroup`) cannot blend, every matrix of that model is shown as
-  b for that interval. A skinned mesh whose envelope matrices were partly blended and partly
-  switched tore apart: the hose stretched into long sticks across Luigi in the in-betweens of a
-  swing (test mode, vacuum scenario frame 2607). The detector counts those as switches.
+- J3D models are handled as one instance (its shape packets share the matrix buffer at packet +0x14:
+  `tagGroup`). A skinned mesh whose envelope matrices were partly blended and partly switched tore
+  apart: the hose stretched into long sticks across Luigi in the in-betweens of a swing (test mode,
+  vacuum scenario frame 2607). When one matrix of the model jumps (its place moved farther than
+  blending allows) the whole model is shown as b for that interval (the detector counts those as
+  switches); when one only turns or scales beyond the limits, the whole model blends, that matrix
+  too. (Switching the whole model for those as well showed the hose at the newest frame while
+  Luigi's hand blended, a long arc from the tank to the nozzle on the vacuum's on/off, and made
+  Bogmire step at 30 Hz in a fifth of his fight's frames: user session, 2f69188.)
+- Present hold (pacing::beforeEnd): on an even grid (VRR or VSync off) a frame built faster than
+  usual is held until the usual time after its scheduled start (90th percentile of the last 60
+  frames, at most 85% of the period), so every frame reaches the screen a constant time after the
+  time its picture is for. Bogmire's fight at 4K with Enhanced lighting Ultra built frames in
+  3-10 ms: presents came 5-13 ms apart while the motion advanced 8.6 ms each (display error p95
+  3-5 ms, 1.2 ms elsewhere): an animated sky with a still camera juddered. `LM_PRESENT_HOLD=0`: off.
 - Fast motion is not a jump: a pair that moves at most 2x + 60 units of what the same identity moved
   over the game frame before (`Tape::worldStep`, recorded by the replays) blends however far it goes
   (Chauncey's swoops, ~500 units per game frame, were snapped at 30 Hz).
