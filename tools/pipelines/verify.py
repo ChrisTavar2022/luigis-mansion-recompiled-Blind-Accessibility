@@ -145,6 +145,9 @@ def run(a, preset, route, ini, spec):
                 seen = re.findall(r"\[frame\] (\d+) presents", (d / "log.txt").read_text(encoding="utf-8", errors="replace"))
                 if seen and int(seen[-1]) >= frames:
                     break
+                if time.time() - (d / "log.txt").stat().st_mtime > a.stall_seconds:
+                    print(f"{preset}/{route}: no log output for {a.stall_seconds:.0f} s, ended (hang)", flush=True)
+                    break
             if p.poll() is None:
                 p.kill()  # only the process this run started
                 p.wait()
@@ -181,6 +184,8 @@ def main():
     ap.add_argument("--gap", type=float, default=60, help="seconds to wait after a run before taking the lock again")
     ap.add_argument("--startup-seconds", type=float, default=120,
                     help="time allowed for the startup shader preparation (more when two checks share the CPU)")
+    ap.add_argument("--stall-seconds", type=float, default=600,
+                    help="end a run whose log stayed silent this long (a hang; LM_PIPELINE_LOG logs every 5 s)")
     ap.add_argument("--resume", action="store_true", help="keep runs an earlier check into --work finished")
     a = ap.parse_args()
     root = Path(a.data_root)
