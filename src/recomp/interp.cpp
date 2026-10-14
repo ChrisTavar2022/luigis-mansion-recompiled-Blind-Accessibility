@@ -2006,8 +2006,12 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 // aspect (the camera zooming), never with another view's.
                 const u8* t = b.bytes.data() + p.offset + 24;
                 if ((u32(t[0]) << 24 | u32(t[1]) << 16 | u32(t[2]) << 8 | t[3]) != 0) continue;  // GX_ORTHOGRAPHIC
+                // (The shadow caster pass is the same light whatever its fitted frustum: "shadows at any
+                // distance" refits its aspect every game frame; its receivers use the blended light, so
+                // the caster projection must blend too, or the shadows swim.)
+                const bool caster = p.bundle < b.bundlePass.size() && b.bundlePass[p.bundle] == 1;
                 const float ra = va[2] != 0 ? va[0] / va[2] : 0, rb = vb[2] != 0 ? vb[0] / vb[2] : 0;
-                if (!(std::fabs(ra - rb) <= 0.01f * std::max(std::fabs(ra), std::fabs(rb)))) continue;
+                if (!caster && !(std::fabs(ra - rb) <= 0.01f * std::max(std::fabs(ra), std::fabs(rb)))) continue;
             }
             // A light is blended only while it is the same light (its attenuation: a spot switched to
             // another shape, or off by its attenuation, is another light).
@@ -2036,6 +2040,12 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 } else {
                     ok = blendable(p.kind, va, vb, p.count);
                 }
+            } else if (p.bundle < b.bundlePass.size() && b.bundlePass[p.bundle] == 1 && sLightPair.ok) {
+                // The shadow caster pass, while its light blends: everything in it blends with the
+                // light (the receivers use the blended light; a caster shown as captured would sit a
+                // frame apart from its shadow lookup, and the shadow would swim).
+                ok = true;
+                for (int k = 0; k < p.count && ok; k++) ok = std::isfinite(va[k]) && std::isfinite(vb[k]);
             } else {
                 ok = blendable(p.kind, va, vb, p.count);
             }
