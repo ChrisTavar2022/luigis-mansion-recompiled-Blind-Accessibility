@@ -78,6 +78,10 @@ def routes(map2: Path):
 
 
 PRESET_INI = {"vanilla": {}, **ENH_PRESET}
+# The same at 120 fps (interpolated frames: docs/INTERPOLATION.md), in case interpolation draws
+# configs of its own.
+FPS120 = {"video": {"target_fps": 120, "match_display_refresh": "false"}}
+PRESET_INI.update({f"{k}_120": sweep.merge(v, FPS120) for k, v in list(PRESET_INI.items())})
 GAMEPLAY = {"gameplay": {"damage_scale": 0, "ghost_health_scale": 0.25, "vacuum_strength": 4}}
 
 
@@ -125,7 +129,7 @@ def run(a, preset, route, ini, spec):
     if a.list:
         e["LM_PIPELINE_LIST"] = a.list
     e.update(env_extra)
-    seconds = frames / 30 * 1.4 + 120  # + the startup shader preparation
+    seconds = frames / 30 * 1.4 + a.startup_seconds  # + the startup shader preparation
     cmd = [a.exe, "--disc", a.disc, "--input", ",".join(inp)]
     if a.lock:
         take_lock(Path(a.lock), a.lock_name)
@@ -134,9 +138,17 @@ def run(a, preset, route, ini, spec):
         with open(d / "log.txt", "w", encoding="utf-8") as log:
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             p = subprocess.Popen(cmd, env=e, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
-            try:
-                p.wait(timeout=seconds)
-            except subprocess.TimeoutExpired:
+            # Until the route's last guest frame (LM_INPUT_CLOCK=frames: the input script is timed in
+            # presented guest frames) or the time limit, whichever comes first.
+            while p.poll() is None and time.time() - t0 < seconds:
+                time.sleep(5)
+                seen = re.findall(r"\[frame\] (\d+) presents", (d / "log.txt").read_text(encoding="utf-8", errors="replace"))
+                if seen and int(seen[-1]) >= frames:
+                    break
+                if time.time() - (d / "log.txt").stat().st_mtime > a.stall_seconds:
+                    print(f"{preset}/{route}: no log output for {a.stall_seconds:.0f} s, ended (hang)", flush=True)
+                    break
+            if p.poll() is None:
                 p.kill()  # only the process this run started
                 p.wait()
     finally:
@@ -150,6 +162,7 @@ def run(a, preset, route, ini, spec):
     r = {"preset": preset, "route": route, "misses": len(misses), "seconds": round(time.time() - t0),
          "startup_s": float(start.group(1)) if start else None, "startup_pipelines": int(start.group(2)) if start else None,
          "presents": int(frames_seen[-1]) if frames_seen else 0}
+    r["complete"] = r["presents"] >= frames  # false: crashed or timed out before the route's end
     (d / "misses.txt").write_text("\n".join(misses) + "\n", encoding="utf-8")
     (d / "result.json").write_text(json.dumps(r), encoding="utf-8")
     print(json.dumps(r), flush=True)
@@ -169,6 +182,10 @@ def main():
     ap.add_argument("--lock")
     ap.add_argument("--lock-name", default="pipelines-verify")
     ap.add_argument("--gap", type=float, default=60, help="seconds to wait after a run before taking the lock again")
+    ap.add_argument("--startup-seconds", type=float, default=120,
+                    help="time allowed for the startup shader preparation (more when two checks share the CPU)")
+    ap.add_argument("--stall-seconds", type=float, default=600,
+                    help="end a run whose log stayed silent this long (a hang; LM_PIPELINE_LOG logs every 5 s)")
     ap.add_argument("--resume", action="store_true", help="keep runs an earlier check into --work finished")
     a = ap.parse_args()
     root = Path(a.data_root)
