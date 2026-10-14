@@ -20,6 +20,14 @@ Scenarios (US disc, LM_INPUT_CLOCK=frames):
   ghosts   gold ghosts room: ghost fight (LM_GHOST_HUNT)
   vacuum   foyer: the vacuum running with the nozzle down while walking: heavy dust
   ballroom the ballroom (LM_TELEPORT), strafing
+  hose     foyer: the Poltergust switched on and off while turning (the hose swings out and back)
+  water    nursery: spraying water (LM_TEST_STATE water) left and right
+  chauncey Chauncey's arena (map 10): idle, then walking (the sky, the rocking horse, his swoops)
+  bogmire  Bogmire's arena (map 13): idle, then walking (the sky, the shadow ghosts)
+
+The lock (--lock or LM_GAME_LOCK) is never waited for unless --wait-lock is given: if it exists or
+another game runs, the run stops at once (a queued runner would start later on its own, e.g. in the
+middle of a user session). It is removed only while it still holds what this run wrote.
 """
 import argparse
 import os
@@ -75,6 +83,30 @@ def scenario(name):
     elif name == "ballroom":
         env["LM_TELEPORT"] = "1800,0,-1400,100"
         inp = MENU + "," + strafe(2600, 60)
+    elif name == "hose":
+        env["LM_START_APPEAR"] = "6"
+        parts = []
+        f = 2600
+        for i in range(24):
+            d = ["STICKLEFT", "STICKUP", "STICKRIGHT", "STICKDOWN"][i % 4]
+            parts.append(f"{f}:R+{d}*30")  # vacuum on while turning: the hose swings out
+            parts.append(f"{f + 32}:{d}*20")  # off: it swings back
+            f += 56
+        inp = MENU + "," + ",".join(parts)
+    elif name == "water":
+        env["LM_TEST_STATE"] = "poltergust+water"
+        parts = []
+        f = 2600
+        for i in range(30):
+            d = "STICKLEFT" if i % 2 == 0 else "STICKRIGHT"
+            parts.append(f"{f}:{d}*10")
+            parts.append(f"{f + 12}:L*50")
+            f += 66
+        inp = MENU + "," + ",".join(parts)
+    elif name in ("chauncey", "bogmire"):
+        env["LM_START_MAP"] = "10" if name == "chauncey" else "13"
+        env.pop("LM_START_APPEAR", None)
+        inp = MENU + "," + strafe(3200, 40)  # idle from the arena's start, then walking
     elif name == "ghosts":
         # gold ghosts room (2F): the game's own ghost AI, LM_GHOST_HUNT points the flashlight and
         # the vacuum at them
@@ -141,7 +173,11 @@ def main():
     ap.add_argument("--grid", default="10,3")
     ap.add_argument("--lock", default=os.environ.get("LM_GAME_LOCK", ""),
                     help="machine-wide lock file to hold while the game runs (LM_GAME_LOCK)")
+    ap.add_argument("--wait-lock", action="store_true", help="wait for the lock instead of giving up")
+    ap.add_argument("--fps", type=int, default=0, help="video.target_fps (and match_display_refresh=false)")
     a = ap.parse_args()
+    if a.fps:
+        a.set += [f"video.target_fps={a.fps}", "video.match_display_refresh=false"]
 
     out = os.path.abspath(a.out)
     if os.path.exists(out):
@@ -163,7 +199,11 @@ def main():
     env = dict(os.environ)
     env.update(senv)
     env.update({"APPDATA": appdata, "LM_CARD_DIR": os.path.join(out, "card"), "LM_AUDIO": "0",
-                "LM_BACKGROUND": "1", "LM_TOPMOST": "1", "LM_FRAME_TAG": "1", "LM_INTERP_JUDDER": os.path.join(out, "judder.log")})
+                "LM_BACKGROUND": "1", "LM_TOPMOST": "1", "LM_FRAME_TAG": "1", "LM_INTERP_JUDDER": os.path.join(out, "judder.log"),
+                # tagged interpolation's detector (docs/INTERPOLATION.md "Tagged interpolation"), and the
+                # hang diagnostics every run keeps
+                "LM_JUDDER_LOG": os.path.join(out, "probe.txt"), "LM_PACING_LOG": os.path.join(out, "pacing.txt"),
+                "LM_TRACE": "ring", "LM_WATCHDOG": "1"})
     for e in a.env:
         k, v = e.split("=", 1)
         env[k] = v
@@ -172,15 +212,14 @@ def main():
         args.append("--fullscreen")
     if a.window:
         args += ["--window", a.window]
-    lock = acquire_lock(a.lock) if a.lock else None
+    lock = acquire_lock(a.lock, a.wait_lock) if a.lock else None
+    if a.lock and not lock:
+        print("game lock held or another game running: not started")
+        return 2
     try:
         return run_game(a, args, env, out, start, lock)
     finally:
-        if lock:
-            try:
-                os.remove(lock)
-            except OSError:
-                pass
+        release_lock(lock)
 
 
 GAMES = ("lmrecomp.exe", "luigismansionrecomp.exe", "smsrecomp.exe")
@@ -192,9 +231,13 @@ def others_running():
     return [l.split(",")[0].strip('"') for l in r.stdout.splitlines() if l.split(",")[0].strip('"').lower() in GAMES]
 
 
-def acquire_lock(path):
-    """Machine-wide measurement lock (parallel game windows distort timing): a file created
-    exclusively, holding the branch name; waits while it exists or another game runs."""
+_lock_text = {}
+
+
+def acquire_lock(path, wait=False):
+    """Machine-wide measurement lock (parallel game windows distort timing, and the user's
+    GameCube adapter opens in one process only): a file created exclusively, holding the branch
+    name. Returns None at once if it exists or another game runs, unless `wait`."""
     branch = subprocess.run(["git", "-C", ROOT, "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True,
                             text=True).stdout.strip() or "interp"
     while True:
@@ -203,13 +246,28 @@ def acquire_lock(path):
                 fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.write(fd, branch.encode())
                 os.close(fd)
+                _lock_text[path] = branch
                 if not others_running():
                     return path
-                os.remove(path)
+                release_lock(path)
             except FileExistsError:
                 pass
+        if not wait:
+            return None
         print("waiting for the game lock / other game processes", flush=True)
         time.sleep(30)
+
+
+def release_lock(path):
+    """Removes the lock only while it still holds what acquire_lock wrote (someone may have taken
+    it over after this run's game was stopped)."""
+    if not path:
+        return
+    try:
+        if open(path, encoding="utf-8", errors="replace").read().strip() == _lock_text.get(path):
+            os.remove(path)
+    except OSError:
+        pass
 
 
 def run_game(a, args, env, out, start, lock):
@@ -260,9 +318,9 @@ def run_game(a, args, env, out, start, lock):
         if lock:  # analysis below does not need the machine
             try:
                 game.wait(timeout=10)
-                os.remove(lock)
-            except (OSError, subprocess.TimeoutExpired):
+            except subprocess.TimeoutExpired:
                 pass
+            release_lock(lock)
     if not a.no_capture:
         subprocess.run([a.python, os.path.join(HERE, "screen_judder.py"), video, "--tag", "--crop", a.crop, "--grid", a.grid,
                         "--csv", os.path.join(out, "steps.csv")])
