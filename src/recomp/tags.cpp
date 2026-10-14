@@ -40,6 +40,10 @@ void registerSiteTags() {
     interp::addSiteTag({VA(0x8012B6C4), VA(0x8012B918), TagCat::Particle, 29, 28, 0x24, -1});
     // fn_80162AE8 -> fn_801796EC: 45 fixed slots of 0x18 bytes (array at [r25]), slot offset in r28.
     interp::addSiteTag({VA(0x801796EC), VA(0x8017996C), TagCat::Particle, 28, 25});
+    // The Poltergust hose (fn_80091A70): a tube drawn as a grid of quads, one GXBegin per cell from
+    // four grid points (column r27, row offset r29); cells whose points are not valid are skipped, so
+    // the n-th quad is not always the same cell (quads swapped places: the hose "freaked out").
+    interp::addSiteTag({VA(0x80091EF4), VA(0x80092110), TagCat::Effect, 27, 29});
     // JPA-style emitters (fn_801604FC -> renderer -> fn_8016169C(renderer, view)): one particle per
     // iteration in r19 (list via +0x5C), its renderer in r30; CPU-built quads.
     // Its age (+1 per frame, every particle) is the u16 at +0x32.
