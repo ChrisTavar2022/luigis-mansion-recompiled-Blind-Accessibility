@@ -82,8 +82,16 @@ A value of game frame b pairs with the value of frame a that has the same key an
 | Hud (2D) | 2D matrices (a jump > 96 px switches) |
 | untagged | nothing: b's values, placed under the in-between camera when in the 3D view (else as captured) |
 
-- Colours (channel/material/light colours, TEV colour and konst registers, fog), alphas and HUD
-  colours are **never** blended: always the newest game frame's. Enhanced lighting's extra lights
+- Colours (channel ambient/material colours 0x100A-0x100D, light colours, TEV colour and konst
+  registers 0xE0-0xE7, fog colour 0xF2, also from display lists) and the direct vertex colours of
+  CPU-built blocks are blended between values with the identical tag (noteColors: Kind::Color, one
+  tape word each) when the draw they belong to pairs with its partner's draw by its own matrices or
+  vertices (a colour set in a helper the item loop calls has no item tag and would pair with another
+  item's). Exceptions, shown as the newest game frame: 2D/HUD colours (static HUD stays
+  pixel-identical), a channel that jumps by more than 96 of 255 in one game frame (blinks, on/off,
+  the hit flash), a register of another type (colour vs konst). Texture swaps (another texture
+  object) switch. (Until b28a8fd colours were never blended: the water's bubbles and the shadow
+  ghosts' shimmer stepped at 30 Hz.) Enhanced lighting's extra lights
   (the port's own lights) blend position, radius, colour and intensity by id; flags and shadow
   weight are b's (ghost glows, dramatic flares and flicker change every game frame: at b's values big
   lit areas stepped at 30 Hz).

@@ -100,6 +100,8 @@ struct Patch {
     bool ownCamera = false;     // noted in a SubView (its own camera: blended as drawn)
     u32 site = 0;       // guest call site (logs)
     u64 group = 0;      // TagFrame::group: values of one model instance switch together
+    u16 clrOffset = 0xFFFF;  // Verts: a direct colour in each vertex (blended unless it jumps)
+    u8 clrBytes = 0;
 };
 
 using M34 = std::array<f32, 12>;
@@ -562,7 +564,6 @@ void pairTapes(const Tape& a, Tape& b) {
     b.paired = b.unpaired = b.untagged = 0;
     for (u32 i = 0; i < b.patches.size(); i++) {
         const Patch& p = b.patches[i];
-        if (p.kind == Kind::Color) continue;
         if (!p.key) {
             b.untagged++;
             continue;
@@ -833,6 +834,8 @@ u32 sFlips = 0;  // pairs blended through an equivalent flipped orientation (sta
 u32 sFlatBlends = 0;  // squashed-flat model matrices blended entrywise in world space (stats)
 u32 sUntwists = 0;    // pairs whose fast twist was taken from b (stats)
 u32 sGroupSnaps = 0;  // model instances switched as a whole (stats)
+u32 sColorsBlended = 0, sColorsSwitched = 0;  // colour registers (stats)
+std::vector<s32> sBundleToA;  // replayPair: per draw of b, the draw of a it pairs with (-1 none, -2 ambiguous)
 u32 sReversals = 0;   // CPU-built blocks shown as captured because they turned back (another particle)
 u32 sGroupForced = 0; // model instances blended linearly as a whole (stats)
 // Set by replayPair around blendFactored for the matrices of a model instance blended linearly
@@ -1349,6 +1352,106 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     sPatches.push_back(p);
 }
 
+// --- colours ---
+// A colour patch is one 32-bit word of the tape: a BP write (register byte + 24-bit value: TEV
+// colour/konst register halves 0xE0-0xE7, fog colour 0xF2) or an XF word (channel ambient/material
+// colours 0x100A-0x100D, a light's colour 0x600 + 16 n + 3, RGBA8). Patch::stride holds the format
+// (kColorBp, kColorFog, kColorRgba8) so only the same register pairs.
+constexpr u16 kColorBp = 1, kColorFog = 2, kColorRgba8 = 3;
+
+void noteColor(u32 off, u16 format, u32 reg) {
+    Patch p{off, 1, Kind::Color};
+    p.stride = format;
+    p.source = reg;
+    p.site = sCallLr;
+    p.key = valueKey(Kind::Color, reg, 0, p.cat);
+    if (sOrtho) p.role = 2;  // 2D layout: as captured
+    p.inScope = sTagDepth > 0 || sVirtActive;
+    sPatches.push_back(p);
+}
+
+void noteColors(u32 at) {
+    if (at == ~0u || !capturing() || sNoBlend > 0) return;
+    const u32 end = sBase + AuroraCapturePos();
+    for (u32 i = at; i < end;) {
+        const u8 op = sScratch[i];
+        if (op == 0x61 && i + 5 <= end) {  // BP write
+            const u8 reg = sScratch[i + 1];
+            if (reg >= 0xE0 && reg <= 0xE7) noteColor(i + 1, kColorBp, reg);
+            else if (reg == 0xF2) noteColor(i + 1, kColorFog, reg);
+            i += 5;
+        } else if (op == 0x10 && i + 5 <= end) {  // XF write: header (count - 1) << 16 | address
+            const u32 h = u32(sScratch[i + 1]) << 24 | u32(sScratch[i + 2]) << 16 | u32(sScratch[i + 3]) << 8 | sScratch[i + 4];
+            const u32 n = (h >> 16) + 1, addr = h & 0xFFFF;
+            if (i + 5 + 4 * n > end) break;
+            for (u32 k = 0; k < n; k++) {
+                const u32 a = addr + k;
+                if ((a >= 0x100A && a <= 0x100D) || (a >= 0x600 && a < 0x680 && (a & 0xF) == 3))
+                    noteColor(i + 5 + 4 * k, kColorRgba8, a);
+            }
+            i += 5 + 4 * n;
+        } else if (op == 0x08 && i + 6 <= end) {  // CP write
+            i += 6;
+        } else if (op == 0x00) {  // NOP
+            i += 1;
+        } else {
+            break;  // anything else: stop (only the writes the call itself made are expected)
+        }
+    }
+}
+
+namespace detail {
+void noteDrawColor(u32 at, u32 reg, u8 type) {
+    if (at == ~0u || !capturing() || sNoBlend > 0 || at + 4 > sBase + AuroraCapturePos()) return;
+    noteColor(at, type == 2 ? kColorFog : kColorBp, reg);
+}
+}  // namespace detail
+
+// Blends colour word `a` toward `b` (big-endian bytes in the tape); false when it jumped (a blink,
+// a flash, on/off: more than 96 of 255 in a channel) or changed type: then b stays.
+bool blendColorWord(u16 format, const u8* a, const u8* b, float t, u8* out) {
+    const auto be = [](const u8* p) { return u32(p[0]) << 24 | u32(p[1]) << 16 | u32(p[2]) << 8 | p[3]; };
+    const u32 va = be(a), vb = be(b);
+    if (va == vb) return true;
+    u32 o = vb;
+    if (format == kColorBp) {
+        if ((va >> 24) != (vb >> 24) || ((va >> 23) & 1) != ((vb >> 23) & 1)) return false;  // other register / colour vs konst
+        const bool konst = (vb >> 23) & 1;
+        // Two fields per write: bits 0-10 and 12-22 (s11 for colour registers, u8 for konst).
+        int fa[2], fb[2];
+        for (int f = 0; f < 2; f++) {
+            const u32 sh = f ? 12 : 0;
+            int x = int((va >> sh) & 0x7FF), y = int((vb >> sh) & 0x7FF);
+            if (!konst) {
+                if (x & 0x400) x -= 0x800;
+                if (y & 0x400) y -= 0x800;
+            }
+            fa[f] = x, fb[f] = y;
+            if (std::abs(x - y) > 96) return false;
+        }
+        o = vb & ~((0x7FFu) | (0x7FFu << 12));
+        for (int f = 0; f < 2; f++) {
+            const int v = int(std::lround(fa[f] + (fb[f] - fa[f]) * t));
+            o |= (u32(v) & 0x7FF) << (f ? 12 : 0);
+        }
+    } else {
+        // RGBA8 (XF) or fog RGB (BP 0xF2: the low 24 bits).
+        const int nc = format == kColorFog ? 3 : 4;
+        if (format == kColorFog && (va >> 24) != (vb >> 24)) return false;
+        for (int c = 0; c < nc; c++) {
+            const int x = int((va >> (8 * c)) & 0xFF), y = int((vb >> (8 * c)) & 0xFF);
+            if (std::abs(x - y) > 96) return false;
+        }
+        for (int c = 0; c < nc; c++) {
+            const int x = int((va >> (8 * c)) & 0xFF), y = int((vb >> (8 * c)) & 0xFF);
+            const u32 v = u32(std::lround(x + (y - x) * t)) & 0xFF;
+            o = (o & ~(0xFFu << (8 * c))) | v << (8 * c);
+        }
+    }
+    out[0] = u8(o >> 24), out[1] = u8(o >> 16), out[2] = u8(o >> 8), out[3] = u8(o);
+    return true;
+}
+
 void noteShadowLight(const float lightView[12], const float kProj[12], const float kRamp[12]) {
     if (!capturing()) return;
     sShadow.valid = true;
@@ -1399,11 +1502,12 @@ void detail::vertsBegin() {
     if (sTagLogFrame != ~0ull) sVertsChain = sTagChain;
 }
 
-void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id) {
+void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, u32 clrOffset, u32 clrBytes) {
     if (!capturing() || count == 0 || count > 0xFFFF) return;
     Patch p{at, u16(count), Kind::Verts};
     p.stride = u16(stride);
     p.posOffset = u16(posOffset);
+    if (clrBytes && clrOffset + clrBytes <= stride) p.clrOffset = u16(clrOffset), p.clrBytes = u8(clrBytes);
     // The key was taken at GXBegin (vertsBegin): the scope may have closed by the time the draw's
     // vertices are complete (noted at the next GX call).
     p.site = sVertsSite;
@@ -2302,9 +2406,11 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
         // stretched into long straight sticks (user clips, 0a5e5f2: tape 160 a 0.05 / 0.34, tape 165
         // a 0.67); switching the whole hose (2f69188) detached it from Luigi's hand.
         {
-            static std::unordered_set<u64> snapGroups, forceGroups;
+            static std::unordered_set<u64> snapGroups, forceGroups, fastGroups, skinGroups;
             snapGroups.clear();
             forceGroups.clear();
+            fastGroups.clear();
+            skinGroups.clear();
             for (u32 i = 0; i < b.patches.size(); i++) {
                 const Patch& p = b.patches[i];
                 const s32 j = b.partner[i];
@@ -2328,17 +2434,28 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     snapGroups.insert(p.group);
                     continue;
                 }
-                bool fast = !anyDist || flatMatrix(wa.data()) || flatMatrix(wb.data());
-                if (!fast) {
-                    Rigid ra, rb;
-                    if (!decompose(wa.data(), 4, ra) || !decompose(wb.data(), 4, rb)) fast = true;
-                    else {
-                        const float d = std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]);
-                        fast = d < 0.7071f;  // turned by more than 90 degrees
+                const bool flat = flatMatrix(wa.data()) || flatMatrix(wb.data());
+                bool fast = !anyDist || flat, skin = flat;
+                Rigid ra, rb;
+                if (!decompose(wa.data(), 4, ra) || !decompose(wb.data(), 4, rb)) {
+                    fast = skin = true;
+                } else {
+                    const float d = std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]);
+                    fast = fast || d < 0.7071f;  // turned by more than 90 degrees
+                    // A weighted (envelope) matrix of joints that point different ways is sheared.
+                    for (const Rigid* r : {&ra, &rb}) {
+                        const float diag = std::max({std::fabs(r->u[0][0]), std::fabs(r->u[1][1]), std::fabs(r->u[2][2]), 1e-6f});
+                        if (std::max({std::fabs(r->u[0][1]), std::fabs(r->u[0][2]), std::fabs(r->u[1][2])}) > 0.08f * diag) skin = true;
                     }
                 }
-                if (fast) forceGroups.insert(p.group);
+                if (fast) fastGroups.insert(p.group);
+                if (skin) skinGroups.insert(p.group);
             }
+            // Linear only for a skinned instance (some matrix sheared or flat) with a fast turn: rigid
+            // parts (the water's bubbles, which spin) keep their own rigid blend (entrywise, a part
+            // turning half a turn shrank to a sliver: the bubbles faded between game frames).
+            for (const u64 g : fastGroups)
+                if (skinGroups.count(g)) forceGroups.insert(g);
             for (u32 i = 0; i < b.patches.size(); i++) {
                 const u64 g = b.patches[i].group;
                 const u8 v = !g ? 0 : snapGroups.count(g) ? 1 : forceGroups.count(g) ? 2 : 0;
@@ -2347,9 +2464,40 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             sGroupSnaps += u32(snapGroups.size());
             sGroupForced += u32(forceGroups.size());
         }
+        // Which draw of a each draw of b is, by its own paired matrices / vertices (-1: none, -2: they
+        // disagree): colours blend only within the same pair of draws.
+        sBundleToA.assign(b.bundleIds.size(), -1);
         for (u32 i = 0; i < b.patches.size(); i++) {
             const Patch& p = b.patches[i];
-            if (p.kind == Kind::Color) continue;  // never blended
+            const s32 j = b.partner[i];
+            if (j < 0 || (p.kind != Kind::PosMtx && p.kind != Kind::Verts) || p.bundle >= sBundleToA.size()) continue;
+            const s32 qb = s32(a->patches[j].bundle);
+            s32& m = sBundleToA[p.bundle];
+            m = m == -1 ? qb : m == qb ? m : -2;
+        }
+        for (u32 i = 0; i < b.patches.size(); i++) {
+            const Patch& p = b.patches[i];
+            if (p.kind == Kind::Color) {
+                // Blended with the same register of the same identity (tagged), unless it jumped;
+                // 2D (HUD) colours and untagged ones stay as captured.
+                const s32 jc = b.partner[i];
+                if (jc < 0 || p.role == 2 || p.cat == TagCat::Hud) continue;
+                const Patch& qc = a->patches[jc];
+                // Only for the same thing drawn: the draw this colour belongs to must pair with the
+                // draw of its partner by its own matrices or vertices. (A colour set in a helper the
+                // item loop calls has no item tag: keyed by occurrence under the emitter, the n-th
+                // bubble's colour paired with another bubble's and the bubbles dimmed between
+                // game frames; tint check, water.)
+                if (p.bundle >= sBundleToA.size() || sBundleToA[p.bundle] < 0 || s32(qc.bundle) != sBundleToA[p.bundle]) {
+                    sColorsSwitched++;
+                    continue;
+                }
+                if (blendColorWord(p.stride, a->bytes.data() + qc.offset, b.bytes.data() + p.offset, alpha, sReplay.data() + p.offset))
+                    sColorsBlended++;
+                else
+                    sColorsSwitched++;
+                continue;
+            }
             const u8 groupPolicy = b.groupSnap ? b.groupSnap[i].load(std::memory_order_relaxed) : 0;
             const bool forced = groupPolicy == 2 && (p.kind == Kind::PosMtx || p.kind == Kind::NrmMtx);
             sLinearBlend = forced;
@@ -2420,6 +2568,21 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                         const f32 va = vtx(*a, q, v, c), vb = vtx(b, p, v, c);
                         storeBE(sReplay.data() + p.offset + v * p.stride + p.posOffset + 4 * c, va + (vb - va) * alpha);
                     }
+                // Vertex colours (particles fading, the water's bubbles): blended unless one jumped.
+                if (p.clrBytes && q.clrBytes == p.clrBytes && q.clrOffset == p.clrOffset) {
+                    bool jumped = false;
+                    for (u32 v = 0; v < p.count && !jumped; v++)
+                        for (u32 c = 0; c < p.clrBytes; c++) {
+                            const int x = a->bytes[q.offset + v * q.stride + q.clrOffset + c], y = b.bytes[p.offset + v * p.stride + p.clrOffset + c];
+                            if (std::abs(x - y) > 96) jumped = true;
+                        }
+                    if (!jumped)
+                        for (u32 v = 0; v < p.count; v++)
+                            for (u32 c = 0; c < p.clrBytes; c++) {
+                                const int x = a->bytes[q.offset + v * q.stride + q.clrOffset + c], y = b.bytes[p.offset + v * p.stride + p.clrOffset + c];
+                                sReplay[p.offset + v * p.stride + p.clrOffset + c] = u8(std::lround(x + (y - x) * alpha));
+                            }
+                }
                 sBlended++;
                 continue;
             }
@@ -3187,6 +3350,12 @@ bool replay(bool final) {
             log("[interp] extra lights per present: %.1f blended by identity, %.1f without partner (%.2f whose identity jumped >200 units)",
                 double(sXlPaired) / presentedWindow, double(sXlNew) / presentedWindow, double(sXlJumped) / presentedWindow);
         sXlPaired = sXlNew = sXlJumped = 0;
+        if (sColorsBlended + sColorsSwitched)
+            log("[interp] colour registers per present: %.1f blended, %.1f switched (jumped); model instances blended linearly %.1f, "
+                "switched %.1f; particles shown at the game frame (turned back) %.1f",
+                double(sColorsBlended) / presentedWindow, double(sColorsSwitched) / presentedWindow,
+                double(sGroupForced) / presentedWindow, double(sGroupSnaps) / presentedWindow, double(sReversals) / presentedWindow);
+        sColorsBlended = sColorsSwitched = sGroupForced = sGroupSnaps = sReversals = 0;
         if (sArraysBlended) log("[interp] %.1f CPU-deformed position arrays blended per present", double(sArraysBlended) / presentedWindow);
         sArraysBlended = 0;
         std::fill(std::begin(sPhaseUs), std::end(sPhaseUs), 0ull);

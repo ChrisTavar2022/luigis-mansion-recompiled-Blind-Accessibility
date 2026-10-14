@@ -97,10 +97,11 @@ void popLinearPosMtx();
 // lights): blended between tapes by light id.
 void noteExtraLights(u32 at, u32 count);
 
-// Colors (channel ambient/material colors, light colors, TEV color/konst registers, fog color):
-// never blended (tagged interpolation: they always come from the newest game frame). Kept as a
-// no-op hook point for a category that may one day allow it.
-inline void noteColors(u32) {}
+// Colors (channel ambient/material colors, light colors, TEV color/konst registers, fog color)
+// written from tape offset `at` to now: each register is a value of its tag scope, blended with
+// the same identity's register in the previous game frame unless it jumps (a blink, a flash, an
+// on/off switch: shown at the game frame). 2D (HUD) colors are never blended.
+void noteColors(u32 at);
 
 // Camera factoring: position/normal matrices and lights are view x world; they are blended as
 // a blended camera times a blended world transform (objects move with the scene as one rigid
@@ -219,13 +220,14 @@ void noteDraw(u64 id);
 inline void noteDrawAlt(u64) {}
 // Immediate-mode vertices with direct f32 XYZ positions: `count` vertices of `stride`
 // bytes starting at tape offset `at`, position at `posOffset` in each.
-void noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id);
+void noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, u32 clrOffset = 0xFFFF, u32 clrBytes = 0);
 void vertsBegin();  // at GXBegin of such a draw: its identity (tag scope, call site)
 u64 mix(u64 h);
 // A display list or stream wrote XF matrix memory directly (judder detector's slot table).
 void xfMatrixWritten(u32 addr, u32 words);
-// A color register written by a display list: never blended (see noteColors).
-inline void noteDrawColor(u32, u32, u8) {}
+// A color register written by a display list (BP write at tape offset `at`, the register byte):
+// blended like noteColors.
+void noteDrawColor(u32 at, u32 reg, u8 type);
 void drawLog(const char* fmt, ...);  // LM_INTERP_DRAWS
 u8* captureBytes();  // the capture buffer (tape offsets index it)
 // This tape's texture/TLUT copies (kept alive by the tape) and the bytes newly copied.
