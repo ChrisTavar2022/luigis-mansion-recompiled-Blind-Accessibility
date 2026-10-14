@@ -1538,6 +1538,7 @@ struct ProbeRec {
     u16 n;
     bool hasPos;
     f32 mtx[12], proj[16], pos[3];
+    f32 ndcMin[2], ndcMax[2], viewport[4];
 };
 std::mutex sProbeM;
 std::vector<ProbeRec> sProbeIn;
@@ -1548,6 +1549,9 @@ void probeCallback(const AuroraDrawProbe* p) {
     std::memcpy(r.mtx, p->mtx, sizeof(r.mtx));
     std::memcpy(r.proj, p->proj, sizeof(r.proj));
     std::memcpy(r.pos, p->pos, sizeof(r.pos));
+    std::memcpy(r.ndcMin, p->ndcMin, sizeof(r.ndcMin));
+    std::memcpy(r.ndcMax, p->ndcMax, sizeof(r.ndcMax));
+    std::memcpy(r.viewport, p->viewport, sizeof(r.viewport));
     std::lock_guard lk(sProbeM);
     if (sProbeIn.size() < (1u << 20)) sProbeIn.push_back(r);
 }
@@ -1580,7 +1584,11 @@ void probeFill(const std::shared_ptr<const Tape>& a, const std::shared_ptr<const
 struct ProbeTotals {
     u64 replays = 0, judged = 0, flagged = 0, cause[6] = {};
     float maxErr = 0;
+    // What the player can see: draws of the full-frame view covering at least kVisiblePx2 on screen.
+    u64 visFlagged = 0, visCause[6] = {}, hiddenFlagged = 0;
+    float visMaxErr = 0;
 } sProbeTotals, sProbeWindow;
+constexpr float kVisiblePx2 = 64.0f;  // (a 2160-line picture)
 const char* const kCauseName[6] = {"blend", "snapped", "camera", "not-noted", "other", "?"};
 
 
@@ -1728,13 +1736,31 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
         const float err = std::hypot(actual[0] - ideal[0], actual[1] - ideal[1]);
         if (!(err > sProbeThresh)) continue;
         flagged++;
+        // Visibility: the draw's screen extent (clipped to the picture) in a full-frame viewport.
+        float area = 0;
+        if (r.ndcMax[0] >= r.ndcMin[0] && r.ndcMax[1] >= r.ndcMin[1]) {
+            const float aspect = r.proj[0] != 0.0f ? r.proj[5] / r.proj[0] : 1.0f;
+            const float w = (std::min(r.ndcMax[0], 1.0f) - std::max(r.ndcMin[0], -1.0f)) * 1080.0f * aspect;
+            const float h = (std::min(r.ndcMax[1], 1.0f) - std::max(r.ndcMin[1], -1.0f)) * 1080.0f;
+            area = w > 0 && h > 0 ? w * h : 0.0f;
+        }
+        const bool fullView = r.viewport[2] >= 600.0f && r.viewport[3] >= 440.0f;
+        const bool visible = fullView && area >= kVisiblePx2;
+        if (visible) {
+            sProbeWindow.visFlagged++, sProbeTotals.visFlagged++;
+            sProbeWindow.visCause[cause]++, sProbeTotals.visCause[cause]++;
+            sProbeWindow.visMaxErr = std::max(sProbeWindow.visMaxErr, err);
+        } else {
+            sProbeWindow.hiddenFlagged++, sProbeTotals.hiddenFlagged++;
+        }
         sProbeTotals.cause[cause]++;
         sProbeWindow.cause[cause]++;
         sProbeTotals.maxErr = std::max(sProbeTotals.maxErr, err);
         sProbeWindow.maxErr = std::max(sProbeWindow.maxErr, err);
-        probeLine( "J %u %llu %.3f %s %.2f cat %s key %016llX site %08X slot %u draw %u act %.0f %.0f ideal %.0f %.0f world %.0f %.0f %.0f\n",
+        probeLine( "J %u %llu %.3f %s %.2f cat %s key %016llX site %08X slot %u draw %u act %.0f %.0f ideal %.0f %.0f world %.0f %.0f %.0f area %.0f %s\n",
                      pr.present, (unsigned long long)b.seq, pr.alpha, kCauseName[cause], err, kCatName[u32(P.cat)],
-                     (unsigned long long)P.key, P.site, r.mtxIdx, k, actual[0], actual[1], ideal[0], ideal[1], wb[0], wb[1], wb[2]);
+                     (unsigned long long)P.key, P.site, r.mtxIdx, k, actual[0], actual[1], ideal[0], ideal[1], wb[0], wb[1], wb[2], area,
+                     visible ? "visible" : fullView ? "tiny" : "subview");
     }
     sProbeTotals.judged += judged;
     sProbeTotals.flagged += flagged;
@@ -1928,6 +1954,15 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             if (p.kind == Kind::Projection &&
                 std::memcmp(a->bytes.data() + q.offset + 24, b.bytes.data() + p.offset + 24, 4) != 0)
                 continue;
+            if (p.kind == Kind::Projection) {
+                // 2D (orthographic) projections are layout (the HUD's anchoring per element), never
+                // animated: always b's. A perspective projection blends only with one of the same
+                // aspect (the camera zooming), never with another view's.
+                const u8* t = b.bytes.data() + p.offset + 24;
+                if ((u32(t[0]) << 24 | u32(t[1]) << 16 | u32(t[2]) << 8 | t[3]) != 0) continue;  // GX_ORTHOGRAPHIC
+                const float ra = va[2] != 0 ? va[0] / va[2] : 0, rb = vb[2] != 0 ? vb[0] / vb[2] : 0;
+                if (!(std::fabs(ra - rb) <= 0.01f * std::max(std::fabs(ra), std::fabs(rb)))) continue;
+            }
             // A light is blended only while it is the same light (its attenuation: a spot switched to
             // another shape, or off by its attenuation, is another light).
             const auto attnChanged = [&] {
@@ -2597,10 +2632,14 @@ bool replay(bool final) {
         sTapeBytes = sArrayBytes = sTexBytes = sPairedSum = sUnpairedSum = sUntaggedSum = sGuestUs = sReplayUs = 0;
         if (sProbeOut && sProbeWindow.replays) {
             log("[judder] %llu in-between frames: %llu tagged draws judged, %llu off by more than %.1f px (blend %llu, snapped %llu, "
-                "camera %llu, other %llu), worst %.1f px; identity check: %llu of %llu tagged matrices jumped there and back",
+                "camera %llu, other %llu), worst %.1f px; VISIBLE (full view, >= %.0f px2): %llu (blend %llu, snapped %llu, camera %llu, "
+                "other %llu, worst %.1f px), %llu tiny or in sub-views; identity check: %llu of %llu tagged matrices jumped there and back",
                 (unsigned long long)sProbeWindow.replays, (unsigned long long)sProbeWindow.judged, (unsigned long long)sProbeWindow.flagged,
                 sProbeThresh, (unsigned long long)sProbeWindow.cause[0], (unsigned long long)sProbeWindow.cause[1],
-                (unsigned long long)sProbeWindow.cause[2], (unsigned long long)sProbeWindow.cause[4], sProbeWindow.maxErr,
+                (unsigned long long)sProbeWindow.cause[2], (unsigned long long)sProbeWindow.cause[4], sProbeWindow.maxErr, kVisiblePx2,
+                (unsigned long long)sProbeWindow.visFlagged, (unsigned long long)sProbeWindow.visCause[0],
+                (unsigned long long)sProbeWindow.visCause[1], (unsigned long long)sProbeWindow.visCause[2],
+                (unsigned long long)sProbeWindow.visCause[4], sProbeWindow.visMaxErr, (unsigned long long)sProbeWindow.hiddenFlagged,
                 (unsigned long long)sIdTotals.flagged, (unsigned long long)sIdTotals.checked);
             sProbeWindow = {};
         }
