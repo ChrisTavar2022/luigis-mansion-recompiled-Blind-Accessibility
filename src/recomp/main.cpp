@@ -204,6 +204,11 @@ int main(int argc, char* argv[]) {
     aurora_initialize(argc, argv, &config);
     if (topmost)
         if (SDL_Window* w = aurora_get_window()) SDL_SetWindowAlwaysOnTop(w, true);
+    // LM_OFFSCREEN=1 (testing: automated runs on a machine someone is using): the window is moved far
+    // outside every display, so it renders and presents as usual but is never seen (a hidden window
+    // pauses the game; Start-Process -WindowStyle Hidden does not hide SDL's window).
+    if (std::getenv("LM_OFFSCREEN"))
+        if (SDL_Window* w = aurora_get_window()) SDL_SetWindowPosition(w, -32000, -32000);
     // LM_MAXIMIZE=1 (testing): open the window maximized, as players often run it.
     if (std::getenv("LM_MAXIMIZE"))
         if (SDL_Window* w = aurora_get_window()) SDL_MaximizeWindow(w);
