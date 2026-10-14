@@ -834,7 +834,10 @@ u32 sFlatBlends = 0;  // squashed-flat model matrices blended entrywise in world
 u32 sUntwists = 0;    // pairs whose fast twist was taken from b (stats)
 u32 sGroupSnaps = 0;  // model instances switched as a whole (stats)
 u32 sReversals = 0;   // CPU-built blocks shown as captured because they turned back (another particle)
-u32 sGroupForced = 0; // model instances whose every matrix blended although some turned too far (stats)
+u32 sGroupForced = 0; // model instances blended linearly as a whole (stats)
+// Set by replayPair around blendFactored for the matrices of a model instance blended linearly
+// (groupSnap 2): entrywise in world space, no flip or twist resolution.
+bool sLinearBlend = false;
 
 bool blendable(Kind kind, const f32* a, const f32* b, int n) {
     switch (kind) {
@@ -1687,8 +1690,8 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
         M34 wa, wb, wt;
         compose(vp->ia.data(), va, wa.data());
         compose(vp->ib.data(), vb, wb.data());
-        if (resolveFlip(wa.data(), wb.data(), 4)) sFlips++;
-        if (untwist(wa.data(), wb.data())) sUntwists++;
+        if (!sLinearBlend && resolveFlip(wa.data(), wb.data(), 4)) sFlips++;
+        if (!sLinearBlend && untwist(wa.data(), wb.data())) sUntwists++;
         // LM_TWIST_LOG=<file> (test aid): model matrices that turn by over 30 degrees in one game
         // frame, with how far each local axis turned (a turn about a barely moving axis is a twist).
         static FILE* sTwistLog = [] {
@@ -1713,7 +1716,7 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
                              (unsigned long long)b.seq, p.site, p.source, (unsigned long long)p.key, total, ax[0], ax[1], ax[2],
                              std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]), wb[3], wb[7], wb[11]);
         }
-        if ((flatMatrix(wa.data()) || flatMatrix(wb.data())) || !blendRigid(wa.data(), wb.data(), 4, alpha, wt.data())) {
+        if (sLinearBlend || flatMatrix(wa.data()) || flatMatrix(wb.data()) || !blendRigid(wa.data(), wb.data(), 4, alpha, wt.data())) {
             // Squashed flat (or mirrored against its partner): entrywise in world space.
             for (int k = 0; k < 12; k++) wt[k] = wa[k] + (wb[k] - wa[k]) * alpha;
             sFlatBlends++;
@@ -1754,9 +1757,13 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
             rotT(vp->vb, cb, wb);
             for (int r = 0; r < 3; r++) na[3 * r + c] = wa[r], nb[3 * r + c] = wb[r];
         }
-        resolveFlip(na, nb, 3);
-        untwist(na, nb, 3);
-        if (!blendRigid(na, nb, 3, alpha, nt)) return false;
+        if (sLinearBlend) {
+            for (int k = 0; k < 9; k++) nt[k] = na[k] + (nb[k] - na[k]) * alpha;
+        } else {
+            resolveFlip(na, nb, 3);
+            untwist(na, nb, 3);
+            if (!blendRigid(na, nb, 3, alpha, nt)) return false;
+        }
         for (int c = 0; c < 3; c++) {
             const f32 cw[3] = {nt[c], nt[3 + c], nt[6 + c]};
             f32 cv[3];
@@ -2066,7 +2073,7 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 }
                 if (cause == 0 && groupPolicy == 1) cause = 5;  // its instance switched
                 const bool flat = flatMatrix(Wa.data()) || flatMatrix(Wb.data());  // entrywise, as the replay
-                if (cause == 0 && !flat && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) xform34(Wt.data(), r.pos, wt);
+                if (cause == 0 && !flat && groupPolicy != 2 && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) xform34(Wt.data(), r.pos, wt);
                 else if (cause != 0) std::copy(wb, wb + 3, wt);  // shown at the game frame's place (policy)
                 else
                     for (int c = 0; c < 3; c++) wt[c] = wa[c] + (wb[c] - wa[c]) * pr.alpha;
@@ -2279,17 +2286,21 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             }
             placeUnderCamera(*a, b, p, alpha);
         };
-        // A model instance (skinned mesh) whose matrices are partly blended and partly switched tears
-        // apart in the in-betweens (the Poltergust hose as Luigi raises or lowers the nozzle: its
-        // envelope matrices turn by 100+ degrees in a game frame while their neighbours blend; the
-        // skin between them stretched into sticks). So an instance is handled as one:
+        // A model instance (an S3D model: fn_80059C54 & co., or a J3D model: its packets' matrix buffer;
+        // tagGroup) is handled as one. Skinned parts are drawn with weighted sums of its joints (sheared,
+        // nearly flat where two joints differ a lot), so the skin only stays together if every matrix of
+        // the instance is blended the same way:
         //  - a matrix that jumps (moves farther than blending allows: a respawn, a teleport) switches
         //    the whole instance (groupSnap 1);
-        //  - one that only turns or scales too far for blending (the hose's segments as the nozzle
-        //    swings, Bogmire's squash and stretch) does not: the whole instance blends, those
-        //    matrices too (groupSnap 2). Switching the whole instance for those (2f69188) showed the
-        //    hose at the newest frame while Luigi's hand blended: a long arc from the tank to the
-        //    nozzle's next place, and Bogmire stepped at 30 Hz in a fifth of the frames.
+        //  - when any matrix turns by more than 90 degrees in the game frame (or is squashed flat, or
+        //    turns or scales too far to blend at all), every matrix of the instance is blended
+        //    entrywise in world space (groupSnap 2): each skinned vertex then moves in a straight
+        //    line from its place in a to its place in b, the same for all of them.
+        // The Poltergust hose on the vacuum's on/off: its envelope matrices turn by 100-150 degrees in
+        // one game frame. Blended one by one (slerp, flip and twist resolution chosen per matrix, a
+        // few switched) neighbouring matrices took different paths and the skin between them
+        // stretched into long straight sticks (user clips, 0a5e5f2: tape 160 a 0.05 / 0.34, tape 165
+        // a 0.67); switching the whole hose (2f69188) detached it from Luigi's hand.
         {
             static std::unordered_set<u64> snapGroups, forceGroups;
             snapGroups.clear();
@@ -2308,13 +2319,25 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 M34 wa, wb;
                 compose(vp->ia.data(), va, wa.data());
                 compose(vp->ib.data(), vb, wb.data());
-                resolveFlip(wa.data(), wb.data(), 4);
-                untwist(wa.data(), wb.data());
+                // (No flip or twist resolution here: done per matrix it breaks a skinned mesh, whose
+                // envelope matrices are weighted sums of its joints.)
                 const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
-                if (blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev)) continue;
-                // (Blendable at any distance: only the place jumped.)
-                if (blendableWorld(wa.data(), wb.data(), 1e9f)) snapGroups.insert(p.group);
-                else forceGroups.insert(p.group);
+                const bool near = blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev);
+                const bool anyDist = blendableWorld(wa.data(), wb.data(), 1e9f);
+                if (!near && anyDist) {  // only the place jumped
+                    snapGroups.insert(p.group);
+                    continue;
+                }
+                bool fast = !anyDist || flatMatrix(wa.data()) || flatMatrix(wb.data());
+                if (!fast) {
+                    Rigid ra, rb;
+                    if (!decompose(wa.data(), 4, ra) || !decompose(wb.data(), 4, rb)) fast = true;
+                    else {
+                        const float d = std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]);
+                        fast = d < 0.7071f;  // turned by more than 90 degrees
+                    }
+                }
+                if (fast) forceGroups.insert(p.group);
             }
             for (u32 i = 0; i < b.patches.size(); i++) {
                 const u64 g = b.patches[i].group;
@@ -2329,6 +2352,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             if (p.kind == Kind::Color) continue;  // never blended
             const u8 groupPolicy = b.groupSnap ? b.groupSnap[i].load(std::memory_order_relaxed) : 0;
             const bool forced = groupPolicy == 2 && (p.kind == Kind::PosMtx || p.kind == Kind::NrmMtx);
+            sLinearBlend = forced;
             if (groupPolicy == 1 && (p.kind == Kind::PosMtx || p.kind == Kind::NrmMtx) && b.partner[i] >= 0) {
                 f32 va[16], vb[16];
                 const Patch& q = a->patches[b.partner[i]];
@@ -2498,8 +2522,8 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             } else if (p.role == 1) {  // a shadow receiver: rebuilt from the blended light, or as captured
                 if (!blendShadowReceiver(*a, q, va, b, p, vb, alpha, out)) std::copy(vb, vb + p.count, out);
             } else if (!(blendFactored(*a, q, va, b, p, vb, alpha, out) ||
-                         (p.kind == Kind::PosMtx && p.count == 12 && blendRigid(va, vb, 4, alpha, out)) ||
-                         (p.kind == Kind::NrmMtx && p.count == 9 && blendRigid(va, vb, 3, alpha, out)) ||
+                         (!forced && p.kind == Kind::PosMtx && p.count == 12 && blendRigid(va, vb, 4, alpha, out)) ||
+                         (!forced && p.kind == Kind::NrmMtx && p.count == 9 && blendRigid(va, vb, 3, alpha, out)) ||
                          (p.kind == Kind::TexMtx && p.count == 8 && blendSpin(va, vb, alpha, out))))
                 for (int k = 0; k < p.count; k++)
                     out[k] = std::isfinite(va[k]) && std::isfinite(vb[k]) ? va[k] + (vb[k] - va[k]) * alpha : vb[k];
@@ -2516,6 +2540,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             for (int k = 0; k < p.count; k++) storeBE(sReplay.data() + p.offset + 4 * k, out[k]);
             sBlended++;
         }
+        sLinearBlend = false;
     }
     // Extra lights (enhanced lighting): position, radius and intensity blended by id (the
     // enhanced-lighting code's own light identity; colours stay b's). Their positions are in view

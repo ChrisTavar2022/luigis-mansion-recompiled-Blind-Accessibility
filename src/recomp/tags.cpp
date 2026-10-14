@@ -47,8 +47,7 @@ void registerSiteTags() {
     interp::addSiteTag({VA(0x801796EC), VA(0x8017996C), TagCat::Particle, 28, 25});
     // fn_80091A70: a cloth sheet (16x16 grid in world space) drawn as one GXBegin quad per cell from
     // four grid points (column r27, row offset r29); cells whose points are not valid are skipped, so
-    // the n-th quad is not always the same cell. (Not the Poltergust hose, which is a J3D model:
-    // see draw__14J3DShapePacketFv below.)
+    // the n-th quad is not always the same cell. (Not the Poltergust hose, which is part of an S3D model.)
     interp::addSiteTag({VA(0x80091EF4), VA(0x80092110), TagCat::Effect, 27, 29});
     // JPA-style emitters (fn_801604FC -> renderer -> fn_8016169C(renderer, view)): one particle per
     // iteration in r19 (list via +0x5C), its renderer in r30; CPU-built quads.
@@ -83,16 +82,19 @@ HLE(fn_8006033C) {
 HLE(fn_80059C54) {
     registerSiteTags();
     TagScope t(TagCat::Object, c.r[3], rd32(c.r[3] + 4));
+    interp::tagGroup(c.r[3]);  // one instance: its matrices blend alike (interp.cpp, replayPair)
     callOriginal(c, "fn_80059C54");
 }
 HLE(fn_80059F6C) {
     registerSiteTags();
     TagScope t(TagCat::Object, c.r[3], rd32(c.r[3] + 4));
+    interp::tagGroup(c.r[3]);  // one instance: its matrices blend alike (interp.cpp, replayPair)
     callOriginal(c, "fn_80059F6C");
 }
 HLE(fn_8005A280) {  // shadow casters
     registerSiteTags();
     TagScope t(TagCat::Object, c.r[3], rd32(c.r[3] + 4));
+    interp::tagGroup(c.r[3]);  // one instance: its matrices blend alike (interp.cpp, replayPair)
     callOriginal(c, "fn_8005A280");
 }
 HLE(fn_800597C0) {
@@ -158,8 +160,8 @@ HLE(fn_80015844) {  // one node (r6) of the model being drawn, recursive
 // --- cloth ---------------------------------------------------------------------------------------
 // fn_8008E580(object, pass) -> fn_80091A70(object, mode): a cloth sheet (a 16x16 grid of world-space
 // points, CPU-built quads): cell n pairs with cell n of the same object and mode. (It was taken for
-// the Poltergust hose at first; the hose is a J3D model, its envelope matrices switch as one model:
-// draw__14J3DShapePacketFv.)
+// the Poltergust hose at first; the hose is part of an S3D model: its matrices blend as one instance,
+// fn_80059C54's tagGroup.)
 HLE(fn_80091A70) {
     TagScope t(TagCat::Effect, c.r[3], 0x91A70, c.r[4]);
     callOriginal(c, "fn_80091A70");

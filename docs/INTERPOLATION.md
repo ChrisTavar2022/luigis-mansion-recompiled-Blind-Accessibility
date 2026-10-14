@@ -96,15 +96,20 @@ A value of game frame b pairs with the value of frame a that has the same key an
   from b at once and blends only the rest (`untwist`). The Poltergust hose's envelope matrices are
   rebuilt from the hose direction every frame and their roll changes by up to ~150 degrees between
   game frames: blending spun the ribs around the tube.
-- J3D models are handled as one instance (its shape packets share the matrix buffer at packet +0x14:
-  `tagGroup`). A skinned mesh whose envelope matrices were partly blended and partly switched tore
-  apart: the hose stretched into long sticks across Luigi in the in-betweens of a swing (test mode,
-  vacuum scenario frame 2607). When one matrix of the model jumps (its place moved farther than
-  blending allows) the whole model is shown as b for that interval (the detector counts those as
-  switches); when one only turns or scales beyond the limits, the whole model blends, that matrix
-  too. (Switching the whole model for those as well showed the hose at the newest frame while
-  Luigi's hand blended, a long arc from the tank to the nozzle on the vacuum's on/off, and made
-  Bogmire step at 30 Hz in a fifth of his fight's frames: user session, 2f69188.)
+- Model instances are handled as one (	agGroup: an S3D model, fn_80059C54 / fn_80059F6C /
+  fn_8005A280's instance; a J3D model, its shape packets' matrix buffer at packet +0x14). Skinned
+  parts are drawn with weighted sums of the model's joints (sheared, nearly flat where two joints
+  differ a lot), so the skin only stays together if every matrix of the instance is blended alike:
+  when one matrix jumps (its place moved farther than blending allows) the whole model is shown as b
+  for that interval (counted as switches); when one turns by more than 90 degrees, cannot be blended
+  by rotation or is squashed flat, every matrix of the model is blended entrywise in world space, so
+  each skinned vertex moves in a straight line from its place in a to its place in b. The Poltergust
+  hose is part of an S3D model (matrix pool around 0x814FF43C, near Luigi's nozzle): on the vacuum's
+  on/off its matrices turn by 150-178 degrees in one game frame. Blended one by one (some switched,
+  flip and twist resolution chosen per matrix) neighbours took different paths and the hose's skin
+  stretched into long straight sticks (user clip with LM_FRAME_TAG: tape 160 alpha 0.05 and 0.34,
+  tape 165 alpha 0.67); switching the whole model detached it from Luigi's hand (2f69188). Earlier
+  attempts tagged fn_80091A70 (a cloth sheet) and J3D models only, which never reached the hose.
 - Present hold (pacing::beforeEnd): on an even grid (VRR or VSync off) a frame built faster than
   usual is held until the usual time after its scheduled start (90th percentile of the last 60
   frames, at most 85% of the period), so every frame reaches the screen a constant time after the
