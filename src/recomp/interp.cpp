@@ -679,7 +679,18 @@ void pairTapes(const Tape& a, Tape& b) {
     if (b.mainView != 0xFFFF) {
         const s32 qa = b.viewToA[b.mainView];
         float moved = 0, turned = 0;
-        if (qa < 0) b.cut = true;
+        // b's main camera paired with a camera that was not a's main one: the view structure changed
+        // (a camera appeared in the path and the main one moved to another index; a teleport into the
+        // basement paired it with a minor view and blended across rooms, sweep A).
+        // A cut when b's main camera is also far from a's main camera (the main view index can change
+        // between game frames without the camera changing).
+        bool otherMain = false;
+        if (qa >= 0 && a.mainView < a.views.size() && qa != s32(a.mainView)) {
+            float m2 = 0, t2 = 0;
+            cameraJump(a.views[a.mainView], b.views[b.mainView], &m2, &t2);
+            otherMain = m2 > 250.0f || t2 > 30.0f;
+        }
+        if (qa < 0 || otherMain) b.cut = true;
         else if (rigidView(a.views[qa].data()) && rigidView(b.views[b.mainView].data())) {
             cameraJump(a.views[qa], b.views[b.mainView], &moved, &turned);
             b.camMove = moved, b.camTurn = turned;
@@ -687,8 +698,15 @@ void pairTapes(const Tape& a, Tape& b) {
             // (a boss fight's, Bogmire's graveyard) moves or turns a lot every frame and is not a cut:
             // treating it as one showed whole game frames without interpolation (the background
             // hitched).
-            b.cut = (moved > 250.0f && moved > 3.0f * a.camMove + 60.0f) || (turned > 30.0f && turned > 3.0f * a.camTurn + 8.0f);
+            // (Over 1500 units in one game frame is always a cut: a teleport whose camera first moved a
+            // few hundred units passed the 3x test.)
+            b.cut = (moved > 250.0f && moved > 3.0f * a.camMove + 60.0f) || moved > 1500.0f ||
+                    (turned > 30.0f && turned > 3.0f * a.camTurn + 8.0f);
         }
+        if (sTrace && (a.views.size() != b.views.size() || qa != s32(a.mainView)))
+            log("[interp] tape %llu: views %zu -> %zu, main %d -> %u (paired with %d), moved %.0f turned %.0f, cut %d",
+                (unsigned long long)b.seq, a.views.size(), b.views.size(), a.mainView == 0xFFFF ? -1 : int(a.mainView),
+                b.mainView, qa, moved, turned, int(b.cut));
         if (sTrace && b.cut)
             log("[interp] tape %llu: camera cut (%s; eye moved %.0f, turned %.0f degrees)", (unsigned long long)b.seq,
                 qa < 0 ? "no main camera before" : "jump", moved, turned);
@@ -1700,7 +1718,8 @@ struct ViewPair {
     M34 va, vb, vt;  // views and blended view
     M34 ia, ib, it;  // inverses
 };
-std::vector<ViewPair> sViewPairs;
+std::deque<ViewPair> sViewPairs;  // (a deque: pointers handed out stay valid as pairs are added)
+float diff12(const f32* x, const f32* y);
 std::vector<u64> sLightsBlended;  // (draw << 8 | light index) of the lights blended in this replay
 const ViewPair* viewPair(const Tape& a, u16 qa, const Tape& b, u16 qb, float alpha) {
     if (qa >= a.views.size() || qb >= b.views.size()) return nullptr;
@@ -1720,6 +1739,13 @@ const ViewPair* viewPair(const Tape& a, u16 qa, const Tape& b, u16 qb, float alp
         vp.cut = std::sqrt(de) > 250.0f || dot < 0.866f;
         // The main camera: its cut decision is the tape's (continuity, pairTapes).
         if (qb == b.mainView && b.viewToA.size() > qb && b.viewToA[qb] == s32(qa)) vp.cut = b.cut;
+        // Another view (its own key) seen through the very camera of b's main view, paired with a view
+        // of a that is another camera: it moves with the main camera (a teleport into the basement
+        // inserted a view, the room's draws paired with a's main camera by order and were shown as
+        // captured while the main camera glided 420 units: 1000 px apart, sweep A).
+        else if (vp.cut && qb != b.mainView && b.mainView < b.views.size() && b.viewToA.size() > b.mainView &&
+                 b.viewToA[b.mainView] >= 0 && diff12(b.views[qb].data(), b.views[b.mainView].data()) < 1e-3f)
+            return viewPair(a, u16(b.viewToA[b.mainView]), b, b.mainView, alpha);
         if (sLogSnaps)
             log("[interp]   view pair a%u b%u: eye moved %.0f, turned %.1f deg%s", qa, qb, std::sqrt(de),
                 std::acos(std::clamp(dot, -1.0f, 1.0f)) * 57.2958f, vp.cut ? " CUT" : "");
