@@ -200,10 +200,9 @@ def main():
     env.update(senv)
     env.update({"APPDATA": appdata, "LM_CARD_DIR": os.path.join(out, "card"), "LM_AUDIO": "0",
                 "LM_BACKGROUND": "1", "LM_TOPMOST": "1", "LM_FRAME_TAG": "1", "LM_INTERP_JUDDER": os.path.join(out, "judder.log"),
-                # tagged interpolation's detector (docs/INTERPOLATION.md "Tagged interpolation"), and the
-                # hang diagnostics every run keeps
-                "LM_JUDDER_LOG": os.path.join(out, "probe.txt"), "LM_PACING_LOG": os.path.join(out, "pacing.txt"),
-                "LM_TRACE": "ring", "LM_WATCHDOG": "1"})
+                # tagged interpolation's detector (docs/INTERPOLATION.md "Tagged interpolation") and the
+                # pacing log (LM_TRACE=ring / LM_WATCHDOG cost CPU: --env them when chasing a hang)
+                "LM_JUDDER_LOG": os.path.join(out, "probe.txt"), "LM_PACING_LOG": os.path.join(out, "pacing.txt")})
     for e in a.env:
         k, v = e.split("=", 1)
         env[k] = v

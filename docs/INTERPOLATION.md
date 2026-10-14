@@ -84,7 +84,9 @@ A value of game frame b pairs with the value of frame a that has the same key an
 
 - Colours (channel/material/light colours, TEV colour and konst registers, fog), alphas and HUD
   colours are **never** blended: always the newest game frame's. Enhanced lighting's extra lights
-  blend position and radius only; colour, intensity, flags and shadow weight are b's.
+  (the port's own lights) blend position, radius, colour and intensity by id; flags and shadow
+  weight are b's (ghost glows, dramatic flares and flicker change every game frame: at b's values big
+  lit areas stepped at 30 Hz).
 - A pair that cannot be blended (rotation over ~150 degrees in one game frame, scale 16x, a jump over
   half its distance from the camera) is shown at b's world place under the in-between camera (Luigi's
   instant turns). The test is made in WORLD space (camera motion taken out; in view space a fast

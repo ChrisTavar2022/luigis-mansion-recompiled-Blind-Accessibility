@@ -2619,12 +2619,16 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     }
                     continue;
                 }
-                // Position (0..2) and radius (6) blended; colour (3..5), intensity (7), flags and the
-                // shadow weight stay b's.
+                // Position (0..2), colour (3..5), radius (6) and intensity (7) blended; flags and the
+                // shadow weight stay b's. (These are enhanced lighting's own lights, not game colour
+                // registers: a ghost light's glow, its dramatic flares and the world lights' flicker
+                // change every game frame. Kept at b's colour and intensity, big lit areas stepped at
+                // 30 Hz: Bogmire's arena, lit by the shadow ghosts' coloured lights, pulsed in steps
+                // with a still camera; screen capture with LM_FRAME_TAG: the change between presents of
+                // one tape was half of that across a tape change.)
                 for (int k = 0; k < 8; k++) {
-                    if ((k >= 3 && k <= 5) || k == 7) continue;
                     const f32 va = loadBE(la + 4 * k), vb = loadBE(lb + 4 * k);
-                    storeBE(out + 4 * k, va + (vb - va) * alpha);
+                    if (std::isfinite(va) && std::isfinite(vb)) storeBE(out + 4 * k, va + (vb - va) * alpha);
                 }
                 if (mvp) {
                     f32 w[3], o[3];
