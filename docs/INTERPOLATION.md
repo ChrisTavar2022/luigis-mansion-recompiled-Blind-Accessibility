@@ -98,7 +98,7 @@ A value of game frame b pairs with the value of frame a that has the same key an
 | category | source | identity |
 |---|---|---|
 | View | `fn_8000BB98(view)` (per-view scene draw; enhanced_lighting.cpp's hook) | view index |
-| View | `fn_8006033C` (model rendered with its own camera into a small viewport: GBH camera, portraits) | its argument |
+| View | `fn_8006033C` (events 5/6: a model rendered with its own camera into a 128x128 copy, Mario in the painting) | its argument |
 | View | shadow caster pass (`shadows.cpp`: `setPass(1)`) | pass number in every key |
 | Object | `fn_80059C54`, `fn_80059F6C` (S3DModel draw), `fn_8005A280` (S3DModel shadow-caster draw) | model instance (r3), its data (+4) |
 | Object | `fn_800597C0`, `fn_800598E0`, `fn_800599E8` (S3DModel node draws) | model, node index |

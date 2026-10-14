@@ -280,6 +280,7 @@ fn_80127A74 us pal
 fn_80127AA8 us pal
 draw__14J3DShapePacketFv us pal
 draw__12J3DMatPacketFv us pal
+drawInit__6J3DSysFv us pal
 loadMtxIndx_PNGP__11J3DShapeMtxCFiUs us pal
 loadMtxIndx_PCPU__11J3DShapeMtxCFiUs us pal
 loadMtxIndx_NCPU__11J3DShapeMtxCFiUs us pal

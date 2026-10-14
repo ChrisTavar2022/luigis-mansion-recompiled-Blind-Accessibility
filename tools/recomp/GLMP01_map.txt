@@ -3331,6 +3331,7 @@
 8012AF24 fn_80127AA8 hook
 801BAEE0 draw__14J3DShapePacketFv hook
 801BAD98 draw__12J3DMatPacketFv hook
+801B94EC drawInit__6J3DSysFv hook
 801BAFBC loadMtxIndx_PNGP__11J3DShapeMtxCFiUs hook
 801BB018 loadMtxIndx_PCPU__11J3DShapeMtxCFiUs hook
 801BB078 loadMtxIndx_NCPU__11J3DShapeMtxCFiUs hook

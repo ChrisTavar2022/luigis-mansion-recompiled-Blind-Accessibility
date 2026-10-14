@@ -55,8 +55,8 @@ void init() { registerSiteTags(); }
 // --- views -------------------------------------------------------------------------------------
 // (fn_8000BB98, the per-view scene draw, is hooked in enhanced_lighting.cpp: it opens the View scope.)
 
-// Game Boy Horror live camera / portrait model views: the model drawn with its own camera into a
-// small viewport (fn_8006033C).
+// Events 5/6 (Mario in the painting, the 2F bathroom): a model drawn with its own camera into a
+// 128x128 copy (fn_8006033C, docs/RENDERING.md "Indirect effects").
 HLE(fn_8006033C) {
     registerSiteTags();
     TagScope v(TagCat::View, VA(0x8006033C), 0, c.r[3]);
@@ -183,6 +183,14 @@ J3D_MTX_LOAD(loadMtxIndx_PCPU__11J3DShapeMtxCFiUs)
 J3D_MTX_LOAD(loadMtxIndx_NCPU__11J3DShapeMtxCFiUs)
 J3D_MTX_LOAD(loadMtxIndx_PNCPU__11J3DShapeMtxCFiUs)
 #undef J3D_MTX_LOAD
+
+// J3DSys::drawInit loads default matrices into every slot (10 position, normal and texture
+// matrices) before each J3D draw phase: tagged so they pair (identical values; they used to count
+// as ~480 untagged values per game frame).
+HLE(drawInit__6J3DSysFv) {
+    TagScope t(TagCat::Object, c.r[3], 0xD1);
+    callOriginal(c, "drawInit__6J3DSysFv");
+}
 
 // A material packet loads its material (texture matrices among it) and then draws its shapes.
 HLE(draw__12J3DMatPacketFv) {

@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -208,7 +209,8 @@ TagFrame sTagStack[kMaxTagDepth];
 int sTagDepth = 0;
 std::unordered_map<u64, u32> sTagOcc;   // per tape: scope base identity -> occurrences so far
 std::unordered_map<u64, u32> sValOcc;   // per tape: (scope, kind, site...) -> values noted so far
-std::unordered_map<u32, u32> sGen;      // tagged object address -> generation
+std::map<u32, u32> sGen;  // tagged object address -> generation (ordered: freed blocks are ranges)
+u32 sGenEpoch = 0;        // added to every generation; bumped when the table is reset
 std::vector<SiteTag> sSiteTags;
 u32 sCallLr = 0;        // guest call site of the GX call being handled
 // Call-site tag of the GX call being handled (a loop inside one game function: one item each).
@@ -225,9 +227,11 @@ const TagFrame* topTag() {
 }
 u32 generationOf(u32 obj) {
     if (!obj) return 0;
-    auto [it, fresh] = sGen.try_emplace(obj, 0u);
-    if (fresh && sGen.size() > (1u << 18)) sGen.clear();  // (bounded; only tagged addresses)
-    return it->second;
+    if (sGen.size() > (1u << 18)) {  // bounded (only tagged addresses); a reset starts a new epoch
+        sGen.clear();
+        sGenEpoch += 0x10000;
+    }
+    return sGen.try_emplace(obj, 0u).first->second + sGenEpoch;
 }
 // A scope's identity under `parent`.
 u64 scopeBase(u64 parent, TagCat cat, u32 obj, u32 type, u32 sub) {
@@ -733,10 +737,10 @@ void checkIdentity(const Tape& t0, const Tape& t1, const Tape& t2) {
         const Patch &p1 = t1.patches[j], &p0 = t0.patches[k];
         // Loaded from the same memory all three frames (a joint's own matrix): the same thing, any
         // back-and-forth is the animation's own (Luigi's trembling hands).
-        if (p2.source && p0.source == p2.source && p1.source == p2.source) continue;
         f32 o0[3], o1[3], o2[3];
         if (!worldOrigin(t0, p0, o0) || !worldOrigin(t1, p1, o1) || !worldOrigin(t2, p2, o2)) continue;
         checked++;
+        if (p2.source && p0.source == p2.source && p1.source == p2.source) continue;
         float jerk = 0, s01 = 0, s12 = 0;
         for (int c = 0; c < 3; c++) {
             jerk += (o0[c] - 2 * o1[c] + o2[c]) * (o0[c] - 2 * o1[c] + o2[c]);
@@ -981,12 +985,7 @@ void tagGeneration(u32 addr) {
 
 void tagFreed(u32 addr, u32 size) {
     if (sGen.empty() || size == 0) return;
-    if (size <= 64) {
-        for (u32 a = addr; a < addr + size; a += 4) tagGeneration(a);
-        return;
-    }
-    for (auto& [obj, gen] : sGen)
-        if (obj >= addr && obj - addr < size) gen++;
+    for (auto it = sGen.lower_bound(addr); it != sGen.end() && it->first - addr < size; ++it) it->second++;
 }
 
 void addSiteTag(const SiteTag& t) { sSiteTags.push_back(t); }
@@ -1376,6 +1375,21 @@ bool blendShadowReceiver(const Tape& a, const Patch& q, const f32* ta, const Tap
         for (int k = 0; k < 12; k++) gt[k] = ga->second[k] + (gb->second[k] - ga->second[k]) * alpha;
     compose((ramp ? sLightPair.krt : sLightPair.kpt).data(), gt.data(), out);
     (void)ta;
+    return true;
+}
+// A shadow receiver's matrix without a partner (set up outside any tag scope): rebuilt from the
+// blended light with b's G; for post-transform receivers (G = the inverse camera the game built them
+// with) the in-between camera's inverse, so the shadow lookup follows the blended camera and light.
+bool shadowReceiverFromB(const Tape& b, const Patch& p, const f32* tb, const ViewPair* mvp, f32* out) {
+    if (!sLightPair.ok || p.count != 12) return false;
+    const auto gb = sRecvB.find(p.bundle * 2 + (p.slot >= 64 ? 1 : 0));
+    if (gb == sRecvB.end()) return false;
+    M34 xp, xr;
+    compose(b.shadow.kp.data(), gb->second.data(), xp.data());
+    compose(b.shadow.kr.data(), gb->second.data(), xr.data());
+    const bool ramp = diff12(xr.data(), tb) < diff12(xp.data(), tb);
+    const bool postTransform = p.slot >= 64 && mvp && mvp->ok && !mvp->cut && diff12(gb->second.data(), mvp->ib.data()) < 0.05f;
+    compose((ramp ? sLightPair.krt : sLightPair.kpt).data(), postTransform ? mvp->it.data() : gb->second.data(), out);
     return true;
 }
 bool reexpress(const ViewPair& vp, bool fromA, const Patch& p, const f32* v, f32* out);
@@ -1869,6 +1883,18 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             const s32 j = b.partner[i];
             // Static world geometry: only the camera moves it.
             const bool cameraOnly = p.cat == TagCat::World && (p.kind == Kind::PosMtx || p.kind == Kind::NrmMtx);
+            if (j < 0 && p.role == 1) {  // a shadow receiver set up outside a tag scope
+                const ViewPair* mvp = b.mainView < sViewToA.size() && sViewToA[b.mainView] >= 0
+                                          ? viewPair(*a, u16(sViewToA[b.mainView]), b, b.mainView, alpha)
+                                          : nullptr;
+                f32 vb[12], out[12];
+                for (int k = 0; k < 12 && p.count == 12; k++) vb[k] = val(b, p, k);
+                if (p.count == 12 && shadowReceiverFromB(b, p, vb, mvp, out)) {
+                    for (int k = 0; k < 12; k++) storeBE(sReplay.data() + p.offset + 4 * k, out[k]);
+                    sCamOnly++;
+                }
+                continue;
+            }
             if (j < 0 || cameraOnly) {
                 if (placeUnderCamera(*a, b, p, alpha)) sCamOnly++;
                 continue;
