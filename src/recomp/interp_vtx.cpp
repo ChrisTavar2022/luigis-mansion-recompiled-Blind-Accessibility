@@ -35,6 +35,7 @@ constexpr int kArrays = 16;  // CP array slots: GX_VA_POS..GX_VA_TEX7, then the 
 struct Binding {
     u32 guest = 0, stride = 0;
     bool valid = false;
+    u64 key = 0;  // position array bound in a tag scope: identity (kept for reloads of the binding)
     int cmd = -1;  // index into sCmds: the array load in the current tape
 };
 Binding sBind[kArrays];
@@ -42,7 +43,11 @@ Binding sBind[kArrays];
 struct Cmd {
     u32 at;      // tape offset before the load was written
     int snap;    // index into sSnaps, -1: not used by any draw (left as is)
+    u64 key = 0;  // position arrays bound in a tag scope: identity (detail::arrayKey)
+    int fmt = -1;  // vertex format of the first draw that read it
+    u32 stride = 0;
 };
+int sScanFmt = -1;  // vertex format of the draw being scanned
 std::vector<Cmd> sCmds;
 
 struct Snap {
@@ -68,7 +73,7 @@ void emitLoad(int slot) {
     const u32 at = mark();
     GXSetArray(GXAttr(GX_VA_POS + slot), hostp(b.guest), 0, u8(b.stride), false);
     b.cmd = int(sCmds.size());
-    sCmds.push_back({at, -1});
+    sCmds.push_back({at, -1, b.key, -1, b.stride});
 }
 
 // Draw-time snapshot mode (snapDisplayList/snapEnd): use() only collects what each slot needs.
@@ -101,6 +106,7 @@ void use(int slot, u32 idxLo, u32 idxEnd, u32 extra) {
     if (phys >= kMem1Size) return;
     extent = std::min(extent, kMem1Size - phys);
     Cmd& cmd = sCmds[b.cmd];
+    if (slot == 0 && cmd.fmt < 0) cmd.fmt = sScanFmt;
     if (cmd.snap < 0) {
         auto [it, fresh] = sSnapOf.try_emplace(b.guest, int(sSnaps.size()));
         if (fresh) sSnaps.push_back({b.guest, {}});
@@ -127,6 +133,7 @@ u32 vertexSize(int fmt) {
 
 // The indexed attributes of `count` vertices at `v`: extents of the arrays they read.
 void scanVertices(int fmt, const u8* v, u32 count, u32 vtxSize) {
+    sScanFmt = fmt;
     u32 offset = 0;
     for (int a = GX_VA_PNMTXIDX; a <= GX_VA_TEX7; a++) {
         const int s = gx::vtxAttrSize(fmt, a);
@@ -293,12 +300,13 @@ void arrayBase(u32 at, u32 attr, u32 guestAddr, u32 stride) {
     Binding& b = sBind[slot];
     b.guest = guestAddr;
     b.stride = stride;
+    b.key = slot == 0 && capturing() ? detail::arrayKey() : 0;
     b.valid = guestAddr != 0;
     b.cmd = -1;
     sSnapBound[slot] = nullptr;  // Aurora now reads the live guest array
     if (capturing() && at != ~0u && b.valid) {
         b.cmd = int(sCmds.size());
-        sCmds.push_back({at, -1});
+        sCmds.push_back({at, -1, b.key, -1, stride});
     }
 }
 
@@ -402,9 +410,10 @@ void vtxBeginTape() {
     }
 }
 
-void vtxEndTape(u8* tape, u32 size, std::vector<std::vector<u8>>& keep, u64& snapshotBytes) {
+void vtxEndTape(u8* tape, u32 size, std::vector<std::vector<u8>>& keep, u64& snapshotBytes, std::vector<ArrayRec>& recs) {
     finishDirect();
     flushPending();
+    recs.clear();
     keep.clear();
     keep.reserve(sSnaps.size());
     snapshotBytes = 0;
@@ -428,6 +437,9 @@ void vtxEndTape(u8* tape, u32 size, std::vector<std::vector<u8>>& keep, u64& sna
             const u32 len = u32(d.size());
             for (int k = 0; k < 8; k++) tape[i + k] = u8(ptr >> (56 - 8 * k));
             for (int k = 0; k < 4; k++) tape[i + 8 + k] = u8(len >> (24 - 8 * k));
+            u8 cnt, type, frac;
+            if (c.key && c.fmt >= 0 && gx::vtxAttrFormat(c.fmt, GX_VA_POS, cnt, type, frac) && type <= GX_F32)
+                recs.push_back({c.key, u32(c.snap), i, u16(c.stride), cnt, type, frac});
             break;
         }
     }

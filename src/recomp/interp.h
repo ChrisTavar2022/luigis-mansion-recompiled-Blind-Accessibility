@@ -190,9 +190,19 @@ struct PresentInfo {
 PresentInfo lastPresent();
 
 namespace detail {  // interp.cpp <-> interp_vtx.cpp
+// A position array copied into a tape that was bound inside a tag scope (CPU-deformed geometry:
+// cloth, morphs): blended between game frames when the same scope binds a same-sized array.
+struct ArrayRec {
+    u64 key;     // identity (tag scope, call site, occurrence), never 0
+    u32 snap;    // index into the tape's array copies
+    u32 ptrAt;   // tape offset of the load's host pointer (u64 BE; the u32 size follows)
+    u16 stride;
+    u8 cnt, type, frac;  // the position format of the first draw that used it
+};
+u64 arrayKey();  // the key of a position array bound now (0: untagged)
 void vtxBeginTape();
 // Copies are finished: points the tape's array loads at them (moved into `keep`).
-void vtxEndTape(u8* tape, u32 size, std::vector<std::vector<u8>>& keep, u64& snapshotBytes);
+void vtxEndTape(u8* tape, u32 size, std::vector<std::vector<u8>>& keep, u64& snapshotBytes, std::vector<ArrayRec>& recs);
 // The tape bytes of the draw just noted (noteDraw): a display list's inlined commands, or an
 // immediate-mode draw from before its setup (drawStart) to after its vertices (drawEnd).
 void drawRange(u32 start, u32 end);

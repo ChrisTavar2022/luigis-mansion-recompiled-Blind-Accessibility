@@ -7,6 +7,7 @@
 #include "recomp/pacing.h"
 
 #include <aurora/present_timing.h>
+#include <dolphin/gx.h>
 #include <dolphin/gx/GXAurora.h>
 
 #include <algorithm>
@@ -24,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -115,6 +117,8 @@ struct Tape {
     std::vector<u64> viewKeys;   // per view: its identity (structural scope path + order)
     ShadowLight shadow;
     std::vector<std::vector<u8>> arrays;  // vertex-array copies the tape's array loads point at
+    std::vector<detail::ArrayRec> arrayRecs;  // tagged position arrays among them (CPU-deformed geometry)
+    std::vector<s32> arrayPartner;            // per arrayRec: the same identity's record in pairedWith, or -1
     u64 arrayBytes = 0;
     std::vector<std::shared_ptr<const std::vector<u8>>> textures;  // texture/TLUT copies its loads point at
     u64 textureBytes = 0;  // newly copied for this tape
@@ -130,6 +134,7 @@ struct Tape {
     bool cut = false;          // the main camera jumped since pairedWith (or appeared): shown as is
     u32 paired = 0, unpaired = 0, untagged = 0;
     std::vector<std::pair<u32, u32>> lights;  // extra-light commands: offset of the first light, count
+    std::vector<u64> lightKeys;               // per extra light (flattened, command order): identity, 0 none
     u32 dumpOffset = ~0u;  // LM_INTERP_TEST: tape offset of the LM_FRAME_DUMP copy's target pointer
     u32 dumpFrame = 0;
     u32 guestUs = 0;  // guest-thread time spent closing the tape (array copies' bookkeeping, pairing)
@@ -251,6 +256,7 @@ u16 sampleView() {
     return u16(sViews.size() - 1);
 }
 std::vector<std::pair<u32, u32>> sLights;  // extra-light commands of the tape being captured
+std::vector<u64> sLightKeys;               // per extra light (in command order): its identity
 bool sOverflowLogged = false;
 u32 sDumpAt = ~0u, sDumpFrame = 0;
 const void* sDumpPtr = nullptr;
@@ -306,7 +312,9 @@ void judderLine(const char* fmt, ...) {
     std::vfprintf(sJudder, fmt, ap);
     va_end(ap);
 }
-u32 sCrossCamera = 0;  // per replay: values whose partner was drawn under another camera (trace)
+u32 sCrossCamera = 0;
+u64 sArraysBlended = 0;  // CPU-deformed position arrays blended (stats window)
+u64 sXlPaired = 0, sXlNew = 0, sXlJumped = 0;  // extra lights per stats window: blended / without partner / identity jumped  // per replay: values whose partner was drawn under another camera (trace)
 u32 sSnapKinds[kKinds];
 bool sLogSnaps = false;  // LM_INTERP_TEST + trace: log what one test replay snapped
 u32 sLoggedSnaps[kKinds];
@@ -555,6 +563,26 @@ void pairTapes(const Tape& a, Tape& b) {
         for (u32 i = 0; i < b.viewKeys.size(); i++)
             if (const auto it = va.find(b.viewKeys[i]); it != va.end() && it->second >= 0) b.viewToA[i] = it->second;
     }
+    // Tagged position arrays (CPU-deformed geometry): the same identity, size, stride and format.
+    b.arrayPartner.assign(b.arrayRecs.size(), -1);
+    {
+        static std::unordered_map<u64, s32> ra;
+        ra.clear();
+        for (u32 i = 0; i < a.arrayRecs.size(); i++) {
+            auto [it, fresh] = ra.try_emplace(a.arrayRecs[i].key, s32(i));
+            if (!fresh) it->second = -2;
+        }
+        for (u32 i = 0; i < b.arrayRecs.size(); i++) {
+            const detail::ArrayRec& r = b.arrayRecs[i];
+            const auto it = ra.find(r.key);
+            if (it == ra.end() || it->second < 0) continue;
+            const detail::ArrayRec& q = a.arrayRecs[it->second];
+            if (q.stride != r.stride || q.cnt != r.cnt || q.type != r.type || q.frac != r.frac ||
+                a.arrays[q.snap].size() != b.arrays[r.snap].size())
+                continue;
+            b.arrayPartner[i] = it->second;
+        }
+    }
     b.phaseUs[2] = usSince(tp);
     // The main camera: the view most 3D model matrices of the main pass were drawn under.
     {
@@ -702,6 +730,9 @@ void checkIdentity(const Tape& t0, const Tape& t1, const Tape& t2) {
         const s32 k = t1.partner.empty() ? -1 : t1.partner[j];
         if (k < 0) continue;
         const Patch &p1 = t1.patches[j], &p0 = t0.patches[k];
+        // Loaded from the same memory all three frames (a joint's own matrix): the same thing, any
+        // back-and-forth is the animation's own (Luigi's trembling hands).
+        if (p2.source && p0.source == p2.source && p1.source == p2.source) continue;
         f32 o0[3], o1[3], o2[3];
         if (!worldOrigin(t0, p0, o0) || !worldOrigin(t1, p1, o1) || !worldOrigin(t2, p2, o2)) continue;
         checked++;
@@ -740,6 +771,7 @@ void beginTape() {
     sViewKeys.clear();
     sShadow = {};
     sLights.clear();
+    sLightKeys.clear();
     sUngrouped = 0;
     sTagOcc.clear();
     sValOcc.clear();
@@ -758,8 +790,9 @@ void endTape(u32 retraceCount) {
     const auto t0 = Clock::now();
     const u32 size = sBase + AuroraCaptureEnd();
     std::vector<std::vector<u8>> arrays;
+    std::vector<detail::ArrayRec> arrayRecs;
     u64 arrayBytes = 0;
-    detail::vtxEndTape(sScratch.data(), size, arrays, arrayBytes);
+    detail::vtxEndTape(sScratch.data(), size, arrays, arrayBytes, arrayRecs);
     std::vector<std::shared_ptr<const std::vector<u8>>> textures;
     u64 textureBytes = 0;
     detail::texEndTape(textures, textureBytes);
@@ -796,7 +829,10 @@ void endTape(u32 retraceCount) {
     tape->shadow = sShadow;
     tape->lights = std::move(sLights);
     sLights = {};
+    tape->lightKeys = std::move(sLightKeys);
+    sLightKeys = {};
     tape->arrays = std::move(arrays);
+    tape->arrayRecs = std::move(arrayRecs);
     tape->arrayBytes = arrayBytes;
     tape->textures = std::move(textures);
     tape->textureBytes = textureBytes;
@@ -817,8 +853,11 @@ void endTape(u32 retraceCount) {
         sDumpAt = ~0u;
     }
     if (sLastTape) pairTapes(*sLastTape, *tape);
-    if (sProbeOut && sLastTape && sLastTape2 && sLastTape->pairedWith == sLastTape2.get() && tape->pairedWith == sLastTape.get())
+    if (sProbeOut && sLastTape && sLastTape2 && sLastTape->pairedWith == sLastTape2.get() && tape->pairedWith == sLastTape.get()) {
+        auto tc = Clock::now();
         checkIdentity(*sLastTape2, *sLastTape, *tape);
+        tape->phaseUs[3] = usSince(tc);
+    }
     if (sTagLog && sLastTape && tape->dumpFrame >= sTagLogFirst && tape->dumpFrame <= sTagLogLast) {
         u32 kinds[kKinds][3] = {};  // paired, unpaired, untagged
         for (u32 i = 0; i < tape->patches.size(); i++) {
@@ -887,6 +926,17 @@ void noteExtraLights(u32 at, u32 count) {
     const u32 end = at + 4 + count * GX_AURORA_EXTRA_LIGHT_WORDS * 4;
     if (end > sBase + AuroraCapturePos() || sScratch[at] != 0x50 || sScratch[at + 3] != count) return;
     sLights.emplace_back(at + 4, count);
+    // Identity of each light: the providing code's id (ghost actor, emitter, fixed source) and, for
+    // an id that is a guest object's address, that object's generation: a light of a new ghost or
+    // emitter at a reused address is another light.
+    for (u32 i = 0; i < count; i++) {
+        const u8* l = sScratch.data() + at + 4 + i * GX_AURORA_EXTRA_LIGHT_WORDS * 4;
+        const u32 id = u32(l[36]) << 24 | u32(l[37]) << 16 | u32(l[38]) << 8 | l[39];
+        u32 obj = id;
+        if (!(obj >= 0x80000000u && obj < 0x81800000u)) obj = id ^ 0x57000000u;  // world lights: emitter
+        const u32 gen = obj >= 0x80000000u && obj < 0x81800000u ? generationOf(obj) : 0;
+        sLightKeys.push_back(id ? mix(u64(id) << 20 ^ gen) : 0);
+    }
 }
 
 namespace {
@@ -1018,12 +1068,13 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
         sSlotPatch[slot / 3] = s32(sPatches.size());
     if (p.role != 2 && (kind == Kind::PosMtx || kind == Kind::NrmMtx || kind == Kind::Light || p.role == 1)) p.view = sampleView();
     if (sTagLogFrame != ~0ull)
-        std::fprintf(sTagLog, "f%llu #%u %s %s key %016llX site %08X slot %u src %08X depth %d view %d%s%s\n",
+        std::fprintf(sTagLog, "f%llu #%u %s %s key %016llX site %08X slot %u src %08X depth %d view %d t %.1f %.1f %.1f%s%s\n",
                      (unsigned long long)sTagLogFrame, u32(sPatches.size()),
                      kind == Kind::PosMtx ? "pos" : kind == Kind::NrmMtx ? "nrm" : kind == Kind::TexMtx ? "tex"
                      : kind == Kind::Projection ? "proj" : kind == Kind::Light ? "light" : "?",
                      kCatName[u32(p.cat)], (unsigned long long)p.key, sCallLr, slot, source, sTagDepth, int(p.view),
-                     p.key ? "" : " chain ", p.key ? "" : sTagChain.c_str());
+                     nFloats == 12 ? loadBE(&sScratch[p.offset + 12]) : 0.0f, nFloats == 12 ? loadBE(&sScratch[p.offset + 28]) : 0.0f,
+                     nFloats == 12 ? loadBE(&sScratch[p.offset + 44]) : 0.0f, p.key ? "" : " chain ", p.key ? "" : sTagChain.c_str());
     sPatches.push_back(p);
 }
 
@@ -1056,6 +1107,12 @@ void detail::noteDraw(u64 id) {
         p.bundle = bundle;
     }
     sUngrouped = u32(sPatches.size());
+}
+
+u64 detail::arrayKey() {
+    if (!capturing()) return 0;
+    TagCat cat;
+    return valueKey(Kind::Verts, 0x41525241u, 0, cat) ^ 0xA77A1ull;  // (a pseudo light-like source: own key space)
 }
 
 namespace {
@@ -1383,6 +1440,21 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
         rotT(vp->vb, vb + 3, db);
         f32 pw[3], dw[3];
         for (int k = 0; k < 3; k++) pw[k] = pa[k] + (pb[k] - pa[k]) * alpha, dw[k] = da[k] + (db[k] - da[k]) * alpha;
+        // The direction turns like the model it belongs to (slerp: the flashlight's light stays
+        // on the cone's axis, which is blended by rotation); its length is set by the caller.
+        {
+            const float la = std::sqrt(da[0] * da[0] + da[1] * da[1] + da[2] * da[2]);
+            const float lb = std::sqrt(db[0] * db[0] + db[1] * db[1] + db[2] * db[2]);
+            if (la > 1e-6f && lb > 1e-6f && std::isfinite(la + lb)) {
+                const float c = std::clamp((da[0] * db[0] + da[1] * db[1] + da[2] * db[2]) / (la * lb), -1.0f, 1.0f);
+                const float th = std::acos(c);
+                if (th > 1e-3f && th < 3.1f) {
+                    const float sn = std::sin(th), wa = std::sin((1 - alpha) * th) / sn, wb = std::sin(alpha * th) / sn;
+                    const float len = la + (lb - la) * alpha;
+                    for (int k = 0; k < 3; k++) dw[k] = (wa * da[k] / la + wb * db[k] / lb) * len;
+                }
+            }
+        }
         rot(vp->vt, pw, out);
         for (int k = 0; k < 3; k++) out[k] += vp->vt[4 * k + 3];
         rot(vp->vt, dw, out + 3);
@@ -1454,6 +1526,7 @@ struct ProbeRec {
 std::mutex sProbeM;
 std::vector<ProbeRec> sProbeIn;
 void probeCallback(const AuroraDrawProbe* p) {
+    if ((p->tag & 0xFFFFF) == 0xFFFFF) return;  // not judged (between draws, or a replay not sampled)
     ProbeRec r;
     r.tag = p->tag, r.prim = p->prim, r.mtxIdx = p->mtxIdx, r.n = p->vtxCount, r.hasPos = p->hasPos != 0;
     std::memcpy(r.mtx, p->mtx, sizeof(r.mtx));
@@ -1468,13 +1541,23 @@ struct ProbeReplay {
     float alpha;
     u32 present;
 };
-std::deque<ProbeReplay> sProbeIssued;
+std::deque<ProbeReplay> sProbeIssued;  // under sProbeIssuedM (host pushes, the judge thread pops)
+std::mutex sProbeIssuedM;
 u32 sProbeNextId = 1;
 bool sProbeFill = false;
+// LM_JUDDER_EVERY=<n>: judge every n-th in-between replay (default 1 in LM_INTERP_TEST runs, else 3:
+// the detector stays cheap enough to play with; judging runs on its own thread).
+const u32 sProbeEvery = [] {
+    const char* v = std::getenv("LM_JUDDER_EVERY");
+    return v ? std::max(1u, u32(std::atoi(v))) : std::getenv("LM_INTERP_TEST") ? 1u : 3u;
+}();
+void probeProcess();
 // After replayPair: the tapes of the replay just issued (kept alive until it is judged).
 void probeFill(const std::shared_ptr<const Tape>& a, const std::shared_ptr<const Tape>& b) {
-    if (!sProbeFill || sProbeIssued.empty()) return;
+    if (!sProbeFill) return;
     sProbeFill = false;
+    std::lock_guard lk(sProbeIssuedM);
+    if (sProbeIssued.empty()) return;
     sProbeIssued.back().a = a;
     sProbeIssued.back().b = b;
 }
@@ -1521,12 +1604,26 @@ void probeBeforeReplay(const Tape* a, const Tape& b, float alpha, std::vector<u8
         return true;
     }();
     (void)sInit;
+    static const bool sThread = [] {
+        std::thread([] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(4));
+                probeProcess();
+            }
+        }).detach();
+        return true;
+    }();
+    (void)sThread;
     const u32 id = sProbeNextId++ & 0xFFF;
-    if (!a || alpha >= 1.0f) {
+    static u32 sCount = 0;
+    if (!a || alpha >= 1.0f || ++sCount % sProbeEvery != 0) {
         GXSetProbeTagAurora(id << 20 | 0xFFFFF);  // not judged
         return;
     }
-    sProbeIssued.push_back({id, nullptr, nullptr, alpha, sProbeNextId});
+    {
+        std::lock_guard lk(sProbeIssuedM);
+        sProbeIssued.push_back({id, nullptr, nullptr, alpha, sProbeNextId});
+    }
     sProbeFill = true;  // the tapes are filled in by the caller, which holds them (probeFill)
     static std::vector<std::pair<u32, u32>> marks;  // offset, tag
     marks.clear();
@@ -1642,16 +1739,21 @@ void probeProcess() {
     // replay is complete once a later one has records (the FIFO is in order).
     static std::unordered_map<u32, std::vector<ProbeRec>> byReplay;
     for (const ProbeRec& r : in) byReplay[r.tag >> 20].push_back(r);
-    while (!sProbeIssued.empty()) {
-        const ProbeReplay& pr = sProbeIssued.front();
-        bool later = false;
-        for (size_t k = 1; k < sProbeIssued.size() && !later; k++) later = byReplay.count(sProbeIssued[k].id) != 0;
-        if (!later && sProbeIssued.size() < 32) break;
+    for (;;) {
+        ProbeReplay pr;
+        {
+            std::lock_guard lk(sProbeIssuedM);
+            if (sProbeIssued.empty()) break;
+            bool later = false;
+            for (size_t k = 1; k < sProbeIssued.size() && !later; k++) later = byReplay.count(sProbeIssued[k].id) != 0;
+            if (!later && sProbeIssued.size() < 32) break;
+            pr = std::move(sProbeIssued.front());
+            sProbeIssued.pop_front();
+        }
         if (auto it = byReplay.find(pr.id); it != byReplay.end()) {
             if (pr.b) probeJudge(pr, it->second);
             byReplay.erase(it);
         }
-        sProbeIssued.pop_front();
     }
     if (byReplay.size() > 256) byReplay.clear();
     static u32 n = 0;
@@ -1844,7 +1946,8 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
     // enhanced-lighting code's own light identity; colours stay b's). Their positions are in view
     // space (the main camera at capture): blended in world space and seen from the blended main
     // camera; a light without a partner keeps its world place under the blended camera.
-    if (a && alpha < 1.0f && !b.lights.empty()) {
+    static const bool sNoBlendExtra = std::getenv("LM_INTERP_NOBLEND") && (std::strtoul(std::getenv("LM_INTERP_NOBLEND"), nullptr, 0) & 0x80);  // bit 7: extra lights as captured
+    if (a && alpha < 1.0f && !b.lights.empty() && !sNoBlendExtra) {
         constexpr u32 kWords = GX_AURORA_EXTRA_LIGHT_WORDS;
         auto u32At = [](const u8* p) { return u32(p[0]) << 24 | u32(p[1]) << 16 | u32(p[2]) << 8 | p[3]; };
         const ViewPair* mvp = nullptr;
@@ -1858,18 +1961,28 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
         const auto rotate = [](const M34& m, const f32* v, f32* o) {
             for (int r = 0; r < 3; r++) o[r] = m[4 * r] * v[0] + m[4 * r + 1] * v[1] + m[4 * r + 2] * v[2];
         };
+        // a's lights by identity (an identity seen twice in a is ambiguous: never paired).
+        static std::unordered_map<u64, const u8*> byKey;
+        byKey.clear();
+        {
+            u32 n = 0;
+            for (const auto& [offA, countA] : a->lights)
+                for (u32 j = 0; j < countA; j++, n++) {
+                    const u64 k = n < a->lightKeys.size() ? a->lightKeys[n] : 0;
+                    if (!k) continue;
+                    auto [it, fresh] = byKey.try_emplace(k, a->bytes.data() + offA + j * kWords * 4);
+                    if (!fresh) it->second = nullptr;
+                }
+        }
+        u32 nb = 0;
         for (const auto& [offB, countB] : b.lights) {
-            for (u32 i = 0; i < countB; i++) {
+            for (u32 i = 0; i < countB; i++, nb++) {
                 const u8* lb = b.bytes.data() + offB + i * kWords * 4;
-                const u32 id = u32At(lb + 36);
                 u8* out = sReplay.data() + (lb - b.bytes.data());
+                const u64 key = nb < b.lightKeys.size() ? b.lightKeys[nb] : 0;
                 const u8* la = nullptr;
-                if (id != 0)
-                    for (const auto& [offA, countA] : a->lights)
-                        for (u32 j = 0; j < countA && !la; j++) {
-                            const u8* cand = a->bytes.data() + offA + j * kWords * 4;
-                            if (u32At(cand + 36) == id) la = cand;
-                        }
+                if (key)
+                    if (const auto it = byKey.find(key); it != byKey.end()) la = it->second;
                 f32 pb[3] = {loadBE(lb), loadBE(lb + 4), loadBE(lb + 8)}, wb[3] = {}, wa[3] = {};
                 if (mvp) {
                     xform(mvp->ib, pb, wb);
@@ -1892,8 +2005,12 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     if (mvp) xform(mvp->ia, pa, wa);
                     const float jump = mvp ? std::fabs(wa[0] - wb[0]) + std::fabs(wa[1] - wb[1]) + std::fabs(wa[2] - wb[2])
                                            : std::fabs(pa[0] - pb[0]) + std::fabs(pa[1] - pb[1]) + std::fabs(pa[2] - pb[2]);
-                    if (jump > 600.0f) paired = false;  // teleport: b as is (below)
+                    if (jump > 200.0f) {  // teleport / a pooled source placed anew: b's place
+                        paired = false;
+                        sXlJumped++;
+                    }
                 }
+                (paired ? sXlPaired : sXlNew)++;
                 if (!paired) {
                     if (mvp) {  // its world place, seen from the blended camera
                         f32 o[3];
@@ -1917,6 +2034,63 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 }
             }
         }
+    }
+    // CPU-deformed position arrays (cloth, morphs) of the same tagged object with the same size and
+    // format: positions blended (model space; the model's matrix is blended on its own).
+    {
+        static std::deque<std::vector<std::shared_ptr<std::vector<u8>>>> sKeep;  // until the FIFO has drained them
+        std::vector<std::shared_ptr<std::vector<u8>>> keep;
+        if (a && alpha < 1.0f)
+            for (u32 i = 0; i < b.arrayRecs.size() && i < b.arrayPartner.size(); i++) {
+                const s32 j = b.arrayPartner[i];
+                if (j < 0) continue;
+                const detail::ArrayRec& r = b.arrayRecs[i];
+                const detail::ArrayRec& q = a->arrayRecs[j];
+                const std::vector<u8>& db = b.arrays[r.snap];
+                const std::vector<u8>& da = a->arrays[q.snap];
+                if (da.size() != db.size() || r.stride == 0 || std::memcmp(da.data(), db.data(), db.size()) == 0) continue;
+                static constexpr u32 kSize[] = {1, 1, 2, 2, 4};
+                const u32 cs = kSize[r.type], nc = r.cnt == GX_POS_XYZ ? 3 : 2;
+                if (cs * nc > r.stride) continue;
+                const float scale = r.type == GX_F32 ? 1.0f : float(1u << r.frac);
+                const auto rdc = [&](const u8* p) -> float {
+                    u32 v = 0;
+                    for (u32 k = 0; k < cs; k++) v = v << 8 | p[k];
+                    switch (r.type) {
+                    case GX_F32: return std::bit_cast<f32>(v);
+                    case GX_S16: return float(s16(v)) / scale;
+                    case GX_U16: return float(u16(v)) / scale;
+                    case GX_S8: return float(s8(v)) / scale;
+                    default: return float(u8(v)) / scale;
+                    }
+                };
+                const auto wrc = [&](u8* p, float f) {
+                    u32 v;
+                    if (r.type == GX_F32) v = std::bit_cast<u32>(f);
+                    else v = u32(s32(std::lround(f * scale)));
+                    for (u32 k = 0; k < cs; k++) p[k] = u8(v >> (8 * (cs - 1 - k)));
+                };
+                const u32 n = u32(db.size()) / r.stride;
+                float jump = 0;
+                for (u32 v = 0; v < n && jump <= 200.0f; v++)
+                    for (u32 c = 0; c < nc; c++)
+                        jump = std::max(jump, std::fabs(rdc(db.data() + v * r.stride + c * cs) - rdc(da.data() + v * r.stride + c * cs)));
+                if (!(jump <= 200.0f)) continue;  // another shape / a reset: b's
+                auto out = std::make_shared<std::vector<u8>>(db);
+                for (u32 v = 0; v < n; v++)
+                    for (u32 c = 0; c < nc; c++) {
+                        const u32 o = v * r.stride + c * cs;
+                        const float x = rdc(da.data() + o), y = rdc(db.data() + o);
+                        wrc(out->data() + o, x + (y - x) * alpha);
+                    }
+                const u64 ptr = u64(reinterpret_cast<uintptr_t>(out->data()));
+                if (r.ptrAt + 8 > sReplay.size()) continue;
+                for (int k = 0; k < 8; k++) sReplay[r.ptrAt + k] = u8(ptr >> (56 - 8 * k));
+                keep.push_back(std::move(out));
+                sArraysBlended++;
+            }
+        sKeep.push_back(std::move(keep));
+        while (sKeep.size() > 8) sKeep.pop_front();
     }
     if (dump && b.dumpOffset != ~0u) {
         const u64 ptr = u64(reinterpret_cast<uintptr_t>(dump));
@@ -2065,7 +2239,6 @@ bool testReplay() {
             log("[dbg] poisoned %08X+%X for %s", pphys, psize, nm);
         }
     }
-    probeProcess();
     replayPair(it.a.get(), *it.b, it.alpha, it.target);
     probeFill(it.a, it.b);
     if (!saved.empty()) {
@@ -2319,7 +2492,6 @@ bool replay(bool final) {
                (unsigned long long)(a && !final ? a->seq : 0), alpha,
                a && !final ? double(a->retrace) + alpha * double(b->retrace - a->retrace) : double(b->retrace),
                sPacer.d * 1000.0, sLastPresent.present, (unsigned long long)aurora_frame_counter());
-    probeProcess();
     replayPair(final ? nullptr : a.get(), *b, alpha, nullptr);
     probeFill(a, b);
     if (sJudder && a && !final && alpha < 1.0f) {
@@ -2376,7 +2548,7 @@ bool replay(bool final) {
         log("[interp] presented %.1f fps, game %.1f fps (shown %.1f), tape %.0f KiB + arrays %.0f KiB + new texture copies %.0f KiB, "
             "per tape %.0f paired / %.0f unpaired / %.0f untagged values; per present %u blended / %u snapped / %u from the newest "
             "frame under the camera; %u cut presents; tape close %.2f ms (guest: arrays %.2f, "
-            "copy %.2f, pairing %.2f, -, cut %.2f), replay %.2f ms (host); shown %.1f ms behind the newest game frame, %u stalls, %u resyncs",
+            "copy %.2f, pairing %.2f, identity check %.2f, cut %.2f), replay %.2f ms (host); shown %.1f ms behind the newest game frame, %u stalls, %u resyncs",
             sPresented / elapsed, sStatsSeq ? double(sLastPresent.newestSeq - sStatsSeq) / elapsed : 0.0, sTapes / elapsed, sTapes ? double(sTapeBytes) / sTapes / 1024.0 : 0.0,
             sTapes ? double(sArrayBytes) / sTapes / 1024.0 : 0.0, sTapes ? double(sTexBytes) / sTapes / 1024.0 : 0.0,
             sTapes ? double(sPairedSum) / sTapes : 0.0,
@@ -2389,6 +2561,7 @@ bool replay(bool final) {
         sPacer.behindSum = 0;
         sPacer.behindN = 0;
         sPacer.stalls = sPacer.snaps = 0;
+        const double presentedWindow = std::max(1u, sPresented);
         sPresented = sTapes = sBlended = sSnapped = sCuts = sCamOnly = 0;
         sTapeBytes = sArrayBytes = sTexBytes = sPairedSum = sUnpairedSum = sUntaggedSum = sGuestUs = sReplayUs = 0;
         if (sProbeOut && sProbeWindow.replays) {
@@ -2400,6 +2573,12 @@ bool replay(bool final) {
                 (unsigned long long)sIdTotals.flagged, (unsigned long long)sIdTotals.checked);
             sProbeWindow = {};
         }
+        if (sXlPaired + sXlNew)
+            log("[interp] extra lights per present: %.1f blended by identity, %.1f without partner (%.2f whose identity jumped >200 units)",
+                double(sXlPaired) / presentedWindow, double(sXlNew) / presentedWindow, double(sXlJumped) / presentedWindow);
+        sXlPaired = sXlNew = sXlJumped = 0;
+        if (sArraysBlended) log("[interp] %.1f CPU-deformed position arrays blended per present", double(sArraysBlended) / presentedWindow);
+        sArraysBlended = 0;
         std::fill(std::begin(sPhaseUs), std::end(sPhaseUs), 0ull);
         sStatsStart = Clock::now();
         sStatsSeq = sLastPresent.newestSeq;

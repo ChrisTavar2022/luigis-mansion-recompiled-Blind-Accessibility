@@ -1,6 +1,7 @@
 # Frame interpolation
 
-Code: `src/recomp/interp.cpp` (tapes, pairing, blending, test mode), `src/recomp/interp_vtx.cpp`
+Code: `src/recomp/interp.cpp` (tapes, tag keys, pairing, blending, test mode, judder detector),
+`src/recomp/tags.cpp` (the game's draw entry points that open tag scopes), `src/recomp/interp_vtx.cpp`
 (draw identities, vertex-array copies, CPU-built vertices), `src/recomp/interp_tex.cpp` (texture and
 TLUT copies), `src/recomp/shadows.cpp` (LM: camera source, shadow light), `src/recomp/frame.cpp` (decoupled
 guest, target frame rate, pacing), hooks in `src/recomp/hle_gx.cpp`, Aurora patches
@@ -21,6 +22,137 @@ through SDL3 every 0.5 s, so moving the window to another monitor follows it).
 - Pacing (`frame::pace`): the host loop sleeps (SDL_DelayPrecise) to the target. With VSync on
   and a target at or above the refresh rate the swap chain paces instead, so the frame rate is
   the refresh rate; the menu says "(VSync limits this to N fps)" and the tooltip explains it.
+
+## Tagged interpolation (interp-tagged, October 2026)
+
+The heuristic pairing of the earlier passes (record two game frames' GX streams, then guess which
+draw of frame a is which draw of frame b by mesh, vertex layout, colour, order or nearest position)
+produced a new class of bug with every fix: identical instances swapping (doors, vases), a reused
+light slot tinting the whole picture yellow, HUD quads mixing up, particles swapping partners. It is
+replaced by **source-tagged** interpolation, as in Zelda 64: Recompiled / RT64: the game's own draw
+code labels what it draws, and the interpolator pairs strictly by that label. Nothing is guessed.
+
+Kept from before (unrelated to pairing): tapes (capture and replay of a game frame's GX stream with
+substituted values), vertex-array / texture copies, the replay state slots and copy generations,
+camera factoring and the rigid (polar) blend, shadow-receiver rebuilding, frame pacing and
+presentation (pacing.cpp, VRR cap, governor, present timing 0197/0216, keep-warm 0215), the shader
+precache, vertex snapshots at draw time, Original 30 (no capture). Removed: nearest/mutual/range-scan
+pairing, layout groups, swarm handling, colour pairing, fade-ins/outs (Aurora 0030 is no longer used),
+blink detection, second-chance pairing by source address or display-list content.
+
+### Identity
+
+`interp::pushTag(category, object, type, sub)` / `popTag` (interp.h; `TagScope` for C++ scopes) open
+a scope around something the game draws. Scopes nest; a scope's identity is
+
+  hash(parent scope, category, object address, type, sub, generation(object), occurrence)
+
+- *object*: the guest address of the thing (actor, model instance, J3D packet, furniture object,
+  particle, J2D pane);
+- *type*: what it is (model data, a constant per hook);
+- *sub*: a part index (node, mesh, joint, pass);
+- *generation*: bumped when the object's memory is freed (`free__10JKRExpHeapFPv`: every tagged
+  address in the freed block) or a pool slot is handed out again (particle link/unlink, particle
+  birth stamps below), so a new object at a reused address is never its predecessor;
+- *occurrence*: the n-th scope with that identity under the same parent in this game frame (an
+  object drawn twice in one view).
+
+Every value the GX HLE notes (position/normal/texture matrix, projection, GX light, CPU-built vertex
+block) gets a **key** = hash(innermost object scope, kind, GX call site (the guest return address of
+the GX call), its occurrence for that scope/kind/site); GX lights add the light object's address and
+slot. Values noted outside any object scope are **untagged** (key 0), except GX lights (the game's
+light object is its own tag) and projections (keyed by the camera's structural scope).
+
+Cameras: the view matrix is sampled at every noted value (`viewMatrixSource`, the game camera's GX
+view matrix); a view's key is its structural (View) scope path + pass + the order of distinct
+cameras in that path. Views pair by key.
+
+### Pairing and policies (`pairTapes`, `replayPair`)
+
+A value of game frame b pairs with the value of frame a that has the same key and the same shape
+(kind, size). Ambiguous keys (twice in one frame) are never paired. Then:
+
+| category | what is blended |
+|---|---|
+| View (structural) | the camera: rotation slerped, eye moved in a straight line |
+| World (map rooms) | only the camera: b's world matrices under the in-between camera |
+| Object (characters, furniture, props, J3D) | model and normal matrices, rigidly (rotation slerp, scale/shear, translation) in world space under the blended camera; texture matrices; GX lights (position linear, direction slerped, by light object) |
+| Particle | the particle's matrices / CPU-built quad positions, by emitter + particle identity (+ birth stamp) |
+| Effect (CPU-built geometry of an object) | vertex positions, only with the same vertex count (topology) |
+| Hud (2D) | 2D matrices (a jump > 96 px switches) |
+| untagged | nothing: b's values, placed under the in-between camera when in the 3D view (else as captured) |
+
+- Colours (channel/material/light colours, TEV colour and konst registers, fog), alphas and HUD
+  colours are **never** blended: always the newest game frame's. Enhanced lighting's extra lights
+  blend position and radius only; colour, intensity, flags and shadow weight are b's.
+- A pair that cannot be blended (rotation over ~150 degrees in one game frame, scale 16x, a jump over
+  half its distance) is shown at b's world place under the in-between camera (Luigi's instant turns).
+- Appear / disappear: b's set of draws is drawn for the whole interval (a new thing appears, a gone
+  thing disappears, at the game frame); nothing is faded or redrawn from a.
+- Camera cuts: b's main camera (the view most main-pass model matrices use) jumps more than 250
+  units or turns more than 30 degrees, or has no counterpart in a: b is shown as captured.
+- The 60 Hz scenes, pauses and lockstep transitions keep the pacing of main.
+
+### Tag sources (src/recomp/tags.cpp; hooks in tools/recomp/hooks.txt)
+
+| category | source | identity |
+|---|---|---|
+| View | `fn_8000BB98(view)` (per-view scene draw; enhanced_lighting.cpp's hook) | view index |
+| View | `fn_8006033C` (model rendered with its own camera into a small viewport: GBH camera, portraits) | its argument |
+| View | shadow caster pass (`shadows.cpp`: `setPass(1)`) | pass number in every key |
+| Object | `fn_80059C54`, `fn_80059F6C` (S3DModel draw), `fn_8005A280` (S3DModel shadow-caster draw) | model instance (r3), its data (+4) |
+| Object | `fn_800597C0`, `fn_800598E0`, `fn_800599E8` (S3DModel node draws) | model, node index |
+| Object | `fn_80058A60` (mesh matrix load), `fn_800595B8` (mesh draw) | model, mesh entry / index |
+| Object | `fn_80057F90`, `fn_800581E8` (actor lighting in `fn_80060E70`'s actor loop) | the actor (the loop's r21) |
+| Object | `fn_8001F098`, `fn_8001F138` (furniture draw) | furniture object |
+| World / Object | `fn_80015CF4` (bin model draw: rooms, furniture models) | model, node matrices, pass; World unless inside furniture or animated |
+| World / Object | `fn_80015844` (bin model node, recursive) | node index |
+| Object | `draw__12J3DMatPacketFv`, `draw__14J3DShapePacketFv` (J3D) | the packet (per model instance and shape/material) |
+| Object | `J3DShapeMtx::loadMtxIndx_PNGP/PCPU/NCPU/PNCPU` | joint index (J3D skips loads already in place, so the n-th load is not always the same joint) |
+| Effect | `fn_80091A70` (Poltergust segments, from `fn_8008E580`) | object, mode |
+| Particle | call-site tag in `fn_8012FD14` (dust groups, `fn_801304B0`) | particle r30, group r29; generation on link/unlink (`fn_80127A74`, `fn_80127AA8`) |
+| Particle | call-site tag in `fn_8012B6C4` (second particle draw, `fn_8012CB74`) | particle r29, group r28, birth stamp from the remaining life at +0x24 (counts down) |
+| Particle | call-site tag in `fn_801796EC` (45 fixed slots, `fn_80162AE8`) | slot offset r28, array r25 |
+| Particle | call-site tag in `fn_8016169C` (JPA-style emitters, `fn_801604FC`) | particle r19, renderer r30, birth stamp from the age at +0x32 (counts up) |
+| Hud | `draw__7J2DPaneFiiPC14J2DGrafContextb` | the pane |
+| (lights) | GX light objects (`GXLoadLightObjImm`) | light object address + slot, in the current scope |
+| (extra lights) | enhanced lighting's ExtraLight ids (ghost actor, world-light emitter, fixed sources) | id + the object's generation |
+| (generation) | `free__10JKRExpHeapFPv` | freed block |
+
+A **call-site tag** (`interp::addSiteTag`) covers a draw loop inside one game function: while a GX
+call comes from inside that function's code range, the item in the named register is a scope of its
+own (a new item when the register changes). Birth stamps (`SiteTag::ageOffset/ageStep`): a u16 in the
+particle that counts its age (+1 per game frame) or its remaining life (-1) makes its birth frame part
+of the identity (found with `LM_TAG_PEEK=<words>`: 98-100% of particles step by exactly one).
+
+### Tools
+
+- `LM_TAG_LOG=<file>,<first>[,<last>]`: every value noted in those game frames with its key,
+  category, call site, scope depth and view, and for untagged values the guest call chain; per tape
+  the paired / unpaired / untagged counts by kind and the views with their keys. Finding the next
+  tag source: run, take the most frequent untagged chains, look the function up
+  (`tools/recomp/addr2sym.py`, the recompiled code in build/**/recomp_gen), hook it.
+- **Judder detector** (`LM_JUDDER_LOG=<file>`, `LM_JUDDER_PX=<px>` default 1.5; live and in
+  `LM_INTERP_TEST` runs). Aurora patch 0218 (`AuroraSetDrawProbe`) reports every draw with the
+  matrix (and its PNMTX slot), projection and first vertex it is drawn with. Every in-between replay
+  is tagged draw by draw; each draw of the main pass is judged against its ideal: for a tagged pair,
+  the world transforms of that slot's matrix in a and b blended rigidly and seen through the ideal
+  camera (rotation slerped, eye linear); for untagged / unpaired / world draws, b's world position
+  under that camera. `J` lines: present, tape, alpha, cause (blend, snapped, camera, ...), error in
+  px of a 2160-line picture, category, key, call site; `R` lines per replay; a `[judder]` summary in
+  the game log every 5 s. **Identity check** (same log, `P` lines): a tagged model matrix followed
+  over three game frames by its identity must not jump there and back in the middle frame (jerk > 30
+  units and > 1.5x both steps): a wrong tag.
+- `tools/interp/tint.py <run> [steps]`: every in-between whose mean colour (whole picture,
+  or one of 16 tiles) lies outside its two game frames' range.
+- `tools/interp/tagstats.py <tag log>`: values by kind/category and the most frequent untagged chains.
+- `LM_INTERP_NOBLEND=<mask>` gained bit 7: enhanced lighting's extra lights shown as captured.
+
+## History: the heuristic design (passes 1-5)
+
+The sections below describe the design that tagged interpolation replaced. Their pairing,
+fade, swarm and blink parts no longer apply; the pacing, copies, camera factoring, shadow and
+measurement parts still do.
 
 ## What was wrong (stability)
 

@@ -39,6 +39,8 @@ extern bool g_discardDraws;
 // format `fmt` (-1 unknown), and its GXAttrType.
 int vtxAttrSize(int fmt, int attr);
 unsigned char vtxDesc(int attr);
+// The VAT entry of `attr` in format `fmt` (component count, GXCompType, fraction bits).
+bool vtxAttrFormat(int fmt, int attr, unsigned char& cnt, unsigned char& type, unsigned char& frac);
 // An active TEV stage samples an EFB copy.
 bool samplesCopy();
 }  // namespace recomp::gx
