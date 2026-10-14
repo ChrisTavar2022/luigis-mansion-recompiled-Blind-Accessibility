@@ -673,6 +673,34 @@ bool blendableWorld(const f32* wa, const f32* wb, float dist) {
     return std::sqrt(dd) <= std::max(200.0f, 0.5f * dist);
 }
 
+// Orientation ambiguity: a matrix built from direction vectors (a hose segment's frame, look-at
+// style) can flip its roll by 180 degrees about one of its own axes from one game frame to the next
+// while the thing itself barely moves. When a pair turns by more than ~150 degrees and b turned by 180
+// degrees about one of its local axes is within 45 degrees of a, b is replaced by that equivalent
+// (columns i, j negated) for the in-betweens; the game frame itself still shows b.
+float turnDegrees(const f32* a, const f32* b, int cols) {
+    Rigid ra, rb;
+    if (!decompose(a, cols, ra) || !decompose(b, cols, rb)) return 0.0f;
+    const float d = std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]);
+    return 2.0f * std::acos(std::min(d, 1.0f)) * 57.2958f;
+}
+bool resolveFlip(const f32* a, f32* b, int cols) {
+    if (turnDegrees(a, b, cols) <= 150.0f) return false;
+    for (int k = 0; k < 3; k++) {
+        f32 c[12];
+        std::copy(b, b + 3 * cols, c);
+        for (int r = 0; r < 3; r++)
+            for (int j = 0; j < 3; j++)
+                if (j != k) c[cols * r + j] = -c[cols * r + j];
+        if (turnDegrees(a, c, cols) < 45.0f) {
+            std::copy(c, c + 3 * cols, b);
+            return true;
+        }
+    }
+    return false;
+}
+u32 sFlips = 0;  // pairs blended through an equivalent flipped orientation (stats)
+
 bool blendable(Kind kind, const f32* a, const f32* b, int n) {
     switch (kind) {
     case Kind::PosMtx:
@@ -1482,6 +1510,7 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
         M34 wa, wb, wt;
         compose(vp->ia.data(), va, wa.data());
         compose(vp->ib.data(), vb, wb.data());
+        if (resolveFlip(wa.data(), wb.data(), 4)) sFlips++;
         if (!blendRigid(wa.data(), wb.data(), 4, alpha, wt.data())) return false;
         compose(vp->vt.data(), wt.data(), out);
         return true;
@@ -1502,6 +1531,7 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
             rotT(vp->vb, cb, wb);
             for (int r = 0; r < 3; r++) na[3 * r + c] = wa[r], nb[3 * r + c] = wb[r];
         }
+        resolveFlip(na, nb, 3);
         if (!blendRigid(na, nb, 3, alpha, nt)) return false;
         for (int c = 0; c < 3; c++) {
             const f32 cw[3] = {nt[c], nt[3 + c], nt[6 + c]};
@@ -1789,6 +1819,7 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 M34 Wa, Wb, Wt;
                 compose(iq.data(), ma, Wa.data());
                 compose(ib.data(), m, Wb.data());
+                resolveFlip(Wa.data(), Wb.data(), 4);
                 if (!blendableWorld(Wa.data(), Wb.data(), std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]))) {
                     cause = 1;
                     Rigid ra, rb;
@@ -2110,7 +2141,23 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     M34 wa, wb;
                     compose(vp->ia.data(), va, wa.data());
                     compose(vp->ib.data(), vb, wb.data());
+                    resolveFlip(wa.data(), wb.data(), 4);
                     ok = blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]));
+                } else {
+                    ok = blendable(p.kind, va, vb, p.count);
+                }
+            } else if (p.kind == Kind::NrmMtx && p.count == 9 && p.role == 0 && p.view < sViewToA.size() && sViewToA[p.view] == s32(q.view)) {
+                // Normals turn with their model: in world space, with the same flip resolution.
+                const ViewPair* vp = viewPair(*a, q.view, b, p.view, alpha);
+                if (vp && vp->ok && !vp->cut) {
+                    f32 na[9], nb[9];
+                    for (int c2 = 0; c2 < 3; c2++)
+                        for (int r = 0; r < 3; r++) {
+                            na[3 * r + c2] = vp->va[r] * va[c2] + vp->va[4 + r] * va[3 + c2] + vp->va[8 + r] * va[6 + c2];
+                            nb[3 * r + c2] = vp->vb[r] * vb[c2] + vp->vb[4 + r] * vb[3 + c2] + vp->vb[8 + r] * vb[6 + c2];
+                        }
+                    resolveFlip(na, nb, 3);
+                    ok = blendable(Kind::NrmMtx, na, nb, 9);
                 } else {
                     ok = blendable(p.kind, va, vb, p.count);
                 }
