@@ -633,6 +633,28 @@ void pairTapes(const Tape& a, Tape& b) {
 // unless it turns by more than ~150 degrees, changes scale 16x or jumps by more than half its
 // distance from the camera (`dist`; at least 200 units). In view space (blendable) a fast camera
 // move alone made static things nearby "jump" (the opening's crane shots: snapped every frame).
+// A scrolling texture whose offset wrapped (1.0 back to 0.0, or a scroll faster than half the texture
+// per game frame): texture coordinates repeat, so the offset is blended by the short way modulo 1
+// (it used to be shown unblended for the whole game frame: animated skies and water stepped). Only
+// texture-coordinate matrices (entries within +-4) whose scale/rotation part barely changed.
+bool blendTexWrap(const f32* a, const f32* b, int n, float t, f32* out) {
+    if (n != 8 && n != 12) return false;
+    bool wrapped = false;
+    for (int i = 0; i < n; i++) {
+        if (!(std::fabs(a[i]) <= 4.0f && std::fabs(b[i]) <= 4.0f)) return false;
+        const bool trans = (i & 3) == 3;
+        if (!trans && std::fabs(a[i] - b[i]) > 0.35f) return false;
+        if (trans && std::fabs(a[i] - b[i]) > 0.5f) wrapped = true;
+    }
+    if (!wrapped) return false;
+    for (int i = 0; i < n; i++) {
+        float d = b[i] - a[i];
+        if ((i & 3) == 3) d -= std::round(d);
+        out[i] = b[i] - d * (1.0f - t);  // exact b at t = 1
+    }
+    return true;
+}
+
 bool blendableWorld(const f32* wa, const f32* wb, float dist) {
     Rigid ra, rb;
     if (!decompose(wa, 4, ra) || !decompose(wb, 4, rb)) {
@@ -1815,10 +1837,27 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
             sProbeTotals.cause[cause]++, sProbeWindow.cause[cause]++;
             if (visible) sProbeTotals.visCause[cause]++, sProbeWindow.visCause[cause]++;
             static u64 sLastKey = 0;  // one S line per matrix (a draw reports many vertices' records)
-            if (P.key != sLastKey)
+            if (P.key != sLastKey) {
                 probeLine("S %u %llu %.3f %s cat %s key %016llX site %08X area %.0f %s why %.0f %.2f %.0f world %.0f %.0f %.0f\n", pr.present,
                           (unsigned long long)b.seq, pr.alpha, kCauseName[cause], kCatName[u32(P.cat)], (unsigned long long)P.key, P.site,
                           area, visible ? "visible" : fullView ? "tiny" : "subview", whyRot, whyScale, whyJump, wb[0], wb[1], wb[2]);
+                // LM_JUDDER_MATRICES=1: both game frames' world matrices of the pair (orientation analysis).
+                static const bool sMats = std::getenv("LM_JUDDER_MATRICES") != nullptr;
+                if (sMats && j >= 0) {
+                    const Patch& Q = a->patches[j];
+                    M34 ia2, ib2, A2, B2;
+                    f32 ma[12], mb[12];
+                    for (int e = 0; e < 12; e++) ma[e] = val(*a, Q, e), mb[e] = val(b, P, e);
+                    if (Q.view < a->views.size() && invertAffine(a->views[Q.view].data(), ia2.data()) && invertAffine(b.views[P.view].data(), ib2.data())) {
+                        compose(ia2.data(), ma, A2.data());
+                        compose(ib2.data(), mb, B2.data());
+                        probeLine("M A %.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f\n", A2[0], A2[1], A2[2], A2[3], A2[4], A2[5],
+                                  A2[6], A2[7], A2[8], A2[9], A2[10], A2[11]);
+                        probeLine("M B %.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f | %.3f %.3f %.3f %.1f\n", B2[0], B2[1], B2[2], B2[3], B2[4], B2[5],
+                                  B2[6], B2[7], B2[8], B2[9], B2[10], B2[11]);
+                    }
+                }
+            }
             sLastKey = P.key;
             continue;
         }
@@ -2059,6 +2098,11 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             }
             const bool jump2D = p.role == 2 && p.kind == Kind::PosMtx && p.count == 12 &&
                                 std::fabs(va[3] - vb[3]) + std::fabs(va[7] - vb[7]) + std::fabs(va[11] - vb[11]) > 96.0f;
+            if (p.kind == Kind::TexMtx && p.role == 0 && blendTexWrap(va, vb, p.count, alpha, out)) {
+                for (int k = 0; k < p.count; k++) storeBE(sReplay.data() + p.offset + 4 * k, out[k]);
+                sBlended++;
+                continue;
+            }
             bool ok;
             if (p.kind == Kind::PosMtx && p.count == 12 && p.role == 0 && p.view < sViewToA.size() && sViewToA[p.view] == s32(q.view)) {
                 const ViewPair* vp = viewPair(*a, q.view, b, p.view, alpha);
