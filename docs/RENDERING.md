@@ -1217,6 +1217,16 @@ shipped list, one game at a time (`--lock`), per F1 preset:
 | Enhanced High | the same 4 | | pending | |
 | Enhanced Ultra (+ ghost/world lights, AO, realistic flashlight 3) | the same 4 | | pending | |
 
+**Still to run** (postponed to the end of the project): Enhanced Low on Bogmire, and Enhanced High
+and Ultra on all 4 routes (opening, tour, event9, boss13). They use the 4387-config list, so a
+miss in them is a new gap. Run them like this (one game at a time, `--resume` keeps finished runs,
+`--lock` is the shared game-window lock file if one is in use), then fill in the three rows above:
+
+```
+python tools/pipelines/verify.py --work <scratch>/vfy --data-root <checkout with orig/> --resume ^
+    --presets enh_low,enh_high,enh_ultra --routes opening,tour,event9,boss13 [--lock <GAME_LOCK file>]
+```
+
 The miss left in the tour (the same material in every preset) is a COLOR1 material whose
 material colour comes from the vertex (no vertex colour: constant white) where every recorded
 draw of it used the register: a state no recorded run had reached. The verification runs' own
