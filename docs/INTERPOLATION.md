@@ -92,7 +92,13 @@ A value of game frame b pairs with the value of frame a that has the same key an
   positions and direct RGB(A)8 vertex colours (HUD fades, full-screen fade quads) are noted as 2D
   blocks (role 2, `posBytes2D`): only their colours blend, and only while every vertex position is
   byte-identical in both game frames; untagged ones are keyed by structural scope + call site +
-  occurrence (87f2ea6). Exceptions, shown as the newest
+  occurrence (87f2ea6). XF colours written inside display lists (0x100A-0x100D, light colours) are
+  noted like the lists' BP colour writes, and untagged 2D colour registers are keyed by structural
+  scope + call site + register + occurrence and blend with a draw of the same kind (8d11727).
+  Still open: the scene fade-in on arriving in the foyer / returning from the save screen steps at 30
+  Hz (sweep C: ~90% of the ramp at the tape change). It is none of these colour paths, nor a light's
+  attenuation (tested: no light changes its attenuation then); candidates left are an EFB copy drawn
+  back over the scene or vertex colours of 3D CPU-built blocks. Exceptions, shown as the newest
   game frame: a channel that jumps by more than 96 of 255 in one game frame (blinks, on/off,
   the hit flash), a register of another type (colour vs konst). Texture swaps (another texture
   object) switch. A GX light's colour (XF 0x600 + 16 n + 3, from GXLoadLightObjImm) takes the
