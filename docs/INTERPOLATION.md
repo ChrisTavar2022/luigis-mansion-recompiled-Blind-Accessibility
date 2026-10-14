@@ -138,11 +138,21 @@ A value of game frame b pairs with the value of frame a that has the same key an
 - Fast motion is not a jump: a pair that moves at most 2x + 60 units of what the same identity moved
   over the game frame before (`Tape::worldStep`, recorded by the replays) blends however far it goes
   (Chauncey's swoops, ~500 units per game frame, were snapped at 30 Hz).
+- Spinners and tumblers (`noteTurn`): every model / normal matrix's world turn since its partner
+  (angle and axis) is recorded per identity. One that turned by over 60 degrees in the game frame
+  before (a spinner), or tumbles (two turns in a row over 20 degrees about axes more than 45 degrees
+  apart; the evidence holds for 8 game frames), blends a turn over ~150 degrees the short way instead
+  of switching. The element streams' drops take a random orientation every game frame (35-180
+  degrees about any axis): those over 150 were shown at the game frame while the rest blended, and
+  the water spray shimmered at 30 Hz (user report). Water spray, Luigi standing: 10-18k such
+  switches per 5 s before, 1.4-2.9k after (drops in their first game frames, no history yet).
+  Luigi turns about one axis (20-25 degrees per game frame), so his instant turns stay switches.
 - Squashed-flat matrices (columns nearly coplanar: |det| < 0.1 x the product of the column lengths;
   Chauncey's squash-and-stretch bones) have no meaningful rotation or mirroring (their Gram-Schmidt
   frame flips between frames): only the axis lengths (16x) and the place are checked, and they blend
   entrywise in world space (`flatMatrix`). Rolling balls and Chauncey's spin (150-175 degrees per game
-  frame) stay switches: the turn direction is not knowable from two frames.
+  frame) were switches (the turn direction is not knowable from two frames); with the spinner rule
+  above they blend the short way once the previous game frame showed the spin.
 - Projections: 2D (orthographic) ones are layout and never blended (the HUD anchors each element with
   its own projection; paired by order they slid HUD elements in the in-betweens); perspective ones
   blend only with one of the same aspect, except the shadow caster pass, which blends with its light.
@@ -185,6 +195,8 @@ A value of game frame b pairs with the value of frame a that has the same key an
 | Particle | call-site tag in `fn_8016169C` (JPA-style emitters, `fn_801604FC`) | particle r19, renderer r30, birth stamp from the age at +0x32 (counts up) |
 | Particle | call-site tags in `fn_801620AC` (particle r19, renderer r26, age +0x32) and `fn_801611CC` (child item r30, owner r29): the other JPA-style renderers (Bowser's flames, boss arenas) | as listed |
 | Object | `fn_8005E110` (one CPU-built quad per ghost, from `fn_80061690`'s loop over the ghost list 0x803D48A0; large in Bogmire's arena) | the ghost (its position pointer r5 - 8) |
+| Particle | `fn_800F3120` called from `fn_8011FB40`'s item loops (0x801201F4: items of 0x34 bytes at [r31+0x4C]+r27; 0x801202F8: 0x68 bytes at [r31+0x48]+r26): the element streams' drops, one shared S3D model drawn per item; `fn_80059F6C` inside groups by item | the item |
+| World | `fn_80015BDC(room lighting, ambient colour)` from the room loop `fn_80011824`: the room's lights and ambient colour (0x100A); World-scope colours blend without the draw check | r3 |
 | Particle | `fn_80120C30` (one GX point per call: the water spray's and other element streams' points, from `fn_8011FB40` / `fn_80120514`) | the point (24-byte entry) |
 | Effect | `fn_80118E44` (CPU-built strips of 0xA8-byte items, from `fn_80118D3C`) | the item |
 | Hud | `draw__7J2DPaneFiiPC14J2DGrafContextb` | the pane |
