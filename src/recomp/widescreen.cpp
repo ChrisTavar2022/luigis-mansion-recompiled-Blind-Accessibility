@@ -4,6 +4,7 @@
 #include "port/options.h"
 #include "port/settings.h"
 #include "recomp/hle.h"
+#include "recomp/interp.h"
 #include "recomp/version.h"
 #include "recomp/coop.h"
 
@@ -11,6 +12,10 @@
 
 #include <algorithm>
 #include <atomic>
+
+namespace recomp {
+u32 copyDispCount();  // hle_gx.cpp
+}
 #include <cmath>
 #include <vector>
 
@@ -167,7 +172,21 @@ HLE(fn_800115F8) {
 // Event portrait renderer (<PDEMO>): 3D drawn into its own viewport. During E. Gadd's call
 // (GBH screen mode lbl_804D846C = 3) that viewport is the GBH screen.
 HLE(fn_80114E18) {
-    AnchorScope s(rd32(VA(0x804D846C)) == 3 ? 1 : 0);
+    // Frame interpolation: event scenes have their own camera (interp.h TagCat::SubView).
+    interp::TagScope subView(interp::TagCat::SubView, VA(0x80114E18), 0, c.r[3]);
+    // The call portrait keeps the GBH's anchoring while it closes: the GBH leaves call mode (3)
+    // before the portrait's last frames are drawn, and centering those jumped the portrait to the
+    // left at 16:9. The anchoring is kept while the portrait is drawn on consecutive game frames
+    // after the call (a door close-up later starts centered).
+
+    static u32 sLastFrame = ~0u;
+    static bool sCallAnchored = false;
+    const u32 frame = ::recomp::copyDispCount();
+    const bool inCall = rd32(VA(0x804D846C)) == 3;
+    if (inCall) sCallAnchored = true;
+    else if (sLastFrame == ~0u || (frame != sLastFrame && frame != sLastFrame + 1)) sCallAnchored = false;
+    sLastFrame = frame;
+    AnchorScope s(sCallAnchored ? 1 : 0);
     callOriginal(c, "fn_80114E18");
 }
 // The event scene's render-to-texture pass, called by fn_80114E18 between the scene and the

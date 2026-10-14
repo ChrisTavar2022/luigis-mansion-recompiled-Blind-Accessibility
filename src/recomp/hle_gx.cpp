@@ -415,6 +415,11 @@ bool gx::samplesCopy() {
     return false;
 }
 u8 gx::vtxDesc(int attr) { return attr < GX_VA_MAX_ATTR ? sDesc[attr] : 0; }
+bool gx::vtxAttrFormat(int fmt, int attr, u8& cnt, u8& type, u8& frac) {
+    if (fmt >= GX_MAX_VTXFMT || attr >= GX_VA_MAX_ATTR) return false;
+    cnt = sVat[fmt][attr].cnt, type = sVat[fmt][attr].type, frac = sVat[fmt][attr].frac;
+    return true;
+}
 
 namespace {
 
@@ -770,6 +775,7 @@ void hw::fifoWrite(u32 v, int size) {
     HLE(name) {                                           \
         frame::gxWaitForGuestTurn();                      \
         gx::endPendingDraw();                             \
+        interp::gxCall(c);                                \
         gxImpl_##name(c);                                 \
     }                                                     \
     static void gxImpl_##name([[maybe_unused]] ::recomp::Ctx& c)

@@ -261,7 +261,17 @@ u32 guestSymbol(const char* name) {
 }
 
 void callOriginal(Ctx& c, const char* name) {
+    // Hooks call this on hot paths (frame interpolation's tag hooks run thousands of times per
+    // frame): the original is looked up once per name (callers pass string literals) per thread.
+    thread_local std::unordered_map<const char*, HleFn> sCache;
+    if (const auto it = sCache.find(name); it != sCache.end()) return it->second(c);
     const u32 addr = guestSymbol(name);
+    for (u32 i = 0; i < g_module->origCount; i++) {
+        if (g_module->orig[i].addr == addr) {
+            sCache.emplace(name, g_module->orig[i].fn);
+            break;
+        }
+    }
     for (u32 i = 0; i < g_module->origCount; i++) {
         if (g_module->orig[i].addr == addr) {
             g_module->orig[i].fn(c);

@@ -1,6 +1,7 @@
 # Frame interpolation
 
-Code: `src/recomp/interp.cpp` (tapes, pairing, blending, test mode), `src/recomp/interp_vtx.cpp`
+Code: `src/recomp/interp.cpp` (tapes, tag keys, pairing, blending, test mode, judder detector),
+`src/recomp/tags.cpp` (the game's draw entry points that open tag scopes), `src/recomp/interp_vtx.cpp`
 (draw identities, vertex-array copies, CPU-built vertices), `src/recomp/interp_tex.cpp` (texture and
 TLUT copies), `src/recomp/shadows.cpp` (LM: camera source, shadow light), `src/recomp/frame.cpp` (decoupled
 guest, target frame rate, pacing), hooks in `src/recomp/hle_gx.cpp`, Aurora patches
@@ -21,6 +22,237 @@ through SDL3 every 0.5 s, so moving the window to another monitor follows it).
 - Pacing (`frame::pace`): the host loop sleeps (SDL_DelayPrecise) to the target. With VSync on
   and a target at or above the refresh rate the swap chain paces instead, so the frame rate is
   the refresh rate; the menu says "(VSync limits this to N fps)" and the tooltip explains it.
+
+## Tagged interpolation (interp-tagged, October 2026)
+
+The heuristic pairing of the earlier passes (record two game frames' GX streams, then guess which
+draw of frame a is which draw of frame b by mesh, vertex layout, colour, order or nearest position)
+produced a new class of bug with every fix: identical instances swapping (doors, vases), a reused
+light slot tinting the whole picture yellow, HUD quads mixing up, particles swapping partners. It is
+replaced by **source-tagged** interpolation, as in Zelda 64: Recompiled / RT64: the game's own draw
+code labels what it draws, and the interpolator pairs strictly by that label. Nothing is guessed.
+
+Kept from before (unrelated to pairing): tapes (capture and replay of a game frame's GX stream with
+substituted values), vertex-array / texture copies, the replay state slots and copy generations,
+camera factoring and the rigid (polar) blend, shadow-receiver rebuilding, frame pacing and
+presentation (pacing.cpp, VRR cap, governor, present timing 0197/0216, keep-warm 0215), the shader
+precache, vertex snapshots at draw time, Original 30 (no capture). Removed: nearest/mutual/range-scan
+pairing, layout groups, swarm handling, colour pairing, fade-ins/outs (Aurora 0030 is no longer used),
+blink detection, second-chance pairing by source address or display-list content.
+
+### Identity
+
+`interp::pushTag(category, object, type, sub)` / `popTag` (interp.h; `TagScope` for C++ scopes) open
+a scope around something the game draws. Scopes nest; a scope's identity is
+
+  hash(parent scope, category, object address, type, sub, generation(object), occurrence)
+
+- *object*: the guest address of the thing (actor, model instance, J3D packet, furniture object,
+  particle, J2D pane);
+- *type*: what it is (model data, a constant per hook);
+- *sub*: a part index (node, mesh, joint, pass);
+- *generation*: bumped when the object's memory is freed (`free__10JKRExpHeapFPv`: every tagged
+  address in the freed block) or a pool slot is handed out again (particle link/unlink, particle
+  birth stamps below), so a new object at a reused address is never its predecessor;
+- *occurrence*: the n-th scope with that identity under the same parent in this game frame (an
+  object drawn twice in one view).
+
+Every value the GX HLE notes (position/normal/texture matrix, projection, GX light, CPU-built vertex
+block) gets a **key** = hash(innermost object scope, kind, GX call site (the guest return address of
+the GX call), its occurrence for that scope/kind/site); GX lights add the light object's address and
+slot. Values noted outside any object scope are **untagged** (key 0), except GX lights (the game's
+light object is its own tag) and projections (keyed by the camera's structural scope).
+
+Cameras: the view matrix is sampled at every noted value (`viewMatrixSource`, the game camera's GX
+view matrix); a view's key is its structural (View) scope path + pass + the order of distinct
+cameras in that path. Views pair by key.
+
+### Pairing and policies (`pairTapes`, `replayPair`)
+
+A value of game frame b pairs with the value of frame a that has the same key and the same shape
+(kind, size). Ambiguous keys (twice in one frame) are never paired. Then:
+
+| category | what is blended |
+|---|---|
+| View (structural) | the camera: rotation slerped, eye moved in a straight line |
+| World (map rooms) | only the camera: b's world matrices under the in-between camera |
+| Object (characters, furniture, props, J3D) | model and normal matrices, rigidly (rotation slerp, scale/shear, translation) in world space under the blended camera; texture matrices; GX lights (position linear, direction slerped, by light object) |
+| Particle | the particle's matrices / CPU-built quad positions, by emitter + particle identity (+ birth stamp) |
+| Effect (CPU-built geometry of an object) | vertex positions, only with the same vertex count (topology) |
+| Hud (2D) | 2D matrices (a jump > 96 px switches) |
+| untagged | nothing: b's values, placed under the in-between camera when in the 3D view (else as captured) |
+
+- Colours (channel/material/light colours, TEV colour and konst registers, fog), alphas and HUD
+  colours are **never** blended: always the newest game frame's. Enhanced lighting's extra lights
+  (the port's own lights) blend position, radius, colour and intensity by id; flags and shadow
+  weight are b's (ghost glows, dramatic flares and flicker change every game frame: at b's values big
+  lit areas stepped at 30 Hz).
+- A pair that cannot be blended (rotation over ~150 degrees in one game frame, scale 16x, a jump over
+  half its distance from the camera) is shown at b's world place under the in-between camera (Luigi's
+  instant turns). The test is made in WORLD space (camera motion taken out; in view space a fast
+  camera alone made nearby things "jump"). A turn over ~150 degrees is first tried against b turned
+  180 degrees about each of its own axes: within 45 degrees of a, that equivalent is blended (matrices
+  built from direction vectors, e.g. the Poltergust hose's segments, flip their roll between frames).
+- Fast twists: a pair that turns by more than 75 degrees in one game frame mostly about one of its own
+  axes (that axis turning by less than 35 degrees, the part scaled alike across it) takes the twist
+  from b at once and blends only the rest (`untwist`). The Poltergust hose's envelope matrices are
+  rebuilt from the hose direction every frame and their roll changes by up to ~150 degrees between
+  game frames: blending spun the ribs around the tube.
+- Model instances are handled as one (	agGroup: an S3D model, fn_80059C54 / fn_80059F6C /
+  fn_8005A280's instance; a J3D model, its shape packets' matrix buffer at packet +0x14). Skinned
+  parts are drawn with weighted sums of the model's joints (sheared, nearly flat where two joints
+  differ a lot), so the skin only stays together if every matrix of the instance is blended alike:
+  when one matrix jumps (its place moved farther than blending allows) the whole model is shown as b
+  for that interval (counted as switches); when one turns by more than 90 degrees, cannot be blended
+  by rotation or is squashed flat, every matrix of the model is blended entrywise in world space, so
+  each skinned vertex moves in a straight line from its place in a to its place in b. The Poltergust
+  hose is part of an S3D model (matrix pool around 0x814FF43C, near Luigi's nozzle): on the vacuum's
+  on/off its matrices turn by 150-178 degrees in one game frame. Blended one by one (some switched,
+  flip and twist resolution chosen per matrix) neighbours took different paths and the hose's skin
+  stretched into long straight sticks (user clip with LM_FRAME_TAG: tape 160 alpha 0.05 and 0.34,
+  tape 165 alpha 0.67); switching the whole model detached it from Luigi's hand (2f69188). Earlier
+  attempts tagged fn_80091A70 (a cloth sheet) and J3D models only, which never reached the hose.
+- Present hold (pacing::beforeEnd): on an even grid (VRR or VSync off) a frame built faster than
+  usual is held until the usual time after its scheduled start (90th percentile of the last 60
+  frames, at most 85% of the period), so every frame reaches the screen a constant time after the
+  time its picture is for. Bogmire's fight at 4K with Enhanced lighting Ultra built frames in
+  3-10 ms: presents came 5-13 ms apart while the motion advanced 8.6 ms each (display error p95
+  3-5 ms, 1.2 ms elsewhere): an animated sky with a still camera juddered. `LM_PRESENT_HOLD=0`: off.
+- Fast motion is not a jump: a pair that moves at most 2x + 60 units of what the same identity moved
+  over the game frame before (`Tape::worldStep`, recorded by the replays) blends however far it goes
+  (Chauncey's swoops, ~500 units per game frame, were snapped at 30 Hz).
+- Squashed-flat matrices (columns nearly coplanar: |det| < 0.1 x the product of the column lengths;
+  Chauncey's squash-and-stretch bones) have no meaningful rotation or mirroring (their Gram-Schmidt
+  frame flips between frames): only the axis lengths (16x) and the place are checked, and they blend
+  entrywise in world space (`flatMatrix`). Rolling balls and Chauncey's spin (150-175 degrees per game
+  frame) stay switches: the turn direction is not knowable from two frames.
+- Projections: 2D (orthographic) ones are layout and never blended (the HUD anchors each element with
+  its own projection; paired by order they slid HUD elements in the in-betweens); perspective ones
+  blend only with one of the same aspect, except the shadow caster pass, which blends with its light.
+- The shadow caster pass blends everything while its light blends (makeLightPair): its frustum is
+  refitted every game frame ("shadows at any distance"); a caster shown as captured sits a frame
+  apart from the receivers' lookup through the blended light (the shadows swam).
+- Texture scrolls that wrap (offset back from 1 to 0, or faster than half the texture per frame) blend
+  the short way modulo 1 (animated skies, water).
+- SubView scopes (`fn_80114E18`: event scenes, E. Gadd's call portrait, the door close-ups) have their
+  own camera: their values are not factored by the game camera; a model that moves by more than a
+  tenth of its distance in one game frame switches.
+- Appear / disappear: b's set of draws is drawn for the whole interval (a new thing appears, a gone
+  thing disappears, at the game frame); nothing is faded or redrawn from a.
+- Camera cuts: b's main camera (the view most main-pass model matrices use) has no counterpart in a,
+  or jumps more than 250 units / turns more than 30 degrees AND more than three times its previous
+  frame's move/turn (a discontinuity; Bogmire's fast camera does that much every frame and is not a
+  cut): b is shown as captured.
+- The 60 Hz scenes, pauses and lockstep transitions keep the pacing of main.
+
+### Tag sources (src/recomp/tags.cpp; hooks in tools/recomp/hooks.txt)
+
+| category | source | identity |
+|---|---|---|
+| View | `fn_8000BB98(view)` (per-view scene draw; enhanced_lighting.cpp's hook) | view index |
+| View | `fn_8006033C` (events 5/6: a model rendered with its own camera into a 128x128 copy, Mario in the painting) | its argument |
+| View | shadow caster pass (`shadows.cpp`: `setPass(1)`) | pass number in every key |
+| Object | `fn_80059C54`, `fn_80059F6C` (S3DModel draw), `fn_8005A280` (S3DModel shadow-caster draw) | model instance (r3), its data (+4) |
+| Object | `fn_800597C0`, `fn_800598E0`, `fn_800599E8` (S3DModel node draws) | model, node index |
+| Object | `fn_80058A60` (mesh matrix load), `fn_800595B8` (mesh draw) | model, mesh entry / index |
+| Object | `fn_80057F90`, `fn_800581E8` (actor lighting in `fn_80060E70`'s actor loop) | the actor (the loop's r21) |
+| Object | `fn_8001F098`, `fn_8001F138` (furniture draw) | furniture object |
+| World / Object | `fn_80015CF4` (bin model draw: rooms, furniture models) | model, node matrices, pass; World unless inside furniture or animated |
+| World / Object | `fn_80015844` (bin model node, recursive) | node index |
+| Object | `draw__12J3DMatPacketFv`, `draw__14J3DShapePacketFv` (J3D) | the packet (per model instance and shape/material); group: the model's matrix buffer (packet +0x14) |
+| Object | `J3DShapeMtx::loadMtxIndx_PNGP/PCPU/NCPU/PNCPU` | joint index (J3D skips loads already in place, so the n-th load is not always the same joint) |
+| Effect | `fn_80091A70` (a cloth sheet: 16x16 world-space grid, from `fn_8008E580`; not the hose, which is a J3D model) | object, mode; cell by call-site tag |
+| Particle | call-site tag in `fn_8012FD14` (dust groups, `fn_801304B0`) | particle r30, group r29; generation on link/unlink (`fn_80127A74`, `fn_80127AA8`) |
+| Particle | call-site tag in `fn_8012B6C4` (second particle draw, `fn_8012CB74`) | particle r29, group r28, birth stamp from the remaining life at +0x24 (counts down) |
+| Particle | call-site tag in `fn_801796EC` (45 fixed slots, `fn_80162AE8`) | slot offset r28, array r25 |
+| Particle | call-site tag in `fn_8016169C` (JPA-style emitters, `fn_801604FC`) | particle r19, renderer r30, birth stamp from the age at +0x32 (counts up) |
+| Particle | call-site tags in `fn_801620AC` (particle r19, renderer r26, age +0x32) and `fn_801611CC` (child item r30, owner r29): the other JPA-style renderers (Bowser's flames, boss arenas) | as listed |
+| Object | `fn_8005E110` (one CPU-built quad per ghost, from `fn_80061690`'s loop over the ghost list 0x803D48A0; large in Bogmire's arena) | the ghost (its position pointer r5 - 8) |
+| Particle | `fn_80120C30` (one GX point per call: the water spray's and other element streams' points, from `fn_8011FB40` / `fn_80120514`) | the point (24-byte entry) |
+| Effect | `fn_80118E44` (CPU-built strips of 0xA8-byte items, from `fn_80118D3C`) | the item |
+| Hud | `draw__7J2DPaneFiiPC14J2DGrafContextb` | the pane |
+| (lights) | GX light objects (`GXLoadLightObjImm`) | light object address + slot, in the current scope |
+| (extra lights) | enhanced lighting's ExtraLight ids (ghost actor, world-light emitter, fixed sources) | id + the object's generation |
+| (generation) | `free__10JKRExpHeapFPv` | freed block |
+
+A **call-site tag** (`interp::addSiteTag`) covers a draw loop inside one game function: while a GX
+call comes from inside that function's code range, the item in the named register is a scope of its
+own (a new item when the register changes). Birth stamps (`SiteTag::ageOffset/ageStep`): a u16 in the
+particle that counts its age (+1 per game frame) or its remaining life (-1) makes its birth frame part
+of the identity (found with `LM_TAG_PEEK=<words>`: 98-100% of particles step by exactly one).
+
+### Tools
+
+- `LM_TWIST_LOG=<file>`: model matrices turning by over 30 degrees in one game frame and how far each
+  local axis turned. `LM_MTX_DUMP=<lo>,<hi>`: world matrices a, b and the blend for sources in that
+  range. `LM_ARRAY_LOG=<file>`: every tagged position array per tape, its partner and how far it
+  moved.
+- `LM_TAG_LOG=<file>,<first>[,<last>]`: every value noted in those game frames with its key,
+  category, call site, scope depth and view, and for untagged values the guest call chain; per tape
+  the paired / unpaired / untagged counts by kind and the views with their keys. Finding the next
+  tag source: run, take the most frequent untagged chains, look the function up
+  (`tools/recomp/addr2sym.py`, the recompiled code in build/**/recomp_gen), hook it.
+- **Judder detector** (`LM_JUDDER_LOG=<file>`, `LM_JUDDER_PX=<px>` default 1.5; live and in
+  `LM_INTERP_TEST` runs). Aurora patch 0218 (`AuroraSetDrawProbe`) reports every draw with the
+  matrix (and its PNMTX slot), projection and first vertex it is drawn with. Every in-between replay
+  is tagged draw by draw; each draw of the main pass is judged against its ideal: for a tagged pair,
+  the world transforms of that slot's matrix in a and b blended rigidly and seen through the ideal
+  camera (rotation slerped, eye linear); for untagged / unpaired / world draws, b's world position
+  under that camera. `J` lines: present, tape, alpha, cause (blend, snapped, camera, ...), error in
+  px of a 2160-line picture, category, key, call site; `R` lines per replay; a `[judder]` summary in
+  the game log every 5 s. **Identity check** (same log, `P` lines): a tagged model matrix followed
+  over three game frames by its identity must not jump there and back in the middle frame (jerk > 30
+  units and > 1.5x both steps): a wrong tag.
+- `tools/interp/tint.py <run> [steps]`: every in-between whose mean colour (whole picture,
+  or one of 16 tiles) lies outside its two game frames' range.
+- `tools/interp/tagstats.py <tag log>`: values by kind/category and the most frequent untagged chains.
+- `LM_INTERP_NOBLEND=<mask>` gained bit 7: enhanced lighting's extra lights shown as captured.
+
+### Enhanced lighting
+
+- Extra lights (world candles/fires/lamps/sprays/lightning, ghost lights, test lights) pair by the
+  providing code's id plus the generation of the object behind it (ghost actor, particle emitter); a
+  pair whose world position jumps by more than 200 units is another light (b's place). Only position
+  and radius blend: colour, intensity, flags and the shadow weight are always b's, so the yellow-tint
+  class (a light's colour carried to another light's place) cannot happen.
+- Ghost lights appear and vanish at the game frame (no partner: b's world place under the in-between
+  camera; gone: not drawn).
+- The light shadow maps, the flashlight's shadow map, AO, bloom/glow and the volumetric beam are
+  computed by Aurora from each replayed (blended) scene, so they follow the blended casters, lights
+  and camera. GX light directions are slerped (the flashlight's light stays on its cone's axis, which
+  is blended by rotation); the realistic flashlight's anchors are world points blended by id.
+- Not interpolation: the realistic flashlight's flare (Aurora `enhanced.cpp`, `g_flare`) follows
+  wall-clock time between presents; in `LM_INTERP_TEST` runs (replays out of order) it makes
+  in-betweens brighter than both game frames (identical numbers on main). Use
+  `AURORA_BEAM_FREEZE_TIME=1` for comparable dumps.
+
+### Results (first build, October 2026)
+
+Test mode (`LM_INTERP_TEST=3`, 640x480 dumps; metrics.py and tint.py; "before" = the heuristic design):
+
+| scenario | stale px | snap blobs start / end | back-and-forth | tint (in-betweens outside both neighbours) | detector |
+|---|---|---|---|---|---|
+| foyer strafing 2600-2700 | 0 | 28,368 / 28,083 (before 26,598 / 22,642) | **18,080** (before 31,913) | 7 of 198 (tiles only: Luigi's instant turn moves the lit area) | 0 blend errors; 36 snapped (instant turns) |
+| foyer, enhanced lighting Ultra | 0 | 56,269 / 78,840 | 27,981 | flare frames (see above) | 0 blend errors; 54 snapped |
+| vacuum, heavy dust 2655-2662 | 0 | 0 / 0 | 0 | 0 of 12 | 0 |
+| nursery 2600-2780 (lightning) | 0 | 765,857 / 84,985 (lightning, lights on) | **54,247** (before 63,749) | lightning frames | |
+| Boolossus (map 11) 2600-2700 | 0 | 9,765 / 2,546 | 20,040 | 6 of 198 (tiles) | 0 blend errors; snapped: joints flipping >150 degrees |
+
+Live (judder detector every 3rd in-between, 120 target): vacuum scene 0 of ~1.27 M judged draws per
+5 s off by more than 1.5 px; gold ghosts room with fire and enhanced lighting Ultra (9 min): 0 blend
+errors. Original 30: 41 foyer frames byte-identical to main. Pacing (hidden window): 60.00 fps at 60,
+116.40 at 120 (as main); tape close 0.6 ms (before 1.4-2.6 ms).
+
+User session 1 (4K, 120 Hz, enhanced lighting Ultra): "things were looking exceptionally smooth, I
+didn't notice anything looking wrong or juddering". Fixed after the sessions: hook overhead
+(`callOriginal` cached: the game logic had dropped to 18-25 Hz in heavy scenes), HUD judder (2D
+projections were paired by order and blended across HUD elements; now never blended).
+
+## History: the heuristic design (passes 1-5)
+
+The sections below describe the design that tagged interpolation replaced. Their pairing,
+fade, swarm and blink parts no longer apply; the pacing, copies, camera factoring, shadow and
+measurement parts still do.
 
 ## What was wrong (stability)
 

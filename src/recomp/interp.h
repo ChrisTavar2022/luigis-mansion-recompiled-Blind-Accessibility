@@ -19,6 +19,58 @@ namespace recomp::interp {
 
 enum class Kind : u32 { PosMtx, NrmMtx, TexMtx, Projection, Light, Verts, Color, Count };
 
+// --- identity tags (docs/INTERPOLATION.md "Tagged interpolation") -----------------
+// The game's own draw code labels what it draws: hooks on its draw entry points (tags.cpp) open a
+// tag scope around each object, part, particle, HUD element or pass. A value noted inside gets a
+// key = (the scope path, the GX call site, the n-th such value in that scope); values pair between
+// game frames only by identical keys. Values noted outside any object scope are untagged: never
+// paired (drawn from the newest frame, placed under the in-between camera when in the 3D view).
+enum class TagCat : u8 {
+    None,      // no scope
+    View,      // structural: a view / sub-view / offscreen pass (camera identity, not an object)
+    World,     // static map geometry: only the camera moves it between game frames
+    Object,    // characters, furniture, props: model matrices blended
+    Particle,  // one particle of an emitter
+    Hud,       // 2D element
+    Effect,    // CPU-built or other effect geometry owned by an object
+    SubView,   // structural: a scene drawn with its OWN camera (event scenes: door close-ups, E. Gadd's
+               // call portrait): its values are not factored by the game camera (blended as they are)
+};
+// Opens a scope: `object` is the guest address of the thing drawn (actor, model instance, particle,
+// pane), `type` what it is (vtable, model data, type id; 0 = none), `sub` a part index. Nests; the
+// identity of a scope is its parent's identity + these + the object's generation (bumped when its
+// memory is freed or the slot is reused, tagGeneration) + its occurrence under that parent.
+void pushTag(TagCat cat, u32 object, u32 type = 0, u32 sub = 0);
+void popTag();
+struct TagScope {
+    TagScope(TagCat cat, u32 object, u32 type = 0, u32 sub = 0) { pushTag(cat, object, type, sub); }
+    ~TagScope() { popTag(); }
+    TagScope(const TagScope&) = delete;
+    TagScope& operator=(const TagScope&) = delete;
+};
+// The memory at `addr` now holds a new object (freed, or a pool slot handed out again): scopes on
+// that address get a new identity, so a reused slot never pairs with its previous occupant.
+void tagGeneration(u32 addr);
+// A heap block [addr, addr + size) was freed: every tagged object inside it gets a new generation.
+void tagFreed(u32 addr, u32 size);
+// The innermost open scope (and what is opened inside it) belongs to model instance id: its
+// matrices switch together when one of them cannot blend (a skinned mesh drawn in several packets).
+void tagGroup(u32 id);
+// Every GX HLE call (hle_gx.cpp GXHLE): the guest call site and registers, for value keys and for
+// call-site tags (a draw loop inside one game function, e.g. particles: tags.cpp registers the
+// function's range and which register holds the item).
+void gxCall(const Ctx& c);
+struct SiteTag {
+    u32 lo, hi;     // guest code range (US addresses; mapped with VA() at registration)
+    TagCat cat;
+    u8 objReg, typeReg;  // registers holding the item and its owner/type (0xFF: none)
+    // A u16 in the item that counts its age (+1 per game frame) or remaining life (-1): its birth
+    // frame becomes part of the identity, so a pool slot reused by a new particle is another item.
+    s16 ageOffset = -1;
+    s8 ageStep = 0;
+};
+void addSiteTag(const SiteTag& t);
+
 // --- guest thread ---------------------------------------------------------------
 bool capturing();
 void beginTape();                 // starts capturing the next guest frame
@@ -46,8 +98,9 @@ void popLinearPosMtx();
 void noteExtraLights(u32 at, u32 count);
 
 // Colors (channel ambient/material colors, light colors, TEV color/konst registers, fog color):
-// after an Aurora call that wrote them, marked at `at`. They belong to the next draw.
-void noteColors(u32 at);
+// never blended (tagged interpolation: they always come from the newest game frame). Kept as a
+// no-op hook point for a category that may one day allow it.
+inline void noteColors(u32) {}
 
 // Camera factoring: position/normal matrices and lights are view x world; they are blended as
 // a blended camera times a blended world transform (objects move with the scene as one rigid
@@ -66,11 +119,6 @@ void noteShadowLight(const float lightView[12], const float kProj[12], const flo
 void pushShadowReceivers();
 // The pass being drawn (0 main; e.g. 1 the shadow caster pass): draws of different passes never pair.
 void setPass(u32 pass);
-// Draws noted while a snap scope is open (nests by count) never fade in or out: they appear and
-// vanish exactly at the game frame, as on the console (characters: a damage blink must stay an
-// on/off blink at every frame rate). Draws that toggle repeatedly are snapped anyway.
-void pushSnapScope();
-void popSnapScope();
 // Values noted while an orthographic projection is current are 2D (HUD): not camera-factored,
 // and a jump of more than 96 units (pixels) shows them unblended.
 void setOrthographic(bool ortho);
@@ -147,9 +195,19 @@ struct PresentInfo {
 PresentInfo lastPresent();
 
 namespace detail {  // interp.cpp <-> interp_vtx.cpp
+// A position array copied into a tape that was bound inside a tag scope (CPU-deformed geometry:
+// cloth, morphs): blended between game frames when the same scope binds a same-sized array.
+struct ArrayRec {
+    u64 key;     // identity (tag scope, call site, occurrence), never 0
+    u32 snap;    // index into the tape's array copies
+    u32 ptrAt;   // tape offset of the load's host pointer (u64 BE; the u32 size follows)
+    u16 stride;
+    u8 cnt, type, frac;  // the position format of the first draw that used it
+};
+u64 arrayKey();  // the key of a position array bound now (0: untagged)
 void vtxBeginTape();
 // Copies are finished: points the tape's array loads at them (moved into `keep`).
-void vtxEndTape(u8* tape, u32 size, std::vector<std::vector<u8>>& keep, u64& snapshotBytes);
+void vtxEndTape(u8* tape, u32 size, std::vector<std::vector<u8>>& keep, u64& snapshotBytes, std::vector<ArrayRec>& recs);
 // The tape bytes of the draw just noted (noteDraw): a display list's inlined commands, or an
 // immediate-mode draw from before its setup (drawStart) to after its vertices (drawEnd).
 void drawRange(u32 start, u32 end);
@@ -157,15 +215,17 @@ void drawStart(u32 start);
 void drawEnd(u32 end);
 // A draw with identity `id`: values noted since the previous draw belong to it.
 void noteDraw(u64 id);
-// The draw just noted: its storage-independent identity (a display list's content hash).
-void noteDrawAlt(u64 alt);
+// (unused since tagged interpolation; kept for interp_vtx.cpp)
+inline void noteDrawAlt(u64) {}
 // Immediate-mode vertices with direct f32 XYZ positions: `count` vertices of `stride`
 // bytes starting at tape offset `at`, position at `posOffset` in each.
 void noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id);
+void vertsBegin();  // at GXBegin of such a draw: its identity (tag scope, call site)
 u64 mix(u64 h);
-// A color register written by the display list of the draw just noted (TEV/fog BP writes in
-// it): the u32 at tape offset `at`, register `reg`, format (0 RGBA8, 1 TEV RA/BG, 2 fog RGB).
-void noteDrawColor(u32 at, u32 reg, u8 fmt);
+// A display list or stream wrote XF matrix memory directly (judder detector's slot table).
+void xfMatrixWritten(u32 addr, u32 words);
+// A color register written by a display list: never blended (see noteColors).
+inline void noteDrawColor(u32, u32, u8) {}
 void drawLog(const char* fmt, ...);  // LM_INTERP_DRAWS
 u8* captureBytes();  // the capture buffer (tape offsets index it)
 // This tape's texture/TLUT copies (kept alive by the tape) and the bytes newly copied.
