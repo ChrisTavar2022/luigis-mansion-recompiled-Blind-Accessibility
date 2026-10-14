@@ -86,11 +86,28 @@ A value of game frame b pairs with the value of frame a that has the same key an
   colours are **never** blended: always the newest game frame's. Enhanced lighting's extra lights
   blend position and radius only; colour, intensity, flags and shadow weight are b's.
 - A pair that cannot be blended (rotation over ~150 degrees in one game frame, scale 16x, a jump over
-  half its distance) is shown at b's world place under the in-between camera (Luigi's instant turns).
+  half its distance from the camera) is shown at b's world place under the in-between camera (Luigi's
+  instant turns). The test is made in WORLD space (camera motion taken out; in view space a fast
+  camera alone made nearby things "jump"). A turn over ~150 degrees is first tried against b turned
+  180 degrees about each of its own axes: within 45 degrees of a, that equivalent is blended (matrices
+  built from direction vectors, e.g. the Poltergust hose's segments, flip their roll between frames).
+- Projections: 2D (orthographic) ones are layout and never blended (the HUD anchors each element with
+  its own projection; paired by order they slid HUD elements in the in-betweens); perspective ones
+  blend only with one of the same aspect, except the shadow caster pass, which blends with its light.
+- The shadow caster pass blends everything while its light blends (makeLightPair): its frustum is
+  refitted every game frame ("shadows at any distance"); a caster shown as captured sits a frame
+  apart from the receivers' lookup through the blended light (the shadows swam).
+- Texture scrolls that wrap (offset back from 1 to 0, or faster than half the texture per frame) blend
+  the short way modulo 1 (animated skies, water).
+- SubView scopes (`fn_80114E18`: event scenes, E. Gadd's call portrait, the door close-ups) have their
+  own camera: their values are not factored by the game camera; a model that moves by more than a
+  tenth of its distance in one game frame switches.
 - Appear / disappear: b's set of draws is drawn for the whole interval (a new thing appears, a gone
   thing disappears, at the game frame); nothing is faded or redrawn from a.
-- Camera cuts: b's main camera (the view most main-pass model matrices use) jumps more than 250
-  units or turns more than 30 degrees, or has no counterpart in a: b is shown as captured.
+- Camera cuts: b's main camera (the view most main-pass model matrices use) has no counterpart in a,
+  or jumps more than 250 units / turns more than 30 degrees AND more than three times its previous
+  frame's move/turn (a discontinuity; Bogmire's fast camera does that much every frame and is not a
+  cut): b is shown as captured.
 - The 60 Hz scenes, pauses and lockstep transitions keep the pacing of main.
 
 ### Tag sources (src/recomp/tags.cpp; hooks in tools/recomp/hooks.txt)
