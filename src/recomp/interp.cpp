@@ -1724,6 +1724,7 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
         xform34(ib.data(), v, wb);
         // The partner draw in a and the matrix its slot held there.
         int cause = 4;
+        float whyRot = 0, whyScale = 1, whyJump = 0;  // a snapped pair: its turn (degrees), scale ratio, world jump
         std::copy(wb, wb + 3, wt);
         const s32 j = b.partner.empty() ? -1 : b.partner[pb];
         const bool cameraOnly = P.cat == TagCat::World || !P.key || j < 0;
@@ -1742,7 +1743,21 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 M34 Wa, Wb, Wt;
                 compose(iq.data(), ma, Wa.data());
                 compose(ib.data(), m, Wb.data());
-                if (!blendableWorld(Wa.data(), Wb.data(), std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]))) cause = 1;
+                if (!blendableWorld(Wa.data(), Wb.data(), std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]))) {
+                    cause = 1;
+                    Rigid ra, rb;
+                    if (decompose(Wa.data(), 4, ra) && decompose(Wb.data(), 4, rb)) {
+                        const float d = std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]);
+                        whyRot = 2.0f * std::acos(std::min(d, 1.0f)) * 57.2958f;
+                        for (int kk = 0; kk < 3; kk++) {
+                            const float sa = std::fabs(ra.u[kk][kk]), sb = std::fabs(rb.u[kk][kk]);
+                            whyScale = std::max(whyScale, std::max(sa, sb) / std::max(std::min(sa, sb), 1e-6f));
+                        }
+                    } else {
+                        whyScale = -1;  // degenerate (a zero scale)
+                    }
+                    whyJump = std::hypot(Wa[3] - Wb[3], Wa[7] - Wb[7], Wa[11] - Wb[11]);
+                }
                 if (cause == 0 && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) xform34(Wt.data(), r.pos, wt);
                 else
                     for (int c = 0; c < 3; c++) wt[c] = wa[c] + (wb[c] - wa[c]) * pr.alpha;
@@ -1780,10 +1795,10 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
         sProbeWindow.cause[cause]++;
         sProbeTotals.maxErr = std::max(sProbeTotals.maxErr, err);
         sProbeWindow.maxErr = std::max(sProbeWindow.maxErr, err);
-        probeLine( "J %u %llu %.3f %s %.2f cat %s key %016llX site %08X slot %u draw %u act %.0f %.0f ideal %.0f %.0f world %.0f %.0f %.0f area %.0f %s\n",
+        probeLine( "J %u %llu %.3f %s %.2f cat %s key %016llX site %08X slot %u draw %u act %.0f %.0f ideal %.0f %.0f world %.0f %.0f %.0f area %.0f %s why %.0f %.2f %.0f\n",
                      pr.present, (unsigned long long)b.seq, pr.alpha, kCauseName[cause], err, kCatName[u32(P.cat)],
                      (unsigned long long)P.key, P.site, r.mtxIdx, k, actual[0], actual[1], ideal[0], ideal[1], wb[0], wb[1], wb[2], area,
-                     visible ? "visible" : fullView ? "tiny" : "subview");
+                     visible ? "visible" : fullView ? "tiny" : "subview", whyRot, whyScale, whyJump);
     }
     sProbeTotals.judged += judged;
     sProbeTotals.flagged += flagged;
