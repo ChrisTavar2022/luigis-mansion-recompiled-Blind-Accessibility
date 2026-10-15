@@ -184,7 +184,14 @@ A value of game frame b pairs with the value of frame a that has the same key an
   a singular blend of their joints at the start of every spin (determinant -4.9 -> +8.9 with 40-60
   degree "turns"), and the mirror test switched them, so his body held for one interval every
   150-400 game frames (sweep C; 534 member switches -> 3 in a map 10 run). The first frame of a real
-  ~170 degree spin still shows b. `LM_SKEW_FLIP_SWITCH=1`: old behaviour.
+  ~170 degree spin still shows b. `LM_SKEW_FLIP_SWITCH=1`: old behaviour. Such pairs get no flip or
+  twist resolution (b turned 180 degrees is other geometry when sheared), their normal matrices blend
+  entrywise too, and a sheared flip makes its model instance fast + skinned, so the whole instance
+  blends entrywise. The S3D node and mesh draws (fn_800597C0 / 598E0 / 599E8, fn_80058A60,
+  fn_800595B8) tag their model as the instance when none was inherited: Chauncey's meshes are drawn
+  without the model draw and had no instance, so some of his envelope matrices blended rigidly and
+  others entrywise at a spin and his skin tore into shards for half an interval (frame 6990,
+  pre-existing). `LM_GROUP_TAPE=<seq>`: the instance votes of one tape.
 - Projections: 2D (orthographic) ones are layout and never blended (the HUD anchors each element with
   its own projection; paired by order they slid HUD elements in the in-betweens); perspective ones
   blend only with one of the same aspect, except the shadow caster pass, which blends with its light.
