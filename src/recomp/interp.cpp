@@ -964,6 +964,7 @@ bool untwist(f32* wa, const f32* wb, int cols = 4) {
 // game frame blends the short way instead of switching.
 constexpr float kSpinnerTurn = 60.0f;
 
+const bool sSkewFlipSwitch = std::getenv("LM_SKEW_FLIP_SWITCH") != nullptr;  // test aid: sheared mirror flips switch (old)
 bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -1.0f, float prevTurn = -1.0f) {
     Rigid ra, rb;
     if (!decompose(wa, 4, ra) || !decompose(wb, 4, rb)) {
@@ -971,7 +972,25 @@ bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -
             if (std::fabs(wa[i] - wb[i]) > ((i & 3) == 3 ? 400.0f : 0.35f)) return false;
         return true;
     }
-    if (flatMatrix(wa) || flatMatrix(wb)) {
+    // A weighted (envelope) matrix whose columns are far from orthogonal and whose handedness flips
+    // between game frames passed through a singular blend of its joints (Chauncey's squash-and-stretch
+    // body at the start of a spin: determinant -4.9 -> +8.9 with 40-60 degree "turns"). Its rotation
+    // and mirroring mean nothing: like a flat one, it blends entrywise (each skinned vertex in a
+    // straight line) when its axes' lengths and place allow. Shown as b, the whole body held for one
+    // interval at every spin start (sweep C). Orthogonal (rigid) mirrors still switch.
+    const auto sheared = [](const f32* m) {
+        float c[3][3], l[3];
+        for (int k = 0; k < 3; k++) {
+            for (int r = 0; r < 3; r++) c[k][r] = m[4 * r + k];
+            l[k] = std::sqrt(c[k][0] * c[k][0] + c[k][1] * c[k][1] + c[k][2] * c[k][2]);
+        }
+        for (int i = 0; i < 3; i++)
+            for (int j = i + 1; j < 3; j++)
+                if (std::fabs(c[i][0] * c[j][0] + c[i][1] * c[j][1] + c[i][2] * c[j][2]) > 0.25f * l[i] * l[j]) return true;
+        return false;
+    };
+    const bool skewFlip = (ra.u[2][2] < 0) != (rb.u[2][2] < 0) && !sSkewFlipSwitch && (sheared(wa) || sheared(wb));
+    if (flatMatrix(wa) || flatMatrix(wb) || skewFlip) {
         // Squashed flat: only its axes' lengths (appearing/vanishing by scale) and place count.
         for (int k = 0; k < 3; k++) {
             const float sa = std::sqrt(wa[k] * wa[k] + wa[4 + k] * wa[4 + k] + wa[8 + k] * wa[8 + k]);
