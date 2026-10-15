@@ -2634,6 +2634,12 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 for (size_t k = 0; k < idx.size(); k++)
                     if (ds[k] > std::max(250.0f, 4.0f * spread)) outlier[idx[k]] = 1;
             }
+            // Per instance: (members whose place jumped, members that voted). A real jump of an
+            // instance (a respawn, a teleport) moves most of its members alike; one of 49 jumping is a
+            // stray matrix and switches nothing (Luigi's J3D instance: one member's first erratic step
+            // after a quiet spell switched all of Luigi, sweep B).
+            static std::unordered_map<u64, std::pair<u32, u32>> jumpVotes;
+            jumpVotes.clear();
             for (size_t mi = 0; mi < members.size(); mi++) {
                 const u32 i = members[mi].i;
                 const s32 j = members[mi].j;
@@ -2666,12 +2672,13 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 }
                 const bool near = blendableWorld(wa.data(), wb.data(), dist, prev, prevTurn);
                 const bool anyDist = blendableWorld(wa.data(), wb.data(), 1e9f, -1.0f, prevTurn);
+                jumpVotes[p.group].second++;
                 if (!near && anyDist) {  // only the place jumped
-                    if (sTrace && snapGroups.insert(p.group).second)
-                        log("[interp] tape %llu: instance %016llX switched by key %016llX site %08X step %.0f prev %.0f dist %.0f (%zu members)",
+                    if (sTrace && jumpVotes[p.group].first == 0)
+                        log("[interp] tape %llu: instance %016llX jump vote by key %016llX site %08X step %.0f prev %.0f dist %.0f median %.0f (%zu members)",
                             (unsigned long long)b.seq, (unsigned long long)p.group, (unsigned long long)p.key, p.site, step, prev, dist,
-                            byGroup.count(p.group) ? byGroup[p.group].size() : 0);
-                    snapGroups.insert(p.group);
+                            groupStep[mi], byGroup.count(p.group) ? byGroup[p.group].size() : 0);
+                    jumpVotes[p.group].first++;
                     continue;
                 }
                 const bool flat = flatMatrix(wa.data()) || flatMatrix(wb.data());
@@ -2691,6 +2698,12 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 if (fast) fastGroups.insert(p.group);
                 if (skin) skinGroups.insert(p.group);
             }
+            for (const auto& [g, v] : jumpVotes)
+                if (v.first > 0 && (v.second < 4 || 2 * v.first >= v.second)) {
+                    snapGroups.insert(g);
+                    if (sTrace) log("[interp] tape %llu: instance %016llX switched (%u of %u members jumped)", (unsigned long long)b.seq,
+                                    (unsigned long long)g, v.first, v.second);
+                }
             // Linear only for a skinned instance (some matrix sheared or flat) with a fast turn: rigid
             // parts (the water's bubbles, which spin) keep their own rigid blend (entrywise, a part
             // turning half a turn shrank to a sliver: the bubbles faded between game frames).
