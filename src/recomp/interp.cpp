@@ -965,6 +965,32 @@ bool untwist(f32* wa, const f32* wb, int cols = 4) {
 constexpr float kSpinnerTurn = 60.0f;
 
 const bool sSkewFlipSwitch = std::getenv("LM_SKEW_FLIP_SWITCH") != nullptr;  // test aid: sheared mirror flips switch (old)
+// A weighted (envelope) matrix whose columns are far from orthogonal and whose handedness flips
+// between game frames passed through a singular blend of its joints (Chauncey's squash-and-stretch
+// body at the start of a spin: determinant -4.9 -> +8.9 with 40-60 degree "turns"). Its rotation and
+// mirroring mean nothing: like a flat one, it blends entrywise (each skinned vertex in a straight
+// line) when its axes' lengths and place allow, with no flip or twist resolution (b turned 180
+// degrees about an axis is other geometry when sheared: the in-betweens converged to it and the part
+// snapped at the game frame). Shown as b, the whole body held for one interval at every spin start
+// (sweep C). Orthogonal (rigid) mirrors still switch.
+bool shearedMatrix(const f32* m, int cols = 4) {
+    float c[3][3], l[3];
+    for (int k = 0; k < 3; k++) {
+        for (int r = 0; r < 3; r++) c[k][r] = m[cols * r + k];
+        l[k] = std::sqrt(c[k][0] * c[k][0] + c[k][1] * c[k][1] + c[k][2] * c[k][2]);
+    }
+    for (int i = 0; i < 3; i++)
+        for (int j = i + 1; j < 3; j++)
+            if (std::fabs(c[i][0] * c[j][0] + c[i][1] * c[j][1] + c[i][2] * c[j][2]) > 0.25f * l[i] * l[j]) return true;
+    return false;
+}
+float det3(const f32* m, int cols = 4) {
+    const f32 *r0 = m, *r1 = m + cols, *r2 = m + 2 * cols;
+    return r0[0] * (r1[1] * r2[2] - r1[2] * r2[1]) - r0[1] * (r1[0] * r2[2] - r1[2] * r2[0]) + r0[2] * (r1[0] * r2[1] - r1[1] * r2[0]);
+}
+bool skewFlip(const f32* wa, const f32* wb, int cols = 4) {
+    return !sSkewFlipSwitch && (det3(wa, cols) < 0) != (det3(wb, cols) < 0) && (shearedMatrix(wa, cols) || shearedMatrix(wb, cols));
+}
 bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -1.0f, float prevTurn = -1.0f) {
     Rigid ra, rb;
     if (!decompose(wa, 4, ra) || !decompose(wb, 4, rb)) {
@@ -972,25 +998,7 @@ bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -
             if (std::fabs(wa[i] - wb[i]) > ((i & 3) == 3 ? 400.0f : 0.35f)) return false;
         return true;
     }
-    // A weighted (envelope) matrix whose columns are far from orthogonal and whose handedness flips
-    // between game frames passed through a singular blend of its joints (Chauncey's squash-and-stretch
-    // body at the start of a spin: determinant -4.9 -> +8.9 with 40-60 degree "turns"). Its rotation
-    // and mirroring mean nothing: like a flat one, it blends entrywise (each skinned vertex in a
-    // straight line) when its axes' lengths and place allow. Shown as b, the whole body held for one
-    // interval at every spin start (sweep C). Orthogonal (rigid) mirrors still switch.
-    const auto sheared = [](const f32* m) {
-        float c[3][3], l[3];
-        for (int k = 0; k < 3; k++) {
-            for (int r = 0; r < 3; r++) c[k][r] = m[4 * r + k];
-            l[k] = std::sqrt(c[k][0] * c[k][0] + c[k][1] * c[k][1] + c[k][2] * c[k][2]);
-        }
-        for (int i = 0; i < 3; i++)
-            for (int j = i + 1; j < 3; j++)
-                if (std::fabs(c[i][0] * c[j][0] + c[i][1] * c[j][1] + c[i][2] * c[j][2]) > 0.25f * l[i] * l[j]) return true;
-        return false;
-    };
-    const bool skewFlip = (ra.u[2][2] < 0) != (rb.u[2][2] < 0) && !sSkewFlipSwitch && (sheared(wa) || sheared(wb));
-    if (flatMatrix(wa) || flatMatrix(wb) || skewFlip) {
+    if (flatMatrix(wa) || flatMatrix(wb) || skewFlip(wa, wb)) {
         // Squashed flat: only its axes' lengths (appearing/vanishing by scale) and place count.
         for (int k = 0; k < 3; k++) {
             const float sa = std::sqrt(wa[k] * wa[k] + wa[4 + k] * wa[4 + k] + wa[8 + k] * wa[8 + k]);
@@ -3045,8 +3053,9 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
         M34 wa, wb, wt;
         compose(vp->ia.data(), va, wa.data());
         compose(vp->ib.data(), vb, wb.data());
-        if (!sLinearBlend && resolveFlip(wa.data(), wb.data(), 4)) sFlips++;
-        if (!sLinearBlend && untwist(wa.data(), wb.data())) sUntwists++;
+        const bool skew = skewFlip(wa.data(), wb.data());
+        if (!sLinearBlend && !skew && resolveFlip(wa.data(), wb.data(), 4)) sFlips++;
+        if (!sLinearBlend && !skew && untwist(wa.data(), wb.data())) sUntwists++;
         // LM_TWIST_LOG=<file> (test aid): model matrices that turn by over 30 degrees in one game
         // frame, with how far each local axis turned (a turn about a barely moving axis is a twist).
         static FILE* sTwistLog = [] {
@@ -3071,7 +3080,7 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
                              (unsigned long long)b.seq, p.site, p.source, (unsigned long long)p.key, total, ax[0], ax[1], ax[2],
                              std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]), wb[3], wb[7], wb[11]);
         }
-        if (sLinearBlend || flatMatrix(wa.data()) || flatMatrix(wb.data()) || !blendRigid(wa.data(), wb.data(), 4, alpha, wt.data())) {
+        if (sLinearBlend || skew || flatMatrix(wa.data()) || flatMatrix(wb.data()) || !blendRigid(wa.data(), wb.data(), 4, alpha, wt.data())) {
             // Squashed flat (or mirrored against its partner): entrywise in world space.
             for (int k = 0; k < 12; k++) wt[k] = wa[k] + (wb[k] - wa[k]) * alpha;
             sFlatBlends++;
@@ -3112,7 +3121,7 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
             rotT(vp->vb, cb, wb);
             for (int r = 0; r < 3; r++) na[3 * r + c] = wa[r], nb[3 * r + c] = wb[r];
         }
-        if (sLinearBlend) {
+        if (sLinearBlend || skewFlip(na, nb, 3)) {
             for (int k = 0; k < 9; k++) nt[k] = na[k] + (nb[k] - na[k]) * alpha;
         } else {
             resolveFlip(na, nb, 3);
@@ -3408,8 +3417,11 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 compose(iq.data(), ma, Wa.data());
                 compose(ib.data(), m, Wb.data());
                 const float prevTurn = noteTurn(a, j, b, pb, Wa.data(), Wb.data(), 4);
-                resolveFlip(Wa.data(), Wb.data(), 4);
-                untwist(Wa.data(), Wb.data());
+                const bool skew = skewFlip(Wa.data(), Wb.data());
+                if (!skew) {
+                    resolveFlip(Wa.data(), Wb.data(), 4);
+                    untwist(Wa.data(), Wb.data());
+                }
                 const u8 groupPolicy = b.groupSnap ? b.groupSnap[pb].load(std::memory_order_relaxed) : 0;
                 if (groupPolicy != 2 &&
                     !blendableWorld(Wa.data(), Wb.data(), std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]),
@@ -3430,7 +3442,7 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                     cause = whyScale < 0 || whyScale > 16.0f ? 5 : whyRot > 150.0f ? 1 : whyJump > 200.0f ? 6 : 5;
                 }
                 if (cause == 0 && groupPolicy == 1) cause = 5;  // its instance switched
-                const bool flat = flatMatrix(Wa.data()) || flatMatrix(Wb.data());  // entrywise, as the replay
+                const bool flat = skew || flatMatrix(Wa.data()) || flatMatrix(Wb.data());  // entrywise, as the replay
                 if (cause == 0 && !flat && groupPolicy != 2 && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) {
                     // (A spinner / tumbler: its drawn centre moves in a straight line, as replayed.)
                     if (prevTurn > kSpinnerTurn && P.bundle < b.bundleCentre.size() && std::isfinite(b.bundleCentre[P.bundle][0])) {
@@ -4063,9 +4075,12 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     compose(vp->ia.data(), va, wa.data());
                     compose(vp->ib.data(), vb, wb.data());
                     const float prevTurn = noteTurn(a, j, b, i, wa.data(), wb.data(), 4);
-                    if (prevTurn > kSpinnerTurn && !forced) pivotVp = vp;
-                    resolveFlip(wa.data(), wb.data(), 4);
-                    untwist(wa.data(), wb.data());
+                    const bool skew = skewFlip(wa.data(), wb.data());
+                    if (prevTurn > kSpinnerTurn && !forced && !skew) pivotVp = vp;
+                    if (!skew) {
+                        resolveFlip(wa.data(), wb.data(), 4);
+                        untwist(wa.data(), wb.data());
+                    }
                     const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
                     if (b.worldStep) b.worldStep[i].store(step, std::memory_order_relaxed);
                     const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
@@ -4084,9 +4099,12 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                             nb[3 * r + c2] = vp->vb[r] * vb[c2] + vp->vb[4 + r] * vb[3 + c2] + vp->vb[8 + r] * vb[6 + c2];
                         }
                     const float prevTurn = noteTurn(a, j, b, i, na, nb, 3);
-                    resolveFlip(na, nb, 3);
-                    untwist(na, nb, 3);
-                    ok = forced || blendable(Kind::NrmMtx, na, nb, 9, prevTurn);
+                    const bool skew = skewFlip(na, nb, 3);  // (blended entrywise in blendFactored)
+                    if (!skew) {
+                        resolveFlip(na, nb, 3);
+                        untwist(na, nb, 3);
+                    }
+                    ok = forced || skew || blendable(Kind::NrmMtx, na, nb, 9, prevTurn);
                 } else {
                     ok = blendable(p.kind, va, vb, p.count);
                 }
