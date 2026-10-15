@@ -2884,6 +2884,7 @@ struct LightPair {
     M34 lvt, kpt, krt;  // K(t) = P(t) x LV(t)
 };
 LightPair sLightPair;
+const bool sLightLegacy = std::getenv("LM_LIGHT_ARC") != nullptr;  // test aid: the old translation blend
 void makeLightPair(const Tape& a, const Tape& b, float alpha) {
     sLightPair = {};
     if (!a.shadow.valid || !b.shadow.valid) return;
@@ -2903,6 +2904,21 @@ void makeLightPair(const Tape& a, const Tape& b, float alpha) {
         !invertAffine(b.shadow.lv.data(), ib.data()) ||
         !blendRigid(a.shadow.lv.data(), b.shadow.lv.data(), 4, alpha, sLightPair.lvt.data()))
         return;
+    // The eye moves in a straight line, as for every camera (viewPair): the caster pass is drawn
+    // through the light's camera pair, so the receivers' light must be that same in-between camera.
+    // Blending the view matrix's translation instead moved the eye along an arc while the light
+    // turned: the follow light (moving 35-150 units and turning every game frame after "shadows at
+    // any distance") then looked up a shadow map drawn from another place mid-interval, and lit walls
+    // shadowed themselves in the in-betweens (sweep B: a candle glow in the 2F east hallway dipped
+    // at every game frame).
+    if (!sLightLegacy) {
+        f32 ea[3], eb[3], e[3];
+        eyeOf(a.shadow.lv, ea);
+        eyeOf(b.shadow.lv, eb);
+        M34& t = sLightPair.lvt;
+        for (int c = 0; c < 3; c++) e[c] = ea[c] + (eb[c] - ea[c]) * alpha;
+        for (int r = 0; r < 3; r++) t[4 * r + 3] = -(t[4 * r] * e[0] + t[4 * r + 1] * e[1] + t[4 * r + 2] * e[2]);
+    }
     for (int which = 0; which < 2; which++) {
         const M34& ka = which ? a.shadow.kr : a.shadow.kp;
         const M34& kb = which ? b.shadow.kr : b.shadow.kp;
@@ -4138,7 +4154,8 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
     // enhanced-lighting code's own light identity; colours stay b's). Their positions are in view
     // space (the main camera at capture): blended in world space and seen from the blended main
     // camera; a light without a partner keeps its world place under the blended camera.
-    static const bool sNoBlendExtra = std::getenv("LM_INTERP_NOBLEND") && (std::strtoul(std::getenv("LM_INTERP_NOBLEND"), nullptr, 0) & 0x80);  // bit 7: extra lights as captured
+    static const bool sXlBoxSlide = std::getenv("LM_XL_BOX_SLIDE") != nullptr;  // test aid: the old room box (moved with the light)
+    static const bool sNoBlendExtra = std::getenv("LM_INTERP_NOBLEND") &&(std::strtoul(std::getenv("LM_INTERP_NOBLEND"), nullptr, 0) & 0x80);  // bit 7: extra lights as captured
     // Test aid LM_XL_LOG=<file>: every replay's extra lights (identity, paired, intensity a / b / shown).
     static FILE* sXlLog = [] {
         const char* v = std::getenv("LM_XL_LOG");
@@ -4235,12 +4252,22 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     const f32 va = loadBE(la + 4 * k), vb = loadBE(lb + 4 * k);
                     if (std::isfinite(va) && std::isfinite(vb)) storeBE(out + 4 * k, va + (vb - va) * alpha);
                 }
+                // The room box's centre is relative to the light's position: it stays at b's place in
+                // the world (the room does not move with the light). Left relative to the blended
+                // position, the box slid with the light by its whole step at alpha 0 and cut off the
+                // part of the room the light was leaving (sweep B: Luigi's fire stream lighting the
+                // 2F east hallway wall went dark at every game frame and came back by alpha 1).
+                f32 bNow[3] = {pb[0], pb[1], pb[2]};  // b's position as seen in this replay
                 if (mvp) {
                     f32 w[3], o[3];
                     for (int c = 0; c < 3; c++) w[c] = wa[c] + (wb[c] - wa[c]) * alpha;
                     xform(mvp->vt, w, o);
                     for (int c = 0; c < 3; c++) storeBE(out + 4 * c, o[c]);
+                    xform(mvp->vt, wb, bNow);
                 }
+                if ((u32At(lb + 32) & 0x10u) && !sXlBoxSlide)
+                    for (int c = 0; c < 3; c++)
+                        storeBE(out + 40 + 4 * c, loadBE(out + 40 + 4 * c) + bNow[c] - loadBE(out + 4 * c));
             }
         }
     }
