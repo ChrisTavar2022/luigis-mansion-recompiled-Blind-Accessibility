@@ -1418,6 +1418,28 @@ Test aids: `LM_PIPELINE_LIST=<file>` (a damaged list), `LM_CACHE_DIR=<dir>`; the
 2 running, consecutive startup crashes, then 64 slots); the `pipeline_bad` table lists recorded
 configs (`reason` 1 = failed creation, 2 = crash suspect, `crashes`).
 
+### Skipped draws are logged; shadow casters wait (Aurora 0221)
+
+Every draw dropped for a missing pipeline is counted. Reasons: creation failed, waiting turned off
+(`LM_PIPELINE_WAIT=0`), or not queued. Logging is always on:
+- every second with a non-zero count, a warning "N draws skipped for a missing pipeline in the
+  last 1.0 s (k shadow casters)";
+- the first skip of each pipeline, one line: "draw skipped:" / "shadow caster skipped:", the
+  pipeline key, the reason, and its config in the MISS format (recorded when a draw asked for the
+  pipeline before it was built; "precache list entry" if none did).
+
+Fix: the light shadow-map casters (`render_casters`) used `try_get_pipeline` and skipped a caster
+whose pipeline was still compiling, so that light had no shadow in that present. They now wait
+like every other draw (the 0013 policy). Reason: the user's foyer capture under 100% CPU load
+alternated between shadowed and unshadowed presents of one candle light (docs/INTERPOLATION.md,
+"Foyer entry flicker report").
+
+Checked:
+- cold cache, `LM_PRECACHE_WAIT=0`, game limited to 2 cores, 60 fps, the foyer intro: 0 skipped
+  draws, the sconce light monotonic present by present;
+- with `LM_PIPELINE_WAIT=0` the log lists the skips (up to 912 per second at startup, 19 distinct
+  pipelines with their configs).
+
 ## Enhanced lighting
 
 Optional effects layered on top of the accurate GX rendering: F1 > Visuals > Enhanced lighting

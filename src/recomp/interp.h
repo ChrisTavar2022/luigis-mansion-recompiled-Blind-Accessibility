@@ -161,6 +161,7 @@ bool raceStore(u32 addr, int size);   // every guest store (true: log it) while 
 
 // Textures and TLUTs (interp_tex.cpp): the data a load points at is copied at capture time.
 void texLoaded(u32 at);   // after GXLoadTexObj, marked at `at`
+u32 boundTexture(int map);  // what was last loaded into that texture map (while capturing; 0: none)
 void tlutLoaded(u32 at);  // after GXLoadTlut, marked at `at`
 void efbCopied(u32 guestDest, u32 size);  // GXCopyTex: textures over that memory are not copied
 void efbWrittenBack(const void* dest, u32 size);  // a copy's bytes were written into memory
@@ -225,7 +226,10 @@ inline void noteDrawAlt(u64) {}
 // Immediate-mode vertices with direct f32 XYZ positions: `count` vertices of `stride`
 // bytes starting at tape offset `at`, position at `posOffset` in each.
 void noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, u32 clrOffset = 0xFFFF, u32 clrBytes = 0,
-                  u32 posBytes2D = 0);  // posBytes2D: a 2D (orthographic) block of positions that size: colours only
+                  u32 posBytes2D = 0,  // posBytes2D: a 2D (orthographic) block of positions that size
+                  // 2D only: 0x100 | component type | frac << 3 of the positions, and the direct texture
+                  // coordinates (offset, bytes): a picture whose layout animates blends its positions.
+                  u32 posFmt2D = 0, u32 uvOffset = 0xFFFF, u32 uvBytes = 0);
 void vertsBegin(bool ortho = false);  // at GXBegin of such a draw: its identity (tag scope, call site)
 u64 mix(u64 h);
 // A display list or stream wrote XF matrix memory directly (judder detector's slot table).

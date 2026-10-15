@@ -90,9 +90,10 @@ A value of game frame b pairs with the value of frame a that has the same key an
   item's). 2D/HUD colours blend under the same draw check since f45cd1e (static HUD colours blend
   to themselves; the HUD fading in with a room stepped at 30 Hz). 2D immediate-mode quads with direct
   positions and direct RGB(A)8 vertex colours (HUD fades, full-screen fade quads) are noted as 2D
-  blocks (role 2, `posBytes2D`): only their colours blend, and only while every vertex position is
-  byte-identical in both game frames; untagged ones are keyed by structural scope + call site +
-  occurrence (87f2ea6). XF colours written inside display lists (0x100A-0x100D, light colours) are
+  blocks (role 2, `posBytes2D`): their colours blend while every vertex position is byte-identical
+  in both game frames, or while the picture's layout animates (positions blended too: "Text boxes"
+  below); untagged ones are keyed by structural scope + call site + occurrence (87f2ea6), plus
+  the texture they show. XF colours written inside display lists (0x100A-0x100D, light colours) are
   noted like the lists' BP colour writes, and untagged 2D colour registers are keyed by structural
   scope + call site + register + occurrence and blend with a draw of the same kind (8d11727).
   Still open: the scene fade-in on arriving in the foyer / returning from the save screen steps at 30
@@ -265,6 +266,49 @@ of the identity (found with `LM_TAG_PEEK=<words>`: 98-100% of particles step by 
   or one of 16 tiles) lies outside its two game frames' range.
 - `tools/interp/tagstats.py <tag log>`: values by kind/category and the most frequent untagged chains.
 - `LM_INTERP_NOBLEND=<mask>` gained bit 7: enhanced lighting's extra lights shown as captured.
+- `LM_PRESENT_DUMP=1` (with `LM_FRAME_DUMP=<dir>,<first>,<last>`): in a real-time run, every present
+  of the tapes in the dump range is written as `f<frame>_p<present>_a<alpha x 1000>.ppm` (640x480
+  EFB through the copy-to-RAM path, so the extra lights, shadows and bloom composited into the EFB
+  are in it; not the post-process chain). It shows what each present looks like without
+  `LM_INTERP_TEST`, which pauses the guest and changes the timing. Works at 60 fps. At 120 fps the
+  dump's own cost made most tapes lose their dump marker (one file per run), so use 60 there.
+- `LM_XL_LOG=<file>`: per replay (`P seq alpha f<dump frame> a <a seq> lights n`), every extra light
+  with its id, identity key, paired or new, intensity in a and b and the intensity shown, and flags
+  (shadow weight in bits 8-15).
+
+### Foyer entry flicker report (October 2026, not reproduced)
+
+User report (live, 60 fps presented on a 120 Hz G-SYNC TV, 4K, Enhanced lighting Ultra): "all the
+lights flicker" in the new-game foyer intro. In the capture the shot after the cut at guest frame
+2583 (left wall sconce, about 19.5-20.5 s into the clip) has the sconce's light pulse. Bright
+presents show a wide, sharp-edged halo with no shadows. Dim presents show the sconce's own shadows
+(bracket, table). They alternate about every 3 game frames, and values are often held for 3
+presents. That session ran while other agents' builds kept the CPU at 100% (guest 21-26 fps at
+times).
+
+Not reproduced, in any of the following runs. The light stayed steady and its shadow faded in
+smoothly in every run:
+- Original 30, vanilla and Enhanced lighting;
+- 60 and 120 fps with the user's own settings.ini (VSync on), render scale 2, 4 and 8, with
+  `LM_JUDDER_LOG`;
+- the shipped LuigisMansionRecomp package with a fresh setup;
+- CPU starved to 2 or 1 cores (affinity), also with a cold pipeline cache;
+- a second new game after a reset in the same session.
+
+Every present was checked with `LM_PRESENT_DUMP`. The data paths were checked as well:
+- extra-light intensities per present (`LM_XL_LOG`): smooth, every light paired;
+- shadow slots and weights (`LM_LIGHT_SELECT_LOG=2`): the two candle groups gain their slots at the
+  cut and fade in 64 -> 255 over 12 game frames, then stay;
+- no lamp is lit (room-lit test) during the intro.
+
+Seen in passing: under starvation, presents hold the same tape (alpha 0 or 1 repeated), which
+matches the user's 3-present holds. Candidates left: what differs between the user's 4K fullscreen
+swap chain and an off-screen window; state from the save played earlier in that session (not
+reproduced with a reset and a second new game).
+Follow-up (Aurora 0221, docs/RENDERING.md "Skipped draws are logged"): light shadow casters whose
+pipeline was still compiling were skipped, which drops that light's shadow for the present. They
+now wait like other draws, and every skipped draw is logged (per-second count plus the config of
+each pipeline the first time). The user's next session log will show whether skips occurred.
 
 ### Enhanced lighting
 
@@ -283,6 +327,54 @@ of the identity (found with `LM_TAG_PEEK=<words>`: 98-100% of particles step by 
   wall-clock time between presents; in `LM_INTERP_TEST` runs (replays out of order) it makes
   in-betweens brighter than both game frames (identical numbers on main). Use
   `AURORA_BEAM_FREEZE_TIME=1` for comparable dumps.
+
+### Text boxes: 2D layout blending and the phase lock (October 2026)
+
+User report (live session, 120 Hz VRR TV): "some judder on text boxes as the text draws in"
+(Neville's dialogue, the purple message window). The user's capture (120 fps; the session itself
+presented 60 fps, `[interp] presented 60.0 fps` in its log) showed the window opening in steps that
+lasted 4, 5, 2 and then 4 capture frames each (top edge 256 -> 196 -> 136 -> 100 px at 1080p), the
+letters then every 4 frames except one 5 / 2 pair, the camera behind the translucent window smooth.
+Two causes, both ours:
+
+1. **The window's layout stepped at 30 Hz.** fn_80044138 draws the window as one 2D quad
+   (`fn_8003B054`, texture 480x120, direct s16 positions, direct colours) that grows from a thin
+   bar to its full height over 3-4 game frames (E. Gadd's call window: top 443 -> 413 -> 383 -> 353
+   in the 640x480 layout). 2D blocks only blended their colours, so its edges jumped 30 units
+   (60 px at 1080p) once per game frame while everything else moved every present.
+   `blend2DLayout`: a 2D block paired by identity whose positions changed blends them too when it
+   is the same picture (identity now includes the texture loaded into map 0; every vertex's
+   texture coordinates identical in both frames), at least 48 layout units across in both frames
+   (glyphs are smaller: letters still appear and lines still scroll at the game frame, as on the
+   console), every vertex moving by at most 96 units, and it either changes size (opening,
+   closing, pulsing) or moved the same way in the game frame before (sliding; a single jump such
+   as a menu cursor stays a jump). Positions keep their format (s16: whole layout units, 4.5 px
+   steps at 2160 lines). Also blended now: the health heart's pulse, the Game Boy Horror sliding
+   up/down, the call screen's icons, the title menu boxes. `LM_2D_LOG=<file>` logs every blended
+   picture (tape, alpha, key, bounds a / b / shown); `LM_INTERP_2D_LAYOUT=0` turns it off; the
+   `[interp] 2D pictures that moved` line counts blended / kept per present.
+   Call window opening at 120 (4 presents per game frame), top edge shown per present:
+   442 434 427 419 | 412 404 396 389 | 381 374 366 359 (before: 443 x4, 413 x4, 383 x4, 353).
+2. **Presents at the tape boundaries** (`pace()`, phase lock). Whatever is shown as the newest
+   game frame (2D layout, text, unpaired things, 30 Hz texture animations) changes at the first
+   present past a tape's time. The delay put the presents anywhere in the game frame; when they sat
+   next to the tape times (the drift between 29.97 Hz and the display, or a change of the measured
+   delay, moves them there every few seconds), the ~1-2 ms jitter of the smoothed tape times decided
+   whether a change came a present early or late: 1 / 3 presents per game frame at 60 fps instead
+   of 2 / 2 (the user's 5 / 2 capture frames), 3 / 5 at 120, sometimes in bursts (1 3 2 1). The
+   delay used (`lockD`) now keeps the target halfway between tape times: measured on the target,
+   corrected by 10% of the phase error per present, kept between d - 0.25 and d + 1 present periods
+   and moved by a whole period only when d leaves that range (so small changes of d no longer
+   move the target either). Only when the presents per game frame are an integer (+-0.08).
+   `LM_PHASE_LOCK=0`: off; the `[interp]` line shows `phase lock +x ms (n wraps)`.
+   Measured with `LM_PACING_LOG` (call scenario, steady 30 Hz stretches, same build, hidden window
+   on a busy machine): 60 fps, off: 0.87% of game frames shown for 1 or 3 presents (10 events in
+   1151 frames, one a burst), first-present alpha spread over the whole game frame; on: 0.24%
+   (4 in 1683, each a single wrap), 91% of first presents at alpha 0.20-0.25; stalls 11 -> 5,
+   shown 25.9 -> 29.3 ms behind the newest game frame. 120 fps: alpha at the first present
+   clustered at 0.10-0.125 (87%) instead of uniform.
+3. Not changed: letters appear at the game frame (inherent; the game reveals one or two per game
+   frame). Original 30 is byte-identical (21 frames 2600-2660 across the call window opening).
 
 ### Results (first build, October 2026)
 
