@@ -179,6 +179,12 @@ A value of game frame b pairs with the value of frame a that has the same key an
   entrywise in world space (`flatMatrix`). Rolling balls and Chauncey's spin (150-175 degrees per game
   frame) were switches (the turn direction is not knowable from two frames); with the spinner rule
   above they blend the short way once the previous game frame showed the spin.
+  Sheared matrices (columns more than ~75 degrees from orthogonal) whose handedness flips between
+  game frames are treated the same way (interp-final 3): Chauncey's envelope matrices pass through
+  a singular blend of their joints at the start of every spin (determinant -4.9 -> +8.9 with 40-60
+  degree "turns"), and the mirror test switched them, so his body held for one interval every
+  150-400 game frames (sweep C; 534 member switches -> 3 in a map 10 run). The first frame of a real
+  ~170 degree spin still shows b. `LM_SKEW_FLIP_SWITCH=1`: old behaviour.
 - Projections: 2D (orthographic) ones are layout and never blended (the HUD anchors each element with
   its own projection; paired by order they slid HUD elements in the in-betweens); perspective ones
   blend only with one of the same aspect, except the shadow caster pass, which blends with its light.
