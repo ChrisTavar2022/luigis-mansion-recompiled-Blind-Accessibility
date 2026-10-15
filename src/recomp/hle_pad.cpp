@@ -5,6 +5,7 @@
 
 #include "port/options.h"
 #include "recomp/controls.h"
+#include "recomp/coop.h"
 #include "recomp/menu.h"
 #include "recomp/skip.h"
 #include "recomp/unused2.h"
@@ -172,12 +173,25 @@ HLE(PADRead) {
     }
     if (!port::options().inputScript.empty()) {
         applyScript(st);
-        ghostlights::testPad(st[0].button, st[0].stickX, st[0].stickY, st[0].substickY, st[0].triggerRight);  // LM_GHOST_HUNT test aid
+        {  // LM_GHOST_HUNT test aid (LM_GHOST_HUNT_PLAYER=2: player 2 of the 2-player mode hunts, on port 2)
+            PADStatus& h = st[ghostlights::huntPort()];
+            ghostlights::testPad(h.button, h.stickX, h.stickY, h.substickY, h.triggerRight);
+        }
         static u32 sLogged = 0;
         if (st[0].button && sLogged++ < 20)
             log("[pad] retrace %u frame %u: buttons %04X err %d", viRetraceCount(), skip::guestFrames(), st[0].button, st[0].err);
     }
     skip::filterPad(st, PAD_MAX_CONTROLLERS);
+    // 2-player co-op improvements: player 2's Game Boy Horror buttons do nothing, and player 2
+    // has no input while an event has set them aside (coop_fixes.cpp).
+    if (coop::fixes()) {
+        st[1].button &= u16(~(PAD_BUTTON_X | PAD_BUTTON_Y | PAD_BUTTON_UP | PAD_BUTTON_DOWN | PAD_BUTTON_LEFT | PAD_BUTTON_RIGHT));
+        if (coop::player2SetAside()) {
+            const s8 err = st[1].err;
+            st[1] = PADStatus{};
+            st[1].err = err;
+        }
+    }
     if (unused2::playerHeld()) {  // poisoned Luigi (luigi_states.cpp): no movement or actions
         st[0].button &= PAD_BUTTON_START;
         st[0].stickX = st[0].stickY = st[0].substickX = st[0].substickY = 0;

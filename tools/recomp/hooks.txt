@@ -234,6 +234,10 @@ fn_800112F8 us pal
 fn_800850B4 us pal
 # HUD overlay pass after each view (2-player HUD after both views, player 2's health meter).
 fn_8003E7B0 us pal
+# 2-player view layout (co-op improvements): full-screen shared view, side-by-side split
+# (fn_80011150 sets the view cameras' viewports, fn_80020654 updates a camera from them).
+fn_80011150 us pal
+fn_80020654 us pal
 
 # Enhanced lighting (src/recomp/enhanced_lighting.cpp, docs/RENDERING.md): the main 3D view of the
 # game scene is bracketed to send the frame's extra lights and the scene-end marker (bloom,

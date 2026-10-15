@@ -79,7 +79,11 @@ void onMapSetup(Ctx& c) {
         const char* v = std::getenv("LM_COOP_PATCHES");
         return v && *v ? u32(std::strtoul(v, nullptr, 16)) : 0xFFu;
     }();
-    for (u32 i = 0; i < kPatchCount; i++) setPatch(kPatchFirst + i, on && (sMask >> i & 1));
+    // Patch 43 (the event-bit test always true) is the code's blanket cheat: it also gives player 1
+    // the Poltergust, the Game Boy Horror and every element medal from the start. With the co-op
+    // improvements player 2 gets player 1's bits instead (coop_fixes.cpp), so it stays off.
+    for (u32 i = 0; i < kPatchCount; i++)
+        setPatch(kPatchFirst + i, on && (sMask >> i & 1) && !(sFixes && kPatchFirst + i == 43));
     onMapSetupFixes(c);
 }
 

@@ -89,6 +89,22 @@ struct WipeScope {
 };
 bool inWipe();
 
+// 2-player split screen (coop_fixes.cpp: two side-by-side halves). A HUD element drawn for
+// one half runs inside a ShiftScope: every 2D draw (and a partial viewport/scissor set in it)
+// is moved right by dx logical pixels and kept centered (anchor 0), at any aspect: with
+// dx = +320 an element of the left 4:3 half lands in the right half of the window, with
+// dx = -320 an element of the right half lands in the left half. Works with widescreen off.
+struct ShiftScope {
+    explicit ShiftScope(int dx);
+    ~ShiftScope();
+    ShiftScope(const ShiftScope&) = delete;
+    ShiftScope& operator=(const ShiftScope&) = delete;
+};
+int hudShift();  // dx of the innermost ShiftScope, 0 outside
+// A viewport (logical x, width) that is one half of the 2-player split screen: its 3D gets
+// the same Hor+ / FOV adjustments as a full-screen view.
+bool splitHalf(float x, float w);
+
 // Full-screen 2D pictures (title backdrops, menu backgrounds), --ws-backgrounds.
 enum class Background { Pillarbox, Stretch, Zoom };
 Background backgroundMode();

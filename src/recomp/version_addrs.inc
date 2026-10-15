@@ -2,6 +2,11 @@
 // USA (GLME01) address -> European (GLMP01) address for every VA(...) in src/ (version.h).
     {0x8000BB98u, 0x8000CA14u},  // start of fn_8000BB98
     {0x8000F374u, 0x8000FE90u},  // fn_8000F1F8+0x17c
+    {0x80010F20u, 0x80011B00u},  // start of fn_80010F20
+    {0x80021618u, 0x800222C4u},  // start of fn_80021618
+    {0x80021844u, 0x800224F0u},  // start of fn_80021844
+    {0x80021AF4u, 0x8002299Cu},  // start of fn_80021AF4
+    {0x80021DDCu, 0x80022C84u},  // start of fn_80021DDC
     {0x8002C364u, 0x8002E014u},  // start of fn_8002C364
     {0x80043930u, 0x80044E24u},  // fn_800433B4+0x57c
     {0x80058290u, 0x8005ACD8u},  // fn_800581E8+0xa8
@@ -47,12 +52,14 @@
     {0x803A3CA0u, 0x80391000u},  // lbl_803A3CA0: 16 matching reference(s)
     {0x803A4168u, 0x803914C8u},  // lbl_803A4168: 2 matching reference(s)
     {0x803A4BB0u, 0x80391F10u},  // lbl_803A4BB0: 9 matching reference(s)
+    {0x803A4C80u, 0x80391FE0u},  // lbl_803A4C80: 59 matching reference(s)
     {0x803CE698u, 0x803BBA08u},  // lbl_803CE698: same instruction in 5 matched function(s)
     {0x803CE7D0u, 0x803BBB10u},  // lbl_803CE7D0: 8 matching reference(s)
     {0x803CFA50u, 0x803BCDE8u},  // lbl_803CFA50: 13 matching reference(s)
     {0x803CFC0Cu, 0x803BD1B4u},  // lbl_803CFC0C: 12 matching reference(s)
     {0x803D2D40u, 0x803C0300u},  // lbl_803D2D40: 9 matching reference(s)
     {0x803D48A0u, 0x803C1E60u},  // lbl_803D48A0: 19 matching reference(s)
+    {0x803D5CD0u, 0x803C3290u},  // lbl_803D5CD0: 2 matching reference(s)
     {0x803D990Cu, 0x803C6ECCu},  // lbl_803D990C: 179 matching reference(s)
     {0x804C8898u, 0x804B5E58u},  // j3dSys: 60 matching reference(s)
     {0x804CFF84u, 0x804BD644u},  // lbl_804CFF84: 5 matching reference(s)
@@ -60,6 +67,7 @@
     {0x804CFF90u, 0x804BD650u},  // lbl_804CFF90: 2 matching reference(s)
     {0x804CFF98u, 0x804BD660u},  // sCurScene: 5 matching reference(s)
     {0x804CFFACu, 0x804BD674u},  // lbl_804CFFAC: 3 matching reference(s)
+    {0x804CFFF0u, 0x804BD6B8u},  // lbl_804CFFF0: 1 matching reference(s)
     {0x804D0558u, 0x804BDC20u},  // lbl_804D0558: 3 matching reference(s)
     {0x804D07C8u, 0x804BDE80u},  // lbl_804D07C8: 2 matching reference(s)
     {0x804D07E0u, 0x804BDE98u},  // lbl_804D07E0: 2 matching reference(s)
@@ -79,9 +87,11 @@
     {0x804D8158u, 0x804C5828u},  // lbl_804D8158: 24 matching reference(s)
     {0x804D8170u, 0x804C5840u},  // lbl_804D8170: 19 matching reference(s)
     {0x804D8178u, 0x804C5848u},  // lbl_804D8178: 103 matching reference(s)
+    {0x804D8180u, 0x804C5850u},  // lbl_804D8180: 119 matching reference(s)
     {0x804D81B4u, 0x804C5884u},  // lbl_804D81B4: 4 matching reference(s)
     {0x804D81B6u, 0x804C5886u},  // lbl_804D81B6: 3 matching reference(s)
     {0x804D8230u, 0x804C5900u},  // lbl_804D8230: 6 matching reference(s)
+    {0x804D8240u, 0x804C5910u},  // lbl_804D8240: 134 matching reference(s)
     {0x804D82E9u, 0x804C59B9u},  // lbl_804D82E9: 4 matching reference(s)
     {0x804D8304u, 0x804C59D4u},  // lbl_804D8304: 4 matching reference(s)
     {0x804D8380u, 0x804C5A50u},  // lbl_804D8380: 17 matching reference(s)

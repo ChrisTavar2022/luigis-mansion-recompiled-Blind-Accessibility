@@ -137,6 +137,16 @@ void watch_store(u32 a, u32 v, int size) {
     const u32 fn = tRingPos ? tRing[(tRingPos - 1) % kRingSize] : 0;
     log("[watch] store%d %08X = %08X in %08X (thread %08X%s)", size * 8, a, v, fn, sched::currentGuest(),
         sched::inIrq() ? ", interrupt" : "");
+    // LM_WATCH_RING=<n>: also the n functions entered before it (with LM_TRACE=ring), newest first;
+    // the store itself may be in a caller of the function named above.
+    static const int sRing = std::getenv("LM_WATCH_RING") ? std::atoi(std::getenv("LM_WATCH_RING")) : 0;
+    if (sRing > 0 && tRingPos) {
+        char buf[256];
+        int n = 0;
+        for (int i = 2; i <= sRing + 1 && u32(i) <= tRingPos && n < 230; i++)
+            n += std::snprintf(buf + n, sizeof(buf) - n, " %08X", tRing[(tRingPos - u32(i)) % kRingSize]);
+        log("[watch]   before:%s", buf);
+    }
 }
 
 void watchRange(u32 a, u32 len, const char* what) {

@@ -111,7 +111,8 @@ Background backgroundMode() { return Background(port::options().wsBackgrounds); 
 HLE(fn_80008D58) {
     const u32 cam = c.r[3];
     // Viewport x and width (the European camera has 12 more bytes before them; fovY is unmoved).
-    const bool fullScreen = rd32(cam + VOFF(0x1EC, 0x1F8)) == 0 && rd32(cam + VOFF(0x1F4, 0x200)) >= 640;
+    const u32 vpX = rd32(cam + VOFF(0x1EC, 0x1F8)), vpW = rd32(cam + VOFF(0x1F4, 0x200));
+    const bool fullScreen = (vpX == 0 && vpW >= 640) || splitHalf(f32(vpX), f32(vpW));
     if (adjusting() && fullScreen && !sShadowLightSetup) {
         const float fovY = rdf32(cam + 0x90) * 3.14159265f / 180.0f;
         const double sides = fovY > 0.0f ? 1.0 / fovRatio(1.0f / std::tan(fovY * 0.5f)) : 1.0;
@@ -134,7 +135,20 @@ namespace {
 int sAnchorStack[16];
 int sAnchorDepth = 0;
 int sRttDepth = 0;  // RenderToTextureScope nesting
+int sShift[8];
+int sShiftDepth = 0;
 }  // namespace
+
+ShiftScope::ShiftScope(int dx) {
+    if (sShiftDepth < int(std::size(sShift))) sShift[sShiftDepth] = dx;
+    sShiftDepth++;
+}
+ShiftScope::~ShiftScope() { sShiftDepth--; }
+int hudShift() { return sShiftDepth > 0 ? sShift[std::min(sShiftDepth, int(std::size(sShift))) - 1] : 0; }
+
+bool splitHalf(float x, float w) {
+    return coop::fixes() && std::fabs(w - 320.0f) < 1.0f && (std::fabs(x) < 1.0f || std::fabs(x - 320.0f) < 1.0f);
+}
 
 AnchorScope::AnchorScope(int anchor) {
     if (sAnchorDepth < int(std::size(sAnchorStack))) sAnchorStack[sAnchorDepth] = anchor;
@@ -143,11 +157,14 @@ AnchorScope::AnchorScope(int anchor) {
 AnchorScope::~AnchorScope() { sAnchorDepth--; }
 
 int hudAnchor() {
+    if (hudShift() != 0) return 0;  // a half of the split screen: centered, then moved
     if (sAnchorDepth <= 0 || !sAnchorHud.load(std::memory_order_relaxed) || !active()) return 0;
     return sAnchorStack[std::min(sAnchorDepth, int(std::size(sAnchorStack))) - 1];
 }
 
-bool inHudScope() { return sAnchorDepth > 0 && sRttDepth == 0 && active(); }
+bool inHudScope() {
+    return sRttDepth == 0 && ((sAnchorDepth > 0 && active()) || hudShift() != 0);
+}
 
 RenderToTextureScope::RenderToTextureScope() { sRttDepth++; }
 RenderToTextureScope::~RenderToTextureScope() { sRttDepth--; }
@@ -162,6 +179,7 @@ RenderToTextureScope::~RenderToTextureScope() { sRttDepth--; }
 // shown at the game frame while a text box is up instead, the earlier behaviour.)
 HLE(fn_8003D634) {
     AnchorScope s(1);
+    ShiftScope half(coop::gbhShift());  // 2-player split screen: in player 1's half
     const bool call = interp::capturing() && tags::textBoxShown();
     const int mode = tags::textMode();
     interp::tagLogMark("gbh begin");
@@ -179,6 +197,7 @@ HLE(fn_8003D634) {
 // GBH view's own pass (fn_8003E7B0(1)).
 HLE(fn_8003BE9C) {
     AnchorScope s(1);
+    ShiftScope half(coop::gbhShift());
     // The noise as E. Gadd's call connects belongs to his call window (fn_8003D634 above).
     const bool call = interp::capturing() && tags::textBoxShown();
     const int mode = tags::textMode();
@@ -196,8 +215,11 @@ HLE(fn_8003BE9C) {
 // GBH screen's live 3D view (unused camera mode). View 0 is the main view; it is smaller
 // than the screen while the GBH frame surrounds it (r13+0x200, fn_80010F20), and then
 // follows the centered frame. In the unused 2-player mode (coop.cpp) view 1 is player 2's
-// half of the split screen, which spans the full width like view 0.
+// half of the split screen, which spans the full width like view 0; with the co-op
+// improvements the views are the side-by-side halves, drawn Hor+ in place (ws::splitHalf), so
+// they are not in a HUD scope at all.
 HLE(fn_800115F8) {
+    if (coop::fixes() && !coop::gbhView()) return callOriginal(c, "fn_800115F8");
     AnchorScope s(c.r[3] == 1 && !coop::active() ? 1 : 0);
     callOriginal(c, "fn_800115F8");
 }

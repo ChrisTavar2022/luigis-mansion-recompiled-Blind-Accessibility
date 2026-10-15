@@ -109,6 +109,7 @@ bool sProjSet = false;              // the guest has set a projection
 bool sProjDirty = false;            // guest projection not yet sent to Aurora
 ProjMode sProjEmitted = ProjMode::None;
 int sProjEmittedAnchor = 0;         // HUD anchor the emitted projection was built for
+int sProjEmittedShift = 0;          // 2D shift (ws::ShiftScope) the emitted projection was built for
 
 struct {
     f32 left = 0, wd = kLogicalWidth;
@@ -118,11 +119,13 @@ struct {
 // it is current follow it too.
 bool sVpFollow = false;
 int sVpAnchor = 0;
+int sVpShift = 0;
 struct {
     u32 x = 0, y = 0, w = 640, h = 480;
 } sScissor;
 bool sScissorPillar = false;  // Aurora currently has the centered-4:3 version of the guest scissor
 int sScissorAnchor = 0;
+int sScissorShift = 0;
 // Draws written straight into the FIFO by game code (J3D inlines its display-list
 // calls and matrix loads) bypass the HLE draw entry points, so the projection for
 // them is brought up to date before the first raw FIFO write after any change.
@@ -131,6 +134,7 @@ bool sRawCheck = true;
 // HUD anchor for the draw being prepared: a held draw keeps the one from its GXBegin (it
 // is only sent at the next GX call, which may come after the HUD element's scope ended).
 int sHeldAnchor = 0;
+int sHeldShift = 0;
 bool sInHeldPrepare = false;
 // A by-side scope is resolved per held draw (classifyHeld); anything else in it stays centered.
 int scopeAnchor() {
@@ -138,12 +142,14 @@ int scopeAnchor() {
     return a == ws::kAnchorBySide ? 0 : a;
 }
 int hudAnchor() { return sInHeldPrepare ? sHeldAnchor : scopeAnchor(); }
+// 2D shift of the draw being prepared (ws::ShiftScope: the 2-player split screen's HUD halves).
+int hudShift() { return sInHeldPrepare ? sHeldShift : ws::hudShift(); }
 
 // x of the centered (and anchored) 4:3 frame for logical x: what the scaled orthographic
-// projection does to 2D, in pixels.
-f32 pillarX(f32 x, int anchor) {
+// projection does to 2D, in pixels. `shift` moves the logical x first (ws::ShiftScope).
+f32 pillarX(f32 x, int anchor, int shift = 0) {
     const f32 s = ws::factor(), mid = kLogicalWidth * 0.5f;
-    return mid + (x - mid) * s + f32(anchor) * (1.0f - s) * mid;
+    return mid + (x + f32(shift) - mid) * s + f32(anchor) * (1.0f - s) * mid;
 }
 
 bool viewportFull() { return sVp.left <= 1.0f && sVp.left + sVp.wd >= kLogicalWidth - 1.0f; }
@@ -159,6 +165,9 @@ void emitProjection(ProjMode mode) {
     f32 m[4][4];
     std::memcpy(m, sProj.m, sizeof(m));
     int anchor = 0;
+    // 2D moved by whole logical pixels (2-player split screen HUD halves): x' = x + shift.
+    const int shift = sProj.type == GX_ORTHOGRAPHIC ? hudShift() : 0;
+    if (shift) m[0][3] += m[0][0] * f32(shift);
     if (mode == ProjMode::Scaled && sProj.type == GX_PERSPECTIVE) {
         // Field of view: the vertical FOV times fovScale, then Hor+ for the width.
         const f32 r = ws::fovRatio(m[1][1]);
@@ -182,6 +191,7 @@ void emitProjection(ProjMode mode) {
     interp::note(at, interp::Kind::Projection, 0, 0, 6);
     sProjEmitted = mode;
     sProjEmittedAnchor = anchor;
+    sProjEmittedShift = shift;
     sProjDirty = false;
 }
 
@@ -190,8 +200,10 @@ void emitScissor(bool pillar) {
     const u32 at = interp::mark();
     if (pillar) {
         sScissorAnchor = sVpFollow ? sVpAnchor : hudAnchor();
-        const f32 l = std::max(0.0f, pillarX(f32(sScissor.x), sScissorAnchor));
-        const f32 r = std::min(kLogicalWidth, pillarX(f32(sScissor.x + sScissor.w), sScissorAnchor));
+        const int shift = sVpFollow ? sVpShift : hudShift();
+        sScissorShift = shift;
+        const f32 l = std::max(0.0f, pillarX(f32(sScissor.x), sScissorAnchor, shift));
+        const f32 r = std::min(kLogicalWidth, pillarX(f32(sScissor.x + sScissor.w), sScissorAnchor, shift));
         const u32 li = u32(std::max(0.0f, std::floor(l)));
         GXSetScissor(li, sScissor.y, u32(std::ceil(r)) - li, sScissor.h);
         interp::noteTextScissor(at, ws::factor(), pillarX(0.0f, sScissorAnchor));
@@ -205,7 +217,9 @@ void emitScissor(bool pillar) {
 // Projection mode for a draw. `ortho2D` is what an orthographic draw into the
 // full-screen viewport gets: Scaled (centered 4:3) or Plain (stretched).
 ProjMode drawMode(ProjMode ortho2D) {
-    if (!viewportFull()) return ProjMode::Plain;
+    // A half of the 2-player split screen (coop_fixes.cpp, side by side) is drawn Hor+ like a
+    // full-screen view: it is stretched across its half of the window by the same factor.
+    if (!viewportFull() && !(sProj.type == GX_PERSPECTIVE && ws::splitHalf(sVp.left, sVp.wd))) return ProjMode::Plain;
     // The shadow-map pass (light's view, fn_8005D984 .. fn_8005DBE4, flagged by the game in
     // lbl_804D8080) is rendered into the whole EFB and copied as a 640x480 texture that the
     // receivers project with the unmodified light matrices: it must not get the Hor+/FOV or
@@ -237,11 +251,14 @@ void prepareDraw(ProjMode mode, const char* what = "draw") {
     traceNote("%s %s vp(%.0f,+%.0f) -> %s", what, sProj.type == GX_PERSPECTIVE ? "persp" : "ortho", sVp.left,
               sVp.wd, mode == ProjMode::Scaled ? "scaled" : mode == ProjMode::Zoom ? "zoom" : "plain");
     const bool hud = mode == ProjMode::Scaled && sProj.type == GX_ORTHOGRAPHIC;
-    if (sProjSet && (sProjDirty || mode != sProjEmitted || (hud && hudAnchor() != sProjEmittedAnchor)))
+    if (sProjSet && (sProjDirty || mode != sProjEmitted || (hud && hudAnchor() != sProjEmittedAnchor) ||
+                     (sProj.type == GX_ORTHOGRAPHIC && hudShift() != sProjEmittedShift)))
         emitProjection(mode);
-    const bool pillar = sVpFollow || (hud && (sScissor.x > 0 || sScissor.x + sScissor.w < 640));
+    const bool shifted = sProj.type == GX_ORTHOGRAPHIC && hudShift() != 0;
+    const bool pillar = sVpFollow || ((hud || shifted) && (sScissor.x > 0 || sScissor.x + sScissor.w < 640));
     const int anchor = sVpFollow ? sVpAnchor : hudAnchor();
-    if (pillar != sScissorPillar || (pillar && anchor != sScissorAnchor)) emitScissor(pillar);
+    const int shift = sVpFollow ? sVpShift : hudShift();
+    if (pillar != sScissorPillar || (pillar && (anchor != sScissorAnchor || shift != sScissorShift))) emitScissor(pillar);
 }
 
 // Mirror of the vertex layout state that immediate-mode 2D draws use, so a
@@ -889,6 +906,7 @@ GXHLE(GXBegin) {
     if (ws::active() && sProj.type == GX_ORTHOGRAPHIC && viewportFull()) {
         sHeld.active = true;
         sHeldAnchor = ws::hudAnchor();
+        sHeldShift = ws::hudShift();
         sHeld.prim = GXPrimitive(c.r[3]);
         sHeld.fmt = GXVtxFmt(c.r[4]);
         sHeld.verts = u16(c.r[5]);
@@ -1033,10 +1051,11 @@ static std::pair<f32, f32> setViewport(const Ctx& c) {
     sVp.wd = farg(c, 3);
     sVpFollow = !viewportFull() && ws::inHudScope();
     sVpAnchor = sVpFollow ? scopeAnchor() : 0;
+    sVpShift = sVpFollow ? ws::hudShift() : 0;
     HUD_TRACE("viewport %.1f %.1f %.1f %.1f%s %s", farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4),
               sVpFollow ? " follow" : "", guestChain(c).c_str());
     if (!sVpFollow) return {sVp.left, sVp.wd};
-    return {pillarX(sVp.left, sVpAnchor), sVp.wd * ws::factor()};
+    return {pillarX(sVp.left, sVpAnchor, sVpShift), sVp.wd * ws::factor()};
 }
 GXHLE(GXSetViewport) {
     const auto [x, w] = setViewport(c);

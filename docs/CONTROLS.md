@@ -177,7 +177,9 @@ lets a module own its own sections of `settings.ini`.
   joined with `+`): items prefixed `P2:` (or `P3:`/`P4:`) drive that port instead of port 1,
   e.g. `--input "1000:A,P2:2600:STICKLEFT*200,P2:3000:R*60"`. A port the script uses reads as
   connected for the whole run, so the game sees a pad plugged in (used for the 2-player
-  mode, docs/UNUSED_CONTENT.md).
+  mode, docs/UNUSED_CONTENT.md). With the 2-player "Co-op improvements" the game ignores port 2's
+  X, Y and D-pad (player 2 has no Game Boy Horror) and all of port 2 while an event has set
+  player 2 aside (hle_pad.cpp).
 - `LM_MENU=Controls` opens the menu on this tab. `LM_CONTROLS_TAB=Ports|Bindings|Analog`
   selects a sub-tab.
 - `LM_CONTROLS_CAPTURE=<keyboard|pad>:<input key>:<1|2>` starts a binding capture when the
