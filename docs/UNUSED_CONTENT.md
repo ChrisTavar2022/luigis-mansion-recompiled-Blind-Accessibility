@@ -852,6 +852,27 @@ motions) maps motions to keys; the slot table `lbl_803523A4` maps slots to motio
   burst hearts and drop coins per point; poison alone never takes the last point). The coin loss
   is kept. Verified with `LM_POISON=1 LM_TEST_POISON=0@<frame>` (sends message 0x38 like the
   mushroom): `poison_crawl.png` (left two).
+  Voice pitch: the poison keeps the mushroom's sound (0x847) but not the shrunk Luigi's high
+  voice. The pitch is not set by the mushroom case itself: the sound starter `fn_80189F78` sets
+  the voice pitch `lbl_804D783C` (float, 1.0 normal) to 2.0 whenever sound 0x847 starts and back
+  to 1.0 for 0x846, and multiplies every Luigi voice line (sounds 0x2xxx) by it
+  (`fn_80199C30`). Only the end of the shrink (`fn_800B47B0`, when +0x1170 runs out) plays 0x846
+  (also `fn_80189468(0)`, and the audio scene setup `fn_8018C9F8` on a map change), so the first
+  version of the poison, which started 0x847 without the shrink, left Luigi's voice an octave up
+  until the next map. The poison path now keeps the pitch across its 0x847, and while the option
+  is on a raised pitch with Luigi not shrunk (+0x1170 and +0x1174 at 0) is put back to 1.0. With
+  the option off nothing changes: the real mushroom raises the pitch and its end restores it.
+  Verified in the foyer (A presses every 40 frames, `LM_TEST_ELEM` / `LM_TEST_STARTLE` for
+  more voice lines, `LM_AUDIO_WAV_RAW`, `LM_AUDIO_LOG` voice-start pitches,
+  `LM_TRACE=80189F78,8018D334` for the sound ids; `LM_STATE_LOG` now prints the voice pitch).
+  Luigi's calls (0x288E, started by animation keys through `fn_8018D334`) play at DSP pitch
+  0x0BFD; the real mushroom (option off) raises them to 0x17FA (spectral centroid ~1000 ->
+  ~1900 Hz in the WAV) until its end plays 0x846, then 0x0BFD again. With the option on, the
+  calls before and after the poison and the poisoned motion's voice (0x2876) stay at 0x0BFD
+  (centroid 940-1360 Hz) and the pitch stays 1.0 all through. Test aid:
+  `LM_TEST_POISON=1@<frame>` starts 0x847 alone, as the old poison did (pitch 2.0, put back
+  the next frame while the option is on). `LM_TEST_POISON=0@<frame>` now passes the duration
+  as the integer the handler expects (it was a float bit pattern: a real shrink never ended).
 - **Crawling fear**. Luigi's fear state (`[Luigi+0x7E8]`, modes 1 calm, 2/3 scared, 4 panic;
   table `lbl_80354B9C`) is advanced by `fn_8007CE04(obj, 0, event)`, which nothing calls (only
   the reset, arg 1). Mode 4 (300 frames) makes the controller pick the unused cowering motions
@@ -878,7 +899,8 @@ motions) maps motions to keys; the slot table `lbl_803523A4` maps slots to motio
   is above zero, and shakes (`fn_80046120`, meter position jittered) while overheated. Tunables:
   time to overheat (20 s), cool-down (30 s full to empty), blowing multiplier (3x), burn damage
   (10). Verified: `overheat_meter.png` (meter filling, then burned), `element_hits.png`.
-  Test aid: `LM_OVERHEAT=1`; generic: `LM_STATE_LOG=1` (controller state, motion, fear, health),
+  Test aid: `LM_OVERHEAT=1`; generic: `LM_STATE_LOG=1` (controller state, motion, fear, health,
+  voice pitch, shrink timer),
   `LM_TEST_SLOT=<slot>@<from>-<to>`, `LM_TEST_DAMAGE`, `LM_TEST_ELEM=<kind>:<dmg>@<frame>`,
   `LM_TEST_FEAR=<event>@<frame>`.
 

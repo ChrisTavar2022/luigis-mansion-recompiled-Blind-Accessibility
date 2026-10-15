@@ -19,7 +19,8 @@
 // on it starts a poison instead: the controller's motion slot 0x41 (motion 42, key doku_lp; the
 // slot exists in Luigi's slot table but nothing selects it) is forced through the override, the
 // key's texture pattern doku_lp.txp gives the dark "poisoned" eyes, Luigi stands still, and his
-// health drops by the set amount over the set time. The coin loss of the mushroom is kept.
+// health drops by the set amount over the set time. The coin loss of the mushroom is kept, and
+// so is its sound, but not the high voice that starting that sound switches on (voicePitch).
 //
 // Crawling fear: when a startle (message 2) comes from behind Luigi, the fear state gets the
 // game's own "panic" event (mode table +0x24: every mode -> mode 4). Mode 4 (300 frames) blocks
@@ -95,6 +96,23 @@ u32 luigi(Ctx& c) {
 }
 
 // ---- poison ----
+// Luigi's voice pitch (float; 1.0 normal, 2.0 while shrunk by the poison mushroom). The sound
+// starter fn_80189F78 sets it to 2.0 when it starts sound 0x847 (shrink) and to 1.0 for 0x846
+// (grow back; also fn_80189468(0/1) and the audio scene setup fn_8018C9F8), and applies it to
+// every Luigi voice line (sounds 0x2xxx).
+u32 voicePitch() { return VA(0x804D783C); }
+constexpr u32 kShrinkTime = 0x1170, kShrinkAnim = 0x1174;
+
+// A voice pitch left raised by an older build's beta poison (it started sound 0x847 without the
+// 0x846 that undoes it) is put back while Luigi is not shrunk by a real mushroom.
+void poisonPitchFix(u32 l) {
+    const u32 p = voicePitch();
+    if (!p || gu::rdf(p) == 1.0f) return;
+    if (gu::rdf(l + kShrinkTime) > 0.0f || gu::rdf(l + kShrinkAnim) > 0.0f) return;
+    log("[states] voice pitch %.2f with Luigi not shrunk: reset to 1.0", gu::rdf(p));
+    gu::wrf(p, 1.0f);
+}
+
 struct Poison {
     u32 actor = 0;
     float left = 0;      // health still to lose
@@ -271,11 +289,17 @@ void testAids(Ctx& c, u32 l) {
             log("[states] test element hit %d (%d): %u", t.a, t.b, r);
         }
     for (const auto& t : sPoisonT)
-        if (now == t.from) {
-            // As the poison mushroom: message 0x38, scale 0.5 for 300 frames.
+        if (now == t.from && t.a == 1) {
+            // What older builds' beta poison did: start the mushroom sound 0x847 alone, which
+            // leaves the voice pitch raised (poisonPitchFix puts it back).
+            gu::call(c, GU_SYM("fn_80189F78"), {0x847, l + kPos, 0});
+            log("[states] test: sound 0x847 alone, voice pitch %.2f", gu::rdf(voicePitch()));
+        } else if (now == t.from) {
+            // As the poison mushroom: message 0x38, scale 0.5 (float) for 300 frames (an int: the
+            // handler converts it to the float shrink timer +0x1170).
             const u32 m = msgBuf(c);
             gu::wrf(m + 0xFC, 0.5f);
-            wr32(m + 0x100, 0x43960000u);  // 300.0f
+            wr32(m + 0x100, 300);
             const u32 r = gu::call(c, GU_SYM("fn_800AEEA8"), {l, 0x38, m});
             log("[states] test mushroom: %u", r);
         }
@@ -294,14 +318,14 @@ void testAids(Ctx& c, u32 l) {
         }
     static const bool sLog = envFlag("LM_STATE_LOG");
     if (sLog) {
-        static u32 sLast[6] = {};
+        static u32 sLast[7] = {};
         const u32 fear = rd32(l + kFear);
-        const u32 cur[6] = {rd32(ctrl + kCtrlState), rd32(ctrl + kCtrlSub), rd32(l + kMotion), gu::inMem1(fear) ? rd32(fear) : 0,
-                            u32(s16(rd16(l + kHp))), rd32(l + kMode)};
+        const u32 cur[7] = {rd32(ctrl + kCtrlState), rd32(ctrl + kCtrlSub), rd32(l + kMotion), gu::inMem1(fear) ? rd32(fear) : 0,
+                            u32(s16(rd16(l + kHp))), rd32(l + kMode), rd32(voicePitch())};
         if (std::memcmp(cur, sLast, sizeof cur)) {
             std::memcpy(sLast, cur, sizeof cur);
-            log("[states] f%u ctrl %u/%u motion %u fear %u hp %d mode %u heat %.2f", now, cur[0], cur[1], cur[2], cur[3],
-                s32(cur[4]), cur[5], sHeat.heat);
+            log("[states] f%u ctrl %u/%u motion %u fear %u hp %d mode %u heat %.2f voice pitch %.2f shrink %.0f", now, cur[0],
+                cur[1], cur[2], cur[3], s32(cur[4]), cur[5], sHeat.heat, gu::rdf(voicePitch()), gu::rdf(l + kShrinkTime));
         }
     }
 }
@@ -338,6 +362,7 @@ void statesFrame(Ctx& c) {
     if (!l || !gu::inMem1(rd32(l + kCtrl))) return;
     testAids(c, l);
     poisonFrame(c, l);
+    if (poisonOn()) poisonPitchFix(l);
     crawlFrame(c, l);
     if (overheatOn()) overheatFrame(c, l);
     else if (sHeat.heat > 0 || sHeat.hot) {
@@ -426,7 +451,12 @@ HLE(fn_800AEEA8) {
                           gu::rdf(l + 0x1170) != 0.0f;
         if (!busy && !sPoison.actor) {
             startPoison(c, l);
-            gu::call(c, GU_SYM("fn_80189F78"), {0x847, l + kPos, 0});  // the mushroom's sound
+            // The mushroom's sound. Starting sound 0x847 also sets the voice pitch (lbl_804D783C,
+            // 2.0 = the shrunk Luigi's high voice) and only sound 0x846 (played when the shrink
+            // timer +0x1170 runs out) sets it back, so the pitch is kept as it was.
+            const float pitch = gu::rdf(voicePitch());
+            gu::call(c, GU_SYM("fn_80189F78"), {0x847, l + kPos, 0});
+            gu::wrf(voicePitch(), pitch);
             const u32 m = msgBuf(c);
             if (m) {
                 wr32(m + 0x90, 10);  // the 10 coins the mushroom takes (message 0x25, as the original)

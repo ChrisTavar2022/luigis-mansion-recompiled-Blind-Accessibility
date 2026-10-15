@@ -61,6 +61,7 @@
     {0x804D07C8u, 0x804BDE80u},  // lbl_804D07C8: 2 matching reference(s)
     {0x804D07E0u, 0x804BDE98u},  // lbl_804D07E0: 2 matching reference(s)
     {0x804D2428u, 0x804BFAE0u},  // lbl_804D2428: 1 matching reference(s)
+    {0x804D783Cu, 0x804C4EF4u},  // lbl_804D783C: 7 matching reference(s)
     {0x804D8078u, 0x804C5738u},  // sGamePad: 43 matching reference(s)
     {0x804D8080u, 0x804C5740u},  // lbl_804D8080: 2 matching reference(s)
     {0x804D8088u, 0x804C5748u},  // lbl_804D8088: 10 matching reference(s)
