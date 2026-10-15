@@ -296,6 +296,8 @@ loadMtxIndx_PCPU__11J3DShapeMtxCFiUs us pal
 loadMtxIndx_NCPU__11J3DShapeMtxCFiUs us pal
 loadMtxIndx_PNCPU__11J3DShapeMtxCFiUs us pal
 fn_80091A70 us pal
+fn_80027F08 us pal
+fn_80025E00 us pal
 fn_8005E110 us pal
 fn_80118E44 us pal
 fn_80120C30 us pal

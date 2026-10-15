@@ -48,6 +48,10 @@ struct Cmd {
     u64 key = 0;  // position arrays bound in a tag scope: identity (detail::arrayKey)
     int fmt = -1;  // vertex format of the first draw that read it
     u32 stride = 0;
+    // Its position format as that draw read it. (Taken at the draw: the format slot is often set
+    // up again for another layout before the tape ends; read at the end, the bathroom's shower
+    // curtain, F32 positions, was taken for S16 and its blend was refused as a jump.)
+    u8 posCnt = 0, posType = 0xFF, posFrac = 0;
 };
 int sScanFmt = -1;  // vertex format of the draw being scanned
 std::vector<Cmd> sCmds;
@@ -108,7 +112,10 @@ void use(int slot, u32 idxLo, u32 idxEnd, u32 extra) {
     if (phys >= kMem1Size) return;
     extent = std::min(extent, kMem1Size - phys);
     Cmd& cmd = sCmds[b.cmd];
-    if (slot == 0 && cmd.fmt < 0) cmd.fmt = sScanFmt;
+    if (slot == 0 && cmd.fmt < 0) {
+        cmd.fmt = sScanFmt;
+        if (sScanFmt >= 0 && !gx::vtxAttrFormat(sScanFmt, GX_VA_POS, cmd.posCnt, cmd.posType, cmd.posFrac)) cmd.posType = 0xFF;
+    }
     if (cmd.snap < 0) {
         auto [it, fresh] = sSnapOf.try_emplace(b.guest, int(sSnaps.size()));
         if (fresh) sSnaps.push_back({b.guest, {}});
@@ -544,9 +551,8 @@ void vtxEndTape(u8* tape, u32 size, std::vector<std::vector<u8>>& keep, u64& sna
             const u32 len = u32(d.size());
             for (int k = 0; k < 8; k++) tape[i + k] = u8(ptr >> (56 - 8 * k));
             for (int k = 0; k < 4; k++) tape[i + 8 + k] = u8(len >> (24 - 8 * k));
-            u8 cnt, type, frac;
-            if (c.key && c.fmt >= 0 && gx::vtxAttrFormat(c.fmt, GX_VA_POS, cnt, type, frac) && type <= GX_F32)
-                recs.push_back({c.key, u32(c.snap), i, u16(c.stride), cnt, type, frac});
+            if (c.key && c.fmt >= 0 && c.posType <= GX_F32)
+                recs.push_back({c.key, u32(c.snap), i, u16(c.stride), c.posCnt, c.posType, c.posFrac});
             break;
         }
     }

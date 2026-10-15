@@ -220,6 +220,7 @@ A value of game frame b pairs with the value of frame a that has the same key an
 | Object | `draw__12J3DMatPacketFv`, `draw__14J3DShapePacketFv` (J3D) | the packet (per model instance and shape/material); group: the model's matrix buffer (packet +0x14) |
 | Object | `J3DShapeMtx::loadMtxIndx_PNGP/PCPU/NCPU/PNCPU` | joint index (J3D skips loads already in place, so the n-th load is not always the same joint) |
 | Effect | `fn_80091A70` (a cloth sheet: 16x16 world-space grid, from `fn_8008E580`; not the hose, which is a J3D model) | object, mode; cell by call-site tag |
+| Object | `fn_80027F08` (room cloths: the 2F bathroom's shower curtain, a CPU-simulated mesh in an indexed position array; from `fn_80028974`'s loop over 0x388-byte items) and `fn_80025E00` (`fn_80025FC8`'s 0x24C-byte items, own position array) | the item |
 | Particle | call-site tag in `fn_8012FD14` (dust groups, `fn_801304B0`) | particle r30, group r29; generation on link/unlink (`fn_80127A74`, `fn_80127AA8`) |
 | Particle | call-site tag in `fn_8012B6C4` (second particle draw, `fn_8012CB74`) | particle r29, group r28, birth stamp from the remaining life at +0x24 (counts down) |
 | Particle | call-site tag in `fn_801796EC` (45 fixed slots, `fn_80162AE8`) | slot offset r28, array r25 |
@@ -251,7 +252,8 @@ of the identity (found with `LM_TAG_PEEK=<words>`: 98-100% of particles step by 
   category, call site, scope depth and view, and for untagged values the guest call chain; per tape
   the paired / unpaired / untagged counts by kind and the views with their keys. Finding the next
   tag source: run, take the most frequent untagged chains, look the function up
-  (`tools/recomp/addr2sym.py`, the recompiled code in build/**/recomp_gen), hook it.
+  (`tools/recomp/addr2sym.py`, the recompiled code in build/**/recomp_gen), hook it. `array` lines: every position array bound, with its scope's key (0: untagged, never blended)
+  and call chain.
 - **Judder detector** (`LM_JUDDER_LOG=<file>`, `LM_JUDDER_PX=<px>` default 1.5; live and in
   `LM_INTERP_TEST` runs). Aurora patch 0218 (`AuroraSetDrawProbe`) reports every draw with the
   matrix (and its PNMTX slot), projection and first vertex it is drawn with. Every in-between replay
@@ -336,6 +338,44 @@ apart from a run-to-run shift of one dump number (`LM_INPUT_CLOCK=frames`, keys
 `1200:START*10,1600:A*6`, the shot at frames 3200-3240).
 Testing note: test widescreen-sensitive rendering with a 16:9 window (`--window 1920x1080`). The
 off-screen default window is 1280x960, so the game runs at 4:3 there.
+
+### Room cloths: the shower curtain (October 2026)
+
+User report (play build, 95-120 fps, 16:9): "this curtain did not get interpolated", the shower
+curtain in the 2F bathroom, which sways at 30 Hz while everything else is smooth. Two causes:
+
+1. **Untagged.** The room loop (`fn_800118FC` -> `fn_80028974`) walks a table of 0x388-byte cloth
+   items (11 slots in map 2) and draws the active ones with `fn_80027F08(item)`: an indexed F32
+   position array (149 vertices, rewritten by the game's cloth simulation every game frame) under
+   the item's own matrix. It was bound outside any tag scope, so its array had no identity and
+   stayed at the game frame's shape (`LM_TAG_LOG` now lists every bound array as an `array` line
+   with its key and call chain; that is how it was found). `fn_80027F08` now opens an Object scope
+   for the item (tags.cpp), and so does the other untagged array draw of the room loop,
+   `fn_80025E00` (`fn_80025FC8`'s 0x24C-byte items). The curtain moves by a median of 6 and up to 37
+   units per game frame (vacuumed); the array blend refuses only jumps over 200.
+2. **Position format read at the wrong time.** An array's position format (component type,
+   fraction) was looked up when the tape ended, from the vertex format slot of the first draw that
+   read it. The slot is set up again for other layouts later in the frame (`fn_80027F08` uses
+   `GXSetVtxAttrFmtv` on format 0), so the curtain's F32 positions were read as S16 and every
+   blend was refused as a jump of ~59,000 units. The format is now taken when the draw reads the
+   array (interp_vtx.cpp, `Cmd::posType`). This also applies to every other tagged CPU-deformed
+   array (a 1751-vertex array in the bathroom moving ~0.15 units per frame now blends too).
+
+Other cloths: in every other room checked (foyer, nursery, ballroom, dining room, parlor area,
+study, Sealed Room, clockwork room, balcony, 3F hallway, graveyard, roof, secret altar) no cloth item
+is active and no other untagged position array is bound apart from the particle quads' templates;
+the ballroom's drapes, the dining room's tablecloth and the like are furniture models, blended by
+their matrices. Slots 0-9 of the cloth table are empty in the retail mansion; any that becomes
+active is covered by the same hook. The cloth's normals are direct vertex data and stay the game
+frame's (lighting changes with its shape at 30 Hz, not visible in testing).
+
+Verified with `LM_PRESENT_DUMP` at 120 (16:9, the user's settings, vacuuming the curtain): the
+curtain changes on every present (mean luma change in its region 1.1-2.9 per present within a game
+frame; before: 0.1-0.4 within a game frame, only noise, and 4-5 at each game frame). `[interp] 2.0
+CPU-deformed position arrays blended per present` (the curtain, drawn in two views).
+Original 30 byte-identical: vanilla, bathroom with the curtain moving, 61 frames; the user's
+settings, foyer intro (`1200:START*10,1600:A*6`, frames 3200-3240, `AURORA_BEAM_FREEZE_TIME=1`), 41
+frames.
 
 ### Enhanced lighting
 

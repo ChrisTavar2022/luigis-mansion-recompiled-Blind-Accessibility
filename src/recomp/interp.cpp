@@ -1748,7 +1748,13 @@ void detail::noteDrawCentre(const float c[3]) {
 u64 detail::arrayKey() {
     if (!capturing() || sFrameLock > 0) return 0;
     TagCat cat;
-    return valueKey(Kind::Verts, 0x41525241u, 0, cat) ^ 0xA77A1ull;  // (a pseudo light-like source: own key space)
+    const u64 k = valueKey(Kind::Verts, 0x41525241u, 0, cat);
+    // LM_TAG_LOG: every position array bound, with its scope's key (0: untagged, never blended)
+    // and the guest call chain (how the shower curtain's untagged array was found).
+    if (sTagLogFrame != ~0ull)
+        std::fprintf(sTagLog, "f%llu array %s key %016llX site %08X depth %d chain %s\n", (unsigned long long)sTagLogFrame,
+                     kCatName[u32(cat)], (unsigned long long)k, sCallLr, sTagDepth, sTagChain.c_str());
+    return k ^ 0xA77A1ull;  // (a pseudo light-like source: own key space)
 }
 
 namespace {

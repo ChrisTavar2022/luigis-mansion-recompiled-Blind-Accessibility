@@ -207,6 +207,27 @@ HLE(fn_80091A70) {
     callOriginal(c, "fn_80091A70");
 }
 
+// The room cloths: the room loop (fn_800118FC -> fn_80028974) walks a table of 0x388-byte items
+// (11 slots in map 2) and draws the active ones with fn_80027F08(item): a CPU-simulated cloth mesh
+// in an indexed F32 position array (149 vertices) the game rewrites every game frame, loaded with
+// the item's own matrix. Only the 2F bathroom's shower curtain was active in the rooms checked
+// (slot 10; the ballroom's drapes, the dining room's tablecloth and the others there are
+// furniture models, blended by their matrices). It sways all the
+// time (median 6, up to 37 units per game frame while the Poltergust pulls at it). Untagged, its
+// array had no identity and the curtain stayed at the game frame's shape (user report: "this
+// curtain did not get interpolated"). The item is its identity: its position array pairs with the
+// same item's array of the game frame before and blends vertex by vertex (interp.cpp, replayPair).
+HLE(fn_80027F08) {
+    TagScope t(TagCat::Object, c.r[3], 0x27F08);
+    callOriginal(c, "fn_80027F08");
+}
+// The other untagged position-array draw of the room loop: fn_80025FC8 walks 0x24C-byte items and
+// draws each with fn_80025E00(item) (its own array and matrix). Tagged alike.
+HLE(fn_80025E00) {
+    TagScope t(TagCat::Object, c.r[3], 0x25E00);
+    callOriginal(c, "fn_80025E00");
+}
+
 // --- ghosts' quads ---------------------------------------------------------------------------------
 // fn_80061690 loops over the ghost list (0x803D48A0) and draws one CPU-built quad per ghost with
 // fn_8005E110(.., ghost + 8 = its position, ..): its identity is the ghost (Bogmire's shadow ghosts,
