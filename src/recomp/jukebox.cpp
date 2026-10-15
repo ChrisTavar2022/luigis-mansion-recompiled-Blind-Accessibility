@@ -21,6 +21,7 @@
 #include "recomp/version.h"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include <atomic>
 #include <cstdio>
@@ -44,7 +45,9 @@ std::vector<Track> sTracks;
 std::once_flag sLoad;
 std::atomic<int> sPlay{-1};
 std::atomic<bool> sStop{false};
-int sNowPlaying = -1;
+int sNowPlaying = -1;                // last track picked in the menu
+std::atomic<u32> sMusicId{0};       // music the game's player runs (guest thread)
+std::atomic<bool> sPending{false};  // a pick the guest has not started yet
 bool sUnusedOnly = false;
 
 // Music ids the retail game selects (USA): event <BGM> table entries the scripts use, constant
@@ -92,6 +95,53 @@ void load() {
     log("[jukebox] %zu sequences in JaiInit.aaf", sTracks.size());
 }
 
+// Test aid LM_JUKEBOX_UI=<sequence|stop>@<guest frame>[,...]: presses the menu's own Play / Stop
+// button (ImGui item activation; the F1 menu must be open on the Sound tab, e.g. LM_MENU=Sound),
+// so the whole UI path is exercised. Logs "[jukebox-ui] click".
+namespace ui {
+struct Click {
+    int target;  // sequence index, 0 = the Stop button
+    u32 frame;
+};
+std::vector<Click> sClicks = [] {
+    std::vector<Click> out;
+    const char* v = std::getenv("LM_JUKEBOX_UI");
+    for (const char* p = v; p && *p;) {
+        Click c{};
+        char what[16] = {};
+        if (std::sscanf(p, "%15[^@]@%u", what, &c.frame) == 2) {
+            c.target = std::strcmp(what, "stop") == 0 ? 0 : std::atoi(what);
+            out.push_back(c);
+        }
+        const char* comma = std::strchr(p, ',');
+        if (!comma) break;
+        p = comma + 1;
+    }
+    return out;
+}();
+int sStep = -1;  // frames into the current click (-1 = idle)
+
+int target() { return !sClicks.empty() && skip::guestFrames() >= sClicks.front().frame ? sClicks.front().target : -1; }
+
+// After the target's button: scroll it into view, then activate it.
+void atButton(int index) {
+    if (target() != index) return;
+    if (sStep < 0) {
+        ImGui::SetScrollHereY(0.5f);
+        sStep = 0;
+        return;
+    }
+    // Activated like a click (ImGui's nav activation goes through the button's own behaviour,
+    // independent of where the real mouse is).
+    if (++sStep == 3) ImGui::ActivateItemByID(ImGui::GetItemID());
+    else if (sStep == 5) {
+        log("[jukebox-ui] click %d frame %u", index, skip::guestFrames());
+        sClicks.erase(sClicks.begin());
+        sStep = -1;
+    }
+}
+}  // namespace ui
+
 }  // namespace
 
 void jukeboxFrame(Ctx& c) {
@@ -107,13 +157,18 @@ void jukeboxFrame(Ctx& c) {
     const int n = sPlay.exchange(-1);
     if (n > 0) {
         gu::call(c, GU_SYM("fn_8018A570"), {0});
-        gu::call(c, GU_SYM("fn_80188760"), {0x80000000u | u32(n)});
+        // r4 is the fade-in time in frames (handed to JAIBasic's start as its fade argument;
+        // every game call passes 0). Left out, it was whatever the hooked caller had in r4
+        // (often a pointer): the music started at volume 0 and faded in over months.
+        gu::call(c, GU_SYM("fn_80188760"), {0x80000000u | u32(n), 0});
         log("[jukebox] playing sequence %d", n);
     }
     // Log what the music player runs (main handle lbl_804D91A4 +8 = sound id), for testing.
     static u32 sLastId = 0;
     const u32 h = rd32(VA(0x804D91A4));
     const u32 id = gu::inMem1(h) ? rd32(h + 8) : 0;
+    sMusicId = id;
+    if (n > 0) sPending = false;
     if (id != sLastId) {
         sLastId = id;
         log("[jukebox] music now %08X", id);
@@ -122,6 +177,7 @@ void jukeboxFrame(Ctx& c) {
 
 void soundSection() {
     ImGui::SeparatorText("Jukebox");
+    if (ui::target() >= 0) ImGui::SetScrollHereY(0.0f);  // LM_JUKEBOX_UI: the section in view
     std::call_once(sLoad, load);
     if (sTracks.empty()) {
         ImGui::TextDisabled("No music table found on the disc.");
@@ -131,13 +187,18 @@ void soundSection() {
                         "The game may change the music again on its own, e.g. when Luigi enters a room.");
     if (ImGui::Button("Stop music")) {
         sStop = true;
+        log("[jukebox] menu: stop");
         sNowPlaying = -1;
     }
+    ui::atButton(0);
     ImGui::SetItemTooltip("Stops the sequenced music the jukebox (or the game) is playing.");
     ImGui::SameLine();
     ImGui::Checkbox("Only tracks not heard in retail", &sUnusedOnly);
     ImGui::SetItemTooltip("Lists only the music the retail game never plays (USA version).");
     const bool us = !ver::pal();
+    // "Playing" only while the game's music player still runs the picked track (it ended, was
+    // stopped, or the game started other music: back to "Play").
+    if (sNowPlaying > 0 && !sPending && sMusicId != (0x80000000u | u32(sNowPlaying))) sNowPlaying = -1;
     if (ImGui::BeginTable("jukebox", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
                           ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 14))) {
         for (const Track& t : sTracks) {
@@ -147,11 +208,14 @@ void soundSection() {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             char label[32];
-            std::snprintf(label, sizeof label, "%s##jb%d", sNowPlaying == t.index ? "Playing" : "Play", t.index);
+            std::snprintf(label, sizeof label, "%s###jb%d", sNowPlaying == t.index ? "Playing" : "Play", t.index);
             if (ImGui::SmallButton(label)) {
+                sPending = true;
                 sPlay = t.index;
+                log("[jukebox] menu: play %d", t.index);
                 sNowPlaying = t.index;
             }
+            ui::atButton(t.index);
             ImGui::TableNextColumn();
             ImGui::Text("%2d  %s", t.index, t.name.c_str());
             ImGui::TableNextColumn();
