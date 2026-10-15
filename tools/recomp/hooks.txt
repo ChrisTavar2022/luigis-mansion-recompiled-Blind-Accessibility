@@ -238,6 +238,17 @@ fn_8003E7B0 us pal
 # (fn_80011150 sets the view cameras' viewports, fn_80020654 updates a camera from them).
 fn_80011150 us pal
 fn_80020654 us pal
+# Objects sucked toward the nozzle (hearts and other items, Boolossus' frozen Boos) test player 1's
+# suction only (fn_80143174 -> fn_80145578 -> fn_80144664: fn_800AD39C(0), room visible in view 0):
+# with the co-op improvements the test runs as player 2 (fn_800AC164: player 0 -> 1,
+# fn_8001CEAC: view 0 -> 1 in the split screen, the suction state's nozzle record of fn_80145534 for
+# player 2) while player 2's Poltergust points at it and player 1's does not; fn_800C60B0 (an object
+# being pulled in) then follows player 2's nozzle.
+fn_80143174
+fn_80145534
+fn_800C60B0
+fn_800AC164
+fn_8001CEAC
 
 # Enhanced lighting (src/recomp/enhanced_lighting.cpp, docs/RENDERING.md): the main 3D view of the
 # game scene is bracketed to send the frame's extra lights and the scene-end marker (bloom,

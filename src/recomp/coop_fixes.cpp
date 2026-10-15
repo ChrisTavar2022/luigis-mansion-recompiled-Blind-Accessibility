@@ -26,7 +26,8 @@ bool envFlag(const char* name) {
 }
 // LM_COOP_BISECT=<hex mask> (test aid): turns single improvements off. 1 event hold, 2 follow,
 // 10 event hold without the hide bits, 20 without keeping player 2 at player 1, 40 shared progress,
-// 4 player 2 camera, 8 view layout, 80 the player an object deals with.
+// 4 player 2 camera, 8 view layout, 80 the player an object deals with, 100 player 2's suction of
+// objects pulled to the nozzle.
 bool off(u32 bit) {
     static const u32 sMask = std::getenv("LM_COOP_BISECT") ? u32(std::strtoul(std::getenv("LM_COOP_BISECT"), nullptr, 16)) : 0;
     return (sMask & bit) != 0;
@@ -48,6 +49,7 @@ u32 sLastRoom[2] = {~0u, ~0u};
 // message 3 (capture end) removes them.
 std::vector<u32> sGhosts;
 std::vector<u32> sObjects;  // AI objects of non-ghost characters that got a message this map
+std::vector<std::pair<u32, u32>> sPulledByP2;  // objects player 2's suction pulls: zako, game frame
 void retargetObjects(Ctx& c);  // below
 
 // Character type flags (type table lbl_8033B590, 0x1C per type, u16 at +8; fn_8006A3BC): 8 = ghost.
@@ -82,6 +84,7 @@ void onMapSetupFixes(Ctx&) {
     sGhosts.clear();
     cooptest::onMapSetup();
     sObjects.clear();
+    sPulledByP2.clear();
     sLastRoom[0] = sLastRoom[1] = ~0u;
     // Player 2 enters every map with player 1's health: player 2's record (lbl_803D5CD0 + 0x16C,
     // +0 health, +2 maximum; read by the player creation) is never reset by the game, so after a
@@ -635,7 +638,7 @@ HLE(fn_800850B4) {
 // against that player. Most objects set it to 0 (player 1) and never change it, so player 2 could
 // not catch the balls and a ghost player 2 hooked was pulled about by player 1's nozzle. With the
 // improvements: a ghost being hooked (message 9) deals with the player whose suction hooked it, and
-// an object that is not a ghost deals with the player whose running Poltergust points at it while
+// any object (ghosts included) deals with the player whose running Poltergust points at it while
 // the player it deals with does not.
 namespace {
 
@@ -644,14 +647,20 @@ namespace {
 float suctionAim(Ctx& c, int idx, u32 a, float maxDist) {
     const u32 p = player(c, idx);
     if (!p || !gu::inMem1(rd32(p + 0x80C + 0xA8))) return -1.0f;  // no suction running
-    const u32 dir = rd32(p + 0x80C + 0x700);
-    if (!gu::inMem1(dir)) return -1.0f;
     const float dx = gu::rdf(a + 0x44) - gu::rdf(p + 0x44), dz = gu::rdf(a + 0x4C) - gu::rdf(p + 0x4C);
     const float d = std::sqrt(dx * dx + dz * dz);
     if (d > maxDist) return -1.0f;
     if (d < 1.0f) return 1.0f;
-    const float nx = gu::rdf(dir), nz = gu::rdf(dir + 8), nl = std::sqrt(nx * nx + nz * nz);
-    return nl > 1e-3f ? (nx * dx + nz * dz) / (nl * d) : -1.0f;
+    // The better of Luigi's facing (+0xF48/+0xF50) and the nozzle direction (part +0x700, turned ahead
+    // of the body by the C stick, but only kept up to date while something is on the nozzle).
+    auto cosTo = [&](float nx, float nz) {
+        const float nl = std::sqrt(nx * nx + nz * nz);
+        return nl > 1e-3f ? (nx * dx + nz * dz) / (nl * d) : -1.0f;
+    };
+    float aim = cosTo(gu::rdf(p + 0xF48), gu::rdf(p + 0xF50));
+    const u32 dir = rd32(p + 0x80C + 0x700);
+    if (gu::inMem1(dir)) aim = std::max(aim, cosTo(gu::rdf(dir), gu::rdf(dir + 8)));
+    return aim;
 }
 
 int suctionPlayer(Ctx& c, u32 a, float maxDist, float minAim) {
@@ -664,17 +673,116 @@ int suctionPlayer(Ctx& c, u32 a, float maxDist, float minAim) {
 
 void retargetObjects(Ctx& c) {
     if (off(0x80)) return;
-    for (u32 t : sObjects) {
-        const u32 a = rd32(t + 0x808), cur = rd32(t + 0x950);
-        if (!gu::inMem1(a) || cur > 1) continue;
-        if (suctionAim(c, int(cur), a, 800.0f) > 0.7f) continue;  // its player is vacuuming at it
-        const int want = suctionPlayer(c, a, 800.0f, 0.7f);
-        if (want < 0 || u32(want) == cur) continue;
-        wr32(t + 0x950, u32(want));
-        log("[coop] object %08X (type %u) now deals with player %d, whose Poltergust points at it", t, rd32(a + 0x3C), want + 1);
-    }
+    // Ghosts too: e.g. Boolossus is drawn toward the nozzle of the player he deals with (his state 7,
+    // fn_80137E24 -> fn_8014573C(.., +0x950)) and pops on the balcony's spikes; with +0x950 left at
+    // 0 only player 1's Poltergust moved him.
+    static u32 sLogged = 0;
+    for (const std::vector<u32>* list : {&sObjects, &sGhosts})
+        for (u32 t : *list) {
+            const u32 a = rd32(t + 0x808), cur = rd32(t + 0x950);
+            if (!gu::inMem1(a) || cur > 1) continue;
+            if (suctionAim(c, int(cur), a, 800.0f) > 0.7f) continue;  // its player is vacuuming at it
+            const int want = suctionPlayer(c, a, 800.0f, 0.7f);
+            if (want < 0 || u32(want) == cur) continue;
+            wr32(t + 0x950, u32(want));
+            if (sLogged++ < 200)
+                log("[coop] %08X (type %u) now deals with player %d, whose Poltergust points at it", t, rd32(a + 0x3C), want + 1);
+        }
 }
 }  // namespace
+
+// ---- Suction of objects pulled to the nozzle -------------------------------------------------
+// fn_80143174(strategy, zako, f1, f2) tells whether an object is in the suction of a running
+// Poltergust (and where to move it): hearts and other items (fn_800D1704, ...), Boolossus' frozen
+// Boos (fn_8013B714). Underneath, fn_80144664 asks for player 0's Poltergust part literally
+// (fn_800AD39C(0)) and fn_8014405C for the object's room being visible in view 0, so only player
+// 1 could vacuum them. With the improvements, while player 2's running Poltergust points at the
+// object and player 1's does not, the test runs as player 2: player index 0 reads as 1 (fn_800AC164)
+// and, in the split screen, view 0 as view 1 (fn_8001CEAC).
+namespace {
+#define kSuction VA(0x803D8B40)  // suction state (fn_8014588C sets +0xE0 -> +0x00, +0xE4 -> +0x60)
+u32 sP2Nozzle = 0;               // player 2's copy of its +0x00 nozzle record (HLE memory)
+int sAsPlayer2 = 0;  // > 0: running as player 2 (player index 0 reads as 1)
+bool pulledByP2(u32 zako) {
+    const u32 now = skip::guestFrames();
+    for (const auto& [z, f] : sPulledByP2)
+        if (z == zako) return now - f <= 10;
+    return false;
+}
+void markPulledByP2(u32 zako) {
+    for (auto& [z, f] : sPulledByP2)
+        if (z == zako) {
+            f = skip::guestFrames();
+            return;
+        }
+    if (sPulledByP2.size() > 64) sPulledByP2.erase(sPulledByP2.begin());
+    sPulledByP2.push_back({zako, skip::guestFrames()});
+    static u32 sLogged = 0;
+    if (sLogged++ < 20)
+        log("[coop] player 2's Poltergust pulls %08X (type %u)", zako, gu::inMem1(zako) ? rd32(rd32(zako + 0x808) + 0x3C) : 0);
+}
+}
+
+// The sucked-object update (fn_800C60B0(strategy)): the movement to the nozzle (the strategy's
+// +0x78 part, its +0x10 update) and the capture once it arrives (fn_800F4374, message 4) follow
+// player 1's nozzle. For an object player 2's suction is pulling it runs as player 2.
+HLE(fn_800C60B0) {
+    const u32 zako = gu::inMem1(c.r[3]) ? rd32(c.r[3] + 4) : 0;
+    const bool p2 = fixes() && !off(0x100) && zako && pulledByP2(zako);
+    if (p2) sAsPlayer2++;
+    callOriginal(c, "fn_800C60B0");
+    if (p2) sAsPlayer2--;
+}
+
+HLE(fn_80143174) {
+    // The test has side effects (a failed test lets go of the object: fn_80143EDC), so it runs once,
+    // for the player whose suction is on the object: player 2 while player 2's running Poltergust
+    // points at it and player 1's does not (or player 2 has been pulling it).
+    const u32 zako = c.r[4];
+    const u32 a = gu::inMem1(zako) ? rd32(zako + 0x808) : 0;
+    bool p2 = false;
+    if (fixes() && !off(0x100) && sAsPlayer2 == 0 && gu::inMem1(a) && player(c, 1)) {
+        const float aim1 = suctionAim(c, 0, a, 800.0f), aim2 = suctionAim(c, 1, a, 800.0f);
+        p2 = (aim2 > 0.7f && aim1 < aim2) || (pulledByP2(zako) && aim2 > 0.0f && aim1 <= 0.7f);
+    }
+    // The nozzle the object is pulled into (and captured at) is the suction state's +0xE0 record,
+    // filled for player 1 every frame (fn_80145534 -> fn_8012BF4C): player 2's record for the call.
+    const u32 rec = kSuction + 0xE0, saved = rd32(rec);
+    const bool swap = (p2 || sAsPlayer2 > 0) && sP2Nozzle;
+    if (swap) wr32(rec, sP2Nozzle);
+    if (p2) sAsPlayer2++;
+    callOriginal(c, "fn_80143174");
+    if (p2) sAsPlayer2--;
+    if (swap) wr32(rec, saved);
+    if ((p2 || sAsPlayer2 > 0) && (c.r[3] & 0xFF) != 0) markPulledByP2(zako);
+}
+
+// The suction state's per-frame update (fn_80145534): its nozzle record (+0xE0 -> +0x00, 0x60
+// bytes: nozzle position and direction pointers, room, reach) is filled from player 1's Poltergust
+// (fn_8012BF4C, fn_800AD39C(0)); a copy is filled the same way for player 2.
+HLE(fn_80145534) {
+    callOriginal(c, "fn_80145534");
+    if (!fixes() || off(0x100) || !player(c, 1)) return;
+    if (!sP2Nozzle) {
+        sP2Nozzle = hleAlloc(0x60, 8);
+        for (u32 i = 0; i < 0x60; i += 4) wr32(sP2Nozzle + i, rd32(kSuction + i));
+    }
+    sAsPlayer2++;
+    gu::call(c, VA(0x8012BF4C), {sP2Nozzle}, {double(gu::rdf(c.r[2] - 0x51F0))});
+    sAsPlayer2--;
+}
+
+// Player by index (index < 256: fn_800E9750; else the special object r13+0xCC8).
+HLE(fn_800AC164) {
+    if (sAsPlayer2 > 0 && c.r[3] == 0) c.r[3] = 1;
+    callOriginal(c, "fn_800AC164");
+}
+
+// Room visibility record for a view (fn_8001CEAC(room, view)).
+HLE(fn_8001CEAC) {
+    if (sAsPlayer2 > 0 && c.r[4] == 0 && rd32(kViewCount) >= 2) c.r[4] = 1;
+    callOriginal(c, "fn_8001CEAC");
+}
 
 // EnThought::receiveMessage (fn_800C0F08), before the original.
 void onGhostMessage(Ctx& c) {
