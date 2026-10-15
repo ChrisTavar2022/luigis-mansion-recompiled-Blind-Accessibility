@@ -107,6 +107,24 @@ struct Patch {
     u16 posFmt = 0;
     u16 uvOffset = 0xFFFF;
     bool sky = false;  // noted inside the sky dome's draw (pushSky)
+    u16 tgroup = 0;  // text box group (pushTextGroup): index + 1 into Tape::textGroups, 0 none
+    s32 mtxPatch = -1;  // 2D blocks: the position matrix patch current at its GXBegin (-1: none noted)
+    s32 projPatch = -1;  // 2D blocks: the projection patch its vertices were written under (-1: none noted)
+};
+
+// A text box drawn in one game frame (pushTextGroup): its patches [first, end) are blended as one
+// layout (replayTextGroups; docs/INTERPOLATION.md "Text boxes at 120").
+struct TextGroupRec {
+    u32 id = 0;
+    u32 first = 0, end = 0;
+    bool oneLayout = false;
+};
+// A viewport (XF 0x101A, 6 floats) or scissor box (BP 0x20 / 0x21) written in a text group.
+struct TextView {
+    u32 at = 0;     // tape offset of the write
+    u8 scissor = 0;
+    u16 group = 0;  // index + 1 into Tape::textGroups
+    float f = 1, c = 0;  // layout x -> pixel x
 };
 
 using M34 = std::array<f32, 12>;
@@ -164,6 +182,14 @@ struct Tape {
     u32 paired = 0, unpaired = 0, untagged = 0;
     std::vector<std::pair<u32, u32>> lights;  // extra-light commands: offset of the first light, count
     std::vector<u64> lightKeys;               // per extra light (flattened, command order): identity, 0 none
+    std::vector<TextGroupRec> textGroups;  // text boxes drawn in this game frame
+    std::vector<TextView> textViews;       // their viewports and scissor boxes
+    // Host (replays only): per patch the block of pairedWith it shows the same glyph/picture as,
+    // in a text group (sequence alignment, computed at the first replay of the pair; -1 none).
+    mutable std::vector<s32> textMatch;
+    mutable std::vector<u8> textKind;  // per patch: 1 the same place in its box, 2 moved with the text layer, 3 on its own
+    mutable std::vector<std::array<float, 2>> textD;  // per patch: its panel's text layer offset since pairedWith (layout)
+    mutable std::shared_ptr<void> textCache;  // host: the text groups' blocks and panels, built at the first replay of the pair
     u32 dumpOffset = ~0u;  // LM_INTERP_TEST: tape offset of the LM_FRAME_DUMP copy's target pointer
     u32 dumpFrame = 0;
     u32 gameFrame = 0;  // GXCopyDisp count + 1 when captured (LM_FRAME_DUMP / LM_INTERP_DRAWS numbering; logs)
@@ -199,6 +225,17 @@ ShadowLight sShadow;
 int sShadowRecv = 0;
 u32 sPass = 0;
 bool sOrtho = false;
+std::vector<TextGroupRec> sTextGroups;
+int sTextDepth = 0;
+std::vector<TextView> sTextViews;
+u32 sTextViewJoin = 0;  // pushTextViewJoin's group id (0 none)
+int sTextViewJoinDepth = 0;
+u16 sTextCur = 0;   // the open text group (index + 1), 0 none
+u16 sVertsText = 0;  // the text group of the immediate-mode block begun at GXBegin
+u32 sCurMtxSlot = 0;  // GXSetCurrentMtx / 3
+s32 sLastPosMtx[10];  // per position matrix slot: the patch that loaded it in this tape (-1 none)
+s32 sVertsMtx = -1;   // the current position matrix patch at the block's GXBegin
+s32 sLastProj = -1;   // the last projection noted in this tape
 
 // Judder detector (LM_JUDDER_LOG, see probeJudge): the noted position matrix each PNMTX slot holds.
 FILE* const sProbeOut = [] {
@@ -1141,6 +1178,12 @@ void beginTape() {
     sLights.clear();
     sLightKeys.clear();
     sUngrouped = 0;
+    sTextGroups.clear();
+    sTextViews.clear();
+    sTextCur = 0;
+    sTextDepth = 0;
+    std::fill(std::begin(sLastPosMtx), std::end(sLastPosMtx), -1);
+    sLastProj = -1;
     sTagOcc.clear();
     sValOcc.clear();
     sVirtBase = 0;
@@ -1202,6 +1245,11 @@ void endTape(u32 retraceCount) {
     sLights = {};
     tape->lightKeys = std::move(sLightKeys);
     sLightKeys = {};
+    for (TextGroupRec& g : sTextGroups) g.end = std::min<u32>(g.end, u32(tape->patches.size()));
+    tape->textGroups = std::move(sTextGroups);
+    sTextGroups = {};
+    tape->textViews = std::move(sTextViews);
+    sTextViews = {};
     tape->arrays = std::move(arrays);
     tape->arrayRecs = std::move(arrayRecs);
     tape->arrayBytes = arrayBytes;
@@ -1318,7 +1366,56 @@ int sLinearPos = 0;
 void pushNoBlend() { sNoBlend++; }
 void popNoBlend() { sNoBlend = sNoBlend > 0 ? sNoBlend - 1 : 0; }
 void pushFrameLock() { sFrameLock++; }
+void setCurrentMtx(u32 id) { sCurMtxSlot = id / 3; }
+void pushTextGroup(u32 id, bool oneLayout) {
+    if (sTextDepth++ > 0 || !capturing() || sFrameLock > 0 || sTextGroups.size() >= 0xFFF0) return;
+    sTextGroups.push_back({id, u32(sPatches.size()), ~0u, oneLayout});
+    sTextCur = u16(sTextGroups.size());
+}
+void pushTextGroupJoin(u32 id) {
+    if (sTextDepth++ > 0 || !capturing() || sFrameLock > 0) return;
+    for (u32 g = u32(sTextGroups.size()); g-- > 0;)
+        if (sTextGroups[g].id == id) {
+            sTextCur = u16(g + 1);
+            return;
+        }
+}
+void noteTextView(u32 at, bool scissor, float f, float c) {
+    if (at == ~0u || !capturing() || sFrameLock > 0) return;
+    u16 g = sTextCur;
+    if (!g && sTextViewJoin)
+        for (u32 k = u32(sTextGroups.size()); k-- > 0;)
+            if (sTextGroups[k].id == sTextViewJoin) {
+                g = u16(k + 1);
+                break;
+            }
+    if (!g) return;
+    const u32 end = sBase + AuroraCapturePos();
+    // Viewport: XF write 0x10, header 0x0005101A, 6 floats. Scissor: BP 0x61 0x20 (top, left),
+    // 0x61 0x21 (bottom, right).
+    if (!scissor && !(at + 29 <= end && sScratch[at] == 0x10 && sScratch[at + 3] == 0x10 && sScratch[at + 4] == 0x1A)) return;
+    if (scissor && !(at + 10 <= end && sScratch[at] == 0x61 && sScratch[at + 1] == 0x20 && sScratch[at + 5] == 0x61 &&
+                     sScratch[at + 6] == 0x21))
+        return;
+    sTextViews.push_back({at, u8(scissor), g, f, c});
+}
+void noteTextViewport(u32 at, float f, float c) { noteTextView(at, false, f, c); }
+void noteTextScissor(u32 at, float f, float c) { noteTextView(at, true, f, c); }
+void pushTextViewJoin(u32 id) {
+    if (sTextViewJoinDepth++ == 0) sTextViewJoin = id;
+}
+void popTextViewJoin() {
+    if (sTextViewJoinDepth > 0 && --sTextViewJoinDepth == 0) sTextViewJoin = 0;
+}
+void popTextGroup() {
+    if (sTextDepth <= 0) return;
+    if (--sTextDepth > 0 || !sTextCur) return;
+    TextGroupRec& r = sTextGroups[sTextCur - 1];
+    r.end = r.end == ~0u ? u32(sPatches.size()) : std::max<u32>(r.end, u32(sPatches.size()));
+    sTextCur = 0;
+}
 void popFrameLock() { sFrameLock = sFrameLock > 0 ? sFrameLock - 1 : 0; }
+bool tagLogOn() { return sTagLogFrame != ~0ull && capturing(); }
 void tagLogMark(const char* text) {
     if (sTagLogFrame != ~0ull && capturing())
         std::fprintf(sTagLog, "f%llu #%u mark %s\n", (unsigned long long)sTagLogFrame, u32(sPatches.size()), text);
@@ -1444,6 +1541,7 @@ u64 valueKey(Kind kind, u32 source, u32 slot, TagCat& cat) {
 }
 
 void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
+    if (kind == Kind::PosMtx && slot % 3 == 0 && slot / 3 < 10) sLastPosMtx[slot / 3] = -1;  // (set below when noted)
     if (at == ~0u || !capturing() || sNoBlend + sFrameLock > 0) return;
     if (sLinearPos > 0 && kind == Kind::PosMtx) kind = Kind::TexMtx;  // element-wise, own key
     // Aurora writes XF loads as 0x10, a u32 header, then the values.
@@ -1459,6 +1557,9 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     else if (sOrtho && kind != Kind::Projection) p.role = 2;
     if (sProbeOut && kind == Kind::PosMtx && nFloats == 12 && slot % 3 == 0 && slot / 3 < 10)
         sSlotPatch[slot / 3] = s32(sPatches.size());
+    p.tgroup = sTextCur;
+    if (kind == Kind::PosMtx && slot % 3 == 0 && slot / 3 < 10) sLastPosMtx[slot / 3] = s32(sPatches.size());
+    if (kind == Kind::Projection) sLastProj = s32(sPatches.size());
     // (Inside a SubView the game camera is not the one these values were built with: not factored.)
     const TagFrame* tf = topTag();
     const bool ownCamera = tf && tf->ownCamera;
@@ -1511,6 +1612,7 @@ void noteColor(u32 off, u16 format, u32 reg, u32 light = 0) {
     }
     if (sOrtho) p.role = 2;  // 2D layout: as captured
     p.inScope = sTagDepth > 0 || sVirtActive;
+    p.tgroup = sTextCur;
     sPatches.push_back(p);
 }
 
@@ -1725,6 +1827,660 @@ bool blend2DLayout(const Tape& a, const Patch& q, s32 j, const Tape& b, const Pa
     return true;
 }
 
+// --- text boxes as one layout (docs/INTERPOLATION.md "Text boxes at 120") -------------------------
+// Everything a text box draws in one game frame (pushTextGroup: fn_80044138's message windows, the
+// room name) is replayed as one 2D layout instead of value by value:
+//  - the box picture (the group's first textured block at least 48 units across: fn_8003B054's
+//    480x120 window) gives the layout transform M: while it opens, closes or slides, its rectangle
+//    is blended and M maps b's rectangle onto the blended one; M is applied to every 2D position
+//    matrix loaded inside the group, so the icon, text, arrow and choices move and scale with it;
+//  - the other blocks (glyphs: one quad per character from JUTResFont::drawChar_scale, the speaker
+//    icon, the "more" arrow) are matched to the previous game frame's by sequence alignment of what
+//    they show (texture, texture coordinates, vertex count): J2DPrint draws a page's text from its
+//    start every frame, so the text so far is the same sequence with new letters at its end;
+//  - text that scrolls (a new line pushes the page up over several game frames: the matched glyphs
+//    move by one common offset D) is drawn D x (1 - alpha) behind b's place, letters new in b
+//    included: the whole text layer moves smoothly and keeps its own layout;
+//  - a letter new in b fades in: its vertex alpha is scaled by the present's alpha (0 at the game
+//    frame that adds it, its full value at the next one); letters already shown stay solid; a page
+//    change or a box that closes switches at the game frame (old text never blends into new text);
+//  - colours of matched blocks blend (unless a channel jumps by more than 96).
+// LM_TEXTBOX_LOG=<file>: per replay and group the box rectangles, M, D and the block counts;
+// LM_TEXTBOX_LOG_BLOCKS=1 adds every block (matched block, local position shown, alpha shown).
+namespace {
+FILE* const sTextLog = [] {
+    const char* v = std::getenv("LM_TEXTBOX_LOG");
+    return v && *v ? std::fopen(v, "w") : nullptr;
+}();
+const bool sTextLogBlocks = std::getenv("LM_TEXTBOX_LOG_BLOCKS") && *std::getenv("LM_TEXTBOX_LOG_BLOCKS") == '1';
+u32 sTextGroupsBlended = 0, sTextFaded = 0, sTextScrolled = 0, sTextBoxMoved = 0;
+
+// The layout x/y of a block drawn with a 2D position matrix (rows x and y of the 3x4 matrix in its
+// current slot at its GXBegin; identity when none was loaded in this game frame).
+struct Affine2D {
+    f32 m[6] = {1, 0, 0, 0, 1, 0};
+    void apply(const float in[2], float out[2]) const {
+        const float x = in[0], y = in[1];
+        out[0] = m[0] * x + m[1] * y + m[2], out[1] = m[3] * x + m[4] * y + m[5];
+    }
+    bool invert(const float in[2], float out[2], bool linear = false) const {
+        const float det = m[0] * m[4] - m[1] * m[3];
+        if (std::fabs(det) < 1e-8f) return false;
+        const float x = in[0] - (linear ? 0 : m[2]), y = in[1] - (linear ? 0 : m[5]);
+        out[0] = (m[4] * x - m[1] * y) / det, out[1] = (m[0] * y - m[3] * x) / det;
+        return true;
+    }
+};
+
+struct TextBlock {
+    u32 i;               // patch index
+    float lo[2], hi[2];  // bounds of its positions (local coordinates)
+    float at[2];         // its top-left in layout coordinates, relative to its panel's box
+    u64 pic;             // what it shows: texture/layout, vertex count, texture coordinates
+    u64 sig;             // pic and its size (glyphs and icons: one character cell, one picture)
+    bool box;            // a box picture: starts a panel
+    u32 panel;           // index into the group's panels (0: blocks before the first box)
+    Affine2D A;          // its position matrix
+    u64 key = 0;         // what it is drawn with (texture, vertex layout)
+    float rect[2][2];    // its layout rectangle
+};
+struct TextPanel {
+    s32 box = -1;            // block index of its (first) box picture (-1: none)
+    float rect[2][2] = {};   // the box's layout rectangle (lo, hi): the union of its pieces
+    u64 key = 0;             // what the box is drawn with (texture, vertex layout)
+};
+
+bool is2DBlock(const Patch& p) { return p.kind == Kind::Verts && p.role == 2 && (p.posFmt & 0x100) && p.count >= 1; }
+
+u32 posComps(const Patch& p, u32& csize) {
+    const u32 type = p.posFmt & 7;
+    csize = type == GX_F32 ? 4 : type >= GX_U16 ? 2 : 1;
+    return std::min<u32>(p.source / csize, 3);
+}
+
+Affine2D blockMatrix(const Tape& t, const Patch& p) {
+    Affine2D a;
+    if (p.mtxPatch >= 0 && u32(p.mtxPatch) < t.patches.size()) {
+        const Patch& q = t.patches[p.mtxPatch];
+        if (q.kind == Kind::PosMtx && q.count == 12) {
+            a.m[0] = val(t, q, 0), a.m[1] = val(t, q, 1), a.m[2] = val(t, q, 3);
+            a.m[3] = val(t, q, 4), a.m[4] = val(t, q, 5), a.m[5] = val(t, q, 7);
+        }
+    }
+    return a;
+}
+
+void layoutRect(const Affine2D& m, const float blo[2], const float bhi[2], float lo[2], float hi[2]) {
+    lo[0] = lo[1] = 1e30f, hi[0] = hi[1] = -1e30f;
+    for (int c = 0; c < 4; c++) {
+        const float in[2] = {c & 1 ? bhi[0] : blo[0], c & 2 ? bhi[1] : blo[1]};
+        float o[2];
+        m.apply(in, o);
+        lo[0] = std::min(lo[0], o[0]), hi[0] = std::max(hi[0], o[0]);
+        lo[1] = std::min(lo[1], o[1]), hi[1] = std::max(hi[1], o[1]);
+    }
+}
+
+bool textBlock(const Tape& t, u32 i, TextBlock& out) {
+    const Patch& p = t.patches[i];
+    u32 csize;
+    const u32 comps = posComps(p, csize);
+    if (comps < 2 || p.offset + u32(p.count) * p.stride > t.bytes.size()) return false;
+    const u32 type = p.posFmt & 7, frac = (p.posFmt >> 3) & 31;
+    out.i = i;
+    out.lo[0] = out.lo[1] = 1e30f, out.hi[0] = out.hi[1] = -1e30f;
+    u64 h = mix(u64(p.count) << 32 ^ (p.bundle < t.bundleIds.size() ? t.bundleIds[p.bundle] : 0) ^ 0x7E47ull);
+    for (u32 v = 0; v < p.count; v++) {
+        const u8* vp = t.bytes.data() + p.offset + v * p.stride;
+        for (u32 c = 0; c < 2; c++) {
+            const f32 x = load2D(vp + p.posOffset + c * csize, type, frac);
+            if (!std::isfinite(x)) return false;
+            out.lo[c] = std::min(out.lo[c], x), out.hi[c] = std::max(out.hi[c], x);
+        }
+        for (u32 k = 0; k < p.uvBytes; k++) h = mix(h ^ u64(vp[p.uvOffset + k]) << (8 * (k & 7)) ^ u64(v) << 60);
+    }
+    out.pic = h;
+    out.sig = mix(h ^ u64(std::lround((out.hi[0] - out.lo[0]) * 8)) << 20 ^ u64(std::lround((out.hi[1] - out.lo[1]) * 8)));
+    out.box = p.uvBytes && p.count == 4 && std::max(out.hi[0] - out.lo[0], out.hi[1] - out.lo[1]) >= 48.0f;
+    out.A = blockMatrix(t, p);
+    out.panel = 0;
+    out.at[0] = out.at[1] = 0;
+    return true;
+}
+
+// The 2D blocks of group g (index) of tape t, split into panels: every box picture (a textured quad
+// at least 48 units across: the message window, a piece of the choice box, a piece of the Game Boy
+// Horror's frame) starts a panel; the pieces drawn right after it with the same texture that touch
+// it (the choice box is nine pieces, opening by moving and stretching them) extend its box, and the
+// blocks drawn after them (its text, icon, arrow) belong to it.
+void groupBlocks(const Tape& t, u32 g, std::vector<TextBlock>& blocks, std::vector<TextPanel>& panels) {
+    blocks.clear();
+    panels.assign(1, TextPanel{});
+    const TextGroupRec& r = t.textGroups[g];
+    bool open = false;  // the current panel's box can still grow (only its pieces drawn since)
+    for (u32 i = r.first; i < r.end && i < t.patches.size(); i++) {
+        const Patch& p = t.patches[i];
+        if (p.tgroup != g + 1 || !is2DBlock(p)) continue;
+        TextBlock tb;
+        if (!textBlock(t, i, tb)) continue;
+        const u64 key = mix((p.bundle < t.bundleIds.size() ? t.bundleIds[p.bundle] : 0) ^ u64(p.site) << 32);
+        float lo[2], hi[2];
+        layoutRect(tb.A, tb.lo, tb.hi, lo, hi);
+        tb.key = key;
+        std::memcpy(tb.rect[0], lo, sizeof(lo));
+        std::memcpy(tb.rect[1], hi, sizeof(hi));
+        TextPanel& cur = panels.back();
+        if (r.oneLayout) {
+            // One picture: everything moves as its first box picture does (its other pieces come
+            // and go: the call screen's frame appears a game frame after the bezel).
+            if (tb.box) {
+                if (panels.size() == 1) {
+                    TextPanel pn;
+                    pn.box = s32(blocks.size());
+                    pn.key = tb.pic;  // (another first picture: no blend)
+                    std::memcpy(pn.rect[0], lo, sizeof(lo));
+                    std::memcpy(pn.rect[1], hi, sizeof(hi));
+                    panels.push_back(pn);
+                    for (TextBlock& prev : blocks) prev.panel = 1;
+                } else {
+                    tb.box = true;
+                }
+            }
+            tb.panel = u32(panels.size() - 1);
+            blocks.push_back(tb);
+            continue;
+        }
+        // A piece touches or overlaps the box (and is drawn by the same code with the same texture:
+        // the speaker icon inside the window is content).
+        const auto touches = [](const float r[2][2], const float l[2], const float h[2]) {
+            return l[0] <= r[1][0] + 1 && h[0] >= r[0][0] - 1 && l[1] <= r[1][1] + 1 && h[1] >= r[0][1] - 1;
+        };
+        if (open && p.uvBytes && key == cur.key && touches(cur.rect, lo, hi)) {
+            tb.box = true;  // another piece of the box
+            for (int c = 0; c < 2; c++) cur.rect[0][c] = std::min(cur.rect[0][c], lo[c]), cur.rect[1][c] = std::max(cur.rect[1][c], hi[c]);
+        } else if (tb.box) {
+            TextPanel pn;
+            pn.box = s32(blocks.size());
+            pn.key = key;
+            std::memcpy(pn.rect[0], lo, sizeof(lo));
+            std::memcpy(pn.rect[1], hi, sizeof(hi));
+            // Pieces of this box drawn just before it (the choice box's top-left corner, smaller
+            // than a box picture) belong to it too.
+            u32 first = u32(blocks.size());
+            while (first > 0) {
+                TextBlock& prev = blocks[first - 1];
+                if (prev.box || prev.key != key || !t.patches[prev.i].uvBytes || !touches(pn.rect, prev.rect[0], prev.rect[1])) break;
+                for (int c = 0; c < 2; c++)
+                    pn.rect[0][c] = std::min(pn.rect[0][c], prev.rect[0][c]), pn.rect[1][c] = std::max(pn.rect[1][c], prev.rect[1][c]);
+                first--;
+            }
+            panels.push_back(pn);
+            for (u32 k = first; k < blocks.size(); k++) {
+                blocks[k].box = true;
+                blocks[k].panel = u32(panels.size() - 1);
+            }
+            if (first < blocks.size()) panels.back().box = s32(first);
+            open = true;
+        } else {
+            open = false;
+        }
+        tb.panel = u32(panels.size() - 1);
+        blocks.push_back(tb);
+    }
+    for (TextBlock& tb : blocks) {
+        float lay[2];
+        tb.A.apply(tb.lo, lay);
+        tb.at[0] = lay[0] - panels[tb.panel].rect[0][0], tb.at[1] = lay[1] - panels[tb.panel].rect[0][1];
+    }
+}
+
+// Panels of b paired with panels of a: panel 0 with panel 0, then in order by what the box is drawn
+// with.
+void matchPanels(const std::vector<TextPanel>& pa, const std::vector<TextPanel>& pb, std::vector<s32>& out) {
+    out.assign(pb.size(), -1);
+    out[0] = 0;
+    u32 next = 1;
+    for (u32 k = 1; k < pb.size(); k++)
+        for (u32 q = next; q < pa.size(); q++)
+            if (pa[q].key == pb[k].key) {
+                out[k] = s32(q);
+                next = q + 1;
+                break;
+            }
+}
+
+// Which block of a's panel each block of b's panel shows again (b.textMatch / textKind / textD).
+// Blocks pair by what they show (texture, texture coordinates, size) and where they are in their box:
+//  1. at the same place (letters already shown, the speaker icon);
+//  2. moved by D, the most common offset between a block of b and a block of a showing the same
+//     (at least 3 blocks: the page scrolling up by a line over a few game frames);
+//  3. on its own by at most 16 units, when the picture is unique in both panels and most of the
+//     text paired (the same page): e.g. the "more" arrow bobbing.
+// Everything else is new in b (a page change: the old text is gone, the new one fades in).
+void matchText(const std::vector<TextBlock>& ba, const std::vector<TextPanel>& pa, u32 qa, const Tape& b,
+               const std::vector<TextBlock>& bb, const std::vector<TextPanel>& pb, u32 qb) {
+    // The box's pieces, in order (their colours blend; their places follow the panel's layout).
+    {
+        std::vector<u32> xa, xb;
+        for (u32 k = 0; k < ba.size(); k++)
+            if (ba[k].panel == qa && ba[k].box) xa.push_back(k);
+        for (u32 k = 0; k < bb.size(); k++)
+            if (bb[k].panel == qb && bb[k].box) xb.push_back(k);
+        for (size_t k = 0; k < xb.size() && k < xa.size(); k++)
+            if (ba[xa[k]].pic == bb[xb[k]].pic || xa.size() == xb.size()) {
+                b.textMatch[bb[xb[k]].i] = s32(ba[xa[k]].i);
+                b.textKind[bb[xb[k]].i] = 1;
+            }
+    }
+    const auto key = [](const TextBlock& t, float dx, float dy) {
+        return mix(t.sig ^ u64(u32(std::lround((t.at[0] - dx) * 16))) << 32 ^ u64(u32(std::lround((t.at[1] - dy) * 16))));
+    };
+    std::unordered_multimap<u64, u32> where;  // a's blocks by what and where
+    std::unordered_map<u64, u32> countA, countB;
+    std::vector<u32> ia, ib;
+    for (u32 k = 0; k < ba.size(); k++)
+        if (ba[k].panel == qa && !ba[k].box) {
+            ia.push_back(k);
+            where.emplace(key(ba[k], 0, 0), k);
+            countA[ba[k].sig]++;
+        }
+    for (u32 k = 0; k < bb.size(); k++)
+        if (bb[k].panel == qb && !bb[k].box) ib.push_back(k), countB[bb[k].sig]++;
+    std::unordered_set<u32> used;
+    u32 paired = 0;
+    const auto take = [&](u32 kb, float dx, float dy, u8 kind) {
+        auto [lo, hi] = where.equal_range(key(bb[kb], dx, dy));
+        for (auto it = lo; it != hi; ++it) {
+            if (used.count(it->second) || ba[it->second].sig != bb[kb].sig) continue;
+            used.insert(it->second);
+            b.textMatch[bb[kb].i] = s32(ba[it->second].i);
+            b.textKind[bb[kb].i] = kind;
+            paired++;
+            return true;
+        }
+        return false;
+    };
+    std::vector<u32> rest;
+    for (const u32 kb : ib)
+        if (!take(kb, 0, 0, 1)) rest.push_back(kb);
+    // The text layer's offset: the most common offset to an unused block of a showing the same.
+    std::map<std::pair<s32, s32>, u32> hist;
+    if (rest.size() * ia.size() <= (4u << 20))
+        for (const u32 kb : rest)
+            for (const u32 k : ia) {
+                if (used.count(k) || ba[k].sig != bb[kb].sig) continue;
+                const float dx = bb[kb].at[0] - ba[k].at[0], dy = bb[kb].at[1] - ba[k].at[1];
+                if (std::hypot(dx, dy) <= 64.0f) hist[{s32(std::lround(dx * 16)), s32(std::lround(dy * 16))}]++;
+            }
+    u32 best = 0;
+    float D[2] = {0, 0};
+    for (const auto& [d, n] : hist)
+        if (n > best) best = n, D[0] = d.first / 16.0f, D[1] = d.second / 16.0f;
+    if (best < 3) D[0] = D[1] = 0;
+    std::vector<u32> rest2;
+    for (const u32 kb : rest)
+        if (best < 3 || !take(kb, D[0], D[1], 2)) rest2.push_back(kb);
+    for (const u32 kb : ib) b.textD[bb[kb].i] = {D[0], D[1]};
+    // On their own: unique pictures of the same page.
+    if (2 * paired >= ib.size())
+        for (const u32 kb : rest2) {
+            if (countB[bb[kb].sig] != 1 || countA[bb[kb].sig] != 1) continue;
+            for (const u32 k : ia) {
+                if (used.count(k) || ba[k].sig != bb[kb].sig) continue;
+                if (std::hypot(bb[kb].at[0] - ba[k].at[0], bb[kb].at[1] - ba[k].at[1]) <= 16.0f) {
+                    used.insert(k);
+                    b.textMatch[bb[kb].i] = s32(ba[k].i);
+                    b.textKind[bb[kb].i] = 3;
+                }
+                break;
+            }
+        }
+}
+
+void readPos(const Tape& t, const Patch& p, u32 v, float xy[2]) {
+    u32 csize;
+    posComps(p, csize);
+    const u8* o = t.bytes.data() + p.offset + v * p.stride + p.posOffset;
+    for (u32 c = 0; c < 2; c++) xy[c] = load2D(o + c * csize, p.posFmt & 7, (p.posFmt >> 3) & 31);
+}
+void readShown(const Patch& p, u32 v, float xy[2]) {
+    u32 csize;
+    posComps(p, csize);
+    const u8* o = sReplay.data() + p.offset + v * p.stride + p.posOffset;
+    for (u32 c = 0; c < 2; c++) xy[c] = load2D(o + c * csize, p.posFmt & 7, (p.posFmt >> 3) & 31);
+}
+void writePos(const Patch& p, u32 v, const float xy[2]) {
+    u32 csize;
+    posComps(p, csize);
+    u8* o = sReplay.data() + p.offset + v * p.stride + p.posOffset;
+    for (u32 c = 0; c < 2; c++) store2D(o + c * csize, p.posFmt & 7, (p.posFmt >> 3) & 31, xy[c]);
+}
+
+// Colours of block p (b) blended toward q (a) unless a channel jumps; false: left as b's.
+bool blendBlockColours(const Tape& a, const Patch& q, const Tape& b, const Patch& p, float alpha) {
+    if (!p.clrBytes || q.clrBytes != p.clrBytes || q.clrOffset != p.clrOffset || q.count != p.count) return false;
+    for (u32 v = 0; v < p.count; v++)
+        for (u32 c = 0; c < p.clrBytes; c++)
+            if (std::abs(int(a.bytes[q.offset + v * q.stride + q.clrOffset + c]) - int(b.bytes[p.offset + v * p.stride + p.clrOffset + c])) > 96)
+                return false;
+    for (u32 v = 0; v < p.count; v++)
+        for (u32 c = 0; c < p.clrBytes; c++) {
+            const int x = a.bytes[q.offset + v * q.stride + q.clrOffset + c], y = b.bytes[p.offset + v * p.stride + p.clrOffset + c];
+            sReplay[p.offset + v * p.stride + p.clrOffset + c] = u8(std::lround(x + (y - x) * alpha));
+        }
+    return true;
+}
+
+// x' = s x + t per axis.
+struct Layout2D {
+    float sx = 1, tx = 0, sy = 1, ty = 0;
+    bool moved = false;
+};
+}  // namespace
+
+void replayTextGroups(const Tape& a, const Tape& b, float alpha) {
+    if (b.textGroups.empty()) return;
+    // The group of a each group of b is (same drawing function, same order among its groups).
+    const auto partnerGroup = [&](u32 g) -> s32 {
+        u32 ord = 0;
+        for (u32 k = 0; k < g; k++) ord += b.textGroups[k].id == b.textGroups[g].id;
+        for (u32 h = 0, n = 0; h < a.textGroups.size(); h++)
+            if (a.textGroups[h].id == b.textGroups[g].id && n++ == ord) return s32(h);
+        return -1;
+    };
+    // Built once per pair (a tape is replayed several times, always with the same pairedWith).
+    struct GroupCache {
+        s32 ga = -1;
+        std::vector<TextBlock> ba, bb;
+        std::vector<TextPanel> pa, pb;
+        std::vector<s32> panelToA;
+    };
+    struct Cache {
+        std::vector<GroupCache> groups;
+        // per position matrix / projection patch: the text groups (index + 1, 0 none) whose 2D blocks use it
+        std::unordered_map<s32, std::vector<u16>> mtxUsers, projUsers;
+    };
+    if (!b.textCache) {
+        auto cache = std::make_shared<Cache>();
+        b.textMatch.assign(b.patches.size(), -1);
+        b.textKind.assign(b.patches.size(), 0);
+        b.textD.assign(b.patches.size(), {0.0f, 0.0f});
+        cache->groups.resize(b.textGroups.size());
+        for (u32 g = 0; g < b.textGroups.size(); g++) {
+            GroupCache& c = cache->groups[g];
+            c.ga = partnerGroup(g);
+            groupBlocks(b, g, c.bb, c.pb);
+            if (c.ga >= 0) {
+                groupBlocks(a, u32(c.ga), c.ba, c.pa);
+                matchPanels(c.pa, c.pb, c.panelToA);
+                for (u32 k = 0; k < c.pb.size(); k++)
+                    if (c.panelToA[k] >= 0) matchText(c.ba, c.pa, u32(c.panelToA[k]), b, c.bb, c.pb, k);
+            } else {
+                c.panelToA.assign(c.pb.size(), -1);
+            }
+        }
+        for (const Patch& p : b.patches) {
+            if (!is2DBlock(p)) continue;
+            for (auto [map, key] : {std::pair{&cache->mtxUsers, p.mtxPatch}, std::pair{&cache->projUsers, p.projPatch}}) {
+                auto& v = (*map)[key];
+                if (std::find(v.begin(), v.end(), p.tgroup) == v.end()) v.push_back(p.tgroup);
+            }
+        }
+        b.textCache = cache;
+    }
+    const Cache& cache = *static_cast<const Cache*>(b.textCache.get());
+    static std::vector<Layout2D> lay;
+    for (u32 g = 0; g < b.textGroups.size(); g++) {
+        const TextGroupRec& rg = b.textGroups[g];
+        const GroupCache& gc = cache.groups[g];
+        const s32 ga = gc.ga;
+        const std::vector<TextBlock>& ba = gc.ba;
+        const std::vector<TextBlock>& bb = gc.bb;
+        const std::vector<TextPanel>& pa = gc.pa;
+        const std::vector<TextPanel>& pb = gc.pb;
+        const std::vector<s32>& panelToA = gc.panelToA;
+        // Each box: its rectangle in a and b (layout coordinates) and the transform mapping b's
+        // rectangle onto the one shown.
+        lay.assign(pb.size(), Layout2D{});
+        static std::vector<std::array<float, 4>> rects;  // per panel: the blended rectangle (lo x, lo y, hi x, hi y)
+        rects.assign(pb.size(), {});
+        u32 moved = 0;
+        for (u32 k = 1; k < pb.size(); k++) {
+            const s32 q = panelToA[k];
+            if (q < 0) continue;
+            const float(&rb)[2][2] = pb[k].rect;
+            const float(&ra)[2][2] = pa[q].rect;
+            const u32 ib = bb[pb[k].box].i, ia = ba[pa[q].box].i;
+            const float d[2] = {(rb[0][0] + rb[1][0] - ra[0][0] - ra[1][0]) * 0.5f, (rb[0][1] + rb[1][1] - ra[0][1] - ra[1][1]) * 0.5f};
+            if (b.vertStep) b.vertStep[3 * ib].store(d[0], std::memory_order_relaxed), b.vertStep[3 * ib + 1].store(d[1], std::memory_order_relaxed);
+            float move = 0;
+            for (int c = 0; c < 2; c++) move = std::max({move, std::fabs(ra[0][c] - rb[0][c]), std::fabs(ra[1][c] - rb[1][c])});
+            const bool sized = std::fabs((rb[1][0] - rb[0][0]) - (ra[1][0] - ra[0][0])) > 0.5f ||
+                               std::fabs((rb[1][1] - rb[0][1]) - (ra[1][1] - ra[0][1])) > 0.5f;
+            bool blend = move > 0.01f && move <= 160.0f;
+            if (blend && !sized && move > 32.0f) {
+                // Only moved, far: a slide (it moved the same way in the game frame before) blends,
+                // a single jump stays a jump. (Small moves blend: the Game Boy Horror rising by
+                // 1-2 units per game frame as E. Gadd's call starts.)
+                const float pd[2] = {a.vertStep ? a.vertStep[3 * ia].load(std::memory_order_relaxed) : std::nanf(""),
+                                     a.vertStep ? a.vertStep[3 * ia + 1].load(std::memory_order_relaxed) : std::nanf("")};
+                const float pl = std::hypot(pd[0], pd[1]), dl = std::hypot(d[0], d[1]);
+                blend = std::isfinite(pl) && pl > 0.5f && pd[0] * d[0] + pd[1] * d[1] > 0.5f * pl * dl;
+            }
+            if (!blend) continue;
+            for (int e = 0; e < 2; e++)
+                for (int c = 0; c < 2; c++) rects[k][2 * e + c] = ra[e][c] + (rb[e][c] - ra[e][c]) * alpha;
+            lay[k].moved = true;
+            moved++;
+        }
+        const auto setLayout = [&](u32 k) {
+            Layout2D& L = lay[k];
+            const float(&rb)[2][2] = pb[k].rect;
+            const auto& rs = rects[k];
+            const float wb = rb[1][0] - rb[0][0], hb = rb[1][1] - rb[0][1];
+            L.sx = wb > 0.5f ? (rs[2] - rs[0]) / wb : 1.0f;
+            L.sy = hb > 0.5f ? (rs[3] - rs[1]) / hb : 1.0f;
+            L.tx = rs[0] - L.sx * rb[0][0];
+            L.ty = rs[1] - L.sy * rb[0][1];
+        };
+        for (u32 k = 1; k < pb.size(); k++)
+            if (lay[k].moved) setLayout(k);
+        // How a panel's transform reaches its blocks: through the position matrix loaded inside the
+        // group or the orthographic projection they are drawn with, when every block drawn with it
+        // moves alike (exact for any vertex format: the Game Boy Horror's s16 pieces rise by 1 unit
+        // per game frame), else on each block's vertices (whole units for s16 positions).
+        const auto sameLayout = [](const Layout2D& x, const Layout2D& y) {
+            return x.moved == y.moved && (!x.moved || (std::fabs(x.sx - y.sx) < 1e-5f && std::fabs(x.sy - y.sy) < 1e-5f &&
+                                                       std::fabs(x.tx - y.tx) < 1e-3f && std::fabs(x.ty - y.ty) < 1e-3f));
+        };
+        std::unordered_map<s32, s32> mtxOwner, projOwner;  // patch -> panel whose transform it takes (-2: none)
+        for (u32 k = 0; k < bb.size(); k++) {
+            const Patch& p = b.patches[bb[k].i];
+            for (auto [map, key] : {std::pair{&mtxOwner, p.mtxPatch}, std::pair{&projOwner, p.projPatch}}) {
+                auto it = map->find(key);
+                if (it == map->end()) (*map)[key] = s32(bb[k].panel);
+                else if (it->second >= 0 && !sameLayout(lay[it->second], lay[bb[k].panel])) it->second = -2;
+            }
+        }
+        // (and nothing outside the group drawn with them)
+        for (auto [owners, users] : {std::pair{&mtxOwner, &cache.mtxUsers}, std::pair{&projOwner, &cache.projUsers}})
+            for (auto& [key, who] : *owners)
+                if (auto it = users->find(key); it != users->end() && (it->second.size() > 1 || it->second[0] != g + 1)) who = -2;
+        // 0: matrix, 1: projection, 2: vertices
+        const auto route = [&](const Patch& p) {
+            const s32 mp = p.mtxPatch, pp = p.projPatch;
+            if (mp >= s32(rg.first) && u32(mp) < b.patches.size() && b.patches[mp].tgroup == g + 1 && b.patches[mp].kind == Kind::PosMtx &&
+                b.patches[mp].count == 12 && mtxOwner.count(mp) && mtxOwner.at(mp) >= 0)
+                return 0;
+            if (pp >= 0 && u32(pp) < b.patches.size() && b.patches[pp].kind == Kind::Projection && b.patches[pp].count == 6 &&
+                b.bytes[b.patches[pp].offset + 27] == GX_ORTHOGRAPHIC && projOwner.count(pp) && projOwner.at(pp) >= 0)
+                return 1;
+            return 2;
+        };
+        const auto viaMatrix = [&](const Patch& p) { return route(p) != 2; };
+        // Pictures with whole-unit positions (s16) moved on their vertices can only land on whole
+        // units: their panel then takes the rounded rectangle, so everything in it moves by the same
+        // whole units (exactly together when it only moves; while it opens or closes, pieces inside
+        // the box can still be half a unit apart).
+        for (u32 k = 1; k < pb.size(); k++) {
+            if (!lay[k].moved) continue;
+            bool intVerts = false;
+            for (const TextBlock& tb : bb) {
+                const Patch& bp = b.patches[tb.i];
+                intVerts |= tb.panel == k && !viaMatrix(bp) && (bp.posFmt & 7) != GX_F32 && ((bp.posFmt >> 3) & 31) == 0;
+            }
+            if (!intVerts) continue;
+            for (float& v : rects[k]) v = std::round(v);
+            setLayout(k);
+        }
+        sTextBoxMoved += moved;
+        if (moved) {
+            std::unordered_set<s32> done;
+            for (const TextBlock& tb : bb) {
+                const Patch& bp = b.patches[tb.i];
+                const Layout2D& L = lay[tb.panel];
+                const int r = route(bp);
+                if (!L.moved || r == 2) continue;
+                const s32 at = r == 0 ? bp.mtxPatch : bp.projPatch;
+                if (!done.insert(at).second) continue;
+                const Patch& p = b.patches[at];
+                if (r == 0) {
+                    f32 m[12];
+                    for (int k = 0; k < 12; k++) m[k] = val(b, p, k);
+                    for (int k = 0; k < 4; k++) m[k] *= L.sx, m[4 + k] *= L.sy;
+                    m[3] += L.tx, m[7] += L.ty;
+                    for (int k = 0; k < 8; k++) storeBE(sReplay.data() + p.offset + 4 * k, m[k]);
+                } else {
+                    // Orthographic: clip x = p0 x + p1, clip y = p2 y + p3.
+                    const f32 p0 = val(b, p, 0), p1 = val(b, p, 1), p2 = val(b, p, 2), p3 = val(b, p, 3);
+                    storeBE(sReplay.data() + p.offset, p0 * L.sx);
+                    storeBE(sReplay.data() + p.offset + 4, p1 + p0 * L.tx);
+                    storeBE(sReplay.data() + p.offset + 8, p2 * L.sy);
+                    storeBE(sReplay.data() + p.offset + 12, p3 + p2 * L.ty);
+                }
+            }
+        }
+        // Viewports and scissor boxes: the panel of the last block drawn before them.
+        if (moved)
+            for (const TextView& v : b.textViews) {
+                if (v.group != g + 1) continue;
+                u32 panel = 0;
+                for (const TextBlock& tb : bb)
+                    if (b.patches[tb.i].offset < v.at) panel = tb.panel;
+                const Layout2D& L = lay[panel];
+                if (!L.moved) continue;
+                const float px = v.f * L.tx + v.c * (1 - L.sx);
+                if (!v.scissor) {
+                    u8* o = sReplay.data() + v.at + 5;
+                    const float vsx = loadBE(o), vsy = loadBE(o + 4), vox = loadBE(o + 12), voy = loadBE(o + 16);
+                    storeBE(o, vsx * L.sx);
+                    storeBE(o + 4, vsy * L.sy);
+                    storeBE(o + 12, 340.0f + L.sx * (vox - 340.0f) + px);
+                    storeBE(o + 16, 340.0f + L.sy * (voy - 340.0f) + L.ty);
+                    if (sTextLog && sTextLogBlocks)
+                        std::fprintf(sTextLog, "  V viewport origin %.2f %.2f -> %.2f %.2f\n", vox, voy, loadBE(o + 12), loadBE(o + 16));
+                    continue;
+                }
+                u8* o = sReplay.data() + v.at;
+                const auto field = [](const u8* w, int sh) { return int(((u32(w[2]) << 16 | u32(w[3]) << 8 | w[4]) >> sh) & 0x7FF); };
+                const int top = field(o, 0) - 342, left = field(o, 12) - 342, bottom = field(o + 5, 0) - 342 + 1,
+                          right = field(o + 5, 12) - 342 + 1;
+                const int nt = int(std::lround(L.sy * top + L.ty)), nb = int(std::lround(L.sy * bottom + L.ty));
+                const int nl = int(std::lround(L.sx * left + px)), nr = int(std::lround(L.sx * right + px));
+                const auto put = [](u8* w, int lo, int hi) {
+                    const u32 val = (u32(std::clamp(lo + 342, 0, 0x7FF)) | u32(std::clamp(hi + 342, 0, 0x7FF)) << 12) & 0xFFFFFF;
+                    w[2] = u8(val >> 16), w[3] = u8(val >> 8), w[4] = u8(val);
+                };
+                put(o, nt, nl);
+                put(o + 5, nb - 1, nr - 1);
+                if (sTextLog && sTextLogBlocks)
+                    std::fprintf(sTextLog, "  V scissor %d %d %d %d -> %d %d %d %d\n", left, top, right, bottom, nl, nt, nr, nb);
+            }
+        u32 faded = 0, indiv = 0, fresh = 0, matched = 0;
+        bool scroll = false;
+        for (u32 k = 0; k < bb.size(); k++) {
+            const TextBlock& tb = bb[k];
+            const Patch& p = b.patches[tb.i];
+            const s32 j = b.textMatch[tb.i];
+            const u8 kind = b.textKind[tb.i];
+            const Layout2D& L = lay[tb.panel];
+            float layer[2] = {0, 0};  // where this block is drawn from b's place (layout units)
+            bool own = false;         // positions blended on its own (the bobbing arrow)
+            if (j >= 0) {
+                const Patch& q = a.patches[j];
+                matched += !tb.box;
+                if (kind == 2) {
+                    layer[0] = -(1 - alpha) * b.textD[tb.i][0], layer[1] = -(1 - alpha) * b.textD[tb.i][1];
+                    scroll = true;
+                } else if (kind == 3 && q.count == p.count) {
+                    own = true;
+                    for (u32 v = 0; v < p.count; v++) {
+                        float xa[2], xb[2], o[2];
+                        readPos(a, q, v, xa);
+                        readPos(b, p, v, xb);
+                        for (int c = 0; c < 2; c++) o[c] = xa[c] + (xb[c] - xa[c]) * alpha;
+                        writePos(p, v, o);
+                    }
+                    indiv++;
+                }
+                blendBlockColours(a, q, b, p, alpha);
+            } else if (!tb.box) {
+                // New in b: part of its panel's (scrolling) text layer; a letter fades in over this
+                // game frame.
+                fresh++;
+                layer[0] = -(1 - alpha) * b.textD[tb.i][0], layer[1] = -(1 - alpha) * b.textD[tb.i][1];
+                if (!rg.oneLayout && p.clrBytes == 4 && std::max(tb.hi[0] - tb.lo[0], tb.hi[1] - tb.lo[1]) < 48.0f) {
+                    for (u32 v = 0; v < p.count; v++) {
+                        u8& al = sReplay[p.offset + v * p.stride + p.clrOffset + 3];
+                        al = u8(std::lround(al * std::clamp(alpha, 0.0f, 1.0f)));
+                    }
+                    faded++;
+                }
+            }
+            const bool vm = viaMatrix(p);
+            if (layer[0] != 0 || layer[1] != 0 || (L.moved && !vm)) {
+                float dl[2] = {0, 0};
+                if (layer[0] != 0 || layer[1] != 0) tb.A.invert(layer, dl, true);  // layout -> local units
+                for (u32 v = 0; v < p.count; v++) {
+                    float l[2], w[2];
+                    readShown(p, v, l);
+                    if (!own) l[0] += dl[0], l[1] += dl[1];
+                    if (L.moved && !vm) {
+                        tb.A.apply(l, w);
+                        w[0] = L.sx * w[0] + L.tx, w[1] = L.sy * w[1] + L.ty;
+                        tb.A.invert(w, l);
+                    }
+                    writePos(p, v, l);
+                }
+            }
+            if (sTextLog && sTextLogBlocks) {
+                float s0[2], w0[2];
+                readShown(p, 0, s0);
+                tb.A.apply(s0, w0);
+                if (L.moved && vm) w0[0] = L.sx * w0[0] + L.tx, w0[1] = L.sy * w0[1] + L.ty;
+                std::fprintf(sTextLog, "  B %u %s%s k%u m %d p %u b %.2f %.2f %.2f %.2f shown %.2f %.2f layout %.2f %.2f al %d mtx %d site %08X i %u alb %d route %d\n", k,
+                             tb.box ? "box" : "glyph", own ? " own" : "", u32(kind), j, tb.panel, tb.lo[0], tb.lo[1], tb.hi[0], tb.hi[1], s0[0],
+                             s0[1], w0[0], w0[1], p.clrBytes == 4 ? int(sReplay[p.offset + p.clrOffset + 3]) : -1, p.mtxPatch, p.site,
+                             tb.i, p.clrBytes == 4 ? int(b.bytes[p.offset + p.clrOffset + 3]) : -1, route(p));
+            }
+        }
+        sTextFaded += faded;
+        if (scroll) sTextScrolled++;
+        sTextGroupsBlended++;
+        if (sTextLog) {
+            std::fprintf(sTextLog, "P %llu %.3f f%u gf %u g %08X%s blocks %zu matched %u new %u faded %u own %u panels %zu", (unsigned long long)b.seq,
+                         alpha, b.dumpFrame, b.gameFrame, rg.id, ga < 0 ? " (new)" : "", bb.size(), matched, fresh, faded, indiv, pb.size());
+            for (u32 k = 1; k < pb.size(); k++) {
+                const Layout2D& L = lay[k];
+                const float(&r)[2][2] = pb[k].rect;
+                std::fprintf(sTextLog, " | box %.2f %.2f %.2f %.2f shown %.2f %.2f %.2f %.2f a %d", r[0][0], r[0][1], r[1][0], r[1][1],
+                             L.sx * r[0][0] + L.tx, L.sy * r[0][1] + L.ty, L.sx * r[1][0] + L.tx, L.sy * r[1][1] + L.ty, panelToA[k]);
+            }
+            std::fprintf(sTextLog, "\n");
+        }
+    }
+}
+
 void noteShadowLight(const float lightView[12], const float kProj[12], const float kRamp[12]) {
     if (!capturing()) return;
     sShadow.valid = true;
@@ -1785,6 +2541,8 @@ void detail::vertsBegin(bool ortho) {
     // The block is noted when its vertices are complete, at the next GX call: possibly after the
     // text box's scope closed (the window's last quad blended while the rest of it was locked).
     sVertsLocked = sFrameLock > 0;
+    sVertsText = sTextCur;
+    sVertsMtx = sCurMtxSlot < 10 ? sLastPosMtx[sCurMtxSlot] : -1;
     if (sVertsLocked) return;
     sVertsSite = sCallLr;
     sVertsKey = valueKey(Kind::Verts, 0, 0, sVertsCat);
@@ -1798,8 +2556,10 @@ void detail::vertsBegin(bool ortho) {
     if (sTagLogFrame != ~0ull) sVertsChain = sTagChain;
 }
 
+s32 detail::currentProjection() { return sLastProj; }
+
 void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, u32 clrOffset, u32 clrBytes, u32 posBytes2D,
-                          u32 posFmt2D, u32 uvOffset, u32 uvBytes) {
+                          u32 posFmt2D, u32 uvOffset, u32 uvBytes, s32 projPatch) {
     const bool locked = sVertsLocked;
     sVertsLocked = false;
     if (locked) sVertsKey = 0;
@@ -1819,6 +2579,23 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, 
     p.cat = sVertsCat;
     p.key = sVertsKey ? mix(sVertsKey ^ id) : 0;  // the same layout (vertex count is checked when pairing)
     sVertsKey = 0;
+    if (sTagLogFrame != ~0ull && p.role == 2 && (p.posFmt & 0x100) && at + count * stride <= sBase + AuroraCapturePos()) {
+        const u32 type = p.posFmt & 7, frac = (p.posFmt >> 3) & 31;
+        const u32 csize = type == GX_F32 ? 4 : type >= GX_U16 ? 2 : 1;
+        float lo[2] = {1e30f, 1e30f}, hi[2] = {-1e30f, -1e30f};
+        for (u32 v = 0; v < count; v++)
+            for (u32 c = 0; c < 2; c++) {
+                const f32 x = load2D(sScratch.data() + at + v * stride + posOffset + c * csize, type, frac);
+                lo[c] = std::min(lo[c], x), hi[c] = std::max(hi[c], x);
+            }
+        u32 uv = 0;
+        if (p.uvBytes >= 4) {
+            const u8* q = sScratch.data() + at + p.uvOffset;
+            uv = u32(q[0]) << 24 | u32(q[1]) << 16 | u32(q[2]) << 8 | q[3];
+        }
+        std::fprintf(sTagLog, "f%llu #%u 2d bounds %.2f %.2f %.2f %.2f uv %08X fmt %X n %u\n", (unsigned long long)sTagLogFrame,
+                     u32(sPatches.size()), lo[0], lo[1], hi[0], hi[1], uv, p.posFmt, count);
+    }
     if (sTagLogFrame != ~0ull)
         std::fprintf(sTagLog, "f%llu #%u verts %s key %016llX site %08X slot %u src %08X depth %d view -1 role %u clr %u@%u %08X%s%s\n",
                      (unsigned long long)sTagLogFrame, u32(sPatches.size()), kCatName[u32(p.cat)], (unsigned long long)p.key,
@@ -1839,6 +2616,14 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, 
         if (sProbeOut) sBundleSlots.push_back(sSlotPatch);
     }
     p.bundle = u32(sBundleIds.size() - 1);
+    // Noted at the next GX call, possibly after the text group closed: it still belongs to it.
+    p.tgroup = sVertsText;
+    p.mtxPatch = sVertsMtx;
+    p.projPatch = projPatch;
+    sVertsText = 0;
+    if (p.tgroup && p.tgroup <= sTextGroups.size() && sTextGroups[p.tgroup - 1].end != ~0u &&
+        sTextGroups[p.tgroup - 1].end <= sPatches.size())
+        sTextGroups[p.tgroup - 1].end = u32(sPatches.size()) + 1;
     const bool tail = sUngrouped == sPatches.size();
     sPatches.push_back(p);
     if (tail) sUngrouped = u32(sPatches.size());
@@ -2914,6 +3699,8 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
         blendedProj.clear();
         for (u32 i = 0; i < b.patches.size(); i++) {
             const Patch& p = b.patches[i];
+            // Text boxes are blended as one layout (replayTextGroups); their 2D projections as usual.
+            if (p.tgroup && p.kind != Kind::Projection) continue;
             if (p.kind == Kind::Color) {
                 // Blended with the same register of the same identity (tagged), unless it jumped;
                 // untagged ones stay as captured. 2D (HUD) colours blend too, under the same draw
@@ -3215,6 +4002,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
         // foyer's left sconce (20 units in front of the wall) was shadowed out on the wall and table
         // at the in-betweens of 2 of 3 game frames, fading back in with alpha (16:9 only; with
         // Original 30 there are no in-betweens). It now gets the same blended values.
+        replayTextGroups(*a, b, alpha);
         for (const u32 i : unpairedProj) {
             const Patch& p = b.patches[i];
             const u8* pb = b.bytes.data() + p.offset;
@@ -3999,6 +4787,11 @@ bool replay(bool final) {
             log("[interp] 2D pictures that moved, per present: %.2f blended, %.2f as captured (not the same picture, glyph-sized or jumped)",
                 double(s2DBlended) / presentedWindow, double(s2DKept) / presentedWindow);
         s2DBlended = s2DKept = 0;
+        if (sTextGroupsBlended)
+            log("[interp] text boxes per present: %.2f blended as one layout (box moving %.2f, text scrolling %.2f, letters fading in %.2f)",
+                double(sTextGroupsBlended) / presentedWindow, double(sTextBoxMoved) / presentedWindow,
+                double(sTextScrolled) / presentedWindow, double(sTextFaded) / presentedWindow);
+        sTextGroupsBlended = sTextBoxMoved = sTextScrolled = sTextFaded = 0;
         if (sArraysBlended) log("[interp] %.1f CPU-deformed position arrays blended per present", double(sArraysBlended) / presentedWindow);
         sArraysBlended = 0;
         std::fill(std::begin(sPhaseUs), std::end(sPhaseUs), 0ull);

@@ -323,6 +323,7 @@ struct {
     u32 clrOffset = 0xFFFF, clrBytes = 0;  // a direct RGB8/RGBX8/RGBA8 colour (CLR0) in each vertex
     u32 posBytes2D = 0;  // a 2D quad (orthographic, direct positions of this size, direct colours)
     u32 posFmt2D = 0, uvOffset = 0xFFFF, uvBytes = 0;  // its position format and direct texture coordinates
+    s32 proj = -1;  // the projection current when its data was written (widescreen emits it lazily)
 } sDirect;
 
 // The immediate-mode draw opened by GXBegin: its vertices are scanned once complete, with the
@@ -341,7 +342,7 @@ void finishDirect() {
     sDirect.active = false;
     if (sDirect.at != ~0u && sDirect.stride && sDirect.bytes == sDirect.count * sDirect.stride)
         detail::noteVertices(sDirect.at, sDirect.count, sDirect.stride, sDirect.posOffset, sDirect.id, sDirect.clrOffset, sDirect.clrBytes,
-                             sDirect.posBytes2D, sDirect.posFmt2D, sDirect.uvOffset, sDirect.uvBytes);
+                             sDirect.posBytes2D, sDirect.posFmt2D, sDirect.uvOffset, sDirect.uvBytes, sDirect.proj);
 }
 
 void flushPending() {
@@ -460,7 +461,9 @@ void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective) {
 
 void vtxBytes(u32 v, int size) {
     if (sDirect.active) {
-        if (sDirect.at == ~0u) sDirect.at = mark();
+        // Called after the bytes were written (hle_gx fifoWrite): a draw's first FIFO write can emit
+        // its projection first (widescreen's prepareDraw), so the mark taken before it pointed there.
+        if (sDirect.at == ~0u) sDirect.at = mark() - u32(size), sDirect.proj = detail::currentProjection();
         sDirect.bytes += u32(size);
     }
     if (sImm.active) {
@@ -473,6 +476,10 @@ void vtxBytes(u32 v, int size) {
     }
     for (int b = size - 1; b >= 0; b--) sPending.push_back(u8(v >> (8 * b)));
     if (sPending.size() - sPendingPos >= 4096) flushPending();
+}
+
+void vtxDataAt(u32 at) {
+    if (sDirect.active && at != ~0u) sDirect.at = at, sDirect.proj = detail::currentProjection();
 }
 
 void vtxDisplayList(u32 guestAddr, const u8* data, u32 size) {

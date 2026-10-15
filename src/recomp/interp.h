@@ -87,14 +87,43 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first = 0);
 // shadow texture matrices must come from the same frame (shadows.cpp). Nests by count.
 void pushNoBlend();
 void popNoBlend();
-// Text boxes (tags.cpp): everything drawn inside is shown exactly at its game frame, as on the
-// console: no value is noted (matrices, lights, colours, 2D vertex blocks and their colours, CPU
-// position arrays), so the box, its text and the portrait/icons in it step together at 30 Hz
-// instead of a smoothly opening box with letters appearing at the game rate. Nests by count.
+// Shown exactly at its game frame: no value is noted inside (matrices, lights, colours, 2D vertex
+// blocks and their colours, CPU position arrays). Used for the area-result screens (widescreen.cpp)
+// and, with LM_TEXTBOX_LOCK=1, the text boxes (test aid; they are one layout otherwise:
+// pushTextGroup). Nests by count.
 void pushFrameLock();
 void popFrameLock();
+// Text boxes (tags.cpp): everything drawn inside is one 2D layout blended as a whole
+// (docs/INTERPOLATION.md "Text boxes at 120"): the box picture's open/close animation gives the
+// layout transform every block in it follows (box, speaker icon, text, arrow, choices); text that
+// scrolls moves as one layer; letters new in a game frame fade in over the presents up to the next
+// game frame. Nests (inner scopes join the outer group); `id` names the drawing function.
+// oneLayout: everything in it is one picture moving as a whole (the Game Boy Horror's frame pieces,
+// its call screen); otherwise every box picture in it (the message window, the choice box) moves
+// on its own with the text drawn after it.
+void pushTextGroup(u32 id, bool oneLayout = false);
+// Draws inside join the last group `id` opened in this game frame (drawn apart from it: the Game
+// Boy Horror's static noise belongs to the GBH's layout).
+void pushTextGroupJoin(u32 id);
+// Viewports and scissor boxes written inside a text group (Aurora's XF / BP writes at tape offset
+// `at`) move and scale with its layout. The 2D layout's x becomes the pixel x f * x + c there
+// (widescreen: centered / anchored 4:3). Outside a group, inside pushTextViewJoin(id), they belong
+// to the last group `id` (E. Gadd's call portrait is drawn into the GBH screen's viewport).
+void noteTextViewport(u32 at, float f, float c);
+void noteTextScissor(u32 at, float f, float c);
+void pushTextViewJoin(u32 id);
+void popTextViewJoin();
+void setCurrentMtx(u32 id);  // GXSetCurrentMtx (which position matrix 2D blocks are drawn with)
+void popTextGroup();
+struct TextGroupScope {
+    explicit TextGroupScope(u32 id) { pushTextGroup(id); }
+    ~TextGroupScope() { popTextGroup(); }
+    TextGroupScope(const TextGroupScope&) = delete;
+    TextGroupScope& operator=(const TextGroupScope&) = delete;
+};
 // LM_TAG_LOG: a marker line in the log (e.g. where a hooked draw begins and ends), when logging.
 void tagLogMark(const char* text);
+bool tagLogOn();  // LM_TAG_LOG is logging this game frame
 // The sky dome (tags.cpp, fn_8002FA34): values noted inside are marked as the sky's.
 void pushSky();
 void popSky();
@@ -156,7 +185,10 @@ void noteDump(u32 at, const void* target, u32 frameNo);
 void arrayBase(u32 at, u32 attr, u32 guestAddr, u32 stride);  // GXSetArray, marked at `at`
 void invalidateVtxCache();                                    // GXInvalidateVtxCache
 void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective);  // GXBegin (before Aurora's header)
-void vtxBytes(u32 v, int size);                               // raw FIFO write from game code
+void vtxBytes(u32 v, int size);                               // raw FIFO write from game code (after it was written)
+// A held immediate-mode draw (widescreen classification) is written after its GXBegin is replayed:
+// its vertex data starts at `at` in the tape, not where the game's writes were first seen.
+void vtxDataAt(u32 at);
 void vtxEnd();  // gx::endPendingDraw: the immediate-mode draw is complete
 u32 drawCount();  // draws captured so far (running count; tags.cpp: did a scope draw anything)
 void vtxDisplayList(u32 guestAddr, const u8* data, u32 size);  // after GXCallDisplayList
@@ -247,7 +279,9 @@ void noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, u32 clrO
                   u32 posBytes2D = 0,  // posBytes2D: a 2D (orthographic) block of positions that size
                   // 2D only: 0x100 | component type | frac << 3 of the positions, and the direct texture
                   // coordinates (offset, bytes): a picture whose layout animates blends its positions.
-                  u32 posFmt2D = 0, u32 uvOffset = 0xFFFF, u32 uvBytes = 0);
+                  u32 posFmt2D = 0, u32 uvOffset = 0xFFFF, u32 uvBytes = 0,
+                  s32 projPatch = -1);  // 2D: the projection its data was written under (currentProjection)
+s32 currentProjection();  // the last projection noted in this tape (index, -1 none)
 void vertsBegin(bool ortho = false);  // at GXBegin of such a draw: its identity (tag scope, call site)
 u64 mix(u64 h);
 // A display list or stream wrote XF matrix memory directly (judder detector's slot table).

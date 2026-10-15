@@ -92,7 +92,7 @@ A value of game frame b pairs with the value of frame a that has the same key an
   positions and direct RGB(A)8 vertex colours (HUD fades, full-screen fade quads) are noted as 2D
   blocks (role 2, `posBytes2D`): their colours blend while every vertex position is byte-identical
   in both game frames, or while the picture's layout animates (positions blended too: "Text boxes"
-  below; text boxes themselves are shown at the game frame); untagged ones are keyed by structural scope + call site + occurrence (87f2ea6), plus
+  below; text boxes are replayed as one layout: "Text boxes at 120"); untagged ones are keyed by structural scope + call site + occurrence (87f2ea6), plus
   the texture they show. XF colours written inside display lists (0x100A-0x100D, light colours) are
   noted like the lists' BP colour writes, and untagged 2D colour registers are keyed by structural
   scope + call site + register + occurrence and blend with a draw of the same kind (8d11727).
@@ -444,7 +444,7 @@ Two causes, both ours:
 3. Not changed: letters appear at the game frame (inherent; the game reveals one or two per game
    frame). Original 30 is byte-identical (21 frames 2600-2660 across the call window opening).
 
-#### Text boxes at the game frame (follow-up)
+#### Text boxes at the game frame (follow-up, superseded by "Text boxes at 120" below)
 
 User feedback on the above: "the text on textboxes is still jumpy perhaps we just leave all text
 boxes at 30fps". The box opened smoothly while its letters still appeared at the game rate, so the
@@ -483,6 +483,91 @@ portrait that goes with it. Nothing inside a text box blends (position or colour
   `LM_2D_LOG` (which now also prints the draw's call site and `f<game frame>`) lists no
   message-window picture in either.
 - Original 30 byte-identical (41 frames 2620-2660 of the call scenario, window opening included).
+
+#### Text boxes at 120 (October 2026, replaces the game-frame lock above)
+
+User: "if you can figure out how to get the textboxes correctly interpolated, then do so, but if not
+keep them at 30" and "if you touch the textboxes then do the letters too". Every text box is now
+replayed as **one 2D layout**: the box, its text, the speaker icon, the "more" arrow, the choices,
+and (during E. Gadd's call) the Game Boy Horror with his portrait move and scale together on every
+present, and each letter fades in over the game frame that adds it. There is no option; the old
+lock is the test aid `LM_TEXTBOX_LOCK=1` (`=0`: neither, the plain value-by-value replay).
+
+**First, a capture bug.** At 16:9 every 2D vertex block was noted at the wrong tape offset: the
+widescreen code holds a 2D draw until it can classify it (`sHeld` in hle_gx.cpp) and then writes its
+projection, `GXBegin` and vertices, but the block's offset was taken at the game's first FIFO write,
+before all of that. `blend2DLayout` and the 2D colour blending read a projection's floats as
+positions and colours (and the colour blend wrote into them). The offset is now taken where the
+data is written (`interp::vtxDataAt` for held draws; `vtxBytes` runs after the write otherwise). The
+"Text boxes: 2D layout blending" results above were measured at 4:3, where draws are not held.
+
+**Groups** (`interp::pushTextGroup(id, oneLayout)` / `TextGroupScope`, interp.cpp
+`replayTextGroups`). Everything noted inside a group is skipped by the value-by-value replay and
+replayed by the group:
+- `fn_80044138` (every message window), `fn_80045BDC` (room name; floor picture and name) and
+  `fn_8003D634` (the Game Boy Horror, always, `oneLayout`); `fn_8003BE9C` (the GBH's static noise)
+  joins the GBH's group (`pushTextGroupJoin`), and during E. Gadd's call the portrait's viewport and
+  scissor box (`fn_80114E18`, `pushTextViewJoin`) do too. Viewports and scissor boxes written inside a
+  group (`noteTextViewport` / `noteTextScissor` from hle_gx.cpp, with the widescreen x mapping
+  `f x + c` of that moment) are moved with it.
+- **Panels.** A group's 2D blocks are split by their box pictures: a textured quad at least 48 units
+  across starts a panel, pieces drawn right before or after it by the same code with the same
+  texture that touch it extend its box (the choice box is nine pieces, `fn_8003B390`, opening by
+  moving and stretching them), and the blocks drawn after them (text, icon, arrow) belong to it. In a
+  `oneLayout` group everything follows the first picture. Panels pair with the previous game frame's
+  in order by what their box is drawn with.
+- **The box's transform.** A panel whose box rectangle changed size blends it (opening, closing);
+  one that only moved blends small moves (up to 32 units: the GBH rising 1-3 units per game frame as
+  the call starts) and larger ones only when it moved the same way the game frame before (a slide;
+  a single jump stays a jump). `M` maps b's rectangle onto the blended one and is applied to every
+  block of the panel, through the position matrix or the orthographic projection they are drawn with
+  when everything drawn with it moves alike (exact for any vertex format), else on each block's
+  vertices. s16 pictures on that last route can only land on whole units: their panel then takes the
+  rounded rectangle, so it moves by the same whole units; while a box opens or closes, a picture
+  inside it can be up to half a unit (2 px at 2160 lines) from its exact place.
+- **Text.** The blocks of a panel are matched to the previous game frame's by what they show
+  (texture, texture coordinates, size) and where they sit in their box: (1) at the same place
+  (letters already shown, the icon); (2) moved by `D`, the most common offset among the rest (the
+  page scrolling up a line over several game frames, at least 3 blocks); (3) a unique picture of the
+  same page that moved by up to 16 units on its own. J2DPrint draws a page's text from its start
+  every game frame, so the text so far is the same sequence with new letters at its end.
+- **Drawn.** Scrolling text (and the letters new in it) is drawn `D x (1 - alpha)` behind b's place,
+  the whole text layer moving smoothly inside the scissor box; a block that moved on its own blends
+  its positions; matched blocks blend their colours (unless a channel jumps); a letter new in b has
+  its vertex alpha scaled by the present's alpha (0 at the game frame that adds it, its full value
+  at the next). A page change or a box closing switches at the game frame: the old text is gone in b,
+  so it never blends into the new text, which fades in.
+- Matching and panels are built once per pair of tapes (`Tape::textCache`); replay cost is the same
+  as before (toad scenario at 120: 1.5-1.9 ms host replay per present, main 1.5-1.8).
+
+**Evidence** (the user's settings.ini with the frame rate overridden: 120 with VSync off, 60 with
+VSync on; `--window 1920x1080`, off-screen; `LM_TEXTBOX_LOG=<file>` with `LM_TEXTBOX_LOG_BLOCKS=1`
+writes, per replay and group, every box's rectangle in a, b and shown, and per block what it paired
+with, how, its layout position and the alpha shown; `LM_PRESENT_DUMP` for the pictures). Measured
+from the logs (`tools/interp/textbox_check.py <log> [group id]`), per present within each game frame:
+
+| scenario (fps) | box edges move monotonically toward b | text glyph offset to its box (scroll layer removed), max change | letter alpha ramps | at the game frame change, offset to the box |
+|---|---|---|---|---|
+| call (120) | 335 of 335 box/game-frame series | 0.008 units (32,655 series) | 744 ramps, all monotonic; 743 of 743 at least as opaque in the next game frame | 0.002 units |
+| call (60) | 335 of 335 | 0.000 | 669 ramps monotonic, 743 of 743 | 0.002 |
+| Toad, two boxes and the choice box opening and closing (120) | 159 of 159 | 0.005 (11,406 series) | 272 monotonic, 271 of 271 | 0.15 (the s16 icon while the choice box opens) |
+| Toad (60) | 159 of 159 | 0.000 | 253 monotonic, 271 of 271 | 0.51 (same icon) |
+| lab: dialogue, choice box (120) | 1646 of 1646 | 0.009 (145,990 series) | 1399 monotonic, 1396 of 1396 | 0.13 |
+| GBH group in the call (120) | 2328 of 2328 | 0.000 (46,082 series, its pieces and the call screen) | | 0.000 |
+
+From the pictures (640x480 EFB per present): the call window's top edge at 60 moves
+446.8 | 436.7, 424.1 | 410.8, 397.3 | 383.7, 370.1 | 369.0 (before: one step per game frame); the
+scrolling text measured against the static box (vertical profile, sub-pixel least squares) moves
+about 0.75 px per present at 120 through the whole scroll (3 units per game frame, 4 presents),
+with no step at the game frames; the GBH rising as the call starts measured the same way
+(-7.65, -6.80, -6.15, -5.40 | -4.80, -4.30, -3.80, -3.30 | -2.85 ...) moves on every present, the
+portrait's viewport with it (`  V viewport` lines). Choice boxes in the Toad and lab dialogues open
+and close smoothly with their text inside and fading in. Original 30 is byte-identical to main (101
+frames 2600-2700 of the call scenario with the user's settings, window opening, text, GBH and
+portrait included).
+
+Not reached in testing: Neville's portrait dialogue (teleported to him he woke up and attacked);
+Toad and E. Gadd's portrait call cover the speaker icon and portrait cases.
 
 ### Boss arena skies (October 2026)
 

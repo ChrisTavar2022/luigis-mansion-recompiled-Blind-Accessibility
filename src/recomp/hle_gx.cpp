@@ -187,14 +187,17 @@ void emitProjection(ProjMode mode) {
 
 void emitScissor(bool pillar) {
     sScissorAnchor = 0;
+    const u32 at = interp::mark();
     if (pillar) {
         sScissorAnchor = sVpFollow ? sVpAnchor : hudAnchor();
         const f32 l = std::max(0.0f, pillarX(f32(sScissor.x), sScissorAnchor));
         const f32 r = std::min(kLogicalWidth, pillarX(f32(sScissor.x + sScissor.w), sScissorAnchor));
         const u32 li = u32(std::max(0.0f, std::floor(l)));
         GXSetScissor(li, sScissor.y, u32(std::ceil(r)) - li, sScissor.h);
+        interp::noteTextScissor(at, ws::factor(), pillarX(0.0f, sScissorAnchor));
     } else {
         GXSetScissor(sScissor.x, sScissor.y, sScissor.w, sScissor.h);
+        interp::noteTextScissor(at, 1.0f, 0.0f);
     }
     sScissorPillar = pillar;
 }
@@ -737,6 +740,7 @@ void gx::endPendingDraw() {
         sRawCheck = true;
         interp::snapBegin(sHeld.fmt, sHeld.verts);
         GXBegin(sHeld.prim, sHeld.fmt, sHeld.verts);
+        if (interp::capturing()) interp::vtxDataAt(interp::mark());
         for (u32 w : sHeld.writes) {
             const int size = int(w >> 30) + 1;  // 1, 2 or 4 (encoded 0, 1, 3)
             const u32 off = w & 0x3FFFFFFF;
@@ -754,8 +758,8 @@ void gx::endPendingDraw() {
 void hw::fifoWrite(u32 v, int size) {
     frame::gxWaitForGuestTurn();
     if (dropDraw()) [[unlikely]] return;
-    if (interp::capturing()) interp::vtxBytes(v, size);
     if (sHeld.active) [[unlikely]] {
+        if (interp::capturing()) interp::vtxBytes(v, size);  // (its tape offset: vtxDataAt when replayed)
         const u32 off = u32(sHeld.bytes.size());
         for (int b = size - 1; b >= 0; b--) sHeld.bytes.push_back(u8(v >> (8 * b)));
         sHeld.writes.push_back(off | u32(size - 1) << 30);
@@ -766,6 +770,7 @@ void hw::fifoWrite(u32 v, int size) {
         prepareDraw(drawMode(ProjMode::Scaled), "fifo");
     }
     rawFifoWrite(v, size);
+    if (interp::capturing()) interp::vtxBytes(v, size);
 }
 
 #define GXHLE(name)                                       \
@@ -1017,6 +1022,7 @@ GXHLE(GXLoadTexMtxImm) {
 }
 GXHLE(GXSetCurrentMtx) {
     sCurPosMtx = c.r[3];
+    interp::setCurrentMtx(c.r[3]);
     GXSetCurrentMtx(c.r[3]);
 }
 // Records the guest viewport; returns the x/width to send (moved and narrowed like the 2D
@@ -1034,16 +1040,33 @@ static std::pair<f32, f32> setViewport(const Ctx& c) {
 }
 GXHLE(GXSetViewport) {
     const auto [x, w] = setViewport(c);
+    const u32 vpAt = interp::mark();
+    if (interp::tagLogOn()) {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "viewport %.1f %.1f %.1f %.1f (sent x %.1f w %.1f) lr %08X", farg(c, 1), farg(c, 2), farg(c, 3),
+                      farg(c, 4), x, w, c.lr);
+        interp::tagLogMark(buf);
+    }
     GXSetViewport(x, farg(c, 2), w, farg(c, 4), farg(c, 5), farg(c, 6));
+    if (sVpFollow) interp::noteTextViewport(vpAt, ws::factor(), pillarX(0.0f, sVpAnchor));
+    else interp::noteTextViewport(vpAt, 1.0f, 0.0f);
 }
 GXHLE(GXSetViewportJitter) {
     gxAudit("GXSetViewportJitter field=%u", c.r[3]);
     const auto [x, w] = setViewport(c);
+    const u32 vpAt = interp::mark();
     GXSetViewportJitter(x, farg(c, 2), w, farg(c, 4), farg(c, 5), farg(c, 6), c.r[3]);
+    if (sVpFollow) interp::noteTextViewport(vpAt, ws::factor(), pillarX(0.0f, sVpAnchor));
+    else interp::noteTextViewport(vpAt, 1.0f, 0.0f);
 }
 GXHLE(GXSetScissor) {
     HUD_TRACE("scissor %u %u %u %u %s", c.r[3], c.r[4], c.r[5], c.r[6], guestChain(c).c_str());
     sScissor = {c.r[3], c.r[4], c.r[5], c.r[6]};
+    if (interp::tagLogOn()) {
+        char buf[120];
+        std::snprintf(buf, sizeof(buf), "scissor %u %u %u %u lr %08X", c.r[3], c.r[4], c.r[5], c.r[6], c.lr);
+        interp::tagLogMark(buf);
+    }
     emitScissor(sVpFollow);
 }
 GXHLE(GXSetClipMode) { GXSetClipMode(GXClipMode(c.r[3])); }

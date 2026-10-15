@@ -350,32 +350,48 @@ HLE(draw__7J2DPaneFiiPC14J2DGrafContextb) {
     callOriginal(c, "draw__7J2DPaneFiiPC14J2DGrafContextb");
 }
 
-// --- text boxes: shown at the game frame ----------------------------------------------------------
-// Every text box is shown exactly as in its game frame, at 30 Hz, as on the console
-// (interp::FrameLockScope; docs/INTERPOLATION.md "Text boxes at the game frame"). The letters appear
-// at the game rate; a box that opened smoothly around them, or moved between presents, made the text
-// jump against it (user report after 4301b1e: "the text on textboxes is still jumpy").
+// --- text boxes: one layout ---------------------------------------------------------------------------
+// Every text box is replayed as one 2D layout (interp::TextGroupScope; docs/INTERPOLATION.md "Text
+// boxes at 120"): the box opens, closes and moves smoothly and its icon, text, arrow and choices move
+// and scale with it, text that scrolls moves as one layer, and each letter fades in over the game
+// frame that adds it. (Shown at the game frame before: a box that opened smoothly around letters
+// appearing at the game rate made the text jump against it, user report after 4301b1e.)
 // fn_80044138, from the frame loop fn_8000BCE8, draws every message window (fn_800433B4): the box
 // picture (fn_8003B054, 480x120, grows open over 3-4 game frames), the speaker icon, the text, the
-// "more" arrow and choices. All dialogue goes through it: Neville, Toad, E. Gadd in the lab and on
-// the Game Boy Horror call, signs. (E. Gadd's call window on the GBH screen: widescreen.cpp
-// fn_8003D634 / fn_80114E18; the room name: fn_80045BDC.)
+// "more" arrow and choices (a nine-piece box, fn_8003B390). All dialogue goes through it: Neville,
+// Toad, E. Gadd in the lab and on the Game Boy Horror call, signs. (E. Gadd's call window on the GBH
+// screen: widescreen.cpp fn_8003D634 / fn_8003BE9C / fn_80114E18; the room name: fn_80045BDC.)
 namespace {
 u32 sTextBoxFrame = ~0u;  // the game frame (GXCopyDisp count) a message window last drew in
 }  // namespace
 namespace tags {
 // A message window is on screen (drawn in this game frame or the one before; the HUD is drawn
-// before the windows). While one is, the Game Boy Horror and the event portrait belong to the text
-// box too (widescreen.cpp): E. Gadd's call is a message window next to his portrait on the GBH,
-// which shakes as the call comes in (its bezel blended while the screen inside stayed put).
-bool textBoxShown() { return sTextBoxFrame != ~0u && copyDispCount() - sTextBoxFrame <= 1; }
+// before the windows). While one is, the event portrait belongs to the text box too
+// (widescreen.cpp): E. Gadd's call is a message window next to his portrait on the GBH.
+// How text boxes are replayed: 2 (default) one layout (interp::TextGroupScope), 1 shown at the game
+// frame with the GBH and portrait (interp::FrameLockScope, the earlier behaviour), 0 nothing special
+// (test aids LM_TEXTBOX_LOCK=1 / 0).
+int textMode() {
+    static const int sMode = [] {
+        const char* v = std::getenv("LM_TEXTBOX_LOCK");
+        return v && *v == '1' ? 1 : v && *v == '0' ? 0 : 2;
+    }();
+    return sMode;
+}
+bool textBoxShown() { return textMode() != 0 && sTextBoxFrame != ~0u && copyDispCount() - sTextBoxFrame <= 1; }
 }  // namespace tags
 HLE(fn_80044138) {
     if (!interp::capturing()) return callOriginal(c, "fn_80044138");
-    interp::FrameLockScope lock;
+    const int mode = tags::textMode();
+    interp::tagLogMark("textbox begin");
+    if (mode == 1) interp::pushFrameLock();
+    if (mode == 2) interp::pushTextGroup(0x80044138u);
     const u32 draws = interp::drawCount();
     callOriginal(c, "fn_80044138");
     if (interp::drawCount() != draws) sTextBoxFrame = copyDispCount();
+    if (mode == 2) interp::popTextGroup();
+    if (mode == 1) interp::popFrameLock();
+    interp::tagLogMark("textbox end");
 }
 
 // --- skies ------------------------------------------------------------------------------------------
