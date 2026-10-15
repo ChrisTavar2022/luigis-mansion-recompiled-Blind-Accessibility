@@ -8,9 +8,11 @@
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
 
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 namespace recomp::coop {
@@ -297,6 +299,18 @@ HLE(fn_800112F8) {
             for (u32 o = 0x44; o < 0x50; o += 4) wr32(p2 + o, rd32(p1 + o));
         }
         if (p1 && p2 && !off(0x40)) mergeProgress(p1, p2);
+        // Player 2 downed while player 1 had nothing to share (1 health left): player 2 stays
+        // down, and is revived with half of player 1's health once player 1 has more than 1 again
+        // (a heart picked up). Player 1 being downed is the game's own game over.
+        if (p1 && p2 && !hold && s16(rd16(p2 + 0xFC)) <= 0) {
+            const s32 hp1 = s16(rd16(p1 + 0xFC));
+            if (hp1 > 1) {
+                const s32 give = hp1 / 2;
+                wr16(p1 + 0xFC, u16(hp1 - give));
+                gu::call(c, GU_SYM("fn_800B9488"), {p2, u32(give)});
+                log("[coop] player 2 revived with %d health from player 1 (%d left)", give, hp1 - give);
+            }
+        }
         // Equipment and medals: Luigi +0x792 event bits (4 Poltergust, 8 Game Boy Horror, the
         // element medals, ...; fn_800B9430 tests them). Player 2 has player 1's, except bit 0
         // (player 1's controller, from the creation flags).
@@ -371,6 +385,26 @@ HLE(fn_800112F8) {
         sLastRoom[0] = r1;
         sLastRoom[1] = r2;
     }
+    // LM_COOP_SETHP=<guest frame>:<player 1|2>:<health>[,...] (test aid): sets a player's health at
+    // that frame through Luigi's own health setter (fn_800B9488, the call every damage source makes).
+    static const auto sSetHp = [] {
+        std::vector<std::array<u32, 3>> v;
+        if (const char* e = std::getenv("LM_COOP_SETHP"))
+            for (const char* q = e; *q;) {
+                std::array<u32, 3> t{};
+                if (std::sscanf(q, "%u:%u:%u", &t[0], &t[1], &t[2]) == 3) v.push_back(t);
+                const char* comma = std::strchr(q, ',');
+                if (!comma) break;
+                q = comma + 1;
+            }
+        return v;
+    }();
+    for (const auto& t : sSetHp)
+        if (t[0] == skip::guestFrames())
+            if (const u32 p = player(c, t[1] == 2 ? 1 : 0)) {
+                log("[coop] LM_COOP_SETHP: player %u health %d -> %u", t[1], s16(rd16(p + 0xFC)), t[2]);
+                gu::call(c, GU_SYM("fn_800B9488"), {p, t[2] & 0xFFFF});
+            }
     const GhostTest& gt = ghostTest();
     const u32 now = skip::guestFrames();
     if (gt.to && now >= gt.from && now < gt.to && !sGhosts.empty()) {
