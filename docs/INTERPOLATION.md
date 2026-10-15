@@ -194,7 +194,11 @@ A value of game frame b pairs with the value of frame a that has the same key an
 - Camera cuts: b's main camera (the view most main-pass model matrices use) has no counterpart in a,
   or jumps more than 250 units / turns more than 30 degrees AND more than three times its previous
   frame's move/turn (a discontinuity; Bogmire's fast camera does that much every frame and is not a
-  cut): b is shown as captured.
+  cut): b is shown as captured. Also a cut (ab2c506, bf38f99): b's main camera paired with a view of
+  a that was not a's main camera and is far from it; a move over 1500 units; the number of views
+  changing while the main view moves to another index (the order-based view keys then pair other
+  cameras wrongly: chimney drop into the Sealed Room, the new-game foyer transition). Views drawn
+  through exactly b's main camera follow its pair.
 - The 60 Hz scenes, pauses and lockstep transitions keep the pacing of main.
 
 ### Tag sources (src/recomp/tags.cpp; hooks in tools/recomp/hooks.txt)
