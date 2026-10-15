@@ -892,9 +892,23 @@ retail" = no event script's `<BGM>`, no constant `0x80000000+n` in the code and 
 selects it, nor any entry sharing its data (USA analysis; computed ids could be missed):
 Mario.com (5/9), Demo_FirstMon/Demo_FirstDoc share data with heard entries, Total.com (17),
 Room_Space (32), Total_Score (35), select.com (40), TelesaDemo02 (48), Demo_Lion1_2 (70), and
-Ochi01-03 turned out to be the ending's rank jingles (heard). Verified: `LM_JUKEBOX=84@<frame>`
-switches the music player to sequence 0x54 (log). Works on both releases (the "not heard"
-labels are USA-only).
+Ochi01-03 turned out to be the ending's rank jingles (heard). Works on both releases (the "not
+heard" labels are USA-only).
+
+The pick is applied on the game thread at the frame-buffer hook: `fn_8018A570(0)` (stop) then
+`fn_80188760(0x80000000 | n, 0)`. The second argument is the fade-in time in frames, which
+`fn_801889FC` passes on to the JAI start (`fn_8018D6C0`, r7); every game call sets it to 0. The
+first version left r4 out, so it held whatever the hooked caller had there (often a pointer): the
+player switched to the track (the log said so) but it faded in from silence over months, and
+nothing was heard (user report, October 2026). The game may still replace the music itself (room
+changes, events); the button then goes back from "Playing" to "Play".
+
+Test aids: `LM_JUKEBOX=<n>@<frame>` (request directly), `LM_JUKEBOX_UI=<n|stop>@<frame>,...`
+(activates the menu's own Play / Stop button through ImGui, so the menu path is covered; open the
+menu with `LM_MENU=Sound`). Check with `LM_AUDIO_WAV_RAW` levels, not only the
+`[jukebox] music now` log. Verified (USA, `LM_AUDIO_WAV_RAW` RMS per second): title screen
+GoodNight (18) and select.com (40) audible from the click, Stop silences the music; in the foyer
+Total.com (17) and Ochi01 (84) above the ambience, Stop back to the ambience alone.
 
 ### Ending pictures (`gallery.cpp`)
 
