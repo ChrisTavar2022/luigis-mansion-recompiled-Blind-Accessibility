@@ -109,22 +109,32 @@ void frame(Ctx& c) {
         }
     }
     // LM_BOSS_SETHP=<type name>:<hp>: last resort for long fights (King Boo's 500 HP are drained a
-    // little per exposure): the first time an actor of that type is seen, its health (+0xFC, mirrored
-    // in its AI's +0x89C) is set to <hp>; the rest is drained and captured the game's own way.
+    // little per exposure, and his health is restored from his own copy each time he comes out): an
+    // actor of that type never has more health than <hp> (+0xFC, mirrored in its AI's +0x89C); the
+    // rest is drained and captured the game's own way.
+    // An optional third field is the strategy's own s32 health (King Boo: +0x298, fn_80126E08, copied
+    // to the actor every frame he is drained).
     if (const char* v = std::getenv("LM_BOSS_SETHP")) {
         static char sType[32] = {};
         static int sHp = -1;
-        if (sHp < 0) sHp = std::sscanf(v, "%31[^:]:%d", sType, &sHp) == 2 ? sHp : 0;
-        static std::vector<u32> sDone;
+        static unsigned sOwn = 0;
+        if (sHp < 0) {
+            int hp = 0;
+            std::sscanf(v, "%31[^:]:%d:%x", sType, &hp, &sOwn);
+            sHp = hp;
+        }
         for (const Known& k : sKnown) {
-            const u32 a = rd32(k.thought + 0x808);
+            const u32 a = rd32(k.thought + 0x808), st = rd32(k.thought + 0x800);
             if (!gu::inMem1(a) || std::strcmp(typeName(rd32(a + 0x3C)), sType) != 0) continue;
-            if (std::find(sDone.begin(), sDone.end(), a) != sDone.end()) continue;
-            sDone.push_back(a);
-            if (s16(rd16(a + 0xFC)) > sHp) {
-                log("[boss] LM_BOSS_SETHP: %s %08X health %d -> %d", sType, a, s16(rd16(a + 0xFC)), sHp);
+            const bool own = sOwn && gu::inMem1(st) && s32(rd32(st + sOwn)) > sHp;
+            if (s16(rd16(a + 0xFC)) > sHp || own) {
+                static u32 sLogged = 0;
+                if (sLogged++ < 10)
+                    log("[boss] LM_BOSS_SETHP: %s %08X health %d (own %d) -> %d", sType, a, s16(rd16(a + 0xFC)),
+                        sOwn && gu::inMem1(st) ? s32(rd32(st + sOwn)) : 0, sHp);
                 wr16(a + 0xFC, u16(sHp));
                 wr32(k.thought + 0x89C, u32(sHp));
+                if (own) wr32(st + sOwn, u32(sHp));
             }
         }
     }
