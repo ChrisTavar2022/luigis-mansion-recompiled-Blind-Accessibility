@@ -124,6 +124,9 @@ u32 player(Ctx& c, int idx) {
 #define kEvent VA(0x803D2D40)   // event interpreter (skip.cpp): +0x0C script cursor, 0 when none
 #define kMenuOff VA(0x804D8088) // <MENUOFF>: the HUD hidden by an event
 #define kCurMapNo VA(0x804D80C8)  // sCurMapNo
+#define kCurCamera VA(0x804D8240)  // r13+0x2E0 on the USA game: the camera being updated (fn_8002064C)
+#define kGbhMode VA(0x804CFFF0)    // r13-0x7F70: 2 = Game Boy Horror search view (fn_80010F20)
+#define kGbhHolder VA(0x804D8180)  // r13+0x220: +0x24 the GBH screen object
 namespace {
 bool sInViewSetup = false;
 bool sEventHold = false;  // an event has taken control: player 2 hidden and following player 1
@@ -152,8 +155,8 @@ namespace {
 u32 sCam1Ac = 0;
 
 bool gbhViewWanted(Ctx& c) {
-    const u32 mode = rd32(c.r[13] - 0x7F70);
-    const u32 g = rd32(c.r[13] + 0x220);
+    const u32 mode = rd32(kGbhMode);
+    const u32 g = rd32(kGbhHolder);
     const u32 scr = gu::inMem1(g) ? rd32(g + 0x24) : 0;
     const u8 framed = gu::inMem1(scr) ? rd8(scr + 0x89) : 0;
     static u32 sLastMode = ~0u, sLastFramed = ~0u;
@@ -172,10 +175,10 @@ void setCamera1(Ctx& c, bool gbh) {
     wr32(cam + 0xE8, kViewPlayers + (gbh ? 0 : 0x28));
     wr32(cam + 4, gbh ? VA(0x80021DDC) : VA(0x80021844));
     wr32(cam + 0xC, 0);
-    const u32 saved = rd32(c.r[13] + 0x2E0);
-    wr32(c.r[13] + 0x2E0, cam);
+    const u32 saved = rd32(kCurCamera);
+    wr32(kCurCamera, cam);
     gu::call(c, gbh ? VA(0x80021AF4) : VA(0x80021618));
-    wr32(c.r[13] + 0x2E0, saved);
+    wr32(kCurCamera, saved);
     if (!gbh) wr32(cam + 0xAC, sCam1Ac);
 }
 }  // namespace
@@ -213,7 +216,7 @@ HLE(fn_80011150) {
 
 HLE(fn_80020654) {
     if (sInViewSetup && fixes()) {
-        const u32 cam = rd32(c.r[13] + 0x2E0);  // the camera being updated (fn_8002064C)
+        const u32 cam = rd32(kCurCamera);  // the camera being updated (fn_8002064C)
         const bool split = rd32(kViewCount) >= 2;
         if (cam == rd32(kCameras)) setViewport(cam, 0, 0, split ? 320 : 640, 480);
         else if (split && cam == rd32(kCameras + 4)) setViewport(cam, 320, 0, 640, 480);
