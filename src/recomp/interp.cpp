@@ -696,7 +696,13 @@ void pairTapes(const Tape& a, Tape& b) {
             cameraJump(a.views[a.mainView], b.views[b.mainView], &m2, &t2);
             otherMain = m2 > 250.0f || t2 > 30.0f;
         }
-        if (qa < 0 || otherMain) b.cut = true;
+        // The view structure changed under the main camera (a view appeared or vanished and the main
+        // view moved to another index): the other views' order-based keys paired the wrong cameras
+        // and the world went through a wrong in-between camera for one interval (the chimney drop
+        // into the Sealed Room, tape 819: views 5 -> 4, main 3 -> 2; the new-game foyer transition;
+        // sweep B). Shown as captured.
+        const bool restructured = a.views.size() != b.views.size() && a.mainView != 0xFFFF && b.mainView != a.mainView;
+        if (qa < 0 || otherMain || restructured) b.cut = true;
         else if (rigidView(a.views[qa].data()) && rigidView(b.views[b.mainView].data())) {
             cameraJump(a.views[qa], b.views[b.mainView], &moved, &turned);
             b.camMove = moved, b.camTurn = turned;
