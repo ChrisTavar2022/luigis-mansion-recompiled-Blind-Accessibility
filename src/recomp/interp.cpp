@@ -2209,7 +2209,13 @@ void matchText(const std::vector<TextBlock>& ba, const std::vector<TextPanel>& p
     float D[2] = {0, 0};
     for (const auto& [d, n] : hist)
         if (n > best) best = n, D[0] = d.first / 16.0f, D[1] = d.second / 16.0f;
-    if (best < 3) D[0] = D[1] = 0;
+    // A scroll keeps most of a's text (J2DPrint redraws the page from its start: a's lines 2..n are
+    // b's lines 1..n-1), so the offset must explain a good share of a's text not already in place.
+    // A page change whose first letters also occur on a's second line ("So" of "Sounds": 4 blocks
+    // of a 118-block page) slid the new page's letters up from there (sweep A3; real scrolls match
+    // 50-60 of 110-128 blocks).
+    const u32 unusedA = u32(ia.size() > used.size() ? ia.size() - used.size() : 0);
+    if (best < 3 || 4 * best < unusedA) best = 0, D[0] = D[1] = 0;
     std::vector<u32> rest2;
     for (const u32 kb : rest)
         if (best < 3 || !take(kb, D[0], D[1], 2)) rest2.push_back(kb);
