@@ -3227,6 +3227,7 @@
 80052378 fn_80050524 hook
 801B507C draw__9J2DScreenFiiPC14J2DGrafContext hook
 801B81A4 drawTexCoord__10J2DPictureFiiiiffffffffPA3_A4_f hook
+8005C69C fn_80059C54 hook
 801B1FA4 J2DFillBox__FiiiiQ28JUtility6TColor hook
 80013FD8 fn_8001333C hook
 800EA4F8 fn_800E70BC hook

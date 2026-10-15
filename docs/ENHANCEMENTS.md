@@ -188,6 +188,34 @@ it is wider than the frame); 4:3 byte-identical to the unfixed build, as is the 
 `LM_GALLERY_PARAM=<n>` (dev_tools.cpp) opens gallery screen n from any plaque. European base
 not run (hooks tagged `us pal`, mapped by gen_version_map.py; the state byte `+1` matches there).
 
+Area-clear follow-up (user report: "glitchy transition", "Luigi's eyes disappeared"):
+
+- **Luigi without eyes.** The Luigi on these screens is a second Luigi S3DModel (not the
+  player's) drawn by the account frame loop (`fn_8000F1F8`, the actors after the 2D:
+  `fn_80059C54` called from 0x8000F370), which never advances his texture pattern. His eyes keep
+  the frame of `usual_bk.txp` (the blink, 96 frames, eye sampler of materials 4/6) they had when
+  the screens began; frames 61-66 are the half-closed lid (sampler 15) and the closed lid
+  (16: plain skin). The user's screen had stopped on the closed lid, so Luigi had no eyes for
+  the whole sequence. That depends on when the last line of the lab dialogue was advanced, and
+  the game would do the same on the console (unconfirmed). Not caused by widescreen, interpolation
+  or enhanced lighting: at Original 30, 4:3 and 16:9, and with the user's settings at 30 and
+  120 fps his eyes were open in the scripted runs, and `LM_ACCT_EYEFRAME=63 LM_ACCT_BLINK=0`
+  reproduces the user's screenshot exactly. Fix (widescreen.cpp `HLE(fn_80059C54)`): before that
+  draw, the pattern is advanced once per game frame with the game's own update (`fn_8005C9E4`,
+  what the actor draw pass does in gameplay), so he blinks every 96 frames and his eyes open
+  again. Test aids `LM_ACCT_EYEFRAME=<f>`, `LM_ACCT_BLINK=0`.
+- **Transition.** With frame interpolation, the wipe's circle picture and its four `J2DFillBox`
+  boxes were blended separately, and in the in-between frames they did not meet: a line of the
+  lab showed under the closing circle (frames ~2895-2903, every interpolated present). All of
+  `fn_80050524`'s 2D (wipe, mask, text, list, fades) now runs in an `interp::FrameLockScope`
+  and is shown at its game frame, like the text boxes. The 3D behind it still blends. Checked
+  frame by frame at 16:9 and 21:9, at Original 30 (`LM_FRAME_DUMP` every frame 2840-2960) and
+  at 120 fps with the user's settings (`LM_PRESENT_DUMP`, every present): there are no lines
+  under the circle any more, nothing shows past the mask, and nothing flashes. Two things
+  remain, both from the game itself and the same at 4:3. First, a faint 1-pixel vertical seam
+  where the circle's edge meets the right box, in one frame (2881). Second, the result-screen
+  Luigi shows below the closing circle in the last few frames of the wipe.
+
 Door knob: the nursery's locked door (`LM_INPUT_CLOCK=frames LM_START_MAP=2 LM_START_APPEAR=1
 LM_TEST_STATE=poltergust`, the `nursery` scenario's input up to `2900:STICKUP*40` from
 tools/interp/scenarios.sh, then `2945:A*3,2975:A*3,3005:A*3`; the knob close-up runs from
