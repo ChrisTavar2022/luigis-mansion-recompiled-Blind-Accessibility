@@ -2463,6 +2463,19 @@ void replayTextGroups(const Tape& a, const Tape& b, float alpha) {
                 const Layout2D& L = lay[panel];
                 if (!L.moved) continue;
                 const float px = v.f * L.tx + v.c * (1 - L.sx);
+                // A full-frame viewport or scissor box (the GBH's status page resets them to
+                // 640x480 before drawing) is not a sub-view of the panel: the blocks drawn under it
+                // are moved by M already, and moving it as well put them 2x the panel's offset off
+                // (the green page jumped back up to 4 units at each game frame while the bezel slid;
+                // sweep A3). Only boxes smaller than the frame (the call portrait) move with it.
+                {
+                    const u8* o = b.bytes.data() + v.at;
+                    if (!v.scissor && std::fabs(loadBE(o + 5 + 4)) >= 239.0f) continue;
+                    if (v.scissor) {
+                        const auto fld = [](const u8* w, int sh) { return int(((u32(w[2]) << 16 | u32(w[3]) << 8 | w[4]) >> sh) & 0x7FF); };
+                        if (fld(o + 5, 0) - fld(o, 0) + 1 >= 470) continue;
+                    }
+                }
                 if (!v.scissor) {
                     u8* o = sReplay.data() + v.at + 5;
                     const float vsx = loadBE(o), vsy = loadBE(o + 4), vox = loadBE(o + 12), voy = loadBE(o + 16);
