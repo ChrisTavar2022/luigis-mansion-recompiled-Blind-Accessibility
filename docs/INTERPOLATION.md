@@ -276,7 +276,7 @@ of the identity (found with `LM_TAG_PEEK=<words>`: 98-100% of particles step by 
   with its id, identity key, paired or new, intensity in a and b and the intensity shown, and flags
   (shadow weight in bits 8-15).
 
-### Foyer entry flicker report (October 2026, not reproduced)
+### Foyer entry flicker report (October 2026, fixed: see "Cause" at the end)
 
 User report (live, 60 fps presented on a 120 Hz G-SYNC TV, 4K, Enhanced lighting Ultra): "all the
 lights flicker" in the new-game foyer intro. In the capture the shot after the cut at guest frame
@@ -309,6 +309,32 @@ Follow-up (Aurora 0221, docs/RENDERING.md "Skipped draws are logged"): light sha
 pipeline was still compiling were skipped, which drops that light's shadow for the present. They
 now wait like other draws, and every skipped draw is logged (per-second count plus the config of
 each pipeline the first time). The user's next session log will show whether skips occurred.
+
+**Cause (found later):** the runs above all used a 4:3 off-screen window. The user's window is 16:9,
+and the flicker only shows at 16:9. Why the 4:3 runs stay clean was not checked; the effect may be
+culled at 4:3. At 16:9 the effect at fn_801191B4 (Effect scope, GXSetProjection at 0x80119208) sets
+the camera's projection again in this shot. Its scope's identity alternates between two keys, so it
+pairs with the previous game frame only every third frame. Unpaired, it stayed b's projection while
+the camera's other projections were blended: the intro camera zooms (p00 0.920 -> 0.916 -> 0.911 per
+game frame). The draws after it, and with them enhanced lighting's shadow mask, had a projection
+that disagreed with the rest of the in-between frame. The mask rebuilds view positions from the
+depth pre-pass with the last world draw's projection. The left sconce's light sits 20 units in front
+of the wall, and on those in-betweens the wall and the table came out fully shadowed, leaving only
+the flames' glow. It faded back in with alpha. That happened in 2 of 3 game frames, every few
+presents. Reproduced with `--window 1920x1080` and the user's settings.ini at 60 and 120 fps. The
+light list was steady (`LM_XL_LOG`, now also with world positions), and the dark presents went away
+with `LM_XL_SHADOWS=1,0` and with `LM_INTERP_NOBLEND=0x08` (projections as captured).
+
+Fix (`replayPair`): an unpaired projection whose captured values (6 values + type) equal those of a
+projection blended in the same replay gets that projection's blended values (`[interp] unpaired
+projections per present given an identical projection's blend`: 0.67 in this shot). Verified with
+`LM_PRESENT_DUMP` (frames 2585-2620, region luma per present): 60 fps, 68 presents, no drop (before:
+drops of 6-9 every 2-3 presents); 120 fps, 144 presents, no drop. Original 30 is untouched (no
+tapes there): vanilla 81 frames byte-identical, and Enhanced-lighting Ultra 80 frames byte-identical
+apart from a run-to-run shift of one dump number (`LM_INPUT_CLOCK=frames`, keys
+`1200:START*10,1600:A*6`, the shot at frames 3200-3240).
+Testing note: test widescreen-sensitive rendering with a 16:9 window (`--window 1920x1080`). The
+off-screen default window is 1280x960, so the game runs at 4:3 there.
 
 ### Enhanced lighting
 
