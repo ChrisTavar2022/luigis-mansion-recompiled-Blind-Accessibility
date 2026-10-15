@@ -1490,6 +1490,7 @@ GXHLE(GXCopyTex) {
         sCopyDests.push_back(phys(c.r[3]));
     }
     interp::efbCopied(c.r[3], GXGetTexBufferSize(u16(sCopyDiag.dw), u16(sCopyDiag.dh), sCopyDiag.fmt, GX_FALSE, 0));
+    efbcopy::guestCopy(c.r[3], sCopyDiag.dw, sCopyDiag.dh, sCopyDiag.fmt);
     GXCopyTex(hostp(c.r[3]), GXBool(c.r[4]));
 }
 
