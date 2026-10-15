@@ -305,6 +305,10 @@ Seen in passing: under starvation, presents hold the same tape (alpha 0 or 1 rep
 matches the user's 3-present holds. Candidates left: what differs between the user's 4K fullscreen
 swap chain and an off-screen window; state from the save played earlier in that session (not
 reproduced with a reset and a second new game).
+Follow-up (Aurora 0221, docs/RENDERING.md "Skipped draws are logged"): light shadow casters whose
+pipeline was still compiling were skipped, which drops that light's shadow for the present. They
+now wait like other draws, and every skipped draw is logged (per-second count plus the config of
+each pipeline the first time). The user's next session log will show whether skips occurred.
 
 ### Enhanced lighting
 
