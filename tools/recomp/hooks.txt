@@ -45,6 +45,8 @@ fn_80008D58 us pal
 fn_80050524 us pal
 draw__9J2DScreenFiiPC14J2DGrafContext us pal
 drawTexCoord__10J2DPictureFiiiiffffffffPA3_A4_f us pal
+# S3DModel opaque draw: Luigi keeps blinking on the result screens (widescreen.cpp).
+fn_80059C54 us pal
 J2DFillBox__FiiiiQ28JUtility6TColor us pal
 # Gallery screen setup: test aid LM_GALLERY_PARAM (src/recomp/dev_tools.cpp).
 fn_8018712C

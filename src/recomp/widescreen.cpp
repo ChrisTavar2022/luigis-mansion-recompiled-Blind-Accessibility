@@ -7,6 +7,7 @@
 #include "recomp/interp.h"
 #include "recomp/version.h"
 #include "recomp/coop.h"
+#include "recomp/guest_util.h"
 
 #include <dolphin/gx/GXAurora.h>
 
@@ -264,11 +265,46 @@ bool inWipe() { return sWipeDepth > 0 && active(); }
 // any width while the spotlight and the text stay where they are.
 HLE(fn_80050524) {
     const bool wipe = rd8(c.r[3] + 1) == 0;
+    // Frame interpolation: all of this 2D is shown at its game frame (as the text boxes, tags.cpp).
+    // Blended separately, the wipe's circle and its four boxes did not meet in the in-between
+    // frames: a line of the lab showed under the circle while it closed.
+    interp::FrameLockScope frameLock;
     sAccountDepth++;
     if (wipe) sWipeDepth++;
     callOriginal(c, "fn_80050524");
     if (wipe) sWipeDepth--;
     sAccountDepth--;
+}
+
+// Luigi's eyes on the result screens. The 3D Luigi there is a second Luigi S3DModel (not the player's),
+// drawn by the account frame loop (fn_8000F1F8: the actors drawn after the 2D, fn_80059C54
+// called from 0x8000F370). Nothing advances his texture pattern (usual_bk.txp, the blink: it
+// writes the eye sampler of materials 4 and 6) while these screens run, so his eyes keep the
+// pattern frame they had when the screens began. Frames 61..66 of the blink's 96 are the
+// half-closed (sampler 15) and closed (16, plain skin: no eyes at all) lids; when the event ended
+// there, Luigi had no eyes for the whole sequence (it depends on when the last dialogue was
+// advanced; presumably the same on the console). Before his draw the pattern is advanced once per
+// game frame with the game's own update (fn_8005C9E4, what the actor draw pass does in gameplay),
+// so he keeps blinking and opens his eyes again.
+// Test aids: LM_ACCT_BLINK=0 (frozen, as the game does), LM_ACCT_EYEFRAME=<f> (set the pattern
+// frame when the screens start, e.g. 63 for the closed lids).
+HLE(fn_80059C54) {
+    if (c.lr == VA(0x8000F374)) {
+        static const bool sBlink = [] { const char* e = std::getenv("LM_ACCT_BLINK"); return !(e && e[0] == '0'); }();
+        static const char* const sStart = std::getenv("LM_ACCT_EYEFRAME");
+        static u32 sModel = 0, sFrame = ~0u;
+        const u32 model = c.r[3], frame = ::recomp::copyDispCount();
+        if (rd32(model + 0x2C) != 0 && !(model == sModel && frame == sFrame)) {
+            if (sStart && sModel != model) {
+                wrf32(model + 0x30, float(std::atof(sStart)));
+                gu::call(c, VA(0x8005CBBC), {model});  // apply without advancing
+            }
+            if (sBlink) gu::call(c, VA(0x8005C9E4), {model});
+            sModel = model;
+            sFrame = frame;
+        }
+    }
+    callOriginal(c, "fn_80059C54");
 }
 
 // J2DScreen::draw(screen, x, y, graf): marks the area-clear mask screen (above).
