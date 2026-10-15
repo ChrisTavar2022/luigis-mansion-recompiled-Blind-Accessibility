@@ -265,6 +265,45 @@ of the identity (found with `LM_TAG_PEEK=<words>`: 98-100% of particles step by 
   or one of 16 tiles) lies outside its two game frames' range.
 - `tools/interp/tagstats.py <tag log>`: values by kind/category and the most frequent untagged chains.
 - `LM_INTERP_NOBLEND=<mask>` gained bit 7: enhanced lighting's extra lights shown as captured.
+- `LM_PRESENT_DUMP=1` (with `LM_FRAME_DUMP=<dir>,<first>,<last>`): in a real-time run, every present
+  of the tapes in the dump range is written as `f<frame>_p<present>_a<alpha x 1000>.ppm` (640x480
+  EFB through the copy-to-RAM path, so the extra lights, shadows and bloom composited into the EFB
+  are in it; not the post-process chain). It shows what each present looks like without
+  `LM_INTERP_TEST`, which pauses the guest and changes the timing. Works at 60 fps. At 120 fps the
+  dump's own cost made most tapes lose their dump marker (one file per run), so use 60 there.
+- `LM_XL_LOG=<file>`: per replay (`P seq alpha f<dump frame> a <a seq> lights n`), every extra light
+  with its id, identity key, paired or new, intensity in a and b and the intensity shown, and flags
+  (shadow weight in bits 8-15).
+
+### Foyer entry flicker report (October 2026, not reproduced)
+
+User report (live, 60 fps presented on a 120 Hz G-SYNC TV, 4K, Enhanced lighting Ultra): "all the
+lights flicker" in the new-game foyer intro. In the capture the shot after the cut at guest frame
+2583 (left wall sconce, about 19.5-20.5 s into the clip) has the sconce's light pulse. Bright
+presents show a wide, sharp-edged halo with no shadows. Dim presents show the sconce's own shadows
+(bracket, table). They alternate about every 3 game frames, and values are often held for 3
+presents. That session ran while other agents' builds kept the CPU at 100% (guest 21-26 fps at
+times).
+
+Not reproduced, in any of the following runs. The light stayed steady and its shadow faded in
+smoothly in every run:
+- Original 30, vanilla and Enhanced lighting;
+- 60 and 120 fps with the user's own settings.ini (VSync on), render scale 2, 4 and 8, with
+  `LM_JUDDER_LOG`;
+- the shipped LuigisMansionRecomp package with a fresh setup;
+- CPU starved to 2 or 1 cores (affinity), also with a cold pipeline cache;
+- a second new game after a reset in the same session.
+
+Every present was checked with `LM_PRESENT_DUMP`. The data paths were checked as well:
+- extra-light intensities per present (`LM_XL_LOG`): smooth, every light paired;
+- shadow slots and weights (`LM_LIGHT_SELECT_LOG=2`): the two candle groups gain their slots at the
+  cut and fade in 64 -> 255 over 12 game frames, then stay;
+- no lamp is lit (room-lit test) during the intro.
+
+Seen in passing: under starvation, presents hold the same tape (alpha 0 or 1 repeated), which
+matches the user's 3-present holds. Candidates left: what differs between the user's 4K fullscreen
+swap chain and an off-screen window; state from the save played earlier in that session (not
+reproduced with a reset and a second new game).
 
 ### Enhanced lighting
 
