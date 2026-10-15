@@ -1595,6 +1595,9 @@ void addSiteTag(const SiteTag& t) { sSiteTags.push_back(t); }
 void tagGroup(u32 id) {
     if (sCapturing && sTagDepth > 0 && sTagDepth <= kMaxTagDepth) sTagStack[sTagDepth - 1].group = mix(u64(id) ^ 0x6A0Full << 48);
 }
+void tagGroupIfNone(u32 id) {
+    if (sCapturing && sTagDepth > 0 && sTagDepth <= kMaxTagDepth && !sTagStack[sTagDepth - 1].group) tagGroup(id);
+}
 
 void gxCall(const Ctx& c) {
     sCallLr = c.lr;
@@ -3820,8 +3823,19 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                         if (std::max({std::fabs(r->u[0][1]), std::fabs(r->u[0][2]), std::fabs(r->u[1][2])}) > 0.08f * diag) skin = true;
                     }
                 }
+                // A sheared member flipping handedness (blended entrywise on its own, blendableWorld):
+                // the instance is at a pose its skin cannot follow rigidly, so all of it goes entrywise.
+                // Members blended rigidly next to entrywise ones skinned from different poses and
+                // Chauncey's body tore into shards for half an interval at a spin (sweep C, frame 6990).
+                const bool skew = skewFlip(wa.data(), wb.data());
+                if (skew) fast = skin = true;
                 if (fast) fastGroups.insert(p.group);
                 if (skin) skinGroups.insert(p.group);
+                static const long long sGroupTape = [] { const char* v = std::getenv("LM_GROUP_TAPE"); return v ? std::atoll(v) : -1ll; }();
+                if (sGroupTape >= 0 && u64(sGroupTape) == b.seq)
+                    log("[group] tape %llu group %016llX key %016llX near %d any %d flat %d skew %d fast %d skin %d",
+                        (unsigned long long)b.seq, (unsigned long long)p.group, (unsigned long long)p.key, int(near), int(anyDist), int(flat),
+                        int(skew), int(fast), int(skin));
             }
             for (const auto& [g, v] : jumpVotes)
                 if (v.first > 0 && (v.second < 4 || 2 * v.first >= v.second)) {

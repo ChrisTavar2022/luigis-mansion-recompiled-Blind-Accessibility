@@ -56,6 +56,9 @@ void tagFreed(u32 addr, u32 size);
 // The innermost open scope (and what is opened inside it) belongs to model instance id: its
 // matrices switch together when one of them cannot blend (a skinned mesh drawn in several packets).
 void tagGroup(u32 id);
+// tagGroup only when the scope did not inherit an instance (a model's node or mesh drawn directly,
+// not through its model draw).
+void tagGroupIfNone(u32 id);
 // Every GX HLE call (hle_gx.cpp GXHLE): the guest call site and registers, for value keys and for
 // call-site tags (a draw loop inside one game function, e.g. particles: tags.cpp registers the
 // function's range and which register holds the item).
