@@ -581,6 +581,27 @@ portrait included).
 Not reached in testing: Neville's portrait dialogue (teleported to him he woke up and attacked);
 Toad and E. Gadd's portrait call cover the speaker icon and portrait cases.
 
+#### Text box fixes from the final sweeps (interp-final 3)
+
+- Full-frame viewports and scissor boxes in a group are not moved with the panel: the GBH's status
+  page resets them to 640x480 inside the GBH group, and moving them as a sub-view drew the page 2x
+  the panel's offset off while the HUD slid in (a gap under the bezel, a jump back at each game
+  frame). Only boxes smaller than the frame (the call portrait, the GBH screen's scissor) move.
+- A text scroll (offset D) must match at least a quarter of a's text blocks not already in place:
+  a new page whose first letters also occur on the old page's second line ("So" of "Sounds") was
+  taken for a scroll and slid up from there. Real scrolls match 50-60 of 110-128 blocks.
+
+### Extra lights: room box (interp-final 3)
+
+An extra light's room box (flag `ExtraLightRoomBox`, Aurora 0187) stores its centre relative to the
+light's position. Blending the position moved the box with the light by its whole step at alpha 0,
+cutting off the part of the room the light was leaving: Luigi's fire stream lighting the 2F east
+hallway wall went dark at each game frame and came back by alpha 1 (sweep B, region luma 25.7 at
+every game-frame start against 28.9-38 at the game frames). The centre now stays at b's world
+place; afterwards the series is monotonic at 60 and 120. `LM_XL_BOX_SLIDE=1`: old behaviour. The
+receivers' shadow light (makeLightPair) also moves its eye in a straight line now, like the caster
+pass's light camera (`LM_LIGHT_ARC=1`: old; measured identical in that scene).
+
 ### Boss arena skies (October 2026)
 
 User reports: the boss arena skies (Chauncey map 10, Boolossus 11, Bogmire 13, the roof 9) were
