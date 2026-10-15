@@ -32,6 +32,7 @@ u32 sLightOwner = 0;  // Luigi whose flashlight update (fn_800850B4) is running
 u32 sMsg2[2] = {};
 u32 sCached[2] = {};  // the players as of the last game-scene frame (cachedPlayer)
 void mergeProgress(u32 p1, u32 p2);  // shared progress, below
+bool sGbhView = false;  // the Game Boy Horror search view is up (below)
 
 // Player records of the view setup (lbl_803A3CA0, 0x28 per player): +0 position, +0xC the
 // room number in its top byte (from the player's room, fn_800E9750(i) +0xB4).
@@ -75,6 +76,7 @@ void onMapSetupFixes(Ctx&) {
     sGhosts.clear();
     sLastRoom[0] = sLastRoom[1] = ~0u;
     sEventHoldReset = true;  // the players are new: nothing is held
+    sGbhView = false;         // and camera 1 is player 2's (fn_800204B4)
     sCached[0] = sCached[1] = 0;
 }
 
@@ -121,6 +123,7 @@ u32 player(Ctx& c, int idx) {
 #define kSceneMainGame VA(0x8021DB68)
 #define kEvent VA(0x803D2D40)   // event interpreter (skip.cpp): +0x0C script cursor, 0 when none
 #define kMenuOff VA(0x804D8088) // <MENUOFF>: the HUD hidden by an event
+#define kCurMapNo VA(0x804D80C8)  // sCurMapNo
 namespace {
 bool sInViewSetup = false;
 bool sEventHold = false;  // an event has taken control: player 2 hidden and following player 1
@@ -133,11 +136,74 @@ void setViewport(u32 cam, u32 x0, u32 y0, u32 x1, u32 y1) {
 }
 }  // namespace
 
+bool player2SetAside() { return fixes() && sEventHold; }
+
+// ---- Game Boy Horror search view ----------------------------------------------------------
+// X (search: the Game Boy Horror's first-person view, how hidden Boos are found) shows view 1
+// through the GBH camera inside the GBH frame. In one-player mode the per-frame view setup
+// (fn_80010F20) does that: two views while the mode r13-0x7F70 is 2, view 0 framed while the GBH
+// screen object ([[r13+0x220] +0x24] +0x89) is up, and camera 1 is the GBH camera (fn_800204B4:
+// update fn_80021DDC, set up by fn_80021AF4, following player 1). In 2-player mode camera 1 is
+// player 2's follow camera and fn_80011150 lays out the players' views, so the search showed a
+// third-person picture with the HUD gone. While it is up the one-player layout runs instead and
+// camera 1 is turned into the GBH camera, then back into player 2's (fn_80021844 / fn_80021618).
+namespace {
+
+u32 sCam1Ac = 0;
+
+bool gbhViewWanted(Ctx& c) {
+    const u32 mode = rd32(c.r[13] - 0x7F70);
+    const u32 g = rd32(c.r[13] + 0x220);
+    const u32 scr = gu::inMem1(g) ? rd32(g + 0x24) : 0;
+    const u8 framed = gu::inMem1(scr) ? rd8(scr + 0x89) : 0;
+    static u32 sLastMode = ~0u, sLastFramed = ~0u;
+    if (mode != sLastMode || framed != sLastFramed) {
+        log("[coop] GBH view mode %u framed %u (guest frame %u)", mode, framed, skip::guestFrames());
+        sLastMode = mode;
+        sLastFramed = framed;
+    }
+    return mode == 2 || framed != 0;
+}
+
+void setCamera1(Ctx& c, bool gbh) {
+    const u32 cam = rd32(kCameras + 4);
+    if (!gu::inMem1(cam)) return;
+    if (gbh) sCam1Ac = rd32(cam + 0xAC);
+    wr32(cam + 0xE8, kViewPlayers + (gbh ? 0 : 0x28));
+    wr32(cam + 4, gbh ? VA(0x80021DDC) : VA(0x80021844));
+    wr32(cam + 0xC, 0);
+    const u32 saved = rd32(c.r[13] + 0x2E0);
+    wr32(c.r[13] + 0x2E0, cam);
+    gu::call(c, gbh ? VA(0x80021AF4) : VA(0x80021618));
+    wr32(c.r[13] + 0x2E0, saved);
+    if (!gbh) wr32(cam + 0xAC, sCam1Ac);
+}
+}  // namespace
+
+bool gbhView() { return fixes() && sGbhView; }
+
 HLE(fn_80011150) {
     if (!fixes() || off(8)) return callOriginal(c, "fn_80011150");
+    // The GBH camera finishes its own exit after the frame closes: camera 1 goes back to player 2
+    // a few frames later (switched at once, the GBH picture stayed on screen).
+    static u32 sGrace = 0;
+    bool gbh = gbhViewWanted(c);
+    if (gbh) sGrace = 10;
+    else if (sGbhView && sGrace > 0) sGrace--, gbh = true;
+    if (gbh != sGbhView) {
+        setCamera1(c, gbh);
+        sGbhView = gbh;
+        log("[coop] Game Boy Horror view %s: camera 1 is %s", gbh ? "up" : "down", gbh ? "the GBH camera" : "player 2's again");
+    }
+    if (gbh) {
+        gu::call(c, VA(0x80010F20));  // the one-player layout
+        return;
+    }
     // During an event the scene is shown in one full view (the event's camera is view 0's):
-    // player 2's record is made player 1's so the layout test sees them together.
-    if (sEventHold) {
+    // player 2's record is made player 1's so the layout test sees them together. The same in
+    // Chauncey's arena (map 10): its camera frames the boss from the arena's side, and view 1's
+    // plain follow camera there looked into the void around the floating stage.
+    if (sEventHold || rd32(kCurMapNo) == 10) {
         for (u32 o = 0; o < 0x10; o += 4) wr32(kViewPlayers + 0x28 + o, rd32(kViewPlayers + o));
     }
     sInViewSetup = true;
@@ -473,7 +539,7 @@ void drawP2Meter(Ctx& c, bool split) {
 }  // namespace
 
 HLE(fn_8003E7B0) {
-    if (!fixes()) return callOriginal(c, "fn_8003E7B0");
+    if (!fixes() || sGbhView) return callOriginal(c, "fn_8003E7B0");
     const u32 view = c.r[3];
     const u32 views = rd32(kViewCount);
     if (views < 2) {

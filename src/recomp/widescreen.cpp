@@ -200,7 +200,7 @@ HLE(fn_8003BE9C) {
 // improvements the views are the side-by-side halves, drawn Hor+ in place (ws::splitHalf), so
 // they are not in a HUD scope at all.
 HLE(fn_800115F8) {
-    if (coop::fixes()) return callOriginal(c, "fn_800115F8");
+    if (coop::fixes() && !coop::gbhView()) return callOriginal(c, "fn_800115F8");
     AnchorScope s(c.r[3] == 1 && !coop::active() ? 1 : 0);
     callOriginal(c, "fn_800115F8");
 }

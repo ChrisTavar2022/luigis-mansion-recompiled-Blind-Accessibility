@@ -19,5 +19,9 @@ void onLuigiHealth(Ctx& c);    // fn_800B9488(luigi, hp) hook (gameplay_hooks.cp
 // 2D shift for the Game Boy Horror (widescreen.cpp's GBH hooks, ws::ShiftScope): -320 while the
 // split screen's HUD is drawn (the GBH moved into player 1's half), else 0.
 int gbhShift();
+// An event has set player 2 aside (hidden, following player 1): port 2 is ignored (hle_pad.cpp).
+bool player2SetAside();
+// The Game Boy Horror's search view is up: the one-player view layout runs (coop_fixes.cpp).
+bool gbhView();
 
 }  // namespace recomp::coop
