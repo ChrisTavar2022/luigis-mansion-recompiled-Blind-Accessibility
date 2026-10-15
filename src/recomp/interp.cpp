@@ -1312,6 +1312,10 @@ void pushNoBlend() { sNoBlend++; }
 void popNoBlend() { sNoBlend = sNoBlend > 0 ? sNoBlend - 1 : 0; }
 void pushFrameLock() { sFrameLock++; }
 void popFrameLock() { sFrameLock = sFrameLock > 0 ? sFrameLock - 1 : 0; }
+void tagLogMark(const char* text) {
+    if (sTagLogFrame != ~0ull && capturing())
+        std::fprintf(sTagLog, "f%llu #%u mark %s\n", (unsigned long long)sTagLogFrame, u32(sPatches.size()), text);
+}
 void pushLinearPosMtx() { sLinearPos++; }
 void popLinearPosMtx() { sLinearPos = sLinearPos > 0 ? sLinearPos - 1 : 0; }
 

@@ -357,6 +357,40 @@ HLE(fn_80044138) {
     if (interp::drawCount() != draws) sTextBoxFrame = copyDispCount();
 }
 
+// --- skies: shown at the game frame -----------------------------------------------------------------
+// The sky dome (a J3D model with texture scroll / colour animations: map 2's vrball_M, the boss
+// arenas' vrball_B on maps 10, 11 and 13, vrKoopa on map 9) is shown exactly as in its game frame,
+// like the text boxes (interp::FrameLockScope; docs/INTERPOLATION.md "Boss arena skies at the game
+// frame"). User decision: blended, the arena skies never looked right ("just lock them to 30 like we
+// did for textboxes"). fn_8002FA34, from the room loop fn_80011824 (per view, before the rooms),
+// advances the sky's animations, places it at the camera (fn_800102B0, J3DSys's view matrix) and
+// draws it (viewCalc, drawInit, its draw buffers): its matrices, texture matrices, projection,
+// material / TEV / fog colours and its own light (fn_800AAF5C: constant J3D channel colours and
+// GX light 7) are all set inside, so nothing scene-wide (Bogmire's lightning light 0-2, room
+// ambient) reaches it. The arena itself, the bosses, Luigi, particles and the HUD still blend.
+// Only the boss maps are locked; map 2's sky (the grounds, windows, balconies) still blends.
+// LM_SKY_LOCK=0: off, =2: every map (test aids).
+namespace {
+bool skyLocked() {
+    static const int sMode = std::getenv("LM_SKY_LOCK") ? std::atoi(std::getenv("LM_SKY_LOCK")) : 1;
+    if (sMode == 0) return false;
+    if (sMode == 2) return true;
+    const u32 map = rd32(VA(0x804D80C8));  // sCurMapNo
+    return map == 9 || map == 10 || map == 11 || map == 13;
+}
+}  // namespace
+HLE(fn_8002FA34) {
+    if (!interp::capturing()) return callOriginal(c, "fn_8002FA34");
+    interp::tagLogMark("sky begin");
+    if (skyLocked()) {
+        interp::FrameLockScope lock;
+        callOriginal(c, "fn_8002FA34");
+    } else {
+        callOriginal(c, "fn_8002FA34");
+    }
+    interp::tagLogMark("sky end");
+}
+
 // --- memory ------------------------------------------------------------------------------------
 // A freed heap block: objects that lived in it get new identities (a new actor allocated at the
 // same address is not the old one).

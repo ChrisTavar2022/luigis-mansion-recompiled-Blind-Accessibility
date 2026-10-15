@@ -114,6 +114,8 @@ fn_800417F8 us pal
 fn_8000C598 us pal
 # Message windows (all dialogue): shown at the game frame while interpolating (src/recomp/tags.cpp).
 fn_80044138 us pal
+# Sky dome draw (boss arenas): shown at the game frame while interpolating (src/recomp/tags.cpp).
+fn_8002FA34 us pal
 # Early ghost lighting (cheat-equivalent, src/recomp/unused_content.cpp)
 fn_8005A5D4 us pal
 

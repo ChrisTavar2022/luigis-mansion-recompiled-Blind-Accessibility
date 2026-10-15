@@ -93,6 +93,8 @@ void popNoBlend();
 // instead of a smoothly opening box with letters appearing at the game rate. Nests by count.
 void pushFrameLock();
 void popFrameLock();
+// LM_TAG_LOG: a marker line in the log (e.g. where a hooked draw begins and ends), when logging.
+void tagLogMark(const char* text);
 struct FrameLockScope {
     FrameLockScope() { pushFrameLock(); }
     ~FrameLockScope() { popFrameLock(); }
