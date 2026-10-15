@@ -464,7 +464,8 @@ The known Action Replay code (US) that turns it on:
 All eight are `tools/recomp/hooks.txt` instruction patches switched with the mode
 (`LM_COOP_PATCHES=<hex mask>` keeps only some of them, bit 0 = patch 40, for testing).
 Patch 43 is the code's own blanket cheat: it also gives player 1 the Poltergust and the Game
-Boy Horror at all times.
+Boy Horror at all times. With the co-op improvements it stays off (player 2 gets player 1's
+bits instead, below).
 
 ### What the unfinished mode looks like (option 1)
 
@@ -486,52 +487,181 @@ both ports):
 
 ### Co-op improvements (option 2)
 
-- **Player 2 follows player 1 between rooms.** When player 1's room (view record +0xC, top byte)
-  changes and player 2 is somewhere else, player 2 is put 120 units behind player 1 (Luigi
-  +0xF48 = facing). Also covers warps and teleports. Verified: `LM_TELEPORT` into the Mirror Room
-  brings player 2 along (`[coop] player 1 entered room 4: player 2 (room 26) follows`), the
-  room's ghosts appear and fight both.
-- **HUD.** `fn_8003E7B0` is hooked: in split screen the HUD is drawn once after the last view
-  (player 1's health meter moved up by 240 to the bottom of the top half), and player 2 gets
-  the game's own health meter drawn a second time with player 2's health (shared view: next to
-  player 1's; split: bottom left of player 2's half). The meter's globals (`0x804D8490/92`
-  health shown, `0x804D84B0` heartbeat, `0x804D8496/98` digit position, heart sprites
-  `0x803CE698 + 0x30/0x48/0x60` x/y) are swapped in for that call and restored.
-- **Health / game over.** A player whose health would drop to 0 while the partner has more than
-  1 takes half of the partner's health instead (hook on Luigi's health setter `fn_800B9488`);
-  the game's own game over only happens once both are out. Verified in the Mirror Room with
-  `damage_scale=20` (one hit is lethal): player 1 was revived six times from player 2's health
-  (100 -> 50/50 -> ... -> 2/2), both meters following.
-- Doors: with the follow rule player 2 never has to open doors on their own; the AR door
-  patches (41/42/47) stay on.
+Everything below is `src/recomp/coop_fixes.cpp` (plus small hooks in `widescreen.cpp`, `hle_gx.cpp`,
+`portal_fix.cpp`, `hle_pad.cpp`), only with both options on; option 1 alone is the mode as the
+game left it. Both releases (addresses through `VA()`; the r13-relative variables differ on the
+European game, e.g. the current camera is r13+0x2E0 on the USA game and r13+0x2F0 on the
+European one, so they are named by their USA addresses).
+
+**Views.** The game's layout (`fn_80011150`) gives one 640x240 view letterboxed in the middle while
+both players are in the same room and closer than ~775 units, two 640x240 halves on top of each
+other otherwise. Both are twice as wide as the 4:3 picture the rooms and cameras were made for, so
+each half looked past the room's geometry into the black void. With the improvements:
+- the shared view is the whole screen (exactly the one-player picture);
+- the split is **side by side**: two 320x480 halves, player 1 left, player 2 right. Chosen over a
+  zoomed top/bottom split: on a 16:9 window each half is 8:9 (960x1080), so with the same vertical
+  field of view a half never shows more to the sides than a single view does (no void), while a
+  top/bottom half there would be 32:9 and need its vertical view cut to a band to avoid the void.
+  The halves are drawn Hor+ like a full view (`ws::splitHalf`: the projection's x row scaled by the
+  widescreen factor, the culling planes `fn_80008D58` and the portal rectangles widened alike).
+- How: the viewport is the view camera's +0xD0..+0xDC (x0, y0, x1, y1), written by `fn_80011150`
+  before it lets each camera update (`fn_80020654`: aspect from it, then the camera's update); the
+  hook on `fn_80020654` rewrites them for the two view cameras (`lbl_803A4C80[0/1]`).
+- While an event has control, and always in Chauncey's arena (map 10, whose camera frames the
+  stage from the side: view 1's plain follow camera looked into the void), the layout is told the
+  players are together (player 2's view record = player 1's), so the scene is one full view.
+
+**Player 2's stick** moves relative to the camera player 2 looks through: Luigi +0x798 (the camera
+from the creation params, camera 0 for every player) is set each frame to view 1's camera in the
+split screen and view 0's while the view is shared.
+
+**HUD.** `ws::ShiftScope(dx)` (widescreen.h) moves every 2D draw (and the partial viewports and
+scissors set in it) by whole logical pixels and keeps it centered, at any aspect, with or without
+widescreen. In the split screen the HUD is drawn once after both views: player 1's health meter
+bottom left (in player 1's half), the Game Boy Horror moved into player 1's half (its bottom right
+corner, -320), player 2's health meter bottom left of player 2's half (+320). Shared view: player
+2's meter next to player 1's.
+
+**Game Boy Horror.**
+- Player 1's map (Y) works unchanged. Player 1's search view (X, the first-person GBH view used to
+  find hidden Boos) is laid out by the one-player code (`fn_80010F20`): in 2-player mode camera 1
+  was player 2's follow camera and `fn_80011150` laid out the players' views, so the search showed
+  a lit third-person picture with the HUD gone. While the search is up (mode `lbl_804CFFF0` = 2 or
+  the GBH screen object `[[lbl_804D8180] +0x24] +0x89` set) the one-player layout runs and camera 1
+  is turned into the GBH camera (update `fn_80021DDC`, set up by `fn_80021AF4`, as `fn_800204B4`
+  does for one player); 10 frames after it closes camera 1 is player 2's follow camera again
+  (`fn_80021844` / `fn_80021618`; switched at once the GBH picture stayed on screen).
+- Player 2's GBH is disabled: port 2's X, Y and D-pad are masked (`hle_pad.cpp`). Player 2's X put
+  the game into a broken half-search state (lit third-person view, no health meter) until player 1
+  opened and closed the search.
+
+**Events.** The event scripts only know player 1 (`<LUIGISTOP>`, `<WARP>`, `<POS>`, camera paths act
+on player index 0: `fn_800AD54C(0, msg)`, `fn_800E9750(0)`). While an event has control (a script
+runs with the HUD hidden or player 1 stopped, the same test as the cutscene skip), player 2 is set
+aside the way the scripts set aside other actors (`<ACTOR>` sub-commands, `fn_80062EE8`, on actor
++0x40): BODYOFF 0x4000 (not drawn: the actor draw loop `fn_80060E70` skips 0x6000), COLOFF 0x80,
+STOP 0x10 and SHADOWOFF 0x800, its Poltergust/nozzle/GBH actors (+0x7A4..+0x7AC) hidden too, port 2
+ignored, and kept at player 1's position every frame (never left behind when the script moves or
+warps player 1; the view stays one full view). When the event ends the bits it did not have are
+cleared and player 2 is put onto player 1's spot facing the same way; the players' collision parts
+them. (A spot beside player 1 is not safe: at the foyer's front door it is off the floor and player
+2 fell into the basement, although the room boxes said foyer. Behind put player 2 back in the
+doorway, i.e. the room before.)
+
+**Following.** When player 1's room changes and player 2 is elsewhere (doors, stairs, warps, mirror
+warps, teleports), player 2 is brought the same way.
+
+**Shared progress.** What a Luigi collects is kept in that Luigi (messages to `fn_800AEEA8`) and,
+at map changes/saves, in its own record (+0x79C: `lbl_803D5CD0 + 0x16C * player`); only player 1's
+record is shown (GBH tally, result screens) and saved (`fn_80067050`/`fn_80067108` copy record 0),
+so whatever player 2 caught or picked up was lost. Each game frame (`mergeProgress`):
+- player 2's captured-ghost list (+0x11EC count, +0x11F0 up to 64 entries) is appended to player
+  1's and cleared;
+- player 2's treasure counters (+0x12F4..+0x1320: coins and bills, the seven gem kinds, three
+  more) are added to player 1's and cleared;
+- the records' bit sets (+0xD4..+0x168, e.g. captured ghost IDs at +0x134, set through
+  `[[Luigi +0x800] +4]`) are kept identical in both records (their union), so player 1's saved
+  record has player 2's captures and player 2's own checks see what player 1 already has;
+- the Poltergusts' captured-type bits (Poltergust +0x7D4, +0x1AC) likewise.
+Portrait ghosts' remaining health is in record 0 for either player (`fn_800C08DC`).
+
+**Equipment and medals.** The AR code's patch 43 (`fn_800B9430`, the Luigi +0x792 event-bit test,
+always true) is the code's blanket cheat: it also gives player 1 the Poltergust, the Game Boy Horror
+and every element medal from the start. With the improvements it stays off and player 2's +0x792
+bits are player 1's each frame (bit 0, player 1's controller, kept): player 2 has what player 1 has
+(elements can be picked up by player 2 once player 1 has the medal).
+
+**Health.**
+- A player whose health would drop to 0 while the partner has more than 1 takes half of the
+  partner's health instead (hook on Luigi's health setter `fn_800B9488`).
+- Player 1 downed with nothing to share is the game's own game over (back to the title; checked:
+  a new game after it starts with both players again).
+- Player 2 downed while player 1 had 1 left stayed dead for good (player 2's death is not a game
+  over): now player 2 lies down until player 1 has more than 1 again, then gets half of it back
+  and stands up (checked with `LM_COOP_SETHP`).
+- Player 2 enters every map with player 1's health (record 1 +0 = record 0 +0 at map setup):
+  player 2's record is never reset by the game, so after a game over the next game started player
+  2 with the 1 point left.
+
+**Gold ghosts and two players.** A gold ghost waiting to appear (`lbl_8035B6E4`, state 3) comes out
+when the nearest player looks away from it (CondCountObj `fn_800D8DA4`: `fn_800E5784` nearest
+player, `fn_800E71D4` dot product with that Luigi's look direction `[Luigi +0xF1C]`). Two idle
+Luigis standing together tend to look at each other, so in a test with both standing still the
+ghosts never came out; it is the game's own rule (moving players turn away), not changed.
+
+**Interpolation.** Views pair by their view index (tags.cpp `fn_8000BB98`), so the two halves never
+pair with each other; a change between one and two views is a camera cut (the view count changes).
+120 fps at 16:9 (`LM_JUDDER_LOG`, split and shared, both players and the camera moving): 0
+defects in every window (one 5-draw sub-view camera window at the teleport). `LM_PRESENT_DUMP` at
+60 fps in the split screen: each half's in-betweens follow its own camera, no mixing.
+
+#### Checklist (October 2026, US unless noted; frame dumps at 16:9)
+
+| Area / feature | Checked | Result |
+|---|---|---|
+| Foyer arrival event (new game) | yes | player 2 hidden through the event, then on player 1's spot, parted by collision |
+| Nursery / Mirror Room (Area 1) | yes | shared full view, split side by side, both health meters, GBH in player 1's half |
+| Player 2 capture (gold ghost, Anteroom, `LM_GHOST_HUNT_PLAYER=2`) | yes | stun, hook, HP 10 to 0, capture by player 2; capture list, ID bits and record go to player 1 |
+| Mirror Room ghosts with player 2 | yes | flashlight and vacuum reach them; stun not staged (not gold ghosts) |
+| E. Gadd's call (first Boo call, flag 15) | yes | player 2 hidden during the call and the save screen, back afterwards |
+| E. Gadd's lab (map 1/4 events, Portrificationizer intro) | yes | only player 1 in the lab scenes (player 2 set aside), no crash |
+| Training room (tutorial event) | yes | player 2 set aside through the tutorial |
+| Save / load | yes | save written in 2-player mode; loading it starts both players |
+| Game over, back to the title, new game | yes | game over when both are out; the next game has both players at full health |
+| Player 2 downed / revived | yes | stays down while player 1 has 1, revived with half once player 1 has more |
+| GBH map (Y) / search (X) with two players | yes | both work for player 1; player 2's X/Y/D-pad do nothing |
+| Chauncey (map 10) | yes | both spawn, both take damage, one full view always |
+| Boolossus (map 11) | yes | both spawn and fight, split/shared views sensible |
+| Bogmire (map 13) | yes | both spawn and fight, split/shared views sensible |
+| Bowser (map 9) | yes | both spawn, take fire damage, split/shared views sensible |
+| Hidden Mansion (PAL variant, `LM_HM_FORCE=1`) | yes | both players, follow, no crash |
+| European game (PAL build, PAL disc) | yes | full-screen shared view, GBH search, follow, ghosts, no crash |
+| Interpolation 120 fps (split and shared) | yes | 0 judder defects; present dumps clean |
+| Study (Neville's room) | partly | both players in the room under attack; Neville's fight itself not started |
+| Doors / stairs | by design | the follow rule; checked with teleports, not with a walked door |
+| Key pickups, room clears and chests, Toads, breaker/blackout, mirror warps | by design | events take control through the same test (`<MENUOFF>`/`<LUIGISTOP>`); not reached in a run |
+| Boss fights won with two players | no | the fights run with two players; finishing one needs real play |
+| Portrait ghosts (Lydia, the Twins, Clairvoya, ...) | no | same event and capture paths as above; not reached |
+| Areas 2-4 and the ending | no | no saves or test states that reach them |
 
 Not done / not verified:
-- A full capture by player 2 was not reproduced with scripted input (getting a ghost stunned in
-  front of a scripted player is timing-dependent). The capture path is per player (the vacuum
-  check iterates ghosts in rooms visible in either view and starts the capture through the
-  shared capture manager `lbl_804D8BF0 +0x24` with the vacuuming Luigi), and the capture count
-  is global (`fn_800E5784`), so captures by either player count.
-- Player 2's stick is relative to view 0's camera (the creation params pass camera 0 to every
-  player). Both cameras look the same way, so this only matters at room-specific angles.
-- Event scenes, boss arenas and the lab with two players are untested; scripted events move only
-  player 1.
+- Finishing a boss fight, the portrait ghost fights and Areas 2-4 / the ending with two players
+  (no test states reach them; scripted input cannot play them).
+- Money/treasure picked up by player 2 in play (the merge is the same path as the captured-ghost
+  list, which was checked).
+- Player 2's stick relative to view 1's camera: set as described, not measured in a room where
+  the two cameras look different ways.
 
-Interplay with the enhancements: the widescreen hook that anchors view 1 as the GBH screen
-(`fn_800115F8`, widescreen.cpp) leaves it full width in 2-player mode; Hor+ widening and the
-widened culling apply to both views (each spans the full width); checked at 21:9 with "Keep HUD
-at 4:3" off (both meters anchored left, the GBH right, both views Hor+). Interpolation was checked with
-`LM_INTERP_TEST` in split screen (both views blend without artefacts). The self-shadow and
-the ghost layer are drawn per view by the game's own code (patches 44/45).
+Test aids (new): `LM_GHOST_HUNT_PLAYER=2` (the ghost-hunt aid of ghost_lights.cpp drives port 2 and
+hunts with player 2), `LM_COOP_SETHP=<guest frame>:<player>:<health>[,...]` (sets a player's health
+through the game's setter), `LM_COOP_BISECT=<hex>` (turns single improvements off: 1 event hold, 2
+follow, 4 player 2 camera, 8 view layout, 10 hold without the hide bits, 20 without keeping player 2
+at player 1, 40 shared progress), `LM_COOP_DIFF=<addr>,<len>` (changed words of a block every 300
+frames), `LM_WATCH_RING=<n>` (with `LM_WATCH` and `LM_TRACE=ring`: the n functions entered before a
+watched store). `LM_COOP_DUMP=1` also lists each known ghost's AI state, place, health and alpha.
+
+Interplay with the enhancements: option 1 alone keeps the game's full-width 640x240 views (the
+widescreen hook on `fn_800115F8`, which anchors view 1 as the GBH screen for one player, leaves
+them alone; Hor+ and the widened culling apply to both). With the improvements the halves are drawn
+Hor+ in place and are not in a HUD scope at all (except while the GBH search view is up, when the
+one-player anchoring applies). The self-shadow and the ghost layer are drawn per view by the
+game's own code (patches 44/45).
 
 Test aids: `LM_COOP=1`, `LM_COOP_FIXES=1` (force the options), `LM_COOP_DUMP=1` (both players'
 position, health, flags and equipment every 300 frames), `LM_COOP_MSGLOG=1` (messages to ghost
 AI objects, with the player whose flashlight sent message 2), `LM_COOP_GHOST_TEST=<from>,<to>`
 (guest frames: keeps the first visible ghost 220 units in front of player 2, or player 1 with
-`LM_COOP_GHOST_TARGET=1`; `LM_COOP_GHOST_HP0=1` also zeroes its health), and `P2:` items in
-`--input` (docs/CONTROLS.md). Typical run: `LM_COOP=1 LM_COOP_FIXES=1 LM_TEST_STATE=poltergust
-LM_START_MAP=2 LM_START_APPEAR=1 LM_TELEPORT=3380,0,-220,200 LM_SKIP_CUTSCENES=1
-LM_SKIP_AUTO=30 --input "600:START*10,1000:A*6,1500:A,1800:A,2100:A,2400:A,P2:2600:STICKLEFT*500"`
-(Nursery, then the Mirror Room with its ghosts).
+`LM_COOP_GHOST_TARGET=1`; `LM_COOP_GHOST_HP0=1` also zeroes its health; the ghost still has to be
+stunned before the vacuum takes it, so this does not stage a capture: use the ghost hunt below), and
+`P2:` items in `--input` (docs/CONTROLS.md). Typical run (`LM_INPUT_CLOCK=frames`):
+`LM_COOP=1 LM_COOP_FIXES=1 LM_TEST_STATE=poltergust LM_START_MAP=2 LM_START_APPEAR=1
+LM_TELEPORT=3380,0,-220,200 LM_SKIP_CUTSCENES=1 LM_SKIP_AUTO=30 --input
+"1200:START*10,1600:A*6,2100:A,2400:A,2700:A,3000:A,P2:3300:STICKLEFT*300"` (Nursery, then the
+Mirror Room with its ghosts). Player 2's capture: `LM_TELEPORT=0,550,-3300,100 LM_GHOST_LIGHTS=1
+LM_GHOST_HUNT=8 LM_GHOST_HUNT_BEAM=89 LM_GHOST_HUNT_DMAX=500 LM_GHOST_HUNT_R=0
+LM_GHOST_HUNT_PLAYER=2 LM_COOP_BISECT=10` (the Anteroom's gold ghost; bisect 10 leaves player 2
+where the teleport puts it, nearer the ghost than player 1, so the ghost picks player 2) with
+`--input "1200:START*10,1600:A*6"`: hooked at hunt frame 1359, captured ~150 frames later.
 
 ## Other leftovers noticed
 
