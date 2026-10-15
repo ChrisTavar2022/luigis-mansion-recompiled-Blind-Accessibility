@@ -142,7 +142,11 @@ A value of game frame b pairs with the value of frame a that has the same key an
   units elsewhere every few game frames (unused or zero-weighted), with runs of small steps in
   between, and switched all the bears to 30 Hz (sweep B: 1.1-1.9k switches per 5 s near them, 0
   after). A whole instance moving fast (Chauncey's swoops) moves alike and keeps its say.
-  `LM_INTERP_TRACE=1` logs which member switched an instance. Earlier
+  (Correction, sweep B: that 49-matrix J3D instance is Luigi, seen near the bears; it follows him
+  everywhere.) An instance of 4 or more voting members is switched for a jump only when at least half
+  of them jumped (30f232a): a real respawn or teleport moves most members alike, while one stray
+  member's first erratic step after a quiet spell switched all of Luigi. `LM_INTERP_TRACE=1` logs
+  the votes ("jump vote ... median", "switched (n of m members jumped)"). Earlier
   attempts tagged fn_80091A70 (a cloth sheet) and J3D models only, which never reached the hose.
 - Present hold (pacing::beforeEnd): on an even grid (VRR or VSync off) a frame built faster than
   usual is held until the usual time after its scheduled start (90th percentile of the last 60
