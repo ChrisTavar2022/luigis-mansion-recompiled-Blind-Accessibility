@@ -165,6 +165,7 @@ struct Tape {
     std::vector<u64> lightKeys;               // per extra light (flattened, command order): identity, 0 none
     u32 dumpOffset = ~0u;  // LM_INTERP_TEST: tape offset of the LM_FRAME_DUMP copy's target pointer
     u32 dumpFrame = 0;
+    u32 gameFrame = 0;  // GXCopyDisp count + 1 when captured (LM_FRAME_DUMP / LM_INTERP_DRAWS numbering; logs)
     u32 guestUs = 0;  // guest-thread time spent closing the tape (array copies' bookkeeping, pairing)
     // Breakdown of guestUs: array bookkeeping, tape copy, pairing, -, cut check.
     u32 phaseUs[5] = {};
@@ -1168,6 +1169,7 @@ void endTape(u32 retraceCount) {
     }
     auto tape = std::make_shared<Tape>();
     tape->seq = ++sSeq;
+    tape->gameFrame = copyDispCount() + 1;
     tape->bytes.assign(sScratch.begin(), sScratch.begin() + size);
     tape->patches = std::move(sPatches);
     sPatches = {};
@@ -1302,10 +1304,13 @@ void noteExtraLights(u32 at, u32 count) {
 
 namespace {
 int sNoBlend = 0;
+int sFrameLock = 0;  // text boxes: nothing noted (matrices, colours, 2D vertex blocks, position arrays)
 int sLinearPos = 0;
 }  // namespace
 void pushNoBlend() { sNoBlend++; }
 void popNoBlend() { sNoBlend = sNoBlend > 0 ? sNoBlend - 1 : 0; }
+void pushFrameLock() { sFrameLock++; }
+void popFrameLock() { sFrameLock = sFrameLock > 0 ? sFrameLock - 1 : 0; }
 void pushLinearPosMtx() { sLinearPos++; }
 void popLinearPosMtx() { sLinearPos = sLinearPos > 0 ? sLinearPos - 1 : 0; }
 
@@ -1418,7 +1423,7 @@ u64 valueKey(Kind kind, u32 source, u32 slot, TagCat& cat) {
 }
 
 void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
-    if (at == ~0u || !capturing() || sNoBlend > 0) return;
+    if (at == ~0u || !capturing() || sNoBlend + sFrameLock > 0) return;
     if (sLinearPos > 0 && kind == Kind::PosMtx) kind = Kind::TexMtx;  // element-wise, own key
     // Aurora writes XF loads as 0x10, a u32 header, then the values.
     if (at + 5 + 4 * u32(first + nFloats) > sBase + AuroraCapturePos() || sScratch[at] != 0x10) return;
@@ -1489,7 +1494,7 @@ void noteColor(u32 off, u16 format, u32 reg, u32 light = 0) {
 }
 
 void noteColors(u32 at, u32 lightObj) {
-    if (at == ~0u || !capturing() || sNoBlend > 0) return;
+    if (at == ~0u || !capturing() || sNoBlend + sFrameLock > 0) return;
     const u32 end = sBase + AuroraCapturePos();
     u32 light = 0;  // the Light value just noted for lightObj (index + 1)
     if (lightObj && !sPatches.empty() && sPatches.back().kind == Kind::Light && sPatches.back().source == lightObj)
@@ -1523,7 +1528,7 @@ void noteColors(u32 at, u32 lightObj) {
 
 namespace detail {
 void noteDrawColor(u32 at, u32 reg, u8 type) {
-    if (at == ~0u || !capturing() || sNoBlend > 0 || at + 4 > sBase + AuroraCapturePos()) return;
+    if (at == ~0u || !capturing() || sNoBlend + sFrameLock > 0 || at + 4 > sBase + AuroraCapturePos()) return;
     noteColor(at, type == 3 ? kColorRgba8 : type == 2 ? kColorFog : kColorBp, reg);
 }
 }  // namespace detail
@@ -1691,9 +1696,9 @@ bool blend2DLayout(const Tape& a, const Patch& q, s32 j, const Tape& b, const Pa
                 const f32 o = load2D(sReplay.data() + p.offset + v * p.stride + p.posOffset + c * csize, type, frac);
                 lo2[c] = std::min(lo2[c], o), hi2[c] = std::max(hi2[c], o);
             }
-        std::fprintf(s2DLog, "%llu %.3f %016llX a %.1f %.1f %.1f %.1f b %.1f %.1f %.1f %.1f shown %.1f %.1f %.1f %.1f\n",
+        std::fprintf(s2DLog, "%llu %.3f %016llX a %.1f %.1f %.1f %.1f b %.1f %.1f %.1f %.1f shown %.1f %.1f %.1f %.1f site %08X f%u\n",
                      (unsigned long long)b.seq, alpha, (unsigned long long)p.key, lo[0][0], lo[0][1], hi[0][0], hi[0][1], lo[1][0],
-                     lo[1][1], hi[1][0], hi[1][1], lo2[0], lo2[1], hi2[0], hi2[1]);
+                     lo[1][1], hi[1][0], hi[1][1], lo2[0], lo2[1], hi2[0], hi2[1], p.site, b.gameFrame);
     }
     s2DBlended++;
     return true;
@@ -1736,19 +1741,24 @@ void detail::noteDrawCentre(const float c[3]) {
 }
 
 u64 detail::arrayKey() {
-    if (!capturing()) return 0;
+    if (!capturing() || sFrameLock > 0) return 0;
     TagCat cat;
     return valueKey(Kind::Verts, 0x41525241u, 0, cat) ^ 0xA77A1ull;  // (a pseudo light-like source: own key space)
 }
 
 namespace {
 u64 sVertsKey = 0;
+bool sVertsLocked = false;  // begun inside a text box (pushFrameLock): its vertices are not noted
 TagCat sVertsCat = TagCat::None;
 u32 sVertsSite = 0;
 std::string sVertsChain;
 }  // namespace
 void detail::vertsBegin(bool ortho) {
     if (!capturing()) return;
+    // The block is noted when its vertices are complete, at the next GX call: possibly after the
+    // text box's scope closed (the window's last quad blended while the rest of it was locked).
+    sVertsLocked = sFrameLock > 0;
+    if (sVertsLocked) return;
     sVertsSite = sCallLr;
     sVertsKey = valueKey(Kind::Verts, 0, 0, sVertsCat);
     if (!sVertsKey && ortho) {
@@ -1763,7 +1773,10 @@ void detail::vertsBegin(bool ortho) {
 
 void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, u32 clrOffset, u32 clrBytes, u32 posBytes2D,
                           u32 posFmt2D, u32 uvOffset, u32 uvBytes) {
-    if (!capturing() || count == 0 || count > 0xFFFF) return;
+    const bool locked = sVertsLocked;
+    sVertsLocked = false;
+    if (locked) sVertsKey = 0;
+    if (!capturing() || locked || count == 0 || count > 0xFFFF) return;
     Patch p{at, u16(count), Kind::Verts};
     p.stride = u16(stride);
     p.posOffset = u16(posOffset);

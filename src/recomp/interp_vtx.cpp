@@ -379,7 +379,11 @@ void invalidateVtxCache() {
         if (sBind[s].valid && sBind[s].cmd >= 0 && sCmds[sBind[s].cmd].snap >= 0) emitLoad(s);
 }
 
+static u32 sDrawCount = 0;
+u32 drawCount() { return sDrawCount; }
+
 void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective) {
+    sDrawCount++;
     finishDirect();
     flushPending();
     fmt &= 7;
@@ -465,6 +469,7 @@ void vtxBytes(u32 v, int size) {
 }
 
 void vtxDisplayList(u32 guestAddr, const u8* data, u32 size) {
+    sDrawCount++;
     finishDirect();
     flushPending();
     detail::noteDraw(detail::mix(u64(guestAddr) << 24 ^ size ^ 0xD15Bull << 48));

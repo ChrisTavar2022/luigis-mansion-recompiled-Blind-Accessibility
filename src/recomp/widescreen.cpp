@@ -15,6 +15,9 @@
 
 namespace recomp {
 u32 copyDispCount();  // hle_gx.cpp
+namespace tags {
+bool textBoxShown();  // tags.cpp: a message window is on screen
+}
 }
 #include <cmath>
 #include <vector>
@@ -149,15 +152,25 @@ RenderToTextureScope::~RenderToTextureScope() { sRttDepth--; }
 
 // Game Boy Horror (bottom right): frame, LEDs and the J2DScreen of whatever its screen
 // shows (money tally, E. Gadd's call, the cut E3 clock).
+// Frame interpolation: while a message window is on screen the GBH is shown at the game frame like
+// the text box (interp::FrameLockScope; tags.cpp fn_80044138): during E. Gadd's call it is his call
+// window, shaking as the call comes in, with his portrait on its screen.
 HLE(fn_8003D634) {
     AnchorScope s(1);
+    const bool call = interp::capturing() && tags::textBoxShown();
+    if (call) interp::pushFrameLock();
     callOriginal(c, "fn_8003D634");
+    if (call) interp::popFrameLock();
 }
 // The static noise drawn over the GBH screen (gbnoise01..03), from the HUD and from the
 // GBH view's own pass (fn_8003E7B0(1)).
 HLE(fn_8003BE9C) {
     AnchorScope s(1);
+    // The noise as E. Gadd's call connects belongs to his call window (fn_8003D634 above).
+    const bool call = interp::capturing() && tags::textBoxShown();
+    if (call) interp::pushFrameLock();
     callOriginal(c, "fn_8003BE9C");
+    if (call) interp::popFrameLock();
 }
 // Sets up view n of the frame loop: its viewport/scissor (and for view 1 the depth-clear
 // quad, fn_8000B228) are set here, and the view's draws that follow use them. View 1 is the
@@ -187,7 +200,13 @@ HLE(fn_80114E18) {
     else if (sLastFrame == ~0u || (frame != sLastFrame && frame != sLastFrame + 1)) sCallAnchored = false;
     sLastFrame = frame;
     AnchorScope s(sCallAnchored ? 1 : 0);
+    // A portrait shown with a message window (E. Gadd's on the GBH during his call) belongs to the
+    // text box: shown at the game frame (interp::FrameLockScope; tags.cpp fn_80044138). Portraits
+    // without text (door close-ups) interpolate.
+    const bool lock = interp::capturing() && tags::textBoxShown();
+    if (lock) interp::pushFrameLock();
     callOriginal(c, "fn_80114E18");
+    if (lock) interp::popFrameLock();
 }
 // The event scene's render-to-texture pass, called by fn_80114E18 between the scene and the
 // portrait draws: when the scene defines a texture target (door scenes: the reflection of
@@ -210,8 +229,10 @@ HLE(fn_8000C598) {
     callOriginal(c, "fn_8000C598");
 }
 // Room name when entering a room: the floor (top right) and the room's name (top left).
+// Frame interpolation: text, shown at the game frame like every text box (tags.cpp fn_80044138).
 HLE(fn_80045BDC) {
     AnchorScope s(kAnchorBySide);
+    interp::FrameLockScope lock;
     callOriginal(c, "fn_80045BDC");
 }
 // ---- widened 2D masks (widescreen.h) ----

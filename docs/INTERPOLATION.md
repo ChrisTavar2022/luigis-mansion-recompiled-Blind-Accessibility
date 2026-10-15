@@ -92,7 +92,7 @@ A value of game frame b pairs with the value of frame a that has the same key an
   positions and direct RGB(A)8 vertex colours (HUD fades, full-screen fade quads) are noted as 2D
   blocks (role 2, `posBytes2D`): their colours blend while every vertex position is byte-identical
   in both game frames, or while the picture's layout animates (positions blended too: "Text boxes"
-  below); untagged ones are keyed by structural scope + call site + occurrence (87f2ea6), plus
+  below; text boxes themselves are shown at the game frame); untagged ones are keyed by structural scope + call site + occurrence (87f2ea6), plus
   the texture they show. XF colours written inside display lists (0x100A-0x100D, light colours) are
   noted like the lists' BP colour writes, and untagged 2D colour registers are keyed by structural
   scope + call site + register + occurrence and blend with a draw of the same kind (8d11727).
@@ -350,7 +350,8 @@ Two causes, both ours:
    closing, pulsing) or moved the same way in the game frame before (sliding; a single jump such
    as a menu cursor stays a jump). Positions keep their format (s16: whole layout units, 4.5 px
    steps at 2160 lines). Also blended now: the health heart's pulse, the Game Boy Horror sliding
-   up/down, the call screen's icons, the title menu boxes. `LM_2D_LOG=<file>` logs every blended
+   up/down, the title menu boxes (the message windows and the call screen no longer: "Text boxes at
+   the game frame" below). `LM_2D_LOG=<file>` logs every blended
    picture (tape, alpha, key, bounds a / b / shown); `LM_INTERP_2D_LAYOUT=0` turns it off; the
    `[interp] 2D pictures that moved` line counts blended / kept per present.
    Call window opening at 120 (4 presents per game frame), top edge shown per present:
@@ -375,6 +376,46 @@ Two causes, both ours:
    clustered at 0.10-0.125 (87%) instead of uniform.
 3. Not changed: letters appear at the game frame (inherent; the game reveals one or two per game
    frame). Original 30 is byte-identical (21 frames 2600-2660 across the call window opening).
+
+#### Text boxes at the game frame (follow-up)
+
+User feedback on the above: "the text on textboxes is still jumpy perhaps we just leave all text
+boxes at 30fps". The box opened smoothly while its letters still appeared at the game rate, so the
+text jumped against the moving box. Now every text box is shown exactly as in its game frame, at
+30 Hz, as on the console: the box, its text, the speaker icon, the "more" arrow and choices, and the
+portrait that goes with it. Nothing inside a text box blends (position or colour).
+
+- `interp::pushFrameLock` / `FrameLockScope` (interp.h): nothing noted inside, so it replays as
+  captured: matrices, lights, colour registers (`note`, `noteColors`, display-list colours), 2D and
+  3D vertex blocks with their colours, CPU position arrays (`arrayKey`). A direct-vertex draw is noted
+  at the next GX call, which can come after the scope has closed, so the lock is taken at its
+  `GXBegin` (`vertsBegin`). Without that, the window's last quad still blended.
+- Where text boxes are drawn (found with `LM_INTERP_DRAWS` call chains and `LM_2D_LOG`):
+  - `fn_80044138` (tags.cpp; from the frame loop `fn_8000BCE8`) draws every message window through
+    `fn_800433B4`: the box picture (`fn_8003B054`), the speaker icon, the text, choices (the lab's
+    green "The Mansion / The Training Room / The Gallery" box). All dialogue goes through it:
+    Neville, Toad, E. Gadd in the lab and on the call, signs, the file-select messages.
+  - Room / area name (`fn_80045BDC`, widescreen.cpp).
+  - While a message window is on screen (it drew in this game frame or the one before;
+    `tags::textBoxShown`, counted with `interp::drawCount`), the Game Boy Horror (`fn_8003D634`), its
+    noise (`fn_8003BE9C`) and the event portrait (`fn_80114E18`): during E. Gadd's call the GBH is his
+    call window. It shakes as the call comes in; its bezel used to blend while the picture inside
+    stayed put. (The GBH screen mode `lbl_804D846C` stays 4 in the `call` scenario's call, so it
+    cannot tell the call apart.)
+- Still blended (not text boxes): the health heart's pulse, the HUD sliding out when a dialogue
+  starts and back after, the Game Boy Horror sliding up/down outside dialogue, the title menu boxes,
+  the area-result iris wipe.
+- The phase lock in `pace()` stays: it keeps the game-frame changes evenly spaced. Call scenario,
+  game frames 2560-2900 (`LM_PACING_LOG`, presents per game frame): 120 fps 339 x 4 and 2 single 5s
+  (the lock moving by one present, `1 wraps`); 60 fps 340 x 2 and 1 single 3. No alternating 5/3 or
+  3/1 runs. With the frame cost above the present period (another instance running, the lab's
+  ~11 ms at 120) the rate falls below 120 and 3/4 alternate, as before.
+- Checked per present with `LM_PRESENT_DUMP`: at 120 in the call (frames 2624-2700) the window's text
+  area and the GBH change only at the first present of each game frame; at 60 in the lab dialogue
+  (`LM_START_MAP=4`) the window opens in whole game-frame steps over the smoothly moving scene.
+  `LM_2D_LOG` (which now also prints the draw's call site and `f<game frame>`) lists no
+  message-window picture in either.
+- Original 30 byte-identical (41 frames 2620-2660 of the call scenario, window opening included).
 
 ### Results (first build, October 2026)
 

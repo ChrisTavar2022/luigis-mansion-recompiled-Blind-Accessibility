@@ -112,6 +112,8 @@ fn_800417F8 us pal
 # Game Boy Horror map screen (its frame-loop scene): the map's viewport follows the centered
 # bezel in widescreen (src/recomp/widescreen.cpp).
 fn_8000C598 us pal
+# Message windows (all dialogue): shown at the game frame while interpolating (src/recomp/tags.cpp).
+fn_80044138 us pal
 # Early ghost lighting (cheat-equivalent, src/recomp/unused_content.cpp)
 fn_8005A5D4 us pal
 

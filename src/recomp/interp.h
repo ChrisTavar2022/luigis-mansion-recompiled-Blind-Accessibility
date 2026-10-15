@@ -87,6 +87,18 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first = 0);
 // shadow texture matrices must come from the same frame (shadows.cpp). Nests by count.
 void pushNoBlend();
 void popNoBlend();
+// Text boxes (tags.cpp): everything drawn inside is shown exactly at its game frame, as on the
+// console: no value is noted (matrices, lights, colours, 2D vertex blocks and their colours, CPU
+// position arrays), so the box, its text and the portrait/icons in it step together at 30 Hz
+// instead of a smoothly opening box with letters appearing at the game rate. Nests by count.
+void pushFrameLock();
+void popFrameLock();
+struct FrameLockScope {
+    FrameLockScope() { pushFrameLock(); }
+    ~FrameLockScope() { popFrameLock(); }
+    FrameLockScope(const FrameLockScope&) = delete;
+    FrameLockScope& operator=(const FrameLockScope&) = delete;
+};
 // While set, position matrices are blended linearly (element-wise, like projection-style texture
 // matrices) instead of rigidly: the shadow map's caster pass, so the in-between shadow map matches
 // the receivers' element-wise blended light projection (shadows.cpp).
@@ -141,6 +153,7 @@ void invalidateVtxCache();                                    // GXInvalidateVtx
 void vtxBegin(u32 prim, u32 fmt, u32 nVerts, bool perspective);  // GXBegin (before Aurora's header)
 void vtxBytes(u32 v, int size);                               // raw FIFO write from game code
 void vtxEnd();  // gx::endPendingDraw: the immediate-mode draw is complete
+u32 drawCount();  // draws captured so far (running count; tags.cpp: did a scope draw anything)
 void vtxDisplayList(u32 guestAddr, const u8* data, u32 size);  // after GXCallDisplayList
 
 // Draw-time vertex array snapshots without interpolation (interp_vtx.cpp; F1 > Visuals >
