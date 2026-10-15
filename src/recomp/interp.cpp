@@ -106,6 +106,7 @@ struct Patch {
     u8 uvBytes = 0;
     u16 posFmt = 0;
     u16 uvOffset = 0xFFFF;
+    bool sky = false;  // noted inside the sky dome's draw (pushSky)
 };
 
 using M34 = std::array<f32, 12>;
@@ -742,11 +743,17 @@ void pairTapes(const Tape& a, Tape& b) {
 // per game frame): texture coordinates repeat, so the offset is blended by the short way modulo 1
 // (it used to be shown unblended for the whole game frame: animated skies and water stepped). Only
 // texture-coordinate matrices (entries within +-4) whose scale/rotation part barely changed.
-bool blendTexWrap(const f32* a, const f32* b, int n, float t, f32* out) {
+// `sky`: the sky dome's texture SRT animations (fn_8002FA34). Their layers repeat the texture 2-10
+// times across the dome (scale entries 6, -8, -10 on vrball_B), outside the +-4 bound, and their
+// offsets wrap by exactly 1 about every 60 game frames: blended entrywise, a layer swept back
+// through the whole texture within one game frame (the boss arena skies' jumps); any matrix of the
+// sky is a texture-coordinate matrix, so only its scale/rotation part must barely change.
+bool blendTexWrap(const f32* a, const f32* b, int n, float t, f32* out, bool sky = false) {
     if (n != 8 && n != 12) return false;
     bool wrapped = false;
     for (int i = 0; i < n; i++) {
-        if (!(std::fabs(a[i]) <= 4.0f && std::fabs(b[i]) <= 4.0f)) return false;
+        if (!(std::isfinite(a[i]) && std::isfinite(b[i]))) return false;
+        if (!sky && !(std::fabs(a[i]) <= 4.0f && std::fabs(b[i]) <= 4.0f)) return false;
         const bool trans = (i & 3) == 3;
         if (!trans && std::fabs(a[i] - b[i]) > 0.35f) return false;
         if (trans && std::fabs(a[i] - b[i]) > 0.5f) wrapped = true;
@@ -1315,6 +1322,15 @@ void popFrameLock() { sFrameLock = sFrameLock > 0 ? sFrameLock - 1 : 0; }
 void tagLogMark(const char* text) {
     if (sTagLogFrame != ~0ull && capturing())
         std::fprintf(sTagLog, "f%llu #%u mark %s\n", (unsigned long long)sTagLogFrame, u32(sPatches.size()), text);
+}
+namespace {
+std::vector<size_t> sSkyStart;
+}  // namespace
+void pushSky() { sSkyStart.push_back(sPatches.size()); }
+void popSky() {
+    if (sSkyStart.empty()) return;
+    for (size_t i = sSkyStart.back(); i < sPatches.size(); i++) sPatches[i].sky = true;
+    sSkyStart.pop_back();
 }
 void pushLinearPosMtx() { sLinearPos++; }
 void popLinearPosMtx() { sLinearPos = sLinearPos > 0 ? sLinearPos - 1 : 0; }
@@ -3086,7 +3102,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             }
             const bool jump2D = p.role == 2 && p.kind == Kind::PosMtx && p.count == 12 &&
                                 std::fabs(va[3] - vb[3]) + std::fabs(va[7] - vb[7]) + std::fabs(va[11] - vb[11]) > 96.0f;
-            if (p.kind == Kind::TexMtx && p.role == 0 && blendTexWrap(va, vb, p.count, alpha, out)) {
+            if (p.kind == Kind::TexMtx && p.role == 0 && blendTexWrap(va, vb, p.count, alpha, out, p.sky)) {
                 for (int k = 0; k < p.count; k++) storeBE(sReplay.data() + p.offset + 4 * k, out[k]);
                 sBlended++;
                 continue;
@@ -3377,6 +3393,58 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             }
         sKeep.push_back(std::move(keep));
         while (sKeep.size() > 8) sKeep.pop_front();
+    }
+    // Test aid LM_SKY_LOG=<file>,<first>,<last>: every sky value of the replays of those game frames
+    // (a, b and what is shown) and the blended main camera's rotation.
+    {
+        static FILE* sSkyLog = nullptr;
+        static u32 sSkyFirst = 0, sSkyLast = 0;
+        static const bool sInit = [] {
+            if (const char* v = std::getenv("LM_SKY_LOG")) {
+                std::string s = v;
+                const auto c1 = s.find(',');
+                if (c1 != std::string::npos && std::sscanf(s.c_str() + c1 + 1, "%u,%u", &sSkyFirst, &sSkyLast) == 2)
+                    sSkyLog = std::fopen(s.substr(0, c1).c_str(), "w");
+            }
+            return true;
+        }();
+        (void)sInit;
+        if (sSkyLog && b.gameFrame >= sSkyFirst && b.gameFrame <= sSkyLast) {
+            std::fprintf(sSkyLog, "P f%u seq %llu alpha %.3f a %d\n", b.gameFrame, (unsigned long long)b.seq, alpha, a && alpha < 1.0f);
+            if (a && alpha < 1.0f && b.mainView < sViewToA.size() && sViewToA[b.mainView] >= 0)
+                if (const ViewPair* vp = viewPair(*a, u16(sViewToA[b.mainView]), b, b.mainView, alpha); vp && vp->ok) {
+                    std::fprintf(sSkyLog, "V");
+                    for (int k = 0; k < 12; k++) std::fprintf(sSkyLog, " %.4f", vp->vt[k]);
+                    std::fprintf(sSkyLog, "\n");
+                }
+            for (u32 i = 0; i < b.patches.size(); i++) {
+                const Patch& p = b.patches[i];
+                if (!p.sky) continue;
+                const s32 j = a && alpha < 1.0f ? b.partner[i] : -1;
+                std::fprintf(sSkyLog, "S %u kind %u slot %u site %08X view %u cat %u j %d n %u", i, u32(p.kind), p.slot, p.site, p.view,
+                             u32(p.cat), j, p.count);
+                if (p.kind == Kind::Color) {
+                    const u8* x = b.bytes.data() + p.offset;
+                    const u8* y = sReplay.data() + p.offset;
+                    std::fprintf(sSkyLog, " b %02X%02X%02X%02X out %02X%02X%02X%02X", x[0], x[1], x[2], x[3], y[0], y[1], y[2], y[3]);
+                    if (j >= 0) {
+                        const u8* z = a->bytes.data() + a->patches[j].offset;
+                        std::fprintf(sSkyLog, " a %02X%02X%02X%02X", z[0], z[1], z[2], z[3]);
+                    }
+                } else if (p.kind != Kind::Verts && p.count <= 16) {
+                    std::fprintf(sSkyLog, " b");
+                    for (int k = 0; k < p.count; k++) std::fprintf(sSkyLog, " %.4f", val(b, p, k));
+                    std::fprintf(sSkyLog, " out");
+                    for (int k = 0; k < p.count; k++) std::fprintf(sSkyLog, " %.4f", loadBE(sReplay.data() + p.offset + 4 * k));
+                    if (j >= 0) {
+                        std::fprintf(sSkyLog, " a");
+                        for (int k = 0; k < p.count; k++) std::fprintf(sSkyLog, " %.4f", val(*a, a->patches[j], k));
+                    }
+                }
+                std::fprintf(sSkyLog, "\n");
+            }
+            std::fflush(sSkyLog);
+        }
     }
     if (dump && b.dumpOffset != ~0u) {
         const u64 ptr = u64(reinterpret_cast<uintptr_t>(dump));

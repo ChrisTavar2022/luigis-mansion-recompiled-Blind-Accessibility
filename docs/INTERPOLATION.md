@@ -186,8 +186,8 @@ A value of game frame b pairs with the value of frame a that has the same key an
   refitted every game frame ("shadows at any distance"); a caster shown as captured sits a frame
   apart from the receivers' lookup through the blended light (the shadows swam).
 - Texture scrolls that wrap (offset back from 1 to 0, or faster than half the texture per frame) blend
-  the short way modulo 1 (map 2's animated sky, water; the boss arena skies are shown at the game
-  frame: "Boss arena skies at the game frame" below).
+  the short way modulo 1 (map 2's animated sky, water). The sky dome's texture matrices do so
+  whatever their scale ("Boss arena skies" below).
 - SubView scopes (`fn_80114E18`: event scenes, E. Gadd's call portrait, the door close-ups) have their
   own camera: their values are not factored by the game camera; a model that moves by more than a
   tenth of its distance in one game frame switches.
@@ -484,11 +484,13 @@ portrait that goes with it. Nothing inside a text box blends (position or colour
   message-window picture in either.
 - Original 30 byte-identical (41 frames 2620-2660 of the call scenario, window opening included).
 
-### Boss arena skies at the game frame (October 2026)
+### Boss arena skies (October 2026)
 
-User decision: the boss arena skies/backgrounds never looked right blended ("just lock them to 30
-like we did for textboxes"). The sky dome of every boss arena is now shown exactly as in its game
-frame (`interp::FrameLockScope`, as for the text boxes above), never blended.
+User reports: the boss arena skies (Chauncey map 10, Boolossus 11, Bogmire 13, the roof 9) were
+"jumpy" with interpolation. First they were locked to their game frame (below, now the test aid
+`LM_SKY_LOCK=1`). That made the sky step at 30 Hz against the smoothly moving arena whenever the
+camera turned. The cause was then found and fixed, and the skies are blended again. There is no
+menu option: the blended sky is the only behaviour.
 
 - **Where the sky is drawn.** `fn_8002FA34` (tags.cpp; `us pal`), called by the room loop
   `fn_80011824` once per view before the rooms when the map has a sky. Its descriptor comes from
@@ -499,40 +501,54 @@ frame (`interp::FrameLockScope`, as for the text boxes above), never blended.
   places the dome at the camera (`fn_800102B0`, J3DSys's view matrix), runs `viewCalc` and
   `drawInit`, loads its own lighting (`fn_800AAF5C`: constant J3D ambient/material colours and
   GX light 7, all from sdata2) and draws its two draw buffers (`fn_801C043C` / `fn_801C0050`; two
-  display lists, 0x400 and 0xAA0 bytes, in `LM_DL_TRACE`). `LM_TAG_LOG` with the new
-  `interp::tagLogMark` lines (`mark sky begin` / `mark sky end`; `LM_SKY_LOCK=0` to see what is
-  noted inside) lists drawInit's matrices, the dome's position/normal matrices (view-space
-  translation 0: it sits at the eye), ten texture matrices (the scroll), the projection and light 7.
-  The first call per frame (another view) draws nothing.
-- **What is locked.** Everything inside `fn_8002FA34` on maps 9, 10, 11 and 13 (`sCurMapNo`;
-  also in either Hidden Mansion, which uses the same maps and code). Nothing scene-wide reaches the
-  sky: its colours, fog, light and projection are all set inside the scope, so the room lights 0-2
-  (Bogmire's lightning fade, loaded untagged per view at `0x80017178`) and the room ambient keep
-  blending for the arena while the sky ignores them. The arena floor and walls, the bosses, Luigi,
-  particles, the HUD and the camera still blend. Map 2's sky (the grounds, windows, balconies) still
-  blends. `LM_SKY_LOCK=0`: blend all skies, `=2`: lock every map's sky (test aids).
-- **Evidence** (120 fps target, VSync off, 1920x1080 offscreen, `LM_PRESENT_DUMP`; sky pixels =
-  pixels that differ between an Original 30 run and one with the sky not drawn, in every sampled
-  frame 2600-2680; `scratchpad` scripts, not committed). Idle stretch 2600-2699, in-between presents
-  compared with the first present of their game frame:
-  - Bogmire (map 13, 4 presents per game frame): 0 of 1962 sky pixels changed in more than 10% of
-    304 in-betweens (82 ever: a camera move in game frame 2636 slid the fence over them); blended
-    (`LM_SKY_LOCK=0`): 1936 in more than 10% of 520.
-  - Chauncey (map 10): the only sky pixels that change inside a game frame lie under Chauncey, his
-    glow and the rocking horses' paths (18.3k of 68k); the rest of the sky never changes. Same in
-    the Hidden Mansion (`LM_HM_FORCE=1`, PAL variant: 17.7k of 68k, the same places).
-  - Boolossus (map 11): unchanged at the sides; changes only through Boolossus' translucent body.
-  - King Boo / Bowser (map 9): the fire sky is unchanged except under Bowser and his flames.
-- **Camera motion.** A locked sky keeps its game frame's view, so when the camera turns it steps at
-  30 Hz against the smoothly blended arena. Measured as the shift of the sky between game frames
-  (first presents, 640x480 EFB) while Luigi walks: Chauncey's arena pans 3-5 px per game frame
-  (up to 12; about 20-30 px at 2160 lines), so its sky visibly jumps against the balustrade while
-  the camera pans; Bogmire 1-2 px, the roof 0-1 px (its fire sky scrolls 2-3 px per game frame by
-  itself, now in 30 Hz steps), Boolossus 0-5 px (up to 20 when its camera swings).
-  When the camera only follows Luigi without
-  turning, the dome (centred on the eye) does not move at all. This is what the user asked for;
-  the sky is not blended again.
-- Original 30 byte-identical (141 frames 2600-2740 of Chauncey's arena against main's build).
+  display lists, 0x400 and 0xAA0 bytes, in `LM_DL_TRACE`). `LM_TAG_LOG` marks it (`mark sky begin`
+  / `mark sky end`, `interp::tagLogMark`). Inside: drawInit's matrices, the dome's position/normal
+  matrices per material packet (view-space translation 0: it sits at the eye, rotation = the
+  camera's), three texture matrices per material (`0x801BF274`: the SRT scroll), the projection,
+  light 7 and the TEV colour registers (`0x801BF574`, the colour animations). Everything set
+  inside the call: nothing scene-wide (Bogmire's lightning lights 0-2, the room ambient) reaches
+  the sky. The first call per frame (another view) draws nothing.
+- **What was wrong.** Values of every replay of the sky logged with the test aid
+  `LM_SKY_LOG=<file>,<first>,<last>` (a, b and the value shown, per present; tags.cpp marks the
+  sky's values with `interp::pushSky`). Everything in the sky pairs (only four constant colour
+  words of `fn_800AAF5C` are untagged). The dome follows the blended camera exactly: its view-space
+  rotation shown equals the blended main camera's, translation 0. Colour animations blend. The
+  texture scrolls did not. Each layer repeats its texture 2-10 times across the dome (matrix scale
+  entries 6, 4, -8, -10 on vrball_B, 2-6 on vrKoopa). Each layer's offset wraps by a whole number
+  (1 on vrball_B, also 3 and 5 on vrKoopa) about every 60 game frames. That is invisible on the
+  console, because the texture repeats. `blendTexWrap` only took matrices with every entry within
+  +-4 (texture-coordinate matrices, not projections), so these were blended entrywise: in the game
+  frame of a wrap the layer swept back through a whole texture period and forward again. Chauncey's
+  sky has three layers, so a jump came about every 20 game frames, idle or not. Measured at 120
+  (sky pixels' mean change per present over the alpha advanced, 640x480 present dumps): 82 at a
+  wrap against a median of 3.3 (25x). Not the cause: the dome's model matrix (pairs and follows the
+  camera), its projection (pairs, constant), colour or light jumps, re-centring on another frame's
+  camera.
+- **Fix.** `blendTexWrap(..., sky)`: for the sky's texture matrices the +-4 bound is dropped, and
+  only the scale/rotation part must barely change. Offsets that changed by more than half a
+  texture blend the short way modulo 1 (`d - round(d)`), so a wrap by 1, 3 or 5 moves the layer by
+  its usual per-frame step. Other texture matrices keep the old rule. Afterwards every sky value
+  moves monotonically between its game frames (`LM_SKY_LOG`, maps 9, 10, 11, 13 and the Hidden
+  Mansion Chauncey). `LM_SKY_LOCK=1`: the old full lock of the boss arena skies (maps 9, 10, 11,
+  13; `interp::FrameLockScope`); `=2`: every map's sky. `LM_SKY_HIDE=1`: no sky at all (finding
+  sky pixels).
+- **Evidence** (120 target, VSync off, 1920x1080 offscreen, the user's settings.ini, `LM_PRESENT_DUMP`,
+  Luigi walking left then right; `LM_START_MAP`, `LM_SKIP_CUTSCENES=1 LM_SKIP_AUTO=30`; sky pixels =
+  pixels that differ between Original 30 runs with and without the sky and are black without it,
+  in 90% of the frames). Sky motion per present = median shift of the all-sky 24x24 blocks;
+  a game frame is flagged when its present steps are uneven by over 1 px or go against the
+  frame's direction by over 0.5 px:
+
+  | arena (frames) | blended before the fix | locked (`LM_SKY_LOCK=1`) | blended now |
+  |---|---|---|---|
+  | Chauncey 10 (4300-4440) | 11 of 99 flagged; wrap jumps (rate up to 82, median 3.3) | 57 of 82 (whole step at one present) | 2 of 124 (a camera reversal at the game frame, a dump stall); rate max 29.8 only at a dark plane in front of the sky that Original 30 and the locked run show too |
+  | Bowser 9 (4120-4240) | not measured (its layers wrap by 1, 3 and 5) | 116 of 117 (the fire sky scrolls 2-2.7 px per game frame) | 0 of 91, worst 0.47 px |
+  | Boolossus 11 (4300-4420) | not measured (same sky as 10) | 78 of 121 (steps up to 5.6 px) | 1 of 121 (14 sky blocks behind his translucent body: noisy) |
+  | Bogmire 13 (4120-4240) | not measured (same sky as 10) | | only a thin strip of sky at that camera (no full block); the only spike of the per-present change is a lightning flash (the whole arena, at the game frame) |
+
+  Scripts in the agent's scratchpad (not committed).
+- Original 30 byte-identical (141 frames 3150-3290 of Chauncey's arena, no cutscene skip; runs
+  with `LM_SKIP_CUTSCENES` are not deterministic from run to run).
 
 ### Results (first build, October 2026)
 

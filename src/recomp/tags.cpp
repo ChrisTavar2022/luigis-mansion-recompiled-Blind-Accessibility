@@ -378,22 +378,24 @@ HLE(fn_80044138) {
     if (interp::drawCount() != draws) sTextBoxFrame = copyDispCount();
 }
 
-// --- skies: shown at the game frame -----------------------------------------------------------------
-// The sky dome (a J3D model with texture scroll / colour animations: map 2's vrball_M, the boss
-// arenas' vrball_B on maps 10, 11 and 13, vrKoopa on map 9) is shown exactly as in its game frame,
-// like the text boxes (interp::FrameLockScope; docs/INTERPOLATION.md "Boss arena skies at the game
-// frame"). User decision: blended, the arena skies never looked right ("just lock them to 30 like we
-// did for textboxes"). fn_8002FA34, from the room loop fn_80011824 (per view, before the rooms),
-// advances the sky's animations, places it at the camera (fn_800102B0, J3DSys's view matrix) and
-// draws it (viewCalc, drawInit, its draw buffers): its matrices, texture matrices, projection,
-// material / TEV / fog colours and its own light (fn_800AAF5C: constant J3D channel colours and
-// GX light 7) are all set inside, so nothing scene-wide (Bogmire's lightning light 0-2, room
-// ambient) reaches it. The arena itself, the bosses, Luigi, particles and the HUD still blend.
-// Only the boss maps are locked; map 2's sky (the grounds, windows, balconies) still blends.
-// LM_SKY_LOCK=0: off, =2: every map (test aids).
+// --- skies ------------------------------------------------------------------------------------------
+// The sky dome (a J3D model with texture SRT scroll / colour animations: map 2's vrball_M, the boss
+// arenas' vrball_B on maps 10, 11 and 13, vrKoopa on map 9; docs/INTERPOLATION.md "Boss arena skies").
+// fn_8002FA34, from the room loop fn_80011824 (per view, before the rooms), advances the sky's
+// animations, places it at the camera (fn_800102B0, J3DSys's view matrix: view-space translation 0)
+// and draws it (viewCalc, drawInit, its draw buffers): its matrices, texture matrices, projection,
+// material / TEV / fog colours and its own light (fn_800AAF5C: constant J3D channel colours and GX
+// light 7) are all set inside, so nothing scene-wide (Bogmire's lightning light 0-2, room ambient)
+// reaches it. Its values are marked as the sky's (interp::pushSky): the dome's matrices follow the
+// blended camera like any object, and its texture scrolls blend the short way when they wrap
+// (blendTexWrap `sky`: the layers repeat 2-10 times, outside the general +-4 bound, and swept back
+// through the whole texture in one game frame when a layer wrapped: the "jumpy" boss skies).
+// LM_SKY_LOCK=1 (test aid): the boss arenas' sky (maps 9, 10, 11, 13) shown exactly as in its game
+// frame (interp::FrameLockScope, like the text boxes; the camera's turns then step it at 30 Hz),
+// =2: every map's sky.
 namespace {
 bool skyLocked() {
-    static const int sMode = std::getenv("LM_SKY_LOCK") ? std::atoi(std::getenv("LM_SKY_LOCK")) : 1;
+    static const int sMode = std::getenv("LM_SKY_LOCK") ? std::atoi(std::getenv("LM_SKY_LOCK")) : 0;
     if (sMode == 0) return false;
     if (sMode == 2) return true;
     const u32 map = rd32(VA(0x804D80C8));  // sCurMapNo
@@ -401,13 +403,19 @@ bool skyLocked() {
 }
 }  // namespace
 HLE(fn_8002FA34) {
+    // LM_SKY_HIDE=1 (test aid): the sky is not drawn at all (finding sky pixels: compare with a run
+    // that draws it).
+    static const bool sHide = std::getenv("LM_SKY_HIDE") != nullptr;
+    if (sHide) return;
     if (!interp::capturing()) return callOriginal(c, "fn_8002FA34");
     interp::tagLogMark("sky begin");
     if (skyLocked()) {
         interp::FrameLockScope lock;
         callOriginal(c, "fn_8002FA34");
     } else {
+        interp::pushSky();
         callOriginal(c, "fn_8002FA34");
+        interp::popSky();
     }
     interp::tagLogMark("sky end");
 }
