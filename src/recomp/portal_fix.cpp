@@ -57,7 +57,8 @@ struct HorPlusScope {
         if (!ws::adjusting()) return;
         // The game camera (lbl_803A3820): full-screen viewport, as fn_80008D58's hook checks.
         const u32 cam = VA(0x803A3820);
-        if (rd32(cam + VOFF(0x1EC, 0x1F8)) != 0 || rd32(cam + VOFF(0x1F4, 0x200)) < 640) return;
+        const u32 vpX = rd32(cam + VOFF(0x1EC, 0x1F8)), vpW = rd32(cam + VOFF(0x1F4, 0x200));
+        if ((vpX != 0 || vpW < 640) && !ws::splitHalf(float(vpX), float(vpW))) return;  // or a 2-player half
         const float fovY = gu::rdf(cam + 0x90) * 3.14159265f / 180.0f;
         const float r = fovY > 0.0f ? ws::fovRatio(1.0f / std::tan(fovY * 0.5f)) : 1.0f;
         const float sx = ws::factor() * r;

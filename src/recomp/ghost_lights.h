@@ -26,6 +26,7 @@ void onVacuumTick(u32 actor);
 // vacuum the nearest ghost (face it with the flashlight off, switch the light on when it shows its
 // heart, then hold R and pull away), so the stun/vacuum/capture lights can be checked.
 void testPad(u16& buttons, s8& stickX, s8& stickY, s8& cY, u8& triggerR);
+int huntPort();  // pad port testPad drives: 0, or 1 with LM_GHOST_HUNT_PLAYER=2 (2-player mode)
 // Test aid LM_GHOST_HUNT_BEAM: the game's "still lit?" query (message 21, the light-bind count)
 // answers yes for the ghost the test aid is lighting.
 bool testForceLit(u32 actor);

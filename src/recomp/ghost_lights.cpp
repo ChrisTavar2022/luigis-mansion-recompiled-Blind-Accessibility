@@ -32,6 +32,8 @@
 // which sends them to Aurora for that frame; a frame without the game scene has none.
 #include "recomp/ghost_lights.h"
 
+#include "recomp/coop.h"
+
 #include "port/settings.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
@@ -653,6 +655,14 @@ void onVacuumTick(u32 actor) {
         log("[ghostlight] f%u vacuum holds %08X %s hp %d", sFrame, actor, typeName(rd32(actor + kActType)), s16(rd16(actor + kActHp)));
 }
 
+// The hunting Luigi: player 1, or with LM_GHOST_HUNT_PLAYER=2 player 2 of the 2-player mode
+// (coop.cpp; driven through port 2).
+int huntPort() {
+    static const int sPort = std::getenv("LM_GHOST_HUNT_PLAYER") && std::atoi(std::getenv("LM_GHOST_HUNT_PLAYER")) == 2 ? 1 : 0;
+    return sPort;
+}
+u32 hunter() { return huntPort() ? coop::cachedPlayer(1) : rd32(kActorSlots); }
+
 void testPad(u16& buttons, s8& stickX, s8& stickY, s8& cY, u8& triggerR) {
     static const bool sHunt = envFlag("LM_GHOST_HUNT");
     // LM_GHOST_HUNT=1 turns the flashlight onto the ghost when its AI enters state 0xA (the
@@ -662,7 +672,7 @@ void testPad(u16& buttons, s8& stickX, s8& stickY, s8& cY, u8& triggerR) {
         return v <= 1 ? 0xAu : v;
     }();
     if (!sHunt || !enabled()) return;
-    const u32 l = rd32(kActorSlots);
+    const u32 l = hunter();
     if (!guestPtr(l) || sFrame < 150) return;
     // Target: the nearest drawn, visible ghost.
     const V3 lp{rdf32(l + kActPos), rdf32(l + kActPos + 4), rdf32(l + kActPos + 8)};
@@ -698,6 +708,8 @@ void testPad(u16& buttons, s8& stickX, s8& stickY, s8& cY, u8& triggerR) {
     const bool held = recent(tr.lastHeld, 3) || recent(tr.fishStart, 3);
     switch (sMode) {
     case Wait:  // face away (the light would scare it off) until it attacks
+        if (sFrame % 60 == 0)
+            log("[ghosthunt] f%u wait: nearest %08X ai %X d %.0f poltergust mode %u", sFrame, best, ai, bestD, rd32(l + 0x1180));
         if (sFrame % 10 < 2 && bestD < 700.0f) stickX = s8(-towardX / 3), stickY = s8(-towardY / 3);
         static u32 sInTrigger = 0;
         sInTrigger = ai == sTrigger ? sInTrigger + (sFrame != sLastSeen ? 1 : 0) : 0;
@@ -767,7 +779,7 @@ void onMainView(Ctx& c) {
     // for aiming the beam (the scripted stick cannot aim it up at a hovering ghost).
     static const char* sBeam = std::getenv("LM_GHOST_HUNT_BEAM");
     if (!sBeam || !enabled()) return;
-    const u32 l = rd32(kActorSlots);
+    const u32 l = hunter();
     if (!guestPtr(l)) return;
     static const u32 ev = [] {
         const u32 p = hleAlloc(0x40, 8);

@@ -172,7 +172,10 @@ HLE(PADRead) {
     }
     if (!port::options().inputScript.empty()) {
         applyScript(st);
-        ghostlights::testPad(st[0].button, st[0].stickX, st[0].stickY, st[0].substickY, st[0].triggerRight);  // LM_GHOST_HUNT test aid
+        {  // LM_GHOST_HUNT test aid (LM_GHOST_HUNT_PLAYER=2: player 2 of the 2-player mode hunts, on port 2)
+            PADStatus& h = st[ghostlights::huntPort()];
+            ghostlights::testPad(h.button, h.stickX, h.stickY, h.substickY, h.triggerRight);
+        }
         static u32 sLogged = 0;
         if (st[0].button && sLogged++ < 20)
             log("[pad] retrace %u frame %u: buttons %04X err %d", viRetraceCount(), skip::guestFrames(), st[0].button, st[0].err);

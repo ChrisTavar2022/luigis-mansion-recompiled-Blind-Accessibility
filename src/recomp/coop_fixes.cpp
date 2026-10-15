@@ -6,8 +6,10 @@
 #include "recomp/hle.h"
 #include "recomp/skip.h"
 #include "recomp/version.h"
+#include "recomp/widescreen.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <vector>
 
@@ -18,9 +20,18 @@ bool envFlag(const char* name) {
     const char* v = std::getenv(name);
     return v && *v && *v != '0';
 }
+// LM_COOP_BISECT=<hex mask> (test aid): turns single improvements off. 1 event hold, 2 follow,
+// 10 event hold without the hide bits, 20 without keeping player 2 at player 1, 40 shared progress,
+// 4 player 2 camera, 8 view layout.
+bool off(u32 bit) {
+    static const u32 sMask = std::getenv("LM_COOP_BISECT") ? u32(std::strtoul(std::getenv("LM_COOP_BISECT"), nullptr, 16)) : 0;
+    return (sMask & bit) != 0;
+}
 
 u32 sLightOwner = 0;  // Luigi whose flashlight update (fn_800850B4) is running
 u32 sMsg2[2] = {};
+u32 sCached[2] = {};  // the players as of the last game-scene frame (cachedPlayer)
+void mergeProgress(u32 p1, u32 p2);  // shared progress, below
 
 // Player records of the view setup (lbl_803A3CA0, 0x28 per player): +0 position, +0xC the
 // room number in its top byte (from the player's room, fn_800E9750(i) +0xB4).
@@ -57,19 +68,31 @@ const GhostTest& ghostTest() {
 
 }  // namespace
 
+namespace {
+bool sEventHoldReset = false;
+}
 void onMapSetupFixes(Ctx&) {
     sGhosts.clear();
     sLastRoom[0] = sLastRoom[1] = ~0u;
+    sEventHoldReset = true;  // the players are new: nothing is held
+    sCached[0] = sCached[1] = 0;
 }
 
 namespace {
 // Puts player 2 right behind player 1 (facing the same way), e.g. after player 1 went
 // through a door: the game only follows player 1 into the next room.
 void bringP2(u32 p1, u32 p2) {
+    // Beside player 1 (to the right of where player 1 faces, a little behind): behind alone
+    // put player 2 back in the doorway player 1 had just come through, i.e. in the room before.
     const float fx = gu::rdf(p1 + 0xF48), fz = gu::rdf(p1 + 0xF50);
-    gu::wrf(p2 + 0x44, gu::rdf(p1 + 0x44) - fx * 120.0f);
+    gu::wrf(p2 + 0x44, gu::rdf(p1 + 0x44) - fz * 70.0f - fx * 20.0f);
     gu::wrf(p2 + 0x48, gu::rdf(p1 + 0x48));
-    gu::wrf(p2 + 0x4C, gu::rdf(p1 + 0x4C) - fz * 120.0f);
+    gu::wrf(p2 + 0x4C, gu::rdf(p1 + 0x4C) + fx * 70.0f - fz * 20.0f);
+    // Facing the same way (actor yaw +0x88/+0x8A as <LOOK> sets it, Luigi's facing vector
+    // +0xF48..+0xF50): both flashlights light the same side of the room. Facing elsewhere,
+    // player 2's beam kept lighting where the gold ghosts wait to appear, so they never came out.
+    wr32(p2 + 0x88, rd32(p1 + 0x88));
+    for (u32 o = 0xF48; o < 0xF54; o += 4) wr32(p2 + o, rd32(p1 + o));
 }
 }  // namespace
 
@@ -79,29 +102,190 @@ u32 player(Ctx& c, int idx) {
     return gu::inMem1(p) ? p : 0;
 }
 
+// ---- Views ------------------------------------------------------------------------------
+// fn_80011150 picks the layout each frame: one view while both players are in the same room
+// and close together, else two. The game's own layout is a 640x240 view letterboxed in the
+// middle of the screen (shared) and two 640x240 halves on top of each other (split). Every
+// one of those is twice as wide as the 4:3 picture the rooms and the camera were made for, so
+// the cameras showed the cut walls and the black void beside the room geometry. With the
+// improvements the shared view is the whole screen (exactly the one-player picture) and the
+// split is side by side: two 320x480 halves, narrower than 4:3 (8:9 on a 16:9 display, drawn
+// Hor+ like the full view: ws::splitHalf), so a half never looks past what a single view
+// shows. The views' viewports are the camera fields +0xD0..+0xDC (x0, y0, x1, y1), set by
+// fn_80011150 before it lets each camera update (fn_80020654: aspect from them, then the
+// camera's own update). The view cameras: lbl_803A4C80[0] player 1, [1] player 2, [2] the
+// Game Boy Horror's.
+#define kCameras VA(0x803A4C80)
+#define kViewCount VA(0x804CFF90)  // lbl_804CFF90 (fn_8000ADFC/fn_8000AE04): views drawn
+#define kCurScene VA(0x804CFF98)
+#define kSceneMainGame VA(0x8021DB68)
+#define kEvent VA(0x803D2D40)   // event interpreter (skip.cpp): +0x0C script cursor, 0 when none
+#define kMenuOff VA(0x804D8088) // <MENUOFF>: the HUD hidden by an event
+namespace {
+bool sInViewSetup = false;
+bool sEventHold = false;  // an event has taken control: player 2 hidden and following player 1
+
+void setViewport(u32 cam, u32 x0, u32 y0, u32 x1, u32 y1) {
+    wr32(cam + 0xD0, x0);
+    wr32(cam + 0xD4, y0);
+    wr32(cam + 0xD8, x1);
+    wr32(cam + 0xDC, y1);
+}
+}  // namespace
+
+HLE(fn_80011150) {
+    if (!fixes() || off(8)) return callOriginal(c, "fn_80011150");
+    // During an event the scene is shown in one full view (the event's camera is view 0's):
+    // player 2's record is made player 1's so the layout test sees them together.
+    if (sEventHold) {
+        for (u32 o = 0; o < 0x10; o += 4) wr32(kViewPlayers + 0x28 + o, rd32(kViewPlayers + o));
+    }
+    sInViewSetup = true;
+    callOriginal(c, "fn_80011150");
+    sInViewSetup = false;
+}
+
+HLE(fn_80020654) {
+    if (sInViewSetup && fixes()) {
+        const u32 cam = rd32(c.r[13] + 0x2E0);  // the camera being updated (fn_8002064C)
+        const bool split = rd32(kViewCount) >= 2;
+        if (cam == rd32(kCameras)) setViewport(cam, 0, 0, split ? 320 : 640, 480);
+        else if (split && cam == rd32(kCameras + 4)) setViewport(cam, 320, 0, 640, 480);
+    }
+    callOriginal(c, "fn_80020654");
+}
+
+// ---- Events -----------------------------------------------------------------------------
+// The event scripts (doors' close-ups, keys, room clears and chests, E. Gadd's calls, Toads,
+// the blackout, ...) only know player 1: <LUIGISTOP>, <WARP>, <POS>, camera paths act on
+// player index 0 (fn_800AD54C(0, msg), fn_800E9750(0)). While an event has taken control
+// (a script runs with the HUD hidden or player 1 stopped, as skip.cpp tells cutscenes),
+// player 2 is set aside the way the scripts set aside other actors (<ACTOR> commands on +0x40,
+// fn_80062EE8): BODYOFF (0x4000, not drawn: fn_80060E70 skips 0x6000), COLOFF (0x80), STOP
+// (0x10) and SHADOWOFF (0x800), its Poltergust, nozzle and Game Boy Horror actors (+0x7A4,
+// +0x7A8, +0x7AC) hidden too, and kept at player 1's position (so it is never left behind when
+// the script moves or warps player 1, and the view stays the single full view). When the event
+// ends the bits it did not have are cleared again and player 2 stands behind player 1.
+namespace {
+constexpr u32 kHideBits = 0x4000 | 0x80 | 0x10 | 0x800;
+u32 sSavedBits = 0;
+u32 sSavedEquip[3] = {};
+
+bool eventControl(u32 p1) {
+    if (rd32(kCurScene) != kSceneMainGame || rd32(kEvent + 0x0C) == 0) return false;
+    return rd32(kMenuOff) != 0 || (rd32(p1 + 0x40) & 0x10) != 0;
+}
+
+void holdP2(u32 p1, u32 p2, bool on) {
+    if (off(0x10)) return;
+    if (on) {
+        sSavedBits = rd32(p2 + 0x40) & kHideBits;
+        wr32(p2 + 0x40, rd32(p2 + 0x40) | kHideBits);
+        for (int i = 0; i < 3; i++) {
+            const u32 e = rd32(p2 + 0x7A4 + 4 * i);
+            sSavedEquip[i] = gu::inMem1(e) ? rd32(e + 0x40) & 0x4000 : 0;
+            if (gu::inMem1(e)) wr32(e + 0x40, rd32(e + 0x40) | 0x4000);
+        }
+    } else {
+        wr32(p2 + 0x40, rd32(p2 + 0x40) & ~(kHideBits & ~sSavedBits));
+        for (int i = 0; i < 3; i++) {
+            const u32 e = rd32(p2 + 0x7A4 + 4 * i);
+            if (gu::inMem1(e) && !sSavedEquip[i]) wr32(e + 0x40, rd32(e + 0x40) & ~0x4000u);
+        }
+        bringP2(p1, p2);
+    }
+}
+}  // namespace
+
 // Game-scene view/camera update (fn_800112F8, once per game frame).
+u32 cachedPlayer(int idx) { return idx >= 0 && idx < 2 && active() ? sCached[idx] : 0; }
+
 HLE(fn_800112F8) {
+    if (sEventHoldReset) {
+        sEventHoldReset = false;
+        sEventHold = false;
+    }
+    if (active()) {
+        sCached[0] = player(c, 0);
+        sCached[1] = player(c, 1);
+    }
+    if (fixes()) {
+        const u32 p1 = player(c, 0), p2 = player(c, 1);
+        const bool hold = p1 && p2 && !off(1) && eventControl(p1);
+        if (hold != sEventHold) {
+            holdP2(p1, p2, hold);
+            log("[coop] event %s: player 2 %s (guest frame %u)", hold ? "took control" : "ended",
+                hold ? "set aside" : "back behind player 1", skip::guestFrames());
+        }
+        sEventHold = hold;
+        if (hold && !off(0x20)) {  // with player 1 wherever the script puts them
+            for (u32 o = 0x44; o < 0x50; o += 4) wr32(p2 + o, rd32(p1 + o));
+        }
+        if (p1 && p2 && !off(0x40)) mergeProgress(p1, p2);
+    }
     callOriginal(c, "fn_800112F8");
     if (!active()) return;
     static const bool sDump = envFlag("LM_COOP_DUMP");
+    // LM_COOP_DIFF=<hex addr>,<hex len> (test aid): every 300 game frames, the words of that block
+    // that changed since the last report (finding where progress is kept).
+    static const auto sDiff = [] {
+        std::pair<u32, u32> r{0, 0};
+        if (const char* v = std::getenv("LM_COOP_DIFF")) std::sscanf(v, "%x,%x", &r.first, &r.second);
+        return r;
+    }();
+    if (sDiff.second) {
+        static std::vector<u32> sPrev;
+        static u32 sDiffFrame = 0;
+        if (sDiffFrame++ % 300 == 0) {
+            const u32 n = sDiff.second / 4;
+            if (sPrev.size() == n) {
+                int shown = 0;
+                for (u32 k = 0; k < n && shown < 40; k++) {
+                    const u32 v = rd32(sDiff.first + 4 * k);
+                    if (v != sPrev[k]) {
+                        log("[coop] diff %08X: %08X -> %08X", sDiff.first + 4 * k, sPrev[k], v);
+                        shown++;
+                    }
+                }
+            }
+            sPrev.resize(n);
+            for (u32 k = 0; k < n; k++) sPrev[k] = rd32(sDiff.first + 4 * k);
+        }
+    }
     if (sDump) {
         static u32 sFrame = 0;
         if (sFrame++ % 300 == 0) {
             for (int i = 0; i < 2; i++) {
                 const u32 p = player(c, i);
                 if (!p) continue;
-                if (i == 0) log("[coop] guest frame %u, %zu ghosts known", skip::guestFrames(), sGhosts.size());
-                log("[coop] P%d %08X pos %.0f,%.0f,%.0f hp %d flags %04X 7D4 %08X 7D8 %08X 7E0 %08X 7E4 %08X 7A4 %08X 7A8 %08X 7AC %08X",
-                    i + 1, p, gu::rdf(p + 0x44), gu::rdf(p + 0x48), gu::rdf(p + 0x4C), s16(rd16(p + 0xFC)), rd16(p + 0x792),
+                if (i == 0)
+                    log("[coop] guest frame %u, %zu ghosts known, rooms %u/%u, views %u", skip::guestFrames(), sGhosts.size(),
+                        roomOf(0), roomOf(1), rd32(kViewCount));
+                if (i == 0)
+                    for (u32 t : sGhosts) {  // AI state (strategy +0xE) and the ghost's place, health, alpha
+                        const u32 st = rd32(t + 0x800), a = rd32(t + 0x808);
+                        if (!gu::inMem1(st) || !gu::inMem1(a)) continue;
+                        log("[coop]   ghost %08X ai %X pos %.0f,%.0f,%.0f hp %d alpha %u room %u", t, rd16(st + 0xE),
+                            gu::rdf(a + 0x44), gu::rdf(a + 0x48), gu::rdf(a + 0x4C), s16(rd16(a + 0xFC)), rd8(a + 0xE3),
+                            rd8(a + 0xB4));
+
+                    }
+                log("[coop] P%d %08X pos %.0f,%.0f,%.0f hp %d flags %04X mode %u elem %u 40 %08X 7D4 %08X 7D8 %08X 7E0 %08X 7E4 %08X 7A4 %08X 7A8 %08X 7AC %08X",
+                    i + 1, p, gu::rdf(p + 0x44), gu::rdf(p + 0x48), gu::rdf(p + 0x4C), s16(rd16(p + 0xFC)), rd16(p + 0x792), rd32(p + 0x1180), rd32(p + 0x1184), rd32(p + 0x40),
                     rd32(p + 0x7D4), rd32(p + 0x7D8), rd32(p + 0x7E0), rd32(p + 0x7E4), rd32(p + 0x7A4), rd32(p + 0x7A8),
                     rd32(p + 0x7AC));
+
             }
         }
     }
     if (fixes()) {
         const u32 p1 = player(c, 0), p2 = player(c, 1);
+        // Player 2's stick moves relative to the camera of the view player 2 looks at (Luigi
+        // +0x798, from the creation params, which give every player camera 0): view 1's in the
+        // split screen, view 0's while both share it.
+        if (p2 && !off(4)) wr32(p2 + 0x798, rd32(kCameras + (rd32(kViewCount) >= 2 ? 4 : 0)));
         const u32 r1 = roomOf(0), r2 = roomOf(1);
-        if (p1 && p2 && r1 != sLastRoom[0] && sLastRoom[0] != ~0u && r1 != r2) {
+        if (p1 && p2 && !sEventHold && !off(2) && r1 != sLastRoom[0] && sLastRoom[0] != ~0u && r1 != r2) {
             bringP2(p1, p2);
             log("[coop] player 1 entered room %u: player 2 (room %u) follows", r1, r2);
         }
@@ -138,6 +322,58 @@ HLE(fn_800112F8) {
         }
     }
 }
+
+// ---- Shared progress ---------------------------------------------------------------------
+// What a Luigi collects is kept in that Luigi (fn_800AEEA8's messages): the captured-ghost list
+// (+0x11EC count, +0x11F0 up to 64 entries), money and treasure counters (+0x12F4..+0x1320:
+// coins and bills, the seven gem kinds, three more), and the Poltergust's captured-type bits
+// (Poltergust +0x7D4, +0x1AC). The "store to record" message copies them into the Luigi's own
+// persistent record (+0x79C: lbl_803D5CD0 + 0x16C * player), and only player 1's record is
+// shown (Game Boy Horror tally, result screens) and saved, so whatever player 2 caught or picked
+// up was lost. Each game frame player 2's gains are moved into player 1 (added, appended,
+// ORed) and cleared in player 2: everything counts for the shared progress.
+namespace {
+void mergeProgress(u32 p1, u32 p2) {
+    const u32 n2 = rd32(p2 + 0x11EC);
+    if (n2 > 0 && n2 <= 64) {
+        u32 n1 = rd32(p1 + 0x11EC);
+        for (u32 k = 0; k < n2 && n1 < 64; k++, n1++) wr32(p1 + 0x11F0 + 4 * n1, rd32(p2 + 0x11F0 + 4 * k));
+        wr32(p1 + 0x11EC, n1);
+        wr32(p2 + 0x11EC, 0);
+        log("[coop] player 2's %u captured ghost(s) added to player 1's (%u)", n2, n1);
+    }
+    for (u32 o = 0x12F4; o <= 0x1320; o += 4) {
+        const s32 v = s32(rd32(p2 + o));
+        if (v <= 0) continue;
+        wr32(p1 + o, u32(s32(rd32(p1 + o)) + v));
+        wr32(p2 + o, 0);
+        log("[coop] player 2's treasure +%X (%d) added to player 1's (%d)", o, v, s32(rd32(p1 + o)));
+    }
+    // The records' bit sets (+0xD4..+0x168, set up by fn_80072B84: captured ghost IDs (fn_800AEEA8
+    // sets bits through [[Luigi +0x800] +4] = record +0x134) and the other per-ghost/per-object sets
+    // next to it) are kept the same in both records (their union): player 1's is the one saved,
+    // and player 2's own checks see what player 1 already has. +0x16A (equipment) is left alone.
+    const u32 rec1 = rd32(p1 + 0x79C), rec2 = rd32(p2 + 0x79C);
+    if (gu::inMem1(rec1) && gu::inMem1(rec2) && rec1 != rec2) {
+        for (u32 k = 0xD4; k < 0x168; k++) {
+            const u8 a = rd8(rec1 + k), b = rd8(rec2 + k);
+            if (a == b) continue;
+            if (b & ~a) log("[coop] player 2's record bits %02X at +%X added to player 1's", u8(b & ~a), k);
+            wr8(rec1 + k, a | b);
+            wr8(rec2 + k, a | b);
+        }
+    }
+    const u32 v1 = rd32(p1 + 0x7D4), v2 = rd32(p2 + 0x7D4);
+    if (gu::inMem1(v1) && gu::inMem1(v2) && v1 != v2) {
+        const u32 a = rd32(v1 + 0x1AC), b = rd32(v2 + 0x1AC);
+        if (a != b) {
+            if (b & ~a) log("[coop] player 2's captured ghost types %08X added to player 1's (%08X)", b, a | b);
+            wr32(v1 + 0x1AC, a | b);
+            wr32(v2 + 0x1AC, a | b);
+        }
+    }
+}
+}  // namespace
 
 // ---- Health ------------------------------------------------------------------------------
 // fn_800B9488(luigi, hp) sets a Luigi's health. The game is over when player 1's health runs
@@ -177,6 +413,7 @@ namespace {
 // object (lbl_803BBA08) starts with them.
 #define kHeartSprites (VA(0x803CE698) + VOFF(0x30, 0))
 #define kMeterArg VA(0x804D84CC)                    // fn_800417F8's argument
+int sGbhShift = 0;
 
 struct MeterOffset {
     s32 dx, dy;
@@ -206,7 +443,7 @@ struct MeterOffset {
 };
 
 // Player 2's meter: the game's own health meter drawn again with player 2's health, moved
-// next to player 1's (shared view) or into player 2's half (split screen).
+// next to player 1's (shared view) or into player 2's (right) half of the split screen.
 void drawP2Meter(Ctx& c, bool split) {
     const u32 p2 = player(c, 1);
     const u32 arg = rd32(kMeterArg);
@@ -222,8 +459,11 @@ void drawP2Meter(Ctx& c, bool split) {
         log("[coop] player 2 health meter (hp %d, %s)", hp, split ? "split" : "shared");
     }
     gu::call(c, GU_SYM("LMDefaultOrthoView__Fv"));
-    {
-        MeterOffset off(split ? 0 : 150, 0);
+    if (split) {
+        ws::ShiftScope half(320);  // bottom left of the right half, at any aspect
+        gu::call(c, GU_SYM("fn_800417F8"), {arg});
+    } else {
+        MeterOffset off(150, 0);
         gu::call(c, GU_SYM("fn_800417F8"), {arg});
     }
     wr16(kHpShown, shown);
@@ -244,13 +484,17 @@ HLE(fn_8003E7B0) {
     if (view == 0) return;  // drawn after the last view
     callOriginal(c, "fn_8003E7B0");  // view 1's own overlay (GBH noise; nothing in 2-player)
     if (view + 1 != views) return;
-    {
-        MeterOffset up(0, -240);  // player 1's meter at the bottom of the top half
-        c.r[3] = 0;
-        callOriginal(c, "fn_8003E7B0");
-    }
+    // Player 1's HUD over the whole screen: the health meter (bottom left) lies in player 1's
+    // (left) half; the Game Boy Horror (bottom right) is moved into that half too, to its
+    // bottom right corner (gbhShift, widescreen.cpp's GBH hooks).
+    sGbhShift = -320;
+    c.r[3] = 0;
+    callOriginal(c, "fn_8003E7B0");
+    sGbhShift = 0;
     drawP2Meter(c, true);
 }
+
+int gbhShift() { return sGbhShift; }
 
 // Flashlight update fn_800850B4(light, params): params +4 is the Luigi it belongs to; the
 // beam's ghost test (fn_800859EC) runs inside.
