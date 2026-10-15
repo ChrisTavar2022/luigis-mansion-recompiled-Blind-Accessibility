@@ -350,6 +350,7 @@ void judderLine(const char* fmt, ...) {
 }
 u32 sCrossCamera = 0;
 u64 sArraysBlended = 0;  // CPU-deformed position arrays blended (stats window)
+u64 sProjShared = 0;  // unpaired projections given the blended values of an identical one (per stats window)
 u64 sXlPaired = 0, sXlNew = 0, sXlJumped = 0;  // extra lights per stats window: blended / without partner / identity jumped  // per replay: values whose partner was drawn under another camera (trace)
 u32 sSnapKinds[kKinds];
 bool sLogSnaps = false;  // LM_INTERP_TEST + trace: log what one test replay snapped
@@ -2882,6 +2883,9 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             s32& m = sBundleToA[p.bundle];
             m = m == -1 ? qb : m == qb ? m : -2;
         }
+        static std::vector<u32> unpairedProj, blendedProj;  // perspective/ortho projections of b by patch index
+        unpairedProj.clear();
+        blendedProj.clear();
         for (u32 i = 0; i < b.patches.size(); i++) {
             const Patch& p = b.patches[i];
             if (p.kind == Kind::Color) {
@@ -2939,6 +2943,11 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     for (int k = 0; k < 12; k++) storeBE(sReplay.data() + p.offset + 4 * k, out[k]);
                     sCamOnly++;
                 }
+                continue;
+            }
+            if (j < 0 && p.kind == Kind::Projection && p.count == 6) {
+                // Resolved after the loop (an identical projection of this frame).
+                unpairedProj.push_back(i);
                 continue;
             }
             if (j < 0 || cameraOnly) {
@@ -3168,8 +3177,29 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             }
             for (int k = 0; k < p.count; k++) storeBE(sReplay.data() + p.offset + 4 * k, out[k]);
             sBlended++;
+            if (p.kind == Kind::Projection && p.count == 6) blendedProj.push_back(i);
         }
         sLinearBlend = false;
+        // A projection without a partner that is the very projection of another (blended) one of this
+        // game frame: the camera's, set again inside an effect's scope (fn_801191B4 in the foyer: its
+        // scope's identity alternates between game frames, so it paired only every third one). Left
+        // as b's while everything around it used the blended (zooming) projection, the draws after it
+        // and enhanced lighting's shadow mask (it rebuilds view positions from the depth pre-pass with
+        // the last world draw's projection) disagreed with the rest of the frame: the light of the
+        // foyer's left sconce (20 units in front of the wall) was shadowed out on the wall and table
+        // at the in-betweens of 2 of 3 game frames, fading back in with alpha (16:9 only; with
+        // Original 30 there are no in-betweens). It now gets the same blended values.
+        for (const u32 i : unpairedProj) {
+            const Patch& p = b.patches[i];
+            const u8* pb = b.bytes.data() + p.offset;
+            for (const u32 k : blendedProj) {
+                const Patch& o = b.patches[k];
+                if (std::memcmp(b.bytes.data() + o.offset, pb, 28) != 0) continue;  // 6 values + type
+                std::memcpy(sReplay.data() + p.offset, sReplay.data() + o.offset, 24);
+                sProjShared++;
+                break;
+            }
+        }
     }
     // Extra lights (enhanced lighting): position, radius and intensity blended by id (the
     // enhanced-lighting code's own light identity; colours stay b's). Their positions are in view
@@ -3249,9 +3279,9 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 (paired ? sXlPaired : sXlNew)++;
                 if (sXlLog) {
                     const f32 ib = loadBE(lb + 28), ia = paired ? loadBE(la + 28) : -1.0f;
-                    std::fprintf(sXlLog, "R %llu %.3f id %08X key %016llX %s Ia %.3f Ib %.3f out %.3f flags %08X\n",
+                    std::fprintf(sXlLog, "R %llu %.3f id %08X key %016llX %s Ia %.3f Ib %.3f out %.3f flags %08X mvp %d wa %.1f %.1f %.1f wb %.1f %.1f %.1f\n",
                                  (unsigned long long)b.seq, alpha, u32At(lb + 36), (unsigned long long)key, paired ? "pair" : "new ", ia, ib,
-                                 paired ? ia + (ib - ia) * alpha : ib, u32At(lb + 32));
+                                 paired ? ia + (ib - ia) * alpha : ib, u32At(lb + 32), mvp != nullptr, wa[0], wa[1], wa[2], wb[0], wb[1], wb[2]);
                 }
                 if (!paired) {
                     if (mvp) {  // its world place, seen from the blended camera
@@ -3879,6 +3909,8 @@ bool replay(bool final) {
             log("[interp] extra lights per present: %.1f blended by identity, %.1f without partner (%.2f whose identity jumped >200 units)",
                 double(sXlPaired) / presentedWindow, double(sXlNew) / presentedWindow, double(sXlJumped) / presentedWindow);
         sXlPaired = sXlNew = sXlJumped = 0;
+        if (sProjShared) log("[interp] unpaired projections per present given an identical projection's blend: %.2f", double(sProjShared) / presentedWindow);
+        sProjShared = 0;
         if (sColorsBlended + sColorsSwitched)
             log("[interp] colour registers per present: %.1f blended, %.1f switched (jumped); model instances blended linearly %.1f, "
                 "switched %.1f; particles shown at the game frame (turned back) %.1f",
