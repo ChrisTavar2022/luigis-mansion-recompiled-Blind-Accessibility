@@ -34,6 +34,9 @@ double retraceSpeed();
 // Audio gain multiplier 0..1 (muted while fast-forwarding, then faded back in). Any thread.
 float audioGain();
 
+// Test aids (coop_test.cpp): fast-forward while a scripted boss fight runs (LM_BOSS_FF).
+void setTestFastForward(bool on);
+
 // Host side, inside the Aurora frame: prompt, cover while skipping, Tab hotkey.
 void drawOverlay();
 

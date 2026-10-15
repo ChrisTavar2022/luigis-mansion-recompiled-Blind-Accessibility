@@ -70,6 +70,10 @@ const bool sLog = envFlag("LM_SKIP_LOG");
 const bool sTracePos = sLog && std::getenv("LM_SKIP_LOG")[0] == '2';  // also a snapshot every 30 frames
 const bool sForceOn = envFlag("LM_SKIP_CUTSCENES");
 const bool sForceFast = envFlag("LM_FF");  // testing: fast-forward all the time
+// LM_FF_FROM=<guest frame> (testing, with LM_FF): fast-forward only from that frame on (past the
+// title screen and menus, which do not take scripted input at fast-forward speed).
+const unsigned sForceFastFrom = std::getenv("LM_FF_FROM") ? unsigned(std::atoi(std::getenv("LM_FF_FROM"))) : 0;
+bool sTestFast = false;  // setTestFastForward
 const int sAutoFrames = [] {
     const char* v = std::getenv("LM_SKIP_AUTO");
     return v ? std::atoi(v) : 0;
@@ -285,12 +289,13 @@ void update() {
     sStatus = s;
     sSkipping = sMode == Mode::Skipping;
     sSkippable = isCutscene && sMode == Mode::Off && !needsPlayer(s);
-    setFast(sMode == Mode::Skipping || sDevFastForward.load() || sForceFast);
+    setFast(sMode == Mode::Skipping || sDevFastForward.load() || (sForceFast && sFrame >= sForceFastFrom) || sTestFast);
 }
 
 }  // namespace
 
 u32 guestFrames() { return sFrame; }
+void setTestFastForward(bool on) { sTestFast = on; }
 
 bool onGuestFrame(Ctx&) {
     sFrame++;

@@ -6,6 +6,7 @@
 #include "port/options.h"
 #include "recomp/controls.h"
 #include "recomp/coop.h"
+#include "recomp/coop_test.h"
 #include "recomp/menu.h"
 #include "recomp/skip.h"
 #include "recomp/unused2.h"
@@ -177,6 +178,7 @@ HLE(PADRead) {
             PADStatus& h = st[ghostlights::huntPort()];
             ghostlights::testPad(h.button, h.stickX, h.stickY, h.substickY, h.triggerRight);
         }
+        cooptest::pad(st);  // co-op test aids (coop_test.cpp)
         static u32 sLogged = 0;
         if (st[0].button && sLogged++ < 20)
             log("[pad] retrace %u frame %u: buttons %04X err %d", viRetraceCount(), skip::guestFrames(), st[0].button, st[0].err);

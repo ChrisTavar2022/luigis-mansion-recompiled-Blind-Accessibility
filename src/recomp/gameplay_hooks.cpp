@@ -5,6 +5,7 @@
 #include "recomp/ghost_lights.h"
 
 #include "recomp/coop.h"
+#include "recomp/coop_test.h"
 #include "recomp/enhanced_lighting.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
@@ -183,6 +184,7 @@ HLE(fn_800C0F08) {
     const u32 self = c.r[3];
     const u32 msg = inMem1(c.r[4]) ? rd32(c.r[4]) : 0;
     if (coop::active()) coop::onGhostMessage(c);  // 2-player mode: messages from player 2
+    cooptest::onMessage(self, msg);                // coop_test.cpp test aids (AI objects of the map)
     if (inMem1(self)) ghostlights::onCharacterEvent(rd32(self + 0x808), msg, self, c.r[4]);  // ghost_lights.cpp
     if (msg == 2 && inMem1(self)) enh::onGhostInBeam(rd32(self + 0x808));  // realistic flashlight flare
     callOriginal(c, "fn_800C0F08");

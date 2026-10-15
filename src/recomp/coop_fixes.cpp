@@ -1,6 +1,7 @@
 // Co-op improvements on top of the unused 2-player mode (coop.cpp): F1 > Enhancements >
 // Unused content "Co-op improvements", off by default. Docs: docs/UNUSED_CONTENT.md.
 #include "recomp/coop.h"
+#include "recomp/coop_test.h"
 
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
@@ -8,6 +9,7 @@
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -24,7 +26,7 @@ bool envFlag(const char* name) {
 }
 // LM_COOP_BISECT=<hex mask> (test aid): turns single improvements off. 1 event hold, 2 follow,
 // 10 event hold without the hide bits, 20 without keeping player 2 at player 1, 40 shared progress,
-// 4 player 2 camera, 8 view layout.
+// 4 player 2 camera, 8 view layout, 80 the player an object deals with.
 bool off(u32 bit) {
     static const u32 sMask = std::getenv("LM_COOP_BISECT") ? u32(std::strtoul(std::getenv("LM_COOP_BISECT"), nullptr, 16)) : 0;
     return (sMask & bit) != 0;
@@ -45,6 +47,8 @@ u32 sLastRoom[2] = {~0u, ~0u};
 // Ghost AI objects (EnThought, +0x808 = actor of a ghost type) that got a message this map;
 // message 3 (capture end) removes them.
 std::vector<u32> sGhosts;
+std::vector<u32> sObjects;  // AI objects of non-ghost characters that got a message this map
+void retargetObjects(Ctx& c);  // below
 
 // Character type flags (type table lbl_8033B590, 0x1C per type, u16 at +8; fn_8006A3BC): 8 = ghost.
 #define kTypeTable VA(0x8033B590)
@@ -76,6 +80,8 @@ bool sEventHoldReset = false;
 }
 void onMapSetupFixes(Ctx&) {
     sGhosts.clear();
+    cooptest::onMapSetup();
+    sObjects.clear();
     sLastRoom[0] = sLastRoom[1] = ~0u;
     // Player 2 enters every map with player 1's health: player 2's record (lbl_803D5CD0 + 0x16C,
     // +0 health, +2 maximum; read by the player creation) is never reset by the game, so after a
@@ -299,6 +305,7 @@ HLE(fn_800112F8) {
             for (u32 o = 0x44; o < 0x50; o += 4) wr32(p2 + o, rd32(p1 + o));
         }
         if (p1 && p2 && !off(0x40)) mergeProgress(p1, p2);
+        if (p1 && p2) retargetObjects(c);  // the player an object deals with (below)
         // Player 2 downed while player 1 had nothing to share (1 health left): player 2 stays
         // down, and is revived with half of player 1's health once player 1 has more than 1 again
         // (a heart picked up). Player 1 being downed is the game's own game over.
@@ -317,6 +324,7 @@ HLE(fn_800112F8) {
         if (p1 && p2) wr16(p2 + 0x792, u16((rd16(p1 + 0x792) & ~1u) | (rd16(p2 + 0x792) & 1u)));
     }
     callOriginal(c, "fn_800112F8");
+    cooptest::frame(c);
     if (!active()) return;
     static const bool sDump = envFlag("LM_COOP_DUMP");
     // LM_COOP_DIFF=<hex addr>,<hex len> (test aid): every 300 game frames, the words of that block
@@ -618,10 +626,74 @@ HLE(fn_800850B4) {
     sLightOwner = prev;
 }
 
+// ---- The player an object deals with ----------------------------------------------------------
+// Every AI object (EnThought) keeps the index of the player it deals with at +0x950; the game
+// reaches that player's Poltergust part (Luigi +0x80C) through fn_800AD39C(index). Objects that
+// are caught on the nozzle test that player's suction (Chauncey's balls: fn_800A30B8, state 4,
+// [part +0xA8] -> vfunc +0x40), hold on to and are fired from that player's nozzle (part +0x700,
+// fn_800A3460), and a hooked ghost's tug of war (the tsuri strategies, e.g. fn_800CDCF4) pulls
+// against that player. Most objects set it to 0 (player 1) and never change it, so player 2 could
+// not catch the balls and a ghost player 2 hooked was pulled about by player 1's nozzle. With the
+// improvements: a ghost being hooked (message 9) deals with the player whose suction hooked it, and
+// an object that is not a ghost deals with the player whose running Poltergust points at it while
+// the player it deals with does not.
+namespace {
+
+// How straight player idx's running Poltergust points at actor a (cosine in the ground plane;
+// -1 when not vacuuming or too far).
+float suctionAim(Ctx& c, int idx, u32 a, float maxDist) {
+    const u32 p = player(c, idx);
+    if (!p || !gu::inMem1(rd32(p + 0x80C + 0xA8))) return -1.0f;  // no suction running
+    const u32 dir = rd32(p + 0x80C + 0x700);
+    if (!gu::inMem1(dir)) return -1.0f;
+    const float dx = gu::rdf(a + 0x44) - gu::rdf(p + 0x44), dz = gu::rdf(a + 0x4C) - gu::rdf(p + 0x4C);
+    const float d = std::sqrt(dx * dx + dz * dz);
+    if (d > maxDist) return -1.0f;
+    if (d < 1.0f) return 1.0f;
+    const float nx = gu::rdf(dir), nz = gu::rdf(dir + 8), nl = std::sqrt(nx * nx + nz * nz);
+    return nl > 1e-3f ? (nx * dx + nz * dz) / (nl * d) : -1.0f;
+}
+
+int suctionPlayer(Ctx& c, u32 a, float maxDist, float minAim) {
+    int best = -1;
+    float bestAim = minAim;
+    for (int i = 0; i < 2; i++)
+        if (const float aim = suctionAim(c, i, a, maxDist); aim > bestAim) best = i, bestAim = aim;
+    return best;
+}
+
+void retargetObjects(Ctx& c) {
+    if (off(0x80)) return;
+    for (u32 t : sObjects) {
+        const u32 a = rd32(t + 0x808), cur = rd32(t + 0x950);
+        if (!gu::inMem1(a) || cur > 1) continue;
+        if (suctionAim(c, int(cur), a, 800.0f) > 0.7f) continue;  // its player is vacuuming at it
+        const int want = suctionPlayer(c, a, 800.0f, 0.7f);
+        if (want < 0 || u32(want) == cur) continue;
+        wr32(t + 0x950, u32(want));
+        log("[coop] object %08X (type %u) now deals with player %d, whose Poltergust points at it", t, rd32(a + 0x3C), want + 1);
+    }
+}
+}  // namespace
+
 // EnThought::receiveMessage (fn_800C0F08), before the original.
 void onGhostMessage(Ctx& c) {
     const u32 msg = gu::inMem1(c.r[4]) ? rd32(c.r[4]) : ~0u;
     const u32 self = c.r[3];
+    if (fixes() && !off(0x80) && gu::inMem1(self)) {
+        const u32 a = rd32(self + 0x808);
+        if (msg == 9 && gu::inMem1(a)) {  // fishing begins: the player whose suction hooked it
+            const int who = suctionPlayer(c, a, 1500.0f, -1.0f);
+            if (who >= 0 && rd32(self + 0x950) <= 1 && rd32(self + 0x950) != u32(who)) {
+                log("[coop] %08X (type %u) hooked by player %d's Poltergust (was dealing with player %u)", self, rd32(a + 0x3C),
+                    who + 1, rd32(self + 0x950) + 1);
+                wr32(self + 0x950, u32(who));
+            }
+        }
+        if (gu::inMem1(a) && !isGhost(a) && rd32(a + 0x3C) > 10 && msg != 3 && msg != 4 &&
+            std::find(sObjects.begin(), sObjects.end(), self) == sObjects.end())
+            sObjects.push_back(self);
+    }
     if (msg != 3 && isGhost(rd32(self + 0x808))) {
         bool known = false;
         for (u32 g : sGhosts) known |= g == self;
