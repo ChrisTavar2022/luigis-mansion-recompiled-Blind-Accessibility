@@ -188,6 +188,18 @@ A value of game frame b pairs with the value of frame a that has the same key an
 - Texture scrolls that wrap (offset back from 1 to 0, or faster than half the texture per frame) blend
   the short way modulo 1 (map 2's animated sky, water). The sky dome's texture matrices do so
   whatever their scale ("Boss arena skies" below).
+- Texture scrolls of any scale, by history (`texWrapPairs`, at pairing; interp-final 3): a texture
+  matrix (GX_TEXMTX ids) whose scale/rotation part is unchanged is compared row by row with the
+  step it took the game frame before. The same step plus a whole number of textures is a wrap and
+  blends by the step (so the old +-4 bound no longer matters); any other step over half a texture
+  means the game placed the texture anew, and b is shown. Sweep of the boss arenas and every
+  mansion entry point (`LM_TEXWRAP_LOG=<file>`, `LM_TEXWRAP_VALUES=1` adds the matrices): the only
+  scale > 4 matrices that wrap are the skies' (now caught both ways); the only placed-anew ones are
+  six J3D materials in the foyer (two sets per view) whose 3x3 part is ~0.005 (a colour looked up
+  at one texture point) and whose offset jumps by 2-13 textures every ~64 game frames. Entrywise
+  they swept the looked-up point through several textures within one game frame (colour flicker
+  at the jump); they now change at the game frame. Matrices with entries within +-4 and no history
+  keep the modulo-1 rule.
 - SubView scopes (`fn_80114E18`: event scenes, E. Gadd's call portrait, the door close-ups) have their
   own camera: their values are not factored by the game camera; a model that moves by more than a
   tenth of its distance in one game frame switches.

@@ -175,6 +175,12 @@ struct Tape {
     // Per CPU-built block (host, set by the replays from pairedWith): how its centre moved since
     // pairedWith (x, y, z; NaN: not known). A block that turns back is another particle in that slot.
     std::unique_ptr<std::atomic<float>[]> vertStep;
+    // Per texture matrix (guest, at pairing; texWrapPairs): each row's offset step since pairedWith
+    // as blended (NaN: unknown), the whole textures a wrap skipped per row, and the decision
+    // (0 the old rules, 1 a scroll blended by its step less texShift, 2 placed anew: b).
+    std::vector<std::array<f32, 3>> texStep;
+    std::vector<std::array<f32, 3>> texShift;
+    std::vector<u8> texMode;
     std::vector<s32> viewToA;  // per view: the view of pairedWith with the same key, or -1
     u16 mainView = 0xFFFF;     // the main camera (most 3D model matrices of the main pass)
     bool cut = false;          // the main camera jumped since pairedWith (or appeared): shown as is
@@ -589,6 +595,92 @@ bool cameraJump(const M34& va, const M34& vb, float* moved = nullptr, float* tur
     return !(std::sqrt(de) <= 250.0f) || !(dot >= 0.866f);
 }
 
+// Texture scrolls, whatever their scale (b.texMode / texShift). A texture matrix whose
+// scale/rotation part stays the same is a scroll; each row's offset step is compared with the step
+// it took the game frame before (texStep: the step as blended, NaN unknown):
+// - about the same step plus a whole number k of textures: the scroll wrapped (texture coordinates
+//   repeat), so it blends by the step less k (mode 1, texShift = k);
+// - anything else beyond half a texture: the game placed the texture anew (J3D materials in the
+//   mansion jump their offset by 2-13 textures every ~2 s), shown as b (mode 2).
+// Before, only matrices with every entry within +-4 were taken as wraps (by the short way modulo 1,
+// still the rule without history, `blendTexWrap`); larger ones (a texture repeated more than 4
+// times: the boss skies' layers, also caught here now, and those J3D materials) were blended
+// entrywise and swept through whole textures within one game frame. Projection-style matrices
+// (flashlight, shadows) change their rotation part as the camera turns and are left alone.
+// LM_TEXWRAP_LOG=<file>: every scroll pair with a step over half a texture, and the decision.
+void texWrapPairs(const Tape& a, Tape& b) {
+    static FILE* sLog = [] {
+        const char* p = std::getenv("LM_TEXWRAP_LOG");
+        return p && *p ? std::fopen(p, "w") : nullptr;
+    }();
+    const f32 kNan = std::nanf("");
+    b.texStep.assign(b.patches.size(), {kNan, kNan, kNan});
+    b.texShift.assign(b.patches.size(), {0, 0, 0});
+    b.texMode.assign(b.patches.size(), 0);
+    const bool aSteps = a.texStep.size() == a.patches.size();
+    for (u32 i = 0; i < b.patches.size(); i++) {
+        const Patch& p = b.patches[i];
+        const s32 j = b.partner[i];
+        // (Texture matrix ids start at GX_TEXMTX0 = 30; below are position matrices noted as TexMtx
+        // for element-wise blending, sLinearPos.)
+        if (j < 0 || p.kind != Kind::TexMtx || p.role != 0 || (p.count != 8 && p.count != 12) || p.slot < 30) continue;
+        const Patch& q = a.patches[j];
+        bool steady = true, jumped = false;
+        float big = 0, d[3] = {};
+        for (int k = 0; k < p.count; k++) {
+            const float x = val(a, q, k), y = val(b, p, k);
+            if (!(std::isfinite(x) && std::isfinite(y))) {
+                steady = false;
+                break;
+            }
+            big = std::max({big, std::fabs(x), std::fabs(y)});
+            if ((k & 3) == 3) {
+                d[k >> 2] = y - x;
+                if (std::fabs(d[k >> 2]) > 0.5f) jumped = true;
+            } else if (std::fabs(x - y) > 0.02f * std::max({1.0f, std::fabs(x), std::fabs(y)})) {
+                steady = false;
+            }
+        }
+        if (!steady) continue;
+        const int rows = p.count / 4;
+        float prev[3] = {kNan, kNan, kNan}, shift[3] = {0, 0, 0};
+        bool known = aSteps, placed = false;
+        for (int r = 0; r < rows && known; r++) {
+            prev[r] = a.texStep[j][r];
+            known = std::isfinite(prev[r]);
+        }
+        if (known) {
+            for (int r = 0; r < rows; r++) {
+                const float k = std::round(d[r] - prev[r]);
+                if (k == 0.0f) continue;  // within half a texture of the last step: moving on
+                if (std::fabs(k) <= 16.0f && std::fabs(d[r] - k - prev[r]) <= 0.05f + 0.25f * std::fabs(prev[r])) shift[r] = k;
+                else placed = true;
+            }
+            b.texMode[i] = placed ? 2 : 1;
+        } else if (jumped && big > 4.0f && !p.sky) {
+            b.texMode[i] = 2;  // no history: a jump through several textures is not blended
+        }
+        for (int r = 0; r < rows; r++) {
+            b.texShift[i][r] = shift[r];
+            if (b.texMode[i] == 1) b.texStep[i][r] = d[r] - shift[r];
+            else if (b.texMode[i] == 0) b.texStep[i][r] = jumped && (big <= 4.0f || p.sky) ? d[r] - std::round(d[r]) : d[r];
+        }
+        if (sLog && jumped)
+            std::fprintf(sLog, "%llu f%u site %08X key %016llX cat %u n %u sky %d big %.2f d %.3f %.3f %.3f prev %.4f %.4f %.4f shift %.0f %.0f %.0f mode %d\n",
+                         (unsigned long long)b.seq, b.gameFrame, p.site, (unsigned long long)p.key, u32(p.cat), u32(p.count),
+                         int(p.sky), big, d[0], d[1], rows > 2 ? d[2] : 0.0f, prev[0], prev[1], prev[2], shift[0], shift[1],
+                         shift[2], int(b.texMode[i]));
+        if (sLog && jumped && std::getenv("LM_TEXWRAP_VALUES")) {
+            std::fprintf(sLog, "  a #%d:", j);
+            for (int k = 0; k < p.count; k++) std::fprintf(sLog, " %.3f", val(a, q, k));
+            std::fprintf(sLog, "\n  b #%u:", i);
+            for (int k = 0; k < p.count; k++) std::fprintf(sLog, " %.3f", val(b, p, k));
+            std::fprintf(sLog, "\n");
+        }
+    }
+    if (sLog) std::fflush(sLog);
+}
+
 // Pairs tape b with its predecessor a strictly by identity: a value of b pairs with the value of a
 // that has the same key (same scope path, call site and occurrence) and the same shape. Nothing
 // else is compared: no nearest match, no ordering, no layout grouping. Cameras pair the same way.
@@ -641,6 +733,7 @@ void pairTapes(const Tape& a, Tape& b) {
         b.partner[i] = it->second;
         b.paired++;
     }
+    texWrapPairs(a, b);
     // Cameras by key.
     b.viewToA.assign(b.views.size(), -1);
     {
@@ -3889,6 +3982,19 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             }
             const bool jump2D = p.role == 2 && p.kind == Kind::PosMtx && p.count == 12 &&
                                 std::fabs(va[3] - vb[3]) + std::fabs(va[7] - vb[7]) + std::fabs(va[11] - vb[11]) > 96.0f;
+            const u8 texMode = p.kind == Kind::TexMtx && i < b.texMode.size() ? b.texMode[i] : 0;
+            if (texMode == 2) {  // a texture placed anew (texWrapPairs)
+                snap(p, va, vb);
+                continue;
+            }
+            if (texMode == 1) {  // a scroll: by its step, less the whole textures a wrap skipped
+                for (int k = 0; k < p.count; k++) {
+                    const float d = (k & 3) == 3 ? vb[k] - va[k] - b.texShift[i][k >> 2] : vb[k] - va[k];
+                    storeBE(sReplay.data() + p.offset + 4 * k, vb[k] - d * (1.0f - alpha));  // exact b at alpha 1
+                }
+                sBlended++;
+                continue;
+            }
             if (p.kind == Kind::TexMtx && p.role == 0 && blendTexWrap(va, vb, p.count, alpha, out, p.sky)) {
                 for (int k = 0; k < p.count; k++) storeBE(sReplay.data() + p.offset + 4 * k, out[k]);
                 sBlended++;
