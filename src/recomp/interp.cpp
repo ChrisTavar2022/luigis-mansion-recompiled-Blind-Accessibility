@@ -3163,6 +3163,13 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
     // space (the main camera at capture): blended in world space and seen from the blended main
     // camera; a light without a partner keeps its world place under the blended camera.
     static const bool sNoBlendExtra = std::getenv("LM_INTERP_NOBLEND") && (std::strtoul(std::getenv("LM_INTERP_NOBLEND"), nullptr, 0) & 0x80);  // bit 7: extra lights as captured
+    // Test aid LM_XL_LOG=<file>: every replay's extra lights (identity, paired, intensity a / b / shown).
+    static FILE* sXlLog = [] {
+        const char* v = std::getenv("LM_XL_LOG");
+        return v && *v ? std::fopen(v, "w") : nullptr;
+    }();
+    if (sXlLog) std::fprintf(sXlLog, "P %llu %.3f f%u a %llu lights %zu\n", (unsigned long long)b.seq, alpha, b.dumpFrame,
+                             a ? (unsigned long long)a->seq : 0ull, b.lightKeys.size());
     if (a && alpha < 1.0f && !b.lights.empty() && !sNoBlendExtra) {
         constexpr u32 kWords = GX_AURORA_EXTRA_LIGHT_WORDS;
         auto u32At = [](const u8* p) { return u32(p[0]) << 24 | u32(p[1]) << 16 | u32(p[2]) << 8 | p[3]; };
@@ -3227,6 +3234,12 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     }
                 }
                 (paired ? sXlPaired : sXlNew)++;
+                if (sXlLog) {
+                    const f32 ib = loadBE(lb + 28), ia = paired ? loadBE(la + 28) : -1.0f;
+                    std::fprintf(sXlLog, "R %llu %.3f id %08X key %016llX %s Ia %.3f Ib %.3f out %.3f flags %08X\n",
+                                 (unsigned long long)b.seq, alpha, u32At(lb + 36), (unsigned long long)key, paired ? "pair" : "new ", ia, ib,
+                                 paired ? ia + (ib - ia) * alpha : ib, u32At(lb + 32));
+                }
                 if (!paired) {
                     if (mvp) {  // its world place, seen from the blended camera
                         f32 o[3];
@@ -3750,7 +3763,17 @@ bool replay(bool final) {
                (unsigned long long)(a && !final ? a->seq : 0), alpha,
                a && !final ? double(a->retrace) + alpha * double(b->retrace - a->retrace) : double(b->retrace),
                sPacer.d * 1000.0, sLastPresent.present, (unsigned long long)aurora_frame_counter());
-    replayPair(final ? nullptr : a.get(), *b, alpha, nullptr);
+    // Test aid LM_PRESENT_DUMP=1 (with LM_FRAME_DUMP): every present of the tapes in the dump range as
+    // its own file, f<frame>_p<present>_a<alpha x 1000>.ppm (real time, unlike LM_INTERP_TEST).
+    static const bool sPresentDump = std::getenv("LM_PRESENT_DUMP") != nullptr;
+    void* presentDump = nullptr;
+    if (sPresentDump && b->dumpOffset != ~0u) {
+        char nm[64];
+        std::snprintf(nm, sizeof nm, "f%05u_p%06u_a%04d", b->dumpFrame, sLastPresent.present,
+                      int(std::lround(sLastPresent.alpha * 1000.0f)));
+        presentDump = efbcopy::namedDumpTarget(nm);
+    }
+    replayPair(final ? nullptr : a.get(), *b, alpha, presentDump);
     probeFill(a, b);
     if (sJudder && a && !final && alpha < 1.0f) {
         // V present m[12]: the blended camera of b's main camera (most position matrices), the one
