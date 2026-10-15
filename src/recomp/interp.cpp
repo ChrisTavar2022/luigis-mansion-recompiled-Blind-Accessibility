@@ -1639,9 +1639,14 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, 
     p.key = sVertsKey ? mix(sVertsKey ^ id) : 0;  // the same layout (vertex count is checked when pairing)
     sVertsKey = 0;
     if (sTagLogFrame != ~0ull)
-        std::fprintf(sTagLog, "f%llu #%u verts %s key %016llX site %08X slot %u src %08X depth %d view -1%s%s\n",
+        std::fprintf(sTagLog, "f%llu #%u verts %s key %016llX site %08X slot %u src %08X depth %d view -1 role %u clr %u@%u %08X%s%s\n",
                      (unsigned long long)sTagLogFrame, u32(sPatches.size()), kCatName[u32(p.cat)], (unsigned long long)p.key,
-                     p.site, count, stride, sTagDepth, p.key ? "" : " chain ", p.key ? "" : sVertsChain.c_str());
+                     p.site, count, stride, sTagDepth, p.role, p.clrBytes, p.clrOffset,
+                     p.clrBytes && at + p.clrOffset + 4 <= sBase + AuroraCapturePos()
+                         ? u32(sScratch[at + p.clrOffset]) << 24 | u32(sScratch[at + p.clrOffset + 1]) << 16 |
+                               u32(sScratch[at + p.clrOffset + 2]) << 8 | sScratch[at + p.clrOffset + 3]
+                         : 0u,
+                     p.key ? "" : " chain ", p.key ? "" : sVertsChain.c_str());
     detail::drawLog("  #%u verts %u stride %u pos@%u", u32(sPatches.size()), count, stride, posOffset);
     // It belongs to the draw just begun (vtxBegin noted it), not to the next one.
     if (sBundleIds.empty()) {
