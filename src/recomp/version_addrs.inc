@@ -56,6 +56,7 @@
     {0x803CFC0Cu, 0x803BD1B4u},  // lbl_803CFC0C: 12 matching reference(s)
     {0x803D2D40u, 0x803C0300u},  // lbl_803D2D40: 9 matching reference(s)
     {0x803D48A0u, 0x803C1E60u},  // lbl_803D48A0: 19 matching reference(s)
+    {0x803D5CD0u, 0x803C3290u},  // lbl_803D5CD0: 2 matching reference(s)
     {0x803D990Cu, 0x803C6ECCu},  // lbl_803D990C: 179 matching reference(s)
     {0x804C8898u, 0x804B5E58u},  // j3dSys: 60 matching reference(s)
     {0x804CFF84u, 0x804BD644u},  // lbl_804CFF84: 5 matching reference(s)

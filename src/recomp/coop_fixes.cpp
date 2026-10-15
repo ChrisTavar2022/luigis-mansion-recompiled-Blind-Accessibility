@@ -75,24 +75,30 @@ bool sEventHoldReset = false;
 void onMapSetupFixes(Ctx&) {
     sGhosts.clear();
     sLastRoom[0] = sLastRoom[1] = ~0u;
+    // Player 2 enters every map with player 1's health: player 2's record (lbl_803D5CD0 + 0x16C,
+    // +0 health, +2 maximum; read by the player creation) is never reset by the game, so after a
+    // game over player 2 started the next game with the 1 point they had left.
+    const u32 rec0 = VA(0x803D5CD0), rec1 = rec0 + 0x16C;
+    if (fixes()) wr32(rec1, rd32(rec0));
     sEventHoldReset = true;  // the players are new: nothing is held
     sGbhView = false;         // and camera 1 is player 2's (fn_800204B4)
     sCached[0] = sCached[1] = 0;
 }
 
 namespace {
-// Puts player 2 right behind player 1 (facing the same way), e.g. after player 1 went
-// through a door: the game only follows player 1 into the next room.
-void bringP2(u32 p1, u32 p2) {
-    // Beside player 1 (to the right of where player 1 faces, a little behind): behind alone
-    // put player 2 back in the doorway player 1 had just come through, i.e. in the room before.
+// Puts player 2 where player 1 stands (facing the same way), e.g. after player 1 went through a
+// door (the game only follows player 1 into the next room) or after an event; the players'
+// collision then pushes them apart. A spot beside or behind player 1 is not safe: behind put
+// player 2 back in the doorway player 1 had come through (the room before), and beside player 1
+// at the foyer's front door is off the floor (player 2 fell into the basement), although the
+// room boxes (fn_80017ADC) say it is in the foyer.
+void bringP2(Ctx&, u32 p1, u32 p2) {
     const float fx = gu::rdf(p1 + 0xF48), fz = gu::rdf(p1 + 0xF50);
-    gu::wrf(p2 + 0x44, gu::rdf(p1 + 0x44) - fz * 70.0f - fx * 20.0f);
+    gu::wrf(p2 + 0x44, gu::rdf(p1 + 0x44) - fz * 2.0f);  // 2 units to the side: a direction to part
     gu::wrf(p2 + 0x48, gu::rdf(p1 + 0x48));
-    gu::wrf(p2 + 0x4C, gu::rdf(p1 + 0x4C) + fx * 70.0f - fz * 20.0f);
+    gu::wrf(p2 + 0x4C, gu::rdf(p1 + 0x4C) + fx * 2.0f);
     // Facing the same way (actor yaw +0x88/+0x8A as <LOOK> sets it, Luigi's facing vector
-    // +0xF48..+0xF50): both flashlights light the same side of the room. Facing elsewhere,
-    // player 2's beam kept lighting where the gold ghosts wait to appear, so they never came out.
+    // +0xF48..+0xF50): both flashlights light the same side of the room.
     wr32(p2 + 0x88, rd32(p1 + 0x88));
     for (u32 o = 0xF48; o < 0xF54; o += 4) wr32(p2 + o, rd32(p1 + o));
 }
@@ -245,7 +251,7 @@ bool eventControl(u32 p1) {
     return rd32(kMenuOff) != 0 || (rd32(p1 + 0x40) & 0x10) != 0;
 }
 
-void holdP2(u32 p1, u32 p2, bool on) {
+void holdP2(Ctx& c, u32 p1, u32 p2, bool on) {
     if (off(0x10)) return;
     if (on) {
         sSavedBits = rd32(p2 + 0x40) & kHideBits;
@@ -261,7 +267,7 @@ void holdP2(u32 p1, u32 p2, bool on) {
             const u32 e = rd32(p2 + 0x7A4 + 4 * i);
             if (gu::inMem1(e) && !sSavedEquip[i]) wr32(e + 0x40, rd32(e + 0x40) & ~0x4000u);
         }
-        bringP2(p1, p2);
+        bringP2(c, p1, p2);
     }
 }
 }  // namespace
@@ -282,15 +288,19 @@ HLE(fn_800112F8) {
         const u32 p1 = player(c, 0), p2 = player(c, 1);
         const bool hold = p1 && p2 && !off(1) && eventControl(p1);
         if (hold != sEventHold) {
-            holdP2(p1, p2, hold);
+            holdP2(c, p1, p2, hold);
             log("[coop] event %s: player 2 %s (guest frame %u)", hold ? "took control" : "ended",
-                hold ? "set aside" : "back behind player 1", skip::guestFrames());
+                hold ? "set aside" : "back with player 1", skip::guestFrames());
         }
         sEventHold = hold;
         if (hold && !off(0x20)) {  // with player 1 wherever the script puts them
             for (u32 o = 0x44; o < 0x50; o += 4) wr32(p2 + o, rd32(p1 + o));
         }
         if (p1 && p2 && !off(0x40)) mergeProgress(p1, p2);
+        // Equipment and medals: Luigi +0x792 event bits (4 Poltergust, 8 Game Boy Horror, the
+        // element medals, ...; fn_800B9430 tests them). Player 2 has player 1's, except bit 0
+        // (player 1's controller, from the creation flags).
+        if (p1 && p2) wr16(p2 + 0x792, u16((rd16(p1 + 0x792) & ~1u) | (rd16(p2 + 0x792) & 1u)));
     }
     callOriginal(c, "fn_800112F8");
     if (!active()) return;
@@ -355,7 +365,7 @@ HLE(fn_800112F8) {
         if (p2 && !off(4)) wr32(p2 + 0x798, rd32(kCameras + (rd32(kViewCount) >= 2 ? 4 : 0)));
         const u32 r1 = roomOf(0), r2 = roomOf(1);
         if (p1 && p2 && !sEventHold && !off(2) && r1 != sLastRoom[0] && sLastRoom[0] != ~0u && r1 != r2) {
-            bringP2(p1, p2);
+            bringP2(c, p1, p2);
             log("[coop] player 1 entered room %u: player 2 (room %u) follows", r1, r2);
         }
         sLastRoom[0] = r1;
