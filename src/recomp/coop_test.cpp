@@ -44,6 +44,12 @@ struct Known {
 };
 std::vector<Known> sKnown;
 
+// A hooked ghost's tug of war runs as the decorator strategy's +0x14 part (EnemyStrategyDecorator).
+bool tsuriActive(u32 thought) {
+    const u32 st = rd32(thought + 0x800);
+    return gu::inMem1(st) && gu::inMem1(rd32(st + 0x14));
+}
+
 u32 strategyState(u32 thought) {
     const u32 st = rd32(thought + 0x800);
     return gu::inMem1(st) ? rd16(st + 0xE) : 0xFFFF;
@@ -100,6 +106,26 @@ void frame(Ctx& c) {
                 }
             q = std::strchr(q, ',');
             if (q) q++;
+        }
+    }
+    // LM_BOSS_SETHP=<type name>:<hp>: last resort for long fights (King Boo's 500 HP are drained a
+    // little per exposure): the first time an actor of that type is seen, its health (+0xFC, mirrored
+    // in its AI's +0x89C) is set to <hp>; the rest is drained and captured the game's own way.
+    if (const char* v = std::getenv("LM_BOSS_SETHP")) {
+        static char sType[32] = {};
+        static int sHp = -1;
+        if (sHp < 0) sHp = std::sscanf(v, "%31[^:]:%d", sType, &sHp) == 2 ? sHp : 0;
+        static std::vector<u32> sDone;
+        for (const Known& k : sKnown) {
+            const u32 a = rd32(k.thought + 0x808);
+            if (!gu::inMem1(a) || std::strcmp(typeName(rd32(a + 0x3C)), sType) != 0) continue;
+            if (std::find(sDone.begin(), sDone.end(), a) != sDone.end()) continue;
+            sDone.push_back(a);
+            if (s16(rd16(a + 0xFC)) > sHp) {
+                log("[boss] LM_BOSS_SETHP: %s %08X health %d -> %d", sType, a, s16(rd16(a + 0xFC)), sHp);
+                wr16(a + 0xFC, u16(sHp));
+                wr32(k.thought + 0x89C, u32(sHp));
+            }
         }
     }
     // LM_BOSS_PEEK=<hex addr>:<words>@<guest frame>: logs guest memory (words and as floats).
@@ -226,19 +252,23 @@ struct BossCfg {
     const char* minionStates;
     const char* splitStates;
     const char* minionVacStates;  // minion states it can be vacuumed in (else: spray it first)
+    const char* fireStates;       // boss states a projectile may be fired in (Bowser: mouth open)
+    const char* vacTarget;        // what is vacuumed while the boss is vulnerable (else the boss)
 };
 const BossCfg kBosses[] = {
-    {10, "babyball", "34", "5", "bbaby", "C", "D", 300.0f, {}, "", "", "", ""},  // Chauncey: his balls
-    {13, "bshadow", "1234", "5", "bfire", "5", "7", 9999.0f, {}, "", "", "", ""},  // Bogmire: his shadows (caught 3/4, on the nozzle 5)
-    {11, "", "", "", "btelesa", "7", "", 9999.0f, {{-2382.0f, 5.0f}, {2307.0f, 5.0f}}, "bmtelesa", "123ABCD4", "3", "4"},  // Boolossus: the spikes, then his Boos
+    {10, "babyball", "34", "5", "bbaby", "C", "D", 300.0f, {}, "", "", "", "", "", ""},  // Chauncey: his balls
+    {13, "bshadow", "1234", "5", "bfire", "5", "7", 9999.0f, {}, "", "", "", "", "", ""},  // Bogmire: his shadows (caught 3/4, on the nozzle 5)
+    {11, "", "", "", "btelesa", "7", "", 9999.0f, {{-2382.0f, 5.0f}, {2307.0f, 5.0f}}, "bmtelesa", "123ABCD4", "3", "4", "", ""},  // Boolossus: the spikes, then his Boos
+    // Bowser: his bombs (rolling 2, on the nozzle 3), fired into his open mouth (head state 4); then
+    // King Boo is out of the suit (states 1-3) and drained while in the suction.
+    {9, "kopabom", "2", "3", "kopahead", "123", "", 9999.0f, {}, "", "", "", "", "4", "kptelesa"},
 };
 
 }  // namespace
 
-void pad(PADStatus* st) {
-    static const int sDrive = envInt("LM_BOSS_DRIVE", 0);
-    if (sDrive != 1 && sDrive != 2) return;
-    const int me = sDrive - 1;
+namespace {
+void drivePlayer(PADStatus* st, int me) {
+    const int sDrive = me + 1;
     const u32 l = coop::cachedPlayer(me) ? coop::cachedPlayer(me) : (me == 0 ? rd32(kActorSlots) : 0);
     if (!gu::inMem1(l)) return;
     PADStatus& p = st[me];
@@ -251,14 +281,15 @@ void pad(PADStatus* st) {
     // LM_BOSS_CFG=<map>:<projectile>:<catch>:<held>:<boss>:<vulnerable>:<hooked>:<fire max y> (states
     // as hex digits): a fight not in the table (finding its states).
     static const BossCfg sEnvCfg = [] {
-        BossCfg b{~0u, "", "", "", "", "", "", 9999.0f, {}, "", "", "", ""};
-        static char f[7][32];
+        BossCfg b{~0u, "", "", "", "", "", "", 9999.0f, {}, "", "", "", "", "", ""};
+        static char f[9][32];
         if (const char* v = std::getenv("LM_BOSS_CFG"))
-            std::sscanf(v, "%u:%31[^:]:%31[^:]:%31[^:]:%31[^:]:%31[^:]:%31[^:]:%f", &b.map, f[0], f[1], f[2], f[3], f[4], f[5],
-                        &b.fireMaxY);
+            std::sscanf(v, "%u:%31[^:]:%31[^:]:%31[^:]:%31[^:]:%31[^:]:%31[^:]:%f:%31[^:]:%31[^:]", &b.map, f[0], f[1], f[2], f[3], f[4],
+                        f[5], &b.fireMaxY, f[6], f[7]);
         for (auto& s : f)
             if (!std::strcmp(s, "-")) s[0] = 0;  // "-": none
         b.proj = f[0], b.catchStates = f[1], b.heldStates = f[2], b.boss = f[3], b.vulnStates = f[4], b.hookedStates = f[5];
+        b.fireStates = f[6], b.vacTarget = f[7];
         return b;
     }();
     if (sEnvCfg.map == map) cfg = &sEnvCfg;
@@ -271,9 +302,11 @@ void pad(PADStatus* st) {
     static const int sNear = envInt("LM_BOSS_NEAR", 250);         // distance kept to a projectile
     static const int sVacNear = envInt("LM_BOSS_VAC_NEAR", 400);  // and to the stunned boss (hooked from below fails)
     enum Phase { Idle, Catch, Aim, Vacuum, Pull, Spray };
-    static Phase sPhase = Idle;
-    static bool sHold = false;
-    static bool sSpray = false;  // L held (Spray phase)
+    static Phase sPhases[2] = {Idle, Idle};
+    static bool sHolds[2] = {}, sSprays[2] = {};
+    Phase& sPhase = sPhases[me];
+    bool& sHold = sHolds[me];
+    bool& sSpray = sSprays[me];  // L held (Spray phase)
     Phase phase = Idle;
     Found t;
     const Found boss = nearest(l, cfg->boss, nullptr);
@@ -286,9 +319,9 @@ void pad(PADStatus* st) {
     bool minionHooked = false;
     if (boss.actor && cfg->minion && *cfg->minion && stateIn(bossState, cfg->splitStates)) {
         for (const Known& k : sKnown) {
-            const u32 a = actorOf(k.thought), ts = rd32(k.thought + 0x14);
+            const u32 a = actorOf(k.thought);
             if (!gu::inMem1(a) || std::strcmp(typeName(rd32(a + 0x3C)), cfg->minion) != 0) continue;
-            if (gu::inMem1(ts) && rd32(k.thought + 0x950) == u32(me)) {
+            if (tsuriActive(k.thought) && rd32(k.thought + 0x950) == u32(me)) {
                 minion = {k.thought, a, 0.0f};
                 minionHooked = true;
                 break;
@@ -302,8 +335,11 @@ void pad(PADStatus* st) {
         const bool ready = !*cfg->minionVacStates || stateIn(strategyState(minion.thought), cfg->minionVacStates);
         phase = minionHooked ? Pull : ready ? Vacuum : Spray, t = minion;
     }
-    else if (boss.actor && stateIn(bossState, cfg->hookedStates)) phase = Pull, t = boss;
-    else if (boss.actor && stateIn(bossState, cfg->vulnStates)) phase = Vacuum, t = boss;
+    // What is vacuumed while vulnerable (Bowser: King Boo, out of the suit), with its own states.
+    else if (const Found vt = *cfg->vacTarget ? nearest(l, cfg->vacTarget, nullptr) : boss;
+             vt.actor && (stateIn(strategyState(vt.thought), cfg->hookedStates) || (vt.actor != boss.actor && tsuriActive(vt.thought))))
+        phase = Pull, t = vt;
+    else if (vt.actor && stateIn(strategyState(vt.thought), cfg->vulnStates)) phase = Vacuum, t = vt;
     else if (const Found held = nearest(l, cfg->proj, cfg->heldStates); held.actor && boss.actor && rd32(held.thought + 0x950) == u32(me))
         phase = Aim, t = boss;
     else if (const Found ball = nearest(l, cfg->proj, cfg->catchStates); ball.actor) phase = Catch, t = ball;
@@ -313,6 +349,15 @@ void pad(PADStatus* st) {
         sPhase = phase;
         sHold = phase == Aim || phase == Pull || phase == Vacuum;  // the stunned boss: vacuum at once
         sSpray = false;
+    }
+    if (phase == Idle && boss.actor) {
+        // Nothing to catch: keep away from the boss (LM_BOSS_IDLE_DIST; Bowser throws his bombs at a
+        // Luigi who keeps his distance and breathes fire at one nearby).
+        static const int sIdle = envInt("LM_BOSS_IDLE_DIST", map == 9 ? 1400 : 0);
+        const float bx = gu::rdf(boss.actor + 0x44) - gu::rdf(l + 0x44), bz = gu::rdf(boss.actor + 0x4C) - gu::rdf(l + 0x4C);
+        const float bd = std::sqrt(bx * bx + bz * bz);
+        if (sIdle > 0 && bd < float(sIdle) - 100.0f) stickToward(l, -bx, -bz, 1.0f, p.stickX, p.stickY);
+        return;
     }
     if (phase == Idle || !t.actor) return;
     const float dx = gu::rdf(t.actor + 0x44) - gu::rdf(l + 0x44), dz = gu::rdf(t.actor + 0x4C) - gu::rdf(l + 0x4C);
@@ -369,7 +414,11 @@ void pad(PADStatus* st) {
             }
             if (d > 900.0f && cfg->lure[0][0] == 0.0f) sHold = false;
             // The C stick turns the nozzle only so far from the body: facing away, let go and turn.
-            if (dot < 0.3f && (t.actor != boss.actor || cfg->lure[0][0] != 0.0f)) sHold = false;
+            // Off target for a while (the nozzle turns only so far ahead of the body): let go, turn.
+            static u32 sOffs[2] = {};
+            u32& sOff = sOffs[me];
+            sOff = dot < 0.9f ? sOff + 1 : 0;
+            if ((dot < 0.3f && (minion.actor || cfg->lure[0][0] != 0.0f)) || (phase == Catch && sOff > 20)) sHold = false, sOff = 0;
         }
         break;
     case Aim:  // projectile on the nozzle: turn to the boss, let go of R once aimed
@@ -379,8 +428,10 @@ void pad(PADStatus* st) {
         // The fired object flies level with the nozzle: wait until the boss is low enough.
         const float ny = gu::inMem1(nozzle) ? gu::rdf(nozzle + 4) : 0.0f;
         p.substickY = s8(sCY);
-        static u32 sAimFrames = 0;
-        sAimFrames = dot > 0.995f && gu::rdf(t.actor + 0x48) - gu::rdf(l + 0x48) < cfg->fireMaxY ? sAimFrames + 1 : 0;
+        static u32 sAimFramesArr[2] = {};
+        u32& sAimFrames = sAimFramesArr[me];
+        const bool open = !*cfg->fireStates || stateIn(bossState, cfg->fireStates);
+        sAimFrames = open && dot > 0.995f && gu::rdf(t.actor + 0x48) - gu::rdf(l + 0x48) < cfg->fireMaxY ? sAimFrames + 1 : 0;
         if (sAimFrames >= 3) {
             sHold = false;
             log("[bossdrive] f%u P%d fire at the boss (d %.0f, boss y %.0f, nozzle %.2f,%.2f,%.2f)", now, sDrive, d,
@@ -425,6 +476,14 @@ void pad(PADStatus* st) {
             now, sDrive, int(phase), gu::rdf(l + 0x44), gu::rdf(l + 0x4C), typeName(rd32(t.actor + 0x3C)), gu::rdf(t.actor + 0x44),
             gu::rdf(t.actor + 0x48), gu::rdf(t.actor + 0x4C), d, p.stickX, p.stickY, p.substickX, p.substickY, int(sHold), int(sSpray), dot, bossState,
             boss.actor ? s16(rd16(boss.actor + 0xFC)) : 0, rd32(l + 0x80C + 0xA8), rd32(l + 0x1184), double(gu::rdf(l + 0x1188)), rd32(l + 0x1180));
+}
+}  // namespace
+
+// LM_BOSS_DRIVE=1|2|3: player 1, player 2, or both.
+void pad(PADStatus* st) {
+    static const int sDrive = envInt("LM_BOSS_DRIVE", 0);
+    if (sDrive & 1) drivePlayer(st, 0);
+    if (sDrive & 2) drivePlayer(st, 1);
 }
 
 }  // namespace recomp::cooptest
