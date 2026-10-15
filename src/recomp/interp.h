@@ -95,6 +95,9 @@ void pushFrameLock();
 void popFrameLock();
 // LM_TAG_LOG: a marker line in the log (e.g. where a hooked draw begins and ends), when logging.
 void tagLogMark(const char* text);
+// The sky dome (tags.cpp, fn_8002FA34): values noted inside are marked as the sky's.
+void pushSky();
+void popSky();
 struct FrameLockScope {
     FrameLockScope() { pushFrameLock(); }
     ~FrameLockScope() { popFrameLock(); }
