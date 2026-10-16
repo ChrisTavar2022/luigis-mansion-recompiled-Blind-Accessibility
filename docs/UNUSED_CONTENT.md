@@ -309,6 +309,26 @@ slot gets the shadow key for the same action: `appear` -> `syutugen` (appear), `
 The early archive's `kogeki` (attack), `kuyasi` (frustrated) and `tyakasu` keys have no retail
 slot and are not used. The retail `geb/bfire.geb` and `.bas` (sound timing) files stay in use.
 
+Height (the early model stood sunken in the floor, only the top of the head and the eyes above
+it). In both skeletons joint 0 is the root everything hangs from (a node's +2 link is its first
+child, +4 its next sibling; `src/game/gfx/mdl.h` has the two names swapped), joint 1 a leaf
+carrying the tar puddle and joint 2 the body; the retail actor position is on the floor.
+Measured from the disc files (poses evaluated from the keys, skinned vertices; the joint matrices
+the game computes were logged and match): `bfire` has its puddle (joint 1, 224 vertices) at Y 0
+in every key and idle (`wait`) geometry Y -67..246; `shadow` has its puddle (joint 1, 24
+vertices) at Y -140 in every key, idle geometry Y -176..69 (up to 142 in the cycle) and the body
+root (joint 2) at -103.5. The early model was built with its origin 140 above its puddle. The
+port adds 140 to the root joint's Y translation in every early key it loads (before relocation;
+the root's translation shares a table entry with every other zero translation, so the shifted
+value is appended to the key and the root's channel index points at it): the puddle sits on the
+floor like retail's and the idle geometry spans Y -36..209 (retail -67..246); `syutugen`
+(appear) starts flat at the floor (Y -10..9; retail `appear` -27..1). Being key data, the joint
+matrices the game reads move with the drawn model. Verified in map 13 fights (frame dumps,
+toggle off / early before / early fixed: Bogmire stands on his puddle, as tall as retail's
+relative to Luigi). The tug of war and the capture were not reached in the scripted runs (the
+poses come from the same lifted keys). Test aid `LM_EARLY_BOGMIRE_LIFT=<units>` (default 140; 0
+= the old placement).
+
 Verified: model viewer (`build/bogmire_viewer.png`: `bfire` above, `shadow` below with the
 longer wings and thin hanging flaps, the defined chin and the wavy skirt) and the map 13 intro
 (`build/bogmire_intro.png`, `LM_START_MAP=13`, same guest frames retail/early). The fight runs
