@@ -177,9 +177,10 @@ struct RenderingSettings {
 
 // ---- Enhanced lighting > Ghost lights (src/recomp/ghost_lights.cpp; docs/RENDERING.md) ----
 // Every visible ghost lights the room around it in its own glow colour. Part of the optional
-// "Enhanced lighting" group: OFF by default, the original look stays one click away.
+// "Enhanced lighting" group: on by default, so it comes on with the Enhanced lighting master
+// switch (itself OFF by default: the original look stays one click away).
 struct GhostLightSettings {
-    bool enabled = false;
+    bool enabled = true;
     float intensity = 1.0f;     // 0..4, multiplies every ghost light
     float radiusScale = 1.0f;   // 0.25..3, multiplies the per-ghost-size radius
     bool dramatic = true;       // pulse, flare on appearing/attacking, flicker when stunned, vacuum struggle, capture burst
@@ -264,8 +265,9 @@ struct EnhancedLightingSettings {
     float bloomFlashlightSuppress = 0.6f;  // 0..1: less glow from walls lit by the flashlight
     float bloomScene = 0.12f;          // 0..1: glow of ordinary bright surfaces (above the threshold)
     float bloomEmissive = 0.6f;        // 0..2: glow of light-emitting effects (glows, fire, beams, sparks)
-    // Screen-space ambient occlusion (contact darkening in corners and under furniture).
-    bool ssao = false;
+    // Screen-space ambient occlusion (contact darkening in corners and under furniture). On by
+    // default, so it comes on with the master switch.
+    bool ssao = true;
     float ssaoIntensity = 0.4f;        // 0..2
     float ssaoRadius = 60.0f;          // world units
 };
