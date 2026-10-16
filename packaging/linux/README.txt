@@ -1,5 +1,5 @@
-Luigi's Mansion PC - Linux x86_64
-=================================
+Luigi's Mansion PC 1.0 - Linux x86_64
+=====================================
 
 A native PC port of Luigi's Mansion (GameCube). No game data is included: the game is
 built on your computer from your own disc image the first time you start it.

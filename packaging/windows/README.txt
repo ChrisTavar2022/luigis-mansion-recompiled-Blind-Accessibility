@@ -1,0 +1,83 @@
+Luigi's Mansion PC 1.0 - Windows x64
+====================================
+
+A native PC port of Luigi's Mansion (GameCube). No game data is included: the game is
+built on your computer from your own disc image the first time you start it.
+
+
+REQUIREMENTS
+------------
+- 64-bit Windows 10 or 11.
+- A graphics card with Direct3D 12 support.
+- About 2 GB of free disk space (the game module built at first start, shader caches).
+- Your own Luigi's Mansion disc image (ISO, GCM, RVZ, WIA, GCZ, CISO, NFS, TGC):
+    USA release (GLME01)  and/or  European release (GLMP01).
+  Other games, other revisions and modified images are rejected.
+
+
+FIRST RUN
+---------
+1. Unpack the archive anywhere you like.
+2. Run LuigisMansionRecomp.exe.
+3. Pick your USA and/or European disc image with "Browse...", then "Install". The game
+   code is translated and compiled for your PC with the bundled compiler (llvm\ folder),
+   which takes about 20 to 60 seconds, then the shaders are prepared once ("Preparing
+   shaders"). Later starts go straight to the game.
+With both discs you choose which release to play; the European disc also unlocks the
+European Hidden Mansion. F1 > Game > "Add or change discs..." reopens setup later.
+
+
+KEYS
+----
+F1    options menu (Esc closes): Visuals, Sound, Controls, Enhancements (General /
+      Gameplay / Unused content / Debug), Game
+F3    info overlay (map / room / position)
+F4    model viewer
+
+Default keyboard: WASD move, arrows C-stick, E/Q/R/F = A/B/X/Y, Left Ctrl = Z,
+Enter = START, Left Shift = L, Space = R, 1-4 = D-pad. Gamepads (including GameCube
+controller adapters) are detected automatically; remap everything in F1 > Controls.
+
+
+HIGHLIGHTS
+----------
+- Any resolution, widescreen and ultrawide (Hor+, HUD anchored to the screen edges).
+- High frame rates: the game logic stays at its original 30 updates per second and every
+  frame in between is interpolated (F1 > Visuals: frame-rate slider up to 320, "Match
+  display refresh rate", "Original" for the console's 30). VRR / G-SYNC / FreeSync aware.
+- Accurate GameCube rendering (EFB copies, depth textures, fog, indirect effects), with
+  optional Enhanced lighting (per-pixel and colored lights, soft shadows, realistic
+  flashlight, bloom) in F1 > Visuals.
+- The European "Hidden Mansion" with its boss changes (needs the European disc; with
+  both discs E. Gadd's lab offers the USA and the European Hidden Mansion).
+- Restored unused and beta content in F1 > Enhancements > Unused content (all off by
+  default): Game Boy Horror camera, beta ghost shading, early Bogmire, poison and other
+  Luigi states, jukebox, gallery, 2-player mode and more.
+
+
+WHERE FILES GO
+--------------
+    %APPDATA%\Luigi's Mansion PC\            settings.ini (F1 menu), install.ini (discs)
+    %APPDATA%\Luigi's Mansion PC\game\       the game module built from your disc
+    %APPDATA%\Luigi's Mansion PC\USA\Card A  memory card saves (Dolphin-compatible .gci;
+                                             European: EUR\Card A)
+
+
+KNOWN LIMITS
+------------
+- 2-player mode (Unused content) is unfinished: Area 1, Chauncey and Boolossus work with
+  two players; the rest of the game is not verified yet.
+- A few very fast motions (Chauncey's quickest spin turns, the first frame of water spray
+  drops) appear at the game's own 30 updates per second when interpolating.
+
+
+WHAT IS IN THIS FOLDER
+----------------------
+    LuigisMansionRecomp.exe   the game program (runtime, recompiler, setup)
+    *.dll                     runtime libraries (SDL3, Dawn/WebGPU, DirectX shader
+                              compiler, nod, libpng, zlib)
+    pipelines.bin             shader precache list
+    llvm\bin\                 clang and lld-link, used once to build the game module from
+                              your disc (LLVM, Apache-2.0 WITH LLVM-exception,
+                              llvm\LLVM-LICENSE.TXT)
+    NOTICE.md                 third-party notices

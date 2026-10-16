@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(lmport LANGUAGES C CXX VERSION 0.0.1)
+project(lmport LANGUAGES C CXX VERSION 1.0.0)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
@@ -200,6 +200,7 @@ install(FILES NOTICE.md DESTINATION .)
 install(FILES data/pipelines.bin DESTINATION .)
 install(FILES packaging/LLVM-LICENSE.TXT DESTINATION llvm)
 if (WIN32)
+    install(FILES packaging/windows/README.txt DESTINATION .)
     install(CODE "
         file(GLOB _dlls \"$<TARGET_FILE_DIR:LuigisMansionRecomp>/*.dll\")
         file(INSTALL \${_dlls} DESTINATION \"\${CMAKE_INSTALL_PREFIX}\")")
