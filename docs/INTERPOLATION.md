@@ -179,6 +179,19 @@ A value of game frame b pairs with the value of frame a that has the same key an
   entrywise in world space (`flatMatrix`). Rolling balls and Chauncey's spin (150-175 degrees per game
   frame) were switches (the turn direction is not knowable from two frames); with the spinner rule
   above they blend the short way once the previous game frame showed the spin.
+  Sheared matrices (columns more than ~75 degrees from orthogonal) whose handedness flips between
+  game frames are treated the same way (interp-final 3): Chauncey's envelope matrices pass through
+  a singular blend of their joints at the start of every spin (determinant -4.9 -> +8.9 with 40-60
+  degree "turns"), and the mirror test switched them, so his body held for one interval every
+  150-400 game frames (sweep C; 534 member switches -> 3 in a map 10 run). The first frame of a real
+  ~170 degree spin still shows b. `LM_SKEW_FLIP_SWITCH=1`: old behaviour. Such pairs get no flip or
+  twist resolution (b turned 180 degrees is other geometry when sheared), their normal matrices blend
+  entrywise too, and a sheared flip makes its model instance fast + skinned, so the whole instance
+  blends entrywise. The S3D node and mesh draws (fn_800597C0 / 598E0 / 599E8, fn_80058A60,
+  fn_800595B8) tag their model as the instance when none was inherited: Chauncey's meshes are drawn
+  without the model draw and had no instance, so some of his envelope matrices blended rigidly and
+  others entrywise at a spin and his skin tore into shards for half an interval (frame 6990,
+  pre-existing). `LM_GROUP_TAPE=<seq>`: the instance votes of one tape.
 - Projections: 2D (orthographic) ones are layout and never blended (the HUD anchors each element with
   its own projection; paired by order they slid HUD elements in the in-betweens); perspective ones
   blend only with one of the same aspect, except the shadow caster pass, which blends with its light.
@@ -188,6 +201,18 @@ A value of game frame b pairs with the value of frame a that has the same key an
 - Texture scrolls that wrap (offset back from 1 to 0, or faster than half the texture per frame) blend
   the short way modulo 1 (map 2's animated sky, water). The sky dome's texture matrices do so
   whatever their scale ("Boss arena skies" below).
+- Texture scrolls of any scale, by history (`texWrapPairs`, at pairing; interp-final 3): a texture
+  matrix (GX_TEXMTX ids) whose scale/rotation part is unchanged is compared row by row with the
+  step it took the game frame before. The same step plus a whole number of textures is a wrap and
+  blends by the step (so the old +-4 bound no longer matters); any other step over half a texture
+  means the game placed the texture anew, and b is shown. Sweep of the boss arenas and every
+  mansion entry point (`LM_TEXWRAP_LOG=<file>`, `LM_TEXWRAP_VALUES=1` adds the matrices): the only
+  scale > 4 matrices that wrap are the skies' (now caught both ways); the only placed-anew ones are
+  six J3D materials in the foyer (two sets per view) whose 3x3 part is ~0.005 (a colour looked up
+  at one texture point) and whose offset jumps by 2-13 textures every ~64 game frames. Entrywise
+  they swept the looked-up point through several textures within one game frame (colour flicker
+  at the jump); they now change at the game frame. Matrices with entries within +-4 and no history
+  keep the modulo-1 rule.
 - SubView scopes (`fn_80114E18`: event scenes, E. Gadd's call portrait, the door close-ups) have their
   own camera: their values are not factored by the game camera; a model that moves by more than a
   tenth of its distance in one game frame switches.
@@ -568,6 +593,27 @@ portrait included).
 
 Not reached in testing: Neville's portrait dialogue (teleported to him he woke up and attacked);
 Toad and E. Gadd's portrait call cover the speaker icon and portrait cases.
+
+#### Text box fixes from the final sweeps (interp-final 3)
+
+- Full-frame viewports and scissor boxes in a group are not moved with the panel: the GBH's status
+  page resets them to 640x480 inside the GBH group, and moving them as a sub-view drew the page 2x
+  the panel's offset off while the HUD slid in (a gap under the bezel, a jump back at each game
+  frame). Only boxes smaller than the frame (the call portrait, the GBH screen's scissor) move.
+- A text scroll (offset D) must match at least a quarter of a's text blocks not already in place:
+  a new page whose first letters also occur on the old page's second line ("So" of "Sounds") was
+  taken for a scroll and slid up from there. Real scrolls match 50-60 of 110-128 blocks.
+
+### Extra lights: room box (interp-final 3)
+
+An extra light's room box (flag `ExtraLightRoomBox`, Aurora 0187) stores its centre relative to the
+light's position. Blending the position moved the box with the light by its whole step at alpha 0,
+cutting off the part of the room the light was leaving: Luigi's fire stream lighting the 2F east
+hallway wall went dark at each game frame and came back by alpha 1 (sweep B, region luma 25.7 at
+every game-frame start against 28.9-38 at the game frames). The centre now stays at b's world
+place; afterwards the series is monotonic at 60 and 120. `LM_XL_BOX_SLIDE=1`: old behaviour. The
+receivers' shadow light (makeLightPair) also moves its eye in a straight line now, like the caster
+pass's light camera (`LM_LIGHT_ARC=1`: old; measured identical in that scene).
 
 ### Boss arena skies (October 2026)
 

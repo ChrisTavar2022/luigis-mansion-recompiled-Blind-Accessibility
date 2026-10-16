@@ -128,24 +128,34 @@ HLE(fn_8005A280) {  // shadow casters
     interp::tagGroup(c.r[3]);  // one instance: its matrices blend alike (interp.cpp, replayPair)
     callOriginal(c, "fn_8005A280");
 }
+// Node and mesh draws of an S3D model are one instance (the model in r3) also when the game draws
+// them directly instead of through the model draw above: those had no instance, so a skinned body
+// was blended matrix by matrix. At the start of one of Chauncey's spins some of his envelope
+// matrices blended rigidly, others entrywise, and his skin tore into shards for half an interval
+// (sweep C, map 10 frame 6990; 1092 such mesh matrices per replay in his arena).
 HLE(fn_800597C0) {
     TagScope t(TagCat::Object, c.r[3], 0x597C0, c.r[4]);
+    interp::tagGroupIfNone(c.r[3]);
     callOriginal(c, "fn_800597C0");
 }
 HLE(fn_800598E0) {
     TagScope t(TagCat::Object, c.r[3], 0x598E0, c.r[4]);
+    interp::tagGroupIfNone(c.r[3]);
     callOriginal(c, "fn_800598E0");
 }
 HLE(fn_800599E8) {
     TagScope t(TagCat::Object, c.r[3], 0x599E8, c.r[4]);
+    interp::tagGroupIfNone(c.r[3]);
     callOriginal(c, "fn_800599E8");
 }
 HLE(fn_80058A60) {
     TagScope t(TagCat::Object, c.r[3], 0x58A60, c.r[4]);
+    interp::tagGroupIfNone(c.r[3]);
     callOriginal(c, "fn_80058A60");
 }
 HLE(fn_800595B8) {
     TagScope t(TagCat::Object, c.r[3], 0x595B8, c.r[4]);
+    interp::tagGroupIfNone(c.r[3]);
     callOriginal(c, "fn_800595B8");
 }
 
