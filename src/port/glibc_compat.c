@@ -132,4 +132,13 @@ LM_COMPAT uint32_t arc4random_uniform(uint32_t bound) {
     }
 }
 
+/* hypotf: glibc 2.35 added a new symbol version (hypotf@GLIBC_2.35, a faster implementation),
+ * which std::hypot(float, float) binds to when built on a newer glibc. Route it to the
+ * original x86_64 version (GLIBC_2.2.5), which every glibc still exports. */
+#if defined(__x86_64__)
+float lm_hypotf_compat(float x, float y);
+__asm__(".symver lm_hypotf_compat, hypotf@GLIBC_2.2.5");
+LM_COMPAT float hypotf(float x, float y) { return lm_hypotf_compat(x, y); }
+#endif
+
 #endif

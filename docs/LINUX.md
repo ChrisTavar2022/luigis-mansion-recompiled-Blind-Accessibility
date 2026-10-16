@@ -84,7 +84,8 @@ Dawn and nod statically; on top of that the runtime targets (`lm_runtime_target`
 - add `src/port/glibc_compat.c`, which defines the few functions a new glibc would
   otherwise be required for: the C23 `__isoc23_strtol`/`sscanf` family (2.38; the headers
   redirect to them, also inside the prebuilt Dawn), `strlcpy`/`strlcat`/`wcslcpy`/`wcslcat`
-  (2.38, used by SDL), `arc4random*` (2.36, libstdc++'s `random_device`) and
+  (2.38, used by SDL), `arc4random*` (2.36, libstdc++'s `random_device`), `hypotf` (bound to its
+  original version instead of the 2.35 one) and
   `pidfd_spawnp`/`pidfd_getpid` (2.39, weak references in Rust's std inside nod).
 
 Result: `NEEDED` is only `libc`, `libm`, `libz`, `libgcc_s`, `ld-linux-x86-64`, and the

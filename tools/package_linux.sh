@@ -32,6 +32,14 @@ for b in "$OUT/$NAME/LuigisMansionRecomp" "$OUT/$NAME/llvm/bin/clang" "$OUT/$NAM
 done
 "$OUT/$NAME/llvm/bin/clang" --version | head -1
 "$OUT/$NAME/llvm/bin/ld.lld" --version
+# The release must load on glibc 2.34 (docs/LINUX.md "Portable executable"): fail on newer
+# symbol versions (add a shim to src/port/glibc_compat.c).
+for b in "$OUT/$NAME/LuigisMansionRecomp" "$OUT/$NAME/llvm/bin/clang" "$OUT/$NAME/llvm/bin/ld.lld"; do
+    if objdump -T "$b" | grep -E 'GLIBC_2\.(3[5-9]|[4-9][0-9])'; then
+        echo "${b#$OUT/} needs glibc newer than 2.34 (symbols above)" >&2
+        exit 1
+    fi
+done
 
 cd "$OUT"
 rm -f "$NAME.tar.gz" "$NAME.zip"
