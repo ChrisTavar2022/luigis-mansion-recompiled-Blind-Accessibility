@@ -1,12 +1,15 @@
-# One-step Windows release: build LuigisMansionRecomp, package it as
-# out/LuigisMansionPC-<version>-windows-x64.zip, then publish GitHub release v<version>
-# with that zip and packaging/release_notes/v<version>.md (hash filled in).
+# One-step release: build LuigisMansionRecomp, package it as
+# out/LuigisMansionPC-<version>-windows-x64.zip, build the Linux packages in WSL
+# (tools/release_linux.sh; skipped with -SkipLinux or when WSL is not installed), then publish
+# GitHub release v<version> with every package and packaging/release_notes/v<version>.md
+# (download table filled in).
 # Publishes with the GitHub CLI (gh) when it is installed and logged in; otherwise opens
 # the "new release" page in the browser, filled in, and the zip's folder in Explorer.
 #   powershell -ExecutionPolicy Bypass -File tools\release_windows.ps1 [-Preset windows-clang]
 # (tools\release_windows.bat does the same on a double-click.)
 param(
-    [string]$Preset = "windows-clang"
+    [string]$Preset = "windows-clang",
+    [switch]$SkipLinux
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -50,10 +53,38 @@ try {
         if (-not (Test-Path (Join-Path $stage $f))) { throw "package is missing $f" }
     }
     Compress-Archive -Path $stage -DestinationPath $zip
-    $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
-    Write-Host "$name.zip  $([math]::Round((Get-Item $zip).Length / 1MB)) MB  sha256 $hash"
+    $assets = @(@{ File = $zip; Platform = "Windows 10/11, 64-bit, Direct3D 12" })
 
-    $notes = (Get-Content -Raw -Encoding UTF8 $notesSrc).Replace("{{WINDOWS_ZIP}}", "$name.zip").Replace("{{WINDOWS_SHA256}}", $hash)
+    $linuxNote = ""
+    if ($SkipLinux) {
+        $linuxNote = "Linux: no $version package; the previous Linux package still works.`n"
+    } elseif (-not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
+        Write-Host "WSL is not installed: no Linux package (install it with 'wsl --install')." -ForegroundColor Yellow
+        $linuxNote = "Linux: no $version package; the previous Linux package still works.`n"
+    } else {
+        Step "Building the Linux packages in WSL (asks for your Linux password if packages are missing)"
+        & wsl.exe --cd "$root" bash tools/release_linux.sh $version out
+        $tgz = Join-Path $outDir "LuigisMansionPC-$version-linux-x86_64.tar.gz"
+        $lzip = Join-Path $outDir "LuigisMansionPC-$version-linux-x86_64.zip"
+        if ($LASTEXITCODE -or -not (Test-Path $tgz) -or -not (Test-Path $lzip)) {
+            Write-Host ""
+            Write-Host "The Linux build failed (messages above)." -ForegroundColor Red
+            $answer = Read-Host "Publish the Windows package alone? (y/n)"
+            if ($answer -notmatch '^[yY]') { throw "stopped: Linux build failed" }
+            $linuxNote = "Linux: no $version package; the previous Linux package still works.`n"
+        } else {
+            $assets += @{ File = $tgz; Platform = "Linux x86_64, glibc 2.34+, Vulkan" }
+            $assets += @{ File = $lzip; Platform = "same as the .tar.gz (prefer the .tar.gz, it keeps file permissions)" }
+        }
+    }
+
+    $rows = foreach ($a in $assets) {
+        $h = (Get-FileHash -Algorithm SHA256 $a.File).Hash.ToLower()
+        $leaf = Split-Path -Leaf $a.File
+        Write-Host "$leaf  $([math]::Round((Get-Item $a.File).Length / 1MB)) MB  sha256 $h"
+        "| ``$leaf`` | $($a.Platform) | ``$h`` |"
+    }
+    $notes = (Get-Content -Raw -Encoding UTF8 $notesSrc).Replace("{{DOWNLOAD_ROWS}}", ($rows -join "`n")).Replace("{{LINUX_NOTE}}", $linuxNote)
     $notesFile = Join-Path $outDir "$tag-notes.md"
     [IO.File]::WriteAllText($notesFile, $notes, (New-Object Text.UTF8Encoding $false))
     $title = "Luigi's Mansion PC $version"
@@ -63,7 +94,7 @@ try {
     $ghOk = $false
     if ($gh) { & gh auth status *> $null; $ghOk = ($LASTEXITCODE -eq 0) }
     if ($ghOk) {
-        & gh release create $tag $zip --repo $repo --target main --title $title --notes-file $notesFile
+        & gh release create $tag @($assets | ForEach-Object { $_.File }) --repo $repo --target main --title $title --notes-file $notesFile
         if ($LASTEXITCODE) { throw "gh release create failed" }
         Write-Host ""
         Write-Host "Done: https://github.com/$repo/releases/tag/$tag" -ForegroundColor Green
@@ -71,11 +102,12 @@ try {
         $url = "https://github.com/$repo/releases/new?tag=$tag&target=main" +
                "&title=" + [uri]::EscapeDataString($title) + "&body=" + [uri]::EscapeDataString($notes)
         Start-Process $url
-        Start-Process explorer.exe "/select,`"$zip`""
+        Start-Process explorer.exe "`"$outDir`""
         Write-Host ""
         Write-Host "The GitHub page for the new release is open in your browser, already filled in." -ForegroundColor Green
-        Write-Host "1. Drag $name.zip (selected in the Explorer window) onto the 'Attach binaries' box."
-        Write-Host "2. Wait for the upload to finish, then click 'Publish release'."
+        Write-Host "1. From the Explorer window (the 'out' folder), drag these files onto the 'Attach binaries' box:"
+        foreach ($a in $assets) { Write-Host "     $(Split-Path -Leaf $a.File)" }
+        Write-Host "2. Wait for every upload to finish, then click 'Publish release'."
     }
 } finally {
     Pop-Location

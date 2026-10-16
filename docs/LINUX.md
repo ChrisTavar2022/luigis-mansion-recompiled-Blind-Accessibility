@@ -136,6 +136,12 @@ llvm/bin/clang, ld.lld   bundled compiler; llvm/lib/libxml2.so.2 (stub); llvm/LL
 ```
 
 No game data, nothing derived from it, and no build output other than these.
+
+Releases: `tools\release_windows.bat` (Windows) builds the Windows zip, then runs
+`tools/release_linux.sh <version> out` in WSL (clone in `~/lm-release` from the committed HEAD,
+missing apt packages installed, an `LLVM-*-Linux-X64` under `~` or `/opt` found or 20.1.8
+downloaded, `package_linux.sh`, versioned copies in `out/`), and publishes GitHub release
+`v<version>` with every package and `packaging/release_notes/v<version>.md`.
 Size: about 450 MB unpacked, 150 MB compressed (clang and lld are 250 MB and 190 MB).
 
 ## Testing
