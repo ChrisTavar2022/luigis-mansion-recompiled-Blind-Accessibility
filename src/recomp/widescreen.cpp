@@ -360,11 +360,26 @@ HLE(fn_80059C54) {
     callOriginal(c, "fn_80059C54");
 }
 
-// J2DScreen::draw(screen, x, y, graf): marks the area-clear mask screen (above).
+// J2DScreen::draw(screen, x, y, graf): marks the area-clear mask screen (above), and anchors
+// the Hidden Mansion star.
+// The star (/kawano/base/blo/star_1.blo, picture "star" at 609,421 24x24: just right of the GBH
+// frame, bottom right) is its own J2DScreen (lbl_803CE3B0+0xC), shown in the Hidden Mansion
+// (fn_8003DF88 makes its ROOT pane visible) and drawn by fn_8003E3D0 itself (call at 0x8003E774,
+// PAL 0x8003FDF4), not by the GBH element function, so it stayed centered while the GBH moved to
+// the right edge: at 16:9 it sat on the GBH screen over the gold bar. It gets the GBH's anchor
+// (and its split-screen half), so it keeps its place beside the GBH at every aspect; 4:3 and
+// "Keep HUD at 4:3" are unchanged (no anchoring there, like the GBH).
 HLE(draw__9J2DScreenFiiPC14J2DGrafContext) {
     const bool mask = sAccountDepth > 0 && active() && c.r[3] == rd32(VA(0x803CFA50));
+    const bool hmStar = c.lr == VA(0x8003E778);
     if (mask) sEdgeDepth++;
-    callOriginal(c, "draw__9J2DScreenFiiPC14J2DGrafContext");
+    if (hmStar) {
+        AnchorScope s(1);
+        ShiftScope half(coop::gbhShift());
+        callOriginal(c, "draw__9J2DScreenFiiPC14J2DGrafContext");
+    } else {
+        callOriginal(c, "draw__9J2DScreenFiiPC14J2DGrafContext");
+    }
     if (mask) sEdgeDepth--;
 }
 
