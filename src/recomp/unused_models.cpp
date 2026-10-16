@@ -64,6 +64,8 @@ struct ModelSwap {
     const char* earlyMdl;
     const KeyMap* keys;       // retail key -> early key; nullptr: same names
     bool (*enabled)();
+    float (*lift)();          // added to joint liftJoint's Y translation in every early key, or nullptr
+    u32 liftJoint;
     // filled on first use
     bool tried = false;
     u32 mdl = 0;
@@ -79,6 +81,69 @@ bool earlyBogmireOn() {
     return sEnv || port::settings().enhancements.earlyBogmire;
 }
 
+// Early Bogmire's height. In both skeletons joint 0 is the root everything hangs from (the
+// node's +2 link is its first child, +4 its next sibling), joint 1 is a leaf under it carrying
+// the tar puddle, joint 2 the body. The retail actor position is on the floor. Measured from
+// the disc models (poses evaluated from the keys, skinned vertices; matches the joint matrices
+// the game computes):
+//   bfire:  puddle (joint 1, 224 vertices) at Y 0 in every key; idle (wait) geometry Y -67..246.
+//   shadow: puddle (joint 1, 24 vertices) at Y -140 in every key; idle geometry Y -176..69
+//           (up to 142 in the cycle), body root (joint 2) at -103.5.
+// The early model was built with its origin 140 above its puddle, so on the retail actor the
+// puddle and most of the body are under the floor and only the head shows. Lifting the root by
+// 140 puts the puddle on the floor like retail's; idle geometry becomes Y -36..209 (retail
+// -67..246). Applied to the key data (the root's Y translation), so the joint matrices the
+// game reads follow the drawn model.
+constexpr u32 kBogmireRootJoint = 0;
+constexpr float kBogmireLift = 140.0f;
+float earlyBogmireLift() {
+    static const float sLift = [] {
+        const char* v = std::getenv("LM_EARLY_BOGMIRE_LIFT");  // test aid
+        return v && *v ? float(std::atof(v)) : kBogmireLift;
+    }();
+    return sLift;
+}
+
+// Adds `dy` to joint `joint`'s Y translation in a .key file (before relocation, which turns the
+// table offsets into pointers; channel indices stay relative to their table). Header: +0
+// joints, +0x14 translation table, +0x18 channel indices (9 u32 per joint), +0x1C channel
+// counts (9 u16 per joint; sx sy sz rx ry rz tx ty tz; 0 = default, 1 = constant, n = keys of
+// {time, value, tangent[, out tangent]}, 4 floats if bit 15). Table entries are shared between
+// channels (every zero translation uses one entry), so the shifted channel is appended to the
+// end of the file and the joint's index points at it.
+bool liftKeyJoint(rarc::Bytes& k, u32 joint, float dy) {
+    auto be32 = [&](size_t o) { return u32(k[o]) << 24 | u32(k[o + 1]) << 16 | u32(k[o + 2]) << 8 | k[o + 3]; };
+    auto be16 = [&](size_t o) { return u32(k[o]) << 8 | k[o + 1]; };
+    auto put32 = [&](size_t o, u32 v) { k[o] = u8(v >> 24), k[o + 1] = u8(v >> 16), k[o + 2] = u8(v >> 8), k[o + 3] = u8(v); };
+    if (k.size() < 0x20) return false;
+    const u32 joints = be32(0), offT = be32(0x14), offIdx = be32(0x18), offCnt = be32(0x1C);
+    if (joint >= joints || offT % 4 || size_t(offIdx) + joints * 0x24 > k.size() ||
+        size_t(offCnt) + joints * 0x12 > k.size() || offT > k.size())
+        return false;
+    constexpr u32 kTY = 7;
+    const size_t cntAt = offCnt + joint * 0x12 + kTY * 2, idxAt = offIdx + joint * 0x24 + kTY * 4;
+    const u32 count = be16(cntAt), idx = be32(idxAt);
+    const u32 n = count & 0x7FFF, stride = (count & 0x8000) ? 4 : 3;
+    const u32 floats = count <= 1 ? 1 : n * stride;
+    if (count != 0 && size_t(offT) + 4 * (size_t(idx) + floats) > k.size()) return false;
+    k.resize((k.size() + 3) & ~size_t(3));
+    const size_t at = k.size();
+    k.resize(at + 4 * floats);
+    if (count == 0) {
+        put32(at, bits32(dy));  // default 0 -> constant dy
+        k[cntAt] = 0, k[cntAt + 1] = 1;
+    } else if (count == 1) {
+        put32(at, bits32(flt(be32(offT + 4 * idx)) + dy));
+    } else {
+        for (u32 i = 0; i < floats; i++) {
+            const u32 v = be32(offT + 4 * (idx + i));
+            put32(at + 4 * i, i % stride == 1 ? bits32(flt(v) + dy) : v);  // values only, not times/tangents
+        }
+    }
+    put32(idxAt, u32((at - offT) / 4));
+    return true;
+}
+
 const KeyMap kBogmireKeys[] = {
     {"appear.key", "syutugen.key"}, {"biribiri.key", "biribiri.key"}, {"dappear.key", "kieru.key"},
     {"dwait.key", "wait.key"},      {"nigeru.key", "kinko.key"},      {"nigeru2.key", "kinko.key"},
@@ -87,9 +152,9 @@ const KeyMap kBogmireKeys[] = {
 
 ModelSwap sSwaps[] = {
     {"early Poltergust", 3, "/Game/game_usa.szp", "model/vbody.arc", "/model/vbody.szp", "model/vbody.mdl", nullptr,
-     earlyPoltergustOn},
+     earlyPoltergustOn, nullptr, 0},
     {"early Bogmire", 130, "/model/bfire.szp", nullptr, "/model/shadow.szp", "model/shadow.mdl", kBogmireKeys,
-     earlyBogmireOn},
+     earlyBogmireOn, earlyBogmireLift, kBogmireRootJoint},
 };
 
 u32 guestCopy(Ctx& c, const rarc::Bytes& data, const char* relocator) {
@@ -139,14 +204,20 @@ bool prepare(Ctx& c, ModelSwap& s) {
                 if (k.name == m->retail) want = m->early;
         }
         u32 g = 0;
-        for (const rarc::Item& e : ek->items)
-            if (!want.empty() && e.name == want) g = guestCopy(c, e.data, "fn_80061A24");
+        for (const rarc::Item& e : ek->items) {
+            if (want.empty() || e.name != want) continue;
+            rarc::Bytes data = e.data;
+            if (s.lift && s.lift() != 0.0f && !liftKeyJoint(data, s.liftJoint, s.lift()))
+                log("[unused] %s: %s joint %u not lifted (unexpected key layout)", s.what, want.c_str(), s.liftJoint);
+            g = guestCopy(c, data, "fn_80061A24");
+        }
         s.keySlots.push_back(g);
         log("[unused] %s: key slot %zu %s -> %s", s.what, s.keySlots.size() - 1, k.name.c_str(),
             g ? want.c_str() : "(retail)");
     }
     s.mdl = guestCopy(c, mdl->data, "fn_80061B40");
     log("[unused] %s: %s loaded (%zu bytes)", s.what, s.earlyMdl, mdl->data.size());
+    if (s.lift) log("[unused] %s: joint %u lifted by %.1f", s.what, s.liftJoint, double(s.lift()));
     return true;
 }
 
