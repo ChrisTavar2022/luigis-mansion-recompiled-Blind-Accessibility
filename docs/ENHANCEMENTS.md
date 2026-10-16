@@ -124,6 +124,7 @@ inside an anchor scope:
 |---|---|---|
 | `fn_8003D634` | Game Boy Horror: frame, LEDs, its screen's J2DScreen (money tally, E. Gadd's call, E3 clock) | right |
 | `fn_8003BE9C` | static noise over the GBH screen (from the HUD and from the GBH view pass) | right |
+| `J2DScreen::draw` called from `fn_8003E3D0` at `0x8003E774` (PAL `0x8003FDF4`) | Hidden Mansion star (`star_1.blo`, picture at 609,421, just right of the GBH; shown by `fn_8003DF88` in the Hidden Mansion). It was centered, so at 16:9 it sat on the GBH screen over the gold bar | right |
 | `fn_800417F8` | health meter | left |
 | `fn_80041214` (inside it) | health shown over Luigi at his projected position (training room) | centered |
 | `fn_80045BDC` | room name: floor (top right) and name (top left) | each draw to its own side |

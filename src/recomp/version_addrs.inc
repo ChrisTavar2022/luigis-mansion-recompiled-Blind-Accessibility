@@ -8,6 +8,7 @@
     {0x80021AF4u, 0x8002299Cu},  // start of fn_80021AF4
     {0x80021DDCu, 0x80022C84u},  // start of fn_80021DDC
     {0x8002C364u, 0x8002E014u},  // start of fn_8002C364
+    {0x8003E778u, 0x8003FDF8u},  // fn_8003E3D0+0x3a8
     {0x80043930u, 0x80044E24u},  // fn_800433B4+0x57c
     {0x80058290u, 0x8005ACD8u},  // fn_800581E8+0xa8
     {0x8005C9E4u, 0x8005F42Cu},  // start of fn_8005C9E4
