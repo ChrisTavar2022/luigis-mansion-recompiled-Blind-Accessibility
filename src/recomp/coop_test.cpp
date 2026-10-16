@@ -60,6 +60,16 @@ u32 strategyState(u32 thought) {
 // (13/14/15) to it, standing in for aiming the spray at a fast flying target.
 u32 sSprayTarget = 0, sSprayMsg = 0;
 
+// The test aids are idle (no bookkeeping at all) unless one of their variables is set.
+bool enabled() {
+    static const bool on = [] {
+        for (const char* v : {"LM_BOSS_LOG", "LM_BOSS_STAB", "LM_BOSS_SETHP", "LM_BOSS_PEEK", "LM_BOSS_DRIVE"})
+            if (std::getenv(v)) return true;
+        return false;
+    }();
+    return on;
+}
+
 }  // namespace
 
 void onMapSetup() {
@@ -69,7 +79,7 @@ void onMapSetup() {
 }
 
 void onMessage(u32 thought, u32 msg) {
-    if (!gu::inMem1(thought)) return;
+    if (!enabled() || !gu::inMem1(thought)) return;
     for (const Known& k : sKnown)
         if (k.thought == thought) return;
     sKnown.push_back({thought, 0xFFFFFFFFu});
@@ -79,6 +89,7 @@ void onMessage(u32 thought, u32 msg) {
 // LM_BOSS_LOG=<n>: every AI object's strategy state change (actor type, health, position), and
 // every n game frames the full list.
 void frame(Ctx& c) {
+    if (!enabled()) return;
     if (sSprayTarget) {
         static const u32 sEv = [] {
             const u32 p = hleAlloc(0x40, 8);
