@@ -264,14 +264,16 @@ struct BossCfg {
     const char* minionVacStates;  // minion states it can be vacuumed in (else: spray it first)
     const char* fireStates;       // boss states a projectile may be fired in (Bowser: mouth open)
     const char* vacTarget;        // what is vacuumed while the boss is vulnerable (else the boss)
+    // Portrait ghosts: the states in which the flashlight stuns it (face it with the light on, no R).
+    const char* flashStates;
 };
 const BossCfg kBosses[] = {
-    {10, "babyball", "34", "5", "bbaby", "C", "D", 300.0f, {}, "", "", "", "", "", ""},  // Chauncey: his balls
-    {13, "bshadow", "1234", "5", "bfire", "5", "7", 9999.0f, {}, "", "", "", "", "", ""},  // Bogmire: his shadows (caught 3/4, on the nozzle 5)
-    {11, "", "", "", "btelesa", "7", "", 9999.0f, {{-2382.0f, 5.0f}, {2307.0f, 5.0f}}, "bmtelesa", "123ABCD4", "3", "4", "", ""},  // Boolossus: the spikes, then his Boos
+    {10, "babyball", "34", "5", "bbaby", "C", "D", 300.0f, {}, "", "", "", "", "", "", ""},  // Chauncey: his balls
+    {13, "bshadow", "1234", "5", "bfire", "5", "7", 9999.0f, {}, "", "", "", "", "", "", ""},  // Bogmire: his shadows (caught 3/4, on the nozzle 5)
+    {11, "", "", "", "btelesa", "7", "", 9999.0f, {{-2382.0f, 5.0f}, {2307.0f, 5.0f}}, "bmtelesa", "123ABCD4", "3", "4", "", "", ""},  // Boolossus: the spikes, then his Boos
     // Bowser: his bombs (rolling 2, on the nozzle 3), fired into his open mouth (head state 4); then
     // King Boo is out of the suit (states 1-3) and drained while in the suction.
-    {9, "kopabom", "2", "3", "kopahead", "123", "", 9999.0f, {}, "", "", "", "", "4", "kptelesa"},
+    {9, "kopabom", "2", "3", "kopahead", "123", "", 9999.0f, {}, "", "", "", "", "4", "kptelesa", ""},
 };
 
 }  // namespace
@@ -286,20 +288,28 @@ void drivePlayer(PADStatus* st, int me) {
     const u32 now = skip::guestFrames();
     const u32 map = rd32(VA(0x804D80C8));  // sCurMapNo
     const BossCfg* cfg = nullptr;
-    for (const BossCfg& b : kBosses)
-        if (b.map == map) cfg = &b;
+    // The fight on this map; on maps with several (the portrait ghosts of the mansion), the one whose
+    // ghost is nearest.
+    float cfgD = 1e9f;
+    for (const BossCfg& b : kBosses) {
+        if (b.map != map) continue;
+        const Found f = nearest(l, b.boss, nullptr);
+        const float d = f.actor ? f.d : 1e8f;
+        if (!cfg || d < cfgD) cfg = &b, cfgD = d;
+    }
+    if (cfg && cfg->flashStates && *cfg->flashStates && cfgD > 3000.0f) cfg = nullptr;  // portrait ghost not here
     // LM_BOSS_CFG=<map>:<projectile>:<catch>:<held>:<boss>:<vulnerable>:<hooked>:<fire max y> (states
     // as hex digits): a fight not in the table (finding its states).
     static const BossCfg sEnvCfg = [] {
-        BossCfg b{~0u, "", "", "", "", "", "", 9999.0f, {}, "", "", "", "", "", ""};
+        BossCfg b{~0u, "", "", "", "", "", "", 9999.0f, {}, "", "", "", "", "", "", ""};
         static char f[9][32];
         if (const char* v = std::getenv("LM_BOSS_CFG"))
-            std::sscanf(v, "%u:%31[^:]:%31[^:]:%31[^:]:%31[^:]:%31[^:]:%31[^:]:%f:%31[^:]:%31[^:]", &b.map, f[0], f[1], f[2], f[3], f[4],
-                        f[5], &b.fireMaxY, f[6], f[7]);
+            std::sscanf(v, "%u:%31[^:]:%31[^:]:%31[^:]:%31[^:]:%31[^:]:%31[^:]:%f:%31[^:]:%31[^:]:%31[^:]", &b.map, f[0], f[1], f[2], f[3], f[4],
+                        f[5], &b.fireMaxY, f[6], f[7], f[8]);
         for (auto& s : f)
             if (!std::strcmp(s, "-")) s[0] = 0;  // "-": none
         b.proj = f[0], b.catchStates = f[1], b.heldStates = f[2], b.boss = f[3], b.vulnStates = f[4], b.hookedStates = f[5];
-        b.fireStates = f[6], b.vacTarget = f[7];
+        b.fireStates = f[6], b.vacTarget = f[7], b.flashStates = f[8];
         return b;
     }();
     if (sEnvCfg.map == map) cfg = &sEnvCfg;
@@ -311,7 +321,7 @@ void drivePlayer(PADStatus* st, int me) {
     static const int sCY = envInt("LM_BOSS_CY", 0);
     static const int sNear = envInt("LM_BOSS_NEAR", 250);         // distance kept to a projectile
     static const int sVacNear = envInt("LM_BOSS_VAC_NEAR", 400);  // and to the stunned boss (hooked from below fails)
-    enum Phase { Idle, Catch, Aim, Vacuum, Pull, Spray };
+    enum Phase { Idle, Catch, Aim, Vacuum, Pull, Spray, Flash };
     static Phase sPhases[2] = {Idle, Idle};
     static bool sHolds[2] = {}, sSprays[2] = {};
     Phase& sPhase = sPhases[me];
@@ -347,9 +357,10 @@ void drivePlayer(PADStatus* st, int me) {
     }
     // What is vacuumed while vulnerable (Bowser: King Boo, out of the suit), with its own states.
     else if (const Found vt = *cfg->vacTarget ? nearest(l, cfg->vacTarget, nullptr) : boss;
-             vt.actor && (stateIn(strategyState(vt.thought), cfg->hookedStates) || (vt.actor != boss.actor && tsuriActive(vt.thought))))
+             vt.actor && (stateIn(strategyState(vt.thought), cfg->hookedStates) || tsuriActive(vt.thought)))
         phase = Pull, t = vt;
     else if (vt.actor && stateIn(strategyState(vt.thought), cfg->vulnStates)) phase = Vacuum, t = vt;
+    else if (boss.actor && *cfg->flashStates && stateIn(bossState, cfg->flashStates)) phase = Flash, t = boss;
     else if (const Found held = nearest(l, cfg->proj, cfg->heldStates); held.actor && boss.actor && rd32(held.thought + 0x950) == u32(me))
         phase = Aim, t = boss;
     else if (const Found ball = nearest(l, cfg->proj, cfg->catchStates); ball.actor) phase = Catch, t = ball;
@@ -449,6 +460,11 @@ void drivePlayer(PADStatus* st, int me) {
         }
         break;
     }
+    case Flash:  // portrait ghost: face it with the flashlight on (no R), from a few steps away
+        sHold = false;
+        if (d > 450.0f) stickToward(l, dx, dz, 1.0f, p.stickX, p.stickY);
+        else if (dot < 0.97f) stickToward(l, dx, dz, 0.6f, p.stickX, p.stickY);
+        break;
     case Spray: {  // element spray (L) at it: walk up, face it, hold L while turning with the C stick
         if (d > 450.0f) sSpray = false, stickToward(l, dx, dz, 1.0f, p.stickX, p.stickY);
         else if (sSpray && dot < 0.3f) sSpray = false;
