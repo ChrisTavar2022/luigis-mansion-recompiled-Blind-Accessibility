@@ -29,7 +29,10 @@ does not cover the target; a full-screen main view (all of normal play) is uncha
    pass.SetBindGroup(0, bind(job.base,
                              (job.mask & 8u) != 0 ? (g_glowDbg == 11 && g_gpu.maskAo.view ? g_gpu.maskAo.view
                                                      : g_glowDbg >= 8 && g_gpu.mask.view ? g_gpu.mask.view
-@@ -3590,6 +3597,20 @@
+@@ -3587,9 +3594,23 @@
+   u.size[3] = 1.f / float(std::max(size.y, 1u));
+   const auto& vp = g_camera.vp;
+   u.vp[0] = vp.left;
    u.vp[1] = vp.top;
    u.vp[2] = std::max(vp.width, 1.f);
    u.vp[3] = std::max(vp.height, 1.f);
