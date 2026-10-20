@@ -242,6 +242,7 @@ HLE(fn_800F3120) {
     }
     if (!interp::capturing() || streamOld()) {
         TagScope t(TagCat::Particle, item, 0x11FB40);
+        interp::tagStreamItem();
         sStreamItem = item;
         callOriginal(c, "fn_800F3120");
         sStreamItem = 0;

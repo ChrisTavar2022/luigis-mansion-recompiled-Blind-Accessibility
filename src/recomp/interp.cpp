@@ -112,6 +112,7 @@ struct Patch {
     s32 projPatch = -1;  // 2D blocks: the projection patch its vertices were written under (-1: none noted)
     bool tumble = false;  // noted in a tagTumbler scope: model matrices blend the short way
     bool tracked = false;  // noted in a tagTracked scope: a CPU-built block turning back is a bounce
+    bool stream = false;   // an element stream's drop (tagStreamItem / tagTumbler; LM_SPRAY_LOG)
     s32 backStep = -1;    // tagBackStep: index into Tape::backSteps (world step per game frame), -1 none
 };
 
@@ -285,6 +286,7 @@ struct TagFrame {
     u64 group = 0;  // the model instance it belongs to (tagGroup: a J3D model's skinned meshes), 0: none
     bool tumble = false;  // tagTumbler, inherited
     bool tracked = false;  // tagTracked, inherited
+    bool stream = false;   // tagStreamItem / tagTumbler, inherited
     s32 backStep = -1;    // tagBackStep (index into sBackSteps), inherited
 };
 constexpr int kMaxTagDepth = 64;
@@ -1120,6 +1122,7 @@ struct ExclStat {
     u32 n = 0, snapped = 0, flipped = 0, untwisted = 0, turn90 = 0, policy = 0;
 };
 std::unordered_map<u64, ExclStat> sExclStats;
+std::unordered_map<u64, std::pair<u32, float>> sPivotStats;  // LM_GROUP_LOG: per instance, members moved by the spinner centre rule, largest shift
 // Set by replayPair around blendFactored for the matrices of a model instance blended linearly
 // (groupSnap 2): entrywise in world space, no flip or twist resolution.
 bool sLinearBlend = false;
@@ -1599,6 +1602,7 @@ void pushTag(TagCat cat, u32 object, u32 type, u32 sub) {
         f.group = parent ? parent->group : 0;  // set by tagGroup (J3D models), inherited
         f.tumble = parent && parent->tumble;
         f.tracked = parent && parent->tracked;
+        f.stream = parent && parent->stream;
         f.backStep = parent ? parent->backStep : -1;
     }
     sTagStack[sTagDepth++] = f;
@@ -1623,7 +1627,10 @@ void tagGroup(u32 id) {
     if (sCapturing && sTagDepth > 0 && sTagDepth <= kMaxTagDepth) sTagStack[sTagDepth - 1].group = mix(u64(id) ^ 0x6A0Full << 48);
 }
 void tagTumbler() {
-    if (sCapturing && sTagDepth > 0 && sTagDepth <= kMaxTagDepth) sTagStack[sTagDepth - 1].tumble = true;
+    if (sCapturing && sTagDepth > 0 && sTagDepth <= kMaxTagDepth) sTagStack[sTagDepth - 1].tumble = sTagStack[sTagDepth - 1].stream = true;
+}
+void tagStreamItem() {
+    if (sCapturing && sTagDepth > 0 && sTagDepth <= kMaxTagDepth) sTagStack[sTagDepth - 1].stream = true;
 }
 void tagTracked() {
     if (sCapturing && sTagDepth > 0 && sTagDepth <= kMaxTagDepth) sTagStack[sTagDepth - 1].tracked = true;
@@ -1672,6 +1679,7 @@ void gxCall(const Ctx& c) {
         sVirt.group = parent ? parent->group : 0;
         sVirt.tumble = parent && parent->tumble;
         sVirt.tracked = parent && parent->tracked;
+        sVirt.stream = parent && parent->stream;
         sVirt.backStep = parent ? parent->backStep : -1;
         sVirtActive = true;
         break;
@@ -1716,7 +1724,7 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     p.slot = slot;
     p.site = sCallLr;
     p.key = valueKey(kind, source, slot, p.cat);
-    if (const TagFrame* g = topTag(); g && p.key) p.group = g->group, p.tumble = g->tumble, p.backStep = g->backStep;
+    if (const TagFrame* g = topTag(); g && p.key) p.group = g->group, p.tumble = g->tumble, p.backStep = g->backStep, p.stream = g->stream;
     p.inScope = sTagDepth > 0 || sVirtActive;
     if (kind == Kind::TexMtx && sShadowRecv > 0) p.role = 1;
     else if (sOrtho && kind != Kind::Projection) p.role = 2;
@@ -3869,6 +3877,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             if (groupLog) {
                 sExcluded.assign(b.patches.size(), 0);
                 sExclStats.clear();
+                sPivotStats.clear();
             }
             struct GStat {
                 u32 members = 0, outliers = 0, erraticNow = 0, erraticHeld = 0, fast = 0, skin = 0, skew = 0, turn90 = 0, unpaired = 0;
@@ -4342,6 +4351,11 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 xform34(pivotVp->vt.data(), pw, want);
                 xform34(out, c, have);
                 for (int r = 0; r < 3; r++) out[4 * r + 3] += want[r] - have[r];
+                if (sGroupLogNow && p.group && !p.tumble) {
+                    auto& st = sPivotStats[p.group];
+                    st.first++;
+                    st.second = std::max(st.second, std::hypot(want[0] - have[0], want[1] - have[1], want[2] - have[2]));
+                }
             }
             if (p.kind == Kind::Light) {  // keep the direction's length (spot cone falloff)
                 const float la = std::sqrt(va[3] * va[3] + va[4] * va[4] + va[5] * va[5]);
@@ -4367,6 +4381,9 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 if (sXLog)
                     std::fprintf(sXLog, "X %llu %016llX excluded %u snapped %u flipped %u untwisted %u turn90 %u policy %u\n", (unsigned long long)b.seq,
                                  (unsigned long long)g, st.n, st.snapped, st.flipped, st.untwisted, st.turn90, st.policy);
+            for (const auto& [g, st] : sPivotStats)
+                if (sXLog)
+                    std::fprintf(sXLog, "V %llu %016llX pivoted %u max %.1f\n", (unsigned long long)b.seq, (unsigned long long)g, st.first, st.second);
             if (sXLog) std::fflush(sXLog);
             sGroupLogNow = false;
         }
@@ -4642,7 +4659,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 const Patch& p = b.patches[i];
                 if (!p.key || p.bundle >= b.bundlePass.size() || b.bundlePass[p.bundle] != 0) continue;
                 const bool point = p.kind == Kind::Verts && p.count == 1 && p.role == 0 && p.cat == TagCat::Particle;
-                const bool drop = p.kind == Kind::PosMtx && p.count == 12 && p.tumble;
+                const bool drop = p.kind == Kind::PosMtx && p.count == 12 && p.stream;
                 if (!point && !drop) continue;
                 const char how = !blend ? 'b' : b.partner[i] >= 0 ? 'b' : p.backStep >= 0 ? 's' : 'n';
                 f32 w[3], o[3] = {0, 0, 0};

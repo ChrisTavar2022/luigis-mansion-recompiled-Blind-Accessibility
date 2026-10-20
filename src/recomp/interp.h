@@ -63,6 +63,8 @@ void tagGroupIfNone(u32 id);
 // (the element streams' drops): its model matrices always blend the short way (never switched for a
 // turn over ~150 degrees), their drawn centre moving in a straight line.
 void tagTumbler();
+// Marks the innermost scope as an element stream's drop for logs only (LM_SPRAY_LOG), not a tumbler.
+void tagStreamItem();
 // The innermost open scope moves by `step` (world units) per game frame: drawn without a partner in
 // the game frame before (just born, or its slot re-placed), it is shown moving along that step into
 // its place (at b - (1 - alpha) step) instead of standing still for the whole interval. Positions of
