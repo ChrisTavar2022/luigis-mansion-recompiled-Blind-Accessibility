@@ -86,7 +86,7 @@ diff --git a/lib/aurora.cpp b/lib/aurora.cpp
  
  uint32_t clamp_scissor_coord(double value, uint32_t maximum) noexcept {
    if (!std::isfinite(value)) {
-@@ -485,11 +563,13 @@
+@@ -486,11 +564,13 @@
      // AURORA_LATE_SUBMIT=1: the previous single submission after the acquire (A/B).
      static const bool sLateSubmit = std::getenv("AURORA_LATE_SUBMIT") != nullptr;
      present_timing::encode_keep_warm(encoder);  // 0215: after the frame's own work
@@ -100,7 +100,7 @@ diff --git a/lib/aurora.cpp b/lib/aurora.cpp
        for (auto& callback : afterSubmitCallbacks) {
          if (callback) {
            callback();
-@@ -722,4 +802,10 @@
+@@ -723,4 +803,10 @@
  #endif
  }
  void aurora_set_timescale(float scale) { aurora::time::set_scale(scale); }
@@ -127,7 +127,7 @@ diff --git a/include/aurora/aurora.h b/include/aurora/aurora.h
 diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 --- a/lib/gfx/enhanced.cpp
 +++ b/lib/gfx/enhanced.cpp
-@@ -160,6 +160,7 @@
+@@ -161,6 +161,7 @@
    uint32_t vtxCount = 0; // debug
    uint32_t tevStages = 0;
    bool lit = false;
@@ -135,7 +135,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
  };
  std::vector<GlowDraw> g_glowDraws;
  
-@@ -623,87 +624,247 @@
+@@ -625,87 +626,247 @@
  // applied inside the opaque world draws (ubuf.enh_flags bit 16) instead of multiplying the whole
  // picture at scene end, which also darkened what is drawn in front of occluded geometry: the
  // ghost layer, the flashlight beam, light effects, particles, glass and water.
@@ -444,7 +444,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
  }
  
  // Downsample (13-tap, as above without threshold).
-@@ -1282,9 +1443,15 @@
+@@ -1284,9 +1445,15 @@
    // 0032 forward ambient occlusion (third mask plane)
    Tex maskAo;
    wgpu::RenderPipeline aoMaskPipe;
@@ -461,20 +461,24 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
    // 0196 realistic flashlight
    wgpu::RenderPipeline beam, beamBlur;
    Tex beamTex, beamTmp;
-@@ -1400,6 +1567,12 @@
-   g_gpu.aoblur = make_pipeline("fs_aoblur", HdrFormat, 1, nullptr, all);
-   g_gpu.beam = make_pipeline("fs_beam", HdrFormat, 1, nullptr, all);
-   g_gpu.beamBlur = make_pipeline("fs_beamblur", HdrFormat, 1, nullptr, all);
-+  // 0224: the forward AO passes are built with the rest (they were built on first use, a hitch
-+  // when AO first ran).
-+  g_gpu.aoMaskPipe = make_pipeline("fs_aomask", wgpu::TextureFormat::RGBA16Float, 1, nullptr, all);
-+  g_gpu.aoDenoisePipe = make_pipeline("fs_aodenoise", wgpu::TextureFormat::RGBA16Float, 1, nullptr, all);
-+  g_gpu.aoDenoise2Pipe = make_pipeline("fs_aodenoise2", wgpu::TextureFormat::RGBA16Float, 1, nullptr, all);
-+  g_gpu.aoBlur4Pipe = make_pipeline("fs_aoblur4", wgpu::TextureFormat::RGBA8Unorm, 1, nullptr, all);
-   if (!g_gpu.beam || !g_gpu.beamBlur) {
-     Log.error("Realistic flashlight pass failed to build");
+@@ -1833,7 +2000,15 @@
+     g_gpu.maskPipe = make_pipeline("fs_xlshadow", wgpu::TextureFormat::RGBA8Unorm, 1, nullptr, wgpu::ColorWriteMask::All);
    }
-@@ -1773,7 +1946,23 @@
+   if (ao && !g_gpu.aoMaskPipe) {
+-    g_gpu.aoMaskPipe = make_pipeline("fs_aomask", wgpu::TextureFormat::RGBA8Unorm, 1, nullptr, wgpu::ColorWriteMask::All);
++    // 0224: horizon-based AO at AO resolution (RGBA16F: visibility, view z, normal) + two
++    // denoise passes before the upsample (fs_aoblur4)
++    g_gpu.aoMaskPipe = make_pipeline("fs_aomask", wgpu::TextureFormat::RGBA16Float, 1, nullptr, wgpu::ColorWriteMask::All);
++  }
++  if (ao && !g_gpu.aoDenoisePipe) {
++    g_gpu.aoDenoisePipe = make_pipeline("fs_aodenoise", wgpu::TextureFormat::RGBA16Float, 1, nullptr, wgpu::ColorWriteMask::All);
++  }
++  if (ao && !g_gpu.aoDenoise2Pipe) {
++    g_gpu.aoDenoise2Pipe = make_pipeline("fs_aodenoise2", wgpu::TextureFormat::RGBA16Float, 1, nullptr, wgpu::ColorWriteMask::All);
+   }
+   if (ao && !g_gpu.aoBlur4Pipe) {
+     g_gpu.aoBlur4Pipe = make_pipeline("fs_aoblur4", wgpu::TextureFormat::RGBA8Unorm, 1, nullptr, wgpu::ColorWriteMask::All);
+@@ -1851,7 +2026,23 @@
    const auto* prevDepth = g_gpu.maskDepth.texture.Get();
    ensure_tex(g_gpu.maskDepth, w, h, depthFormat, wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding,
               "Enhanced light-shadow depth");
@@ -499,7 +503,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
    ensure_tex(g_gpu.maskDepthR, w, h, wgpu::TextureFormat::R32Float,
               wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopySrc,
               "Enhanced light-shadow depth R");
-@@ -1790,8 +1979,21 @@
+@@ -1866,8 +2057,21 @@
          .depthStoreOp = wgpu::StoreOp::Store,
          .depthClearValue = gx::UseReversedZ ? 0.f : 1.f,
      };
@@ -523,7 +527,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
      const auto pass = cmd.BeginRenderPass(&desc);
      reset_bound_pipeline();
      pass.SetBindGroup(0, detail::resources().staticBindGroup);
-@@ -1800,6 +2002,9 @@
+@@ -1876,6 +2080,9 @@
      const float sx = 1.f / std::max(job.scaleBack, 1e-3f), sy = sx;
      for (size_t i = fromDepth; i < job.draws.size(); ++i) {
        const auto& g = job.draws[i];
@@ -533,7 +537,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
        const auto& vp = g.viewport;
        const float minDepth = gx::UseReversedZ ? 1.f - vp.zfar : vp.znear;
        const float maxDepth = gx::UseReversedZ ? 1.f - vp.znear : vp.zfar;
-@@ -1815,6 +2020,7 @@
+@@ -1891,6 +2098,7 @@
      }
      pass.End();
      reset_bound_pipeline();
@@ -541,7 +545,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
    }
    // 0210: an incremental mask (this frame's previous mask, same lights/layout, only new draws
    // added to the pre-pass) recomputes its planes only around the texels whose pre-pass depth
-@@ -1872,28 +2078,68 @@
+@@ -1948,23 +2156,60 @@
      cmd.CopyTextureToBuffer(&srcD, &dstD, &extent);
    }
    if (job.ao) {
@@ -558,16 +562,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 +    const auto* prevRaw = g_gpu.maskAoRaw.texture.Get();
 +    ensure_tex(g_gpu.maskAoRaw, aw, ah, wgpu::TextureFormat::RGBA16Float,
                 wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding, "Enhanced ambient occlusion raw");
-     if (!g_gpu.aoMaskPipe) {
--      g_gpu.aoMaskPipe = make_pipeline("fs_aomask", wgpu::TextureFormat::RGBA8Unorm, 1, nullptr, wgpu::ColorWriteMask::All);
-+      g_gpu.aoMaskPipe = make_pipeline("fs_aomask", wgpu::TextureFormat::RGBA16Float, 1, nullptr, wgpu::ColorWriteMask::All);
-     }
-     if (!g_gpu.aoBlur4Pipe) {
-       g_gpu.aoBlur4Pipe = make_pipeline("fs_aoblur4", wgpu::TextureFormat::RGBA8Unorm, 1, nullptr, wgpu::ColorWriteMask::All);
-     }
-+    if (!g_gpu.aoDenoisePipe) {
-+      g_gpu.aoDenoisePipe = make_pipeline("fs_aodenoise", wgpu::TextureFormat::RGBA16Float, 1, nullptr, wgpu::ColorWriteMask::All);
-+    }
+     ensure_mask_pipes(true);
 +    ensure_tex(g_gpu.maskAoDen, aw, ah, wgpu::TextureFormat::RGBA16Float,
 +               wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding, "Enhanced ambient occlusion denoised");
 +    const wgpu::TextureView normalView = normals ? g_gpu.maskNormal.view : wgpu::TextureView{};
@@ -616,7 +611,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
        pass.Draw(3);
        pass.End();
      }
-@@ -1903,7 +2149,7 @@
+@@ -1974,7 +2219,7 @@
                                            .timestampWrites = webgpu::gpu_prof::pass_writes("Ambient occlusion blur")};
      const auto pass = cmd.BeginRenderPass(&desc);
      pass.SetPipeline(g_gpu.aoBlur4Pipe);
@@ -625,7 +620,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
      pass.Draw(3);
      pass.End();
      const wgpu::TexelCopyTextureInfo src3{.texture = g_gpu.maskAo.texture};
-@@ -2476,6 +2722,23 @@
+@@ -2538,6 +2783,23 @@
    return layout;
  }
  
@@ -649,7 +644,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
  // The depth pre-pass and the light shadow maps (depth only).
  RenderTargetLayout depth_layout() noexcept {
    RenderTargetLayout l{
-@@ -2548,7 +2811,8 @@
+@@ -2610,7 +2872,8 @@
                         const std::function<void(const gx::PipelineConfig&, uint8_t targets)>& emit) noexcept {
    if (c.shaderConfig.depthOnly || c.shaderConfig.lightDepth) {
      if (bits & PrecacheEnabled) {
@@ -659,7 +654,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
      }
      return;
    }
-@@ -2610,7 +2874,8 @@
+@@ -2672,7 +2935,8 @@
        dc.alphaUpdate = false;
        dc.dstAlpha = UINT32_MAX;
        dc.shaderConfig.depthOnly = 1;
@@ -669,7 +664,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
        if ((bits & PrecacheCasters) && v.shaderConfig.lineMode == 0 && v.shaderConfig.zTexOp == 0) {
          gx::PipelineConfig lc = dc;
          lc.shaderConfig.lightDepth = 1;
-@@ -2971,13 +3236,17 @@
+@@ -3033,13 +3297,17 @@
      dc.dstAlpha = UINT32_MAX;
      dc.shaderConfig.depthOnly = 1; // the enhanced shading of the copy would be wasted (depth only)
      static const RenderTargetLayout layout = depth_layout();
@@ -691,7 +686,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
      }
      g.data.dstAlpha = UINT32_MAX;
      if (pointShadows && shadow_maps() && config.shaderConfig.lineMode == 0 && config.shaderConfig.zTexOp == 0) {
-@@ -3216,6 +3485,7 @@
+@@ -3278,6 +3546,7 @@
    job.ao = ao_forward();
    u.ao[0] = std::clamp(g_cfg.ssaoIntensity, 0.f, 2.f);
    u.ao[1] = std::max(g_cfg.ssaoRadius, 1.f);
@@ -699,10 +694,26 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
    if (job.point && shadow_maps()) {
      // Atlas: per light 3x2 faces of S texels. 0187: up to 16 lights in a roughly square grid
      // (cols x 3 ~ rows x 2), within the device's texture size limit (was two columns and 8192).
+@@ -3854,8 +4123,14 @@
+         make(g_gpu.mask4, w, h, wgpu::TextureFormat::RGBA8Unorm, maskUse, "Enhanced light-shadow mask 4");
+       }
+       if (ao) {
++        // 0224: AO at half the mask's resolution above 900 lines, the pre-pass normal target
++        const uint32_t s2 = h > 900 ? 2 : 1, aw = (w + s2 - 1) / s2, ah = (h + s2 - 1) / s2;
+         make(g_gpu.maskAo, w, h, wgpu::TextureFormat::RGBA8Unorm, maskUse, "Enhanced ambient occlusion mask");
+-        make(g_gpu.maskAoRaw, w, h, wgpu::TextureFormat::RGBA8Unorm, rt, "Enhanced ambient occlusion raw");
++        make(g_gpu.maskAoRaw, aw, ah, wgpu::TextureFormat::RGBA16Float, rt, "Enhanced ambient occlusion raw");
++        make(g_gpu.maskAoDen, aw, ah, wgpu::TextureFormat::RGBA16Float, rt, "Enhanced ambient occlusion denoised");
++        make(g_gpu.maskNormal, w, h, wgpu::TextureFormat::RGBA8Unorm, rt, "Enhanced pre-pass normals");
++        make(g_gpu.maskNormalColor, w, h, wgpu::TextureFormat::RGBA8Unorm, wgpu::TextureUsage::RenderAttachment,
++             "Enhanced pre-pass color placeholder");
+       }
+     }
+   }
 diff --git a/lib/gfx/enhanced.hpp b/lib/gfx/enhanced.hpp
 --- a/lib/gfx/enhanced.hpp
 +++ b/lib/gfx/enhanced.hpp
-@@ -90,7 +90,10 @@
+@@ -95,7 +95,10 @@
    PrecacheOffscreen = 1u << 1, // offscreen EFB passes (single sample, one attachment)
    PrecacheGlowTarget = 1u << 2,
    PrecacheDepthTarget = 1u << 3,
