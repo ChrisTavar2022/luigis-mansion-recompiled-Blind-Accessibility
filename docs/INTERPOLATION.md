@@ -736,7 +736,9 @@ checked: the Poltergust's water spray (nursery), the courtyard fountain (map 2 r
   by its own last step; tolerance 8 units + 30% of the step). The track is the identity. Loop 2
   keeps its items, with a new generation when the life counter (+3) rises.
 - All drops are tumblers from their first game frame (`interp::tagTumbler`): turns blend the short
-  way, the drawn centre moves in a straight line, and scale changes have no limit.
+  way, the drawn centre moves in a straight line, and scale changes have no limit. One whose random
+  orientation is mirrored in only one of the two game frames blends entrywise, like a sheared flip.
+  Before this fix the ceiling splashes switched.
 - Born moving (`interp::tagBackStep`). A point without a partner is shown at b - (1 - alpha) v,
   where v is its velocity (for the exact-velocity kind). A drop without a partner uses the step of
   the nearest followed drop within 80 units, or else of the nearest exact point within 120 units. So
@@ -766,19 +768,24 @@ game-frame join:
 The judder detector's visible counts come from the same runs; switches exclude the teleport's game
 frame.
 
-| scene, fps | points hold/n | points gap | drops hold/n | drops gap + nonlinear | detector visible blend defects | visible switches |
-|---|---|---|---|---|---|---|
-| nursery spray 120, old / new | 7372 (5.5%) / 352 | 4 / 0 | 2226 / 50 | 802 / 12 | 1794 / **0** | 191 / 11 |
-| nursery spray 60, old / new | 1234 / 275 | 0 / 0 | 316 / 47 | 92 / 10 | 650 / **0** | 341 / 7 |
-| courtyard fountain 120 | 54757 (2.3%) / 1105 | 57 / 0 | 12477 / 113 | 502 / 0 | 4643 / **0** | 107 / 0 |
-| courtyard fountain 60 | 47205 / 965 | 44 / 0 | 9048 / 96 | 440 / 0 | 3337 / **0** | 64 / 3 |
-| Spooky's garden 120 | 30041 (5.7%) / 677 | 136 / 0 | 12061 / 57 | 4834 / 1 | 1410 / **0** | 1172 / 1 |
-| Spooky's garden 60 | 27086 / 591 | 109 / 0 | 10863 / 51 | 4130 / 1 | 947 / **0** | 807 / 1 |
-| kitchen faucet 120 | 14183 (6.5%) / 185 | 111 / 0 | 5196 / 6 | 2404 / 0 | 2386 / **0** | 792 / 3 |
-| kitchen faucet 60 | 16118 / 173 | 116 / 0 | 5748 / 6 | 2877 / 0 | 2160 / **0** | 536 / 3 |
+Old = the first build of this branch with the old rules (`ev` runs); new = the final build (`fin3`
+runs, after the mirrored-tumbler and scale fixes), the same inputs.
 
-(The new nursery's 11 / 7 switches were ceiling splashes growing past the scale limit, fixed
-afterwards by the tumblers' unlimited scale.)
+| scene, fps | points hold/n old / new | points gap | drops hold/n | drops gap + nonlinear | detector visible blend defects | visible switches |
+|---|---|---|---|---|---|---|
+| nursery spray 120 | 7372 (5.5%) / 352 (0.26%) | 4 / 0 | 2226 / 50 | 802 / 0 | 1794 / **0** | 191 / **0** |
+| nursery spray 60 | 1234 / 314 | 0 / 0 | 316 / 47 | 92 / 0 | 650 / **0** | 341 / **0** |
+| courtyard fountain 120 | 54757 (2.3%) / 1042 (0.05%) | 57 / 0 | 12477 / 104 | 502 / 0 | 4643 / **0** | 107 / **0** |
+| courtyard fountain 60 | 47205 / 1014 | 44 / 0 | 9048 / 96 | 440 / 0 | 3337 / **0** | 64 / **0** |
+| Spooky's garden 120 | 30041 (5.7%) / 677 (0.15%) | 136 / 0 | 12061 / 57 | 4834 / 0 | 1410 / **0** | 1172 / **0** |
+| Spooky's garden 60 | 27086 / 611 | 109 / 0 | 10863 / 53 | 4130 / 0 | 947 / **0** | 807 / **0** |
+| kitchen faucet 120 | 14183 (6.5%) / 185 (0.07%) | 111 / 0 | 5196 / 6 | 2404 / 0 | 2386 / **0** | 792 / 3 |
+| kitchen faucet 60 | 16118 / 171 | 116 / 0 | 5748 / 3 | 2877 / 0 | 2160 / **0** | 536 / 3 |
+
+The kitchen's 3 switches are a J3D model (src 81377710) whose matrices jump about 860 units in one
+game frame: a respawn, at the game frame by design. The remaining new points without a partner
+(0.07-0.26% of point intervals) are points born in slots not yet seen moving by their own velocity,
+so they have no step to be born along.
 
 Also flagged as "hold", in old and new alike, are drops resting with an unchanged matrix in both
 game frames (the game's own; 7-18% of drop intervals) and drops born next to resting drops (moving
@@ -787,11 +794,16 @@ along a zero step).
 Hose, the varied-play A/B: foyer, water element, fast vacuum swings, R taps, turning on the spot,
 walking, reversals, spraying, a hit every 450 game frames; 10 minutes, same input. Old: 223,494
 blend defects (Luigi's model members, `loadPosMtxIndx` draws), more than 30 px off in 814 game
-frames (2160-line picture). New: 0.
+frames (2160-line picture). New: 0, and 0 at 60 fps (VSync on) with the same input. `LM_GROUP_LOG`
+V lines (members moved by the centre rule) went from 5693 tapes for Luigi's instance to none.
 
-Original 30 is byte-identical to main (db02360) with the user's settings at a 30 target: 71 frames
-2690-2760 of the nursery water spray, and 71 frames of the courtyard fountain (`LM_INPUT_CLOCK=frames`,
-`AURORA_BEAM_FREEZE_TIME=1`). The new code runs only while tapes are captured.
+Original 30 is byte-identical to main with the user's settings at a 30 target
+(`LM_INPUT_CLOCK=frames`, `AURORA_BEAM_FREEZE_TIME=1`, frames 2690-2760):
+- before the final merge, against db02360: 71 frames of the nursery water spray and 71 frames of the
+  courtyard fountain;
+- final build, against c6813d6: 71 frames of the nursery water spray and 71 frames of Spooky's garden.
+
+The new code runs only while tapes are captured.
 
 Remaining: the 98-matrix J3D instance at about (0, 600, 50) in the foyer (src 8136BEC0-8136C1F0) has erratic
 members that switch (590 "jump" lines in 10 minutes, the same with the old rule). It is not part of
