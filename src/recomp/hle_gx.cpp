@@ -1052,6 +1052,23 @@ static std::pair<f32, f32> setViewport(const Ctx& c) {
     sVpFollow = !viewportFull() && ws::inHudScope();
     sVpAnchor = sVpFollow ? scopeAnchor() : 0;
     sVpShift = sVpFollow ? ws::hudShift() : 0;
+    // A partial main view (bordered view) follows the centered frame where the frame loop sets it
+    // up (fn_800115F8(0), in a scope); the view's later passes set the same rectangle again outside
+    // any scope (ghost layer, effects, portraits): those follow it too, or they were drawn into the
+    // raw rectangle, stretched and spilling past the border in widescreen.
+    static struct {
+        bool valid = false;
+        f32 x = 0, y = 0, w = 0, h = 0;
+        int anchor = 0, shift = 0;
+    } sMainVp;
+    if (ws::inMainViewSetup()) {
+        sMainVp = {sVpFollow, sVp.left, farg(c, 2), sVp.wd, farg(c, 4), sVpAnchor, sVpShift};
+    } else if (!sVpFollow && sMainVp.valid && !viewportFull() && ws::active() && sVp.left == sMainVp.x &&
+               farg(c, 2) == sMainVp.y && sVp.wd == sMainVp.w && farg(c, 4) == sMainVp.h) {
+        sVpFollow = true;
+        sVpAnchor = sMainVp.anchor;
+        sVpShift = sMainVp.shift;
+    }
     HUD_TRACE("viewport %.1f %.1f %.1f %.1f%s %s", farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4),
               sVpFollow ? " follow" : "", guestChain(c).c_str());
     if (!sVpFollow) return {sVp.left, sVp.wd};

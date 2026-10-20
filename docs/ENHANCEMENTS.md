@@ -525,6 +525,11 @@ from `jmp/eventinfo` start by themselves) or `<frame>:pos:<x>,<y>,<z>`, `LM_FF=1
 (fast-forward everything), `LM_FF_SPEED=<x>`, `LM_SKIP_LOG=2` (snapshot every 30
 frames). Use `LM_CARD_DIR` for test runs: events save the game.
 
+Options audit (October 2026, docs/OPTIONS_AUDIT.md): with the user's settings (Enhanced lighting,
+interpolated presentation, 16:9) the opening, the foyer entrance event and E. Gadd's Game Boy Horror
+call were skipped with START; the call's skip suspended at the save prompt and left it to the player.
+The earlier "broken / can get stuck" state was not reproduced.
+
 ### Limitations
 
 - Only the opening and event scripts are covered. Sequences played by game code rather

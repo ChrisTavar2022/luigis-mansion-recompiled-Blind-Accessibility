@@ -12,4 +12,18 @@ void shutdown();                          // saves changes not yet written (wind
 // LM_MENU_ID_CHECK sweep: tree nodes and collapsible sections in the menu call this right
 // before their TreeNode() so the sweep sees (and checks) their contents too.
 void openTreesForCheck();
+
+// ImGui::Checkbox / Button / SmallButton for the menu's options: the same widgets, plus the
+// LM_MENU_CLICK test aid (menu.cpp), which clicks an option by its label at a guest frame
+// through the widget's own activation path, as a player's click would.
+bool Checkbox(const char* label, bool* v);
+bool Button(const char* label);
+bool SmallButton(const char* label);
+
+// ImGui::SliderFloat / SliderInt with "-" and "+" buttons in front: one click steps the value by
+// one unit of its last shown digit (1 for ints and "%.0f", 0.1 for "%.1f", 0.01 for "%.2f", ...),
+// clamped to the slider's range. Same arguments and return value as ImGui's (flags are
+// ImGuiSliderFlags).
+bool SliderFloat(const char* label, float* v, float min, float max, const char* format = "%.3f", int flags = 0);
+bool SliderInt(const char* label, int* v, int min, int max, const char* format = "%d", int flags = 0);
 }  // namespace recomp::menu

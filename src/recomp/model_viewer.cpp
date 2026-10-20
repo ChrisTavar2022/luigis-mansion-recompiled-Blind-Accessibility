@@ -31,6 +31,7 @@
 // Animations (docs/UNUSED_CONTENT.md, "Animations"): .key/.txp/.clk on S3D models,
 // .bck/.btk/.bpk/.brk on J3D models, .anm node animations on room models, all through the
 // game's own animation code on one timeline. Framing is refined from the drawn picture.
+#include "recomp/menu.h"
 #include "recomp/model_viewer.h"
 
 #include "recomp/dev_tools.h"
@@ -2483,8 +2484,8 @@ void window() {
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Play every piece of furniture's action animation (anm/<name>_1.anm:\n"
                                   "drawers, doors, swinging lamps...) in a loop. Applies on Load.");
-            ImGui::SliderFloat("Ambient", &sRoomAmbient, 0.0f, 1.0f, "%.2f");
-            ImGui::SliderFloat("Headlight", &sRoomLight, 0.0f, 1.0f, "%.2f");
+            recomp::menu::SliderFloat("Ambient", &sRoomAmbient, 0.0f, 1.0f, "%.2f");
+            recomp::menu::SliderFloat("Headlight", &sRoomLight, 0.0f, 1.0f, "%.2f");
             ImGui::SameLine();
             if (ImGui::Button("Load")) requestMap(sMapSel, sRoomSel);
             ImGui::TextDisabled("Fly: right-drag to look, WASD/QE to move,\nShift faster, wheel changes speed.");
@@ -2514,7 +2515,7 @@ void window() {
             ImGui::ColorEdit4("Ghost colour", sGhostColor, ImGuiColorEditFlags_NoInputs);
             ImGui::SameLine();
             ImGui::SetNextItemWidth(120);
-            ImGui::SliderFloat("Alpha", &sGhostAlpha, 0.0f, 1.0f, "%.2f");
+            recomp::menu::SliderFloat("Alpha", &sGhostAlpha, 0.0f, 1.0f, "%.2f");
         }
     }
     int wire = int(sWire);
@@ -2554,13 +2555,13 @@ void window() {
                 ImGui::SetTooltip("Keep the orbit centre on the model while its animation moves it\n"
                                   "(on by default for cutscene models that travel through the scene).");
         }
-        ImGui::SliderFloat("Yaw", &sCam.yaw, -6.2832f, 6.2832f);
-        ImGui::SliderFloat("Pitch", &sCam.pitch, -1.5f, 1.5f);
-        ImGui::SliderFloat("Distance", &sCam.zoom, 0.05f, 8.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
+        recomp::menu::SliderFloat("Yaw", &sCam.yaw, -6.2832f, 6.2832f);
+        recomp::menu::SliderFloat("Pitch", &sCam.pitch, -1.5f, 1.5f);
+        recomp::menu::SliderFloat("Distance", &sCam.zoom, 0.05f, 8.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
         ImGui::TextDisabled("Drag on the picture to orbit, wheel to zoom.");
     } else {
         ImGui::Text("pos %.1f %.1f %.1f", sCam.pos[0], sCam.pos[1], sCam.pos[2]);
-        ImGui::SliderFloat("Speed", &sCam.speed, 0.01f, 500.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+        recomp::menu::SliderFloat("Speed", &sCam.speed, 0.01f, 500.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
         ImGui::TextDisabled("Drag to look, WASD/QE to move, Shift faster,\nwheel changes speed.");
     }
     if (sNumFrames > 1) {
@@ -2583,8 +2584,8 @@ void window() {
         ImGui::Checkbox("Loop", &sAnim.loop);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(110);
-        ImGui::SliderFloat("Speed##anim", &sAnim.speed, 0.1f, 3.0f, "%.2fx");
-        if (ImGui::SliderFloat("Frame", &sFrame, 0.0f, float(sNumFrames - 1), "%.0f")) sAnim.play = false;
+        recomp::menu::SliderFloat("Speed##anim", &sAnim.speed, 0.1f, 3.0f, "%.2fx");
+        if (recomp::menu::SliderFloat("Frame", &sFrame, 0.0f, float(sNumFrames - 1), "%.0f")) sAnim.play = false;
         if (!sAnimInfo.empty()) ImGui::TextDisabled("%s", sAnimInfo.c_str());
     }
     ImGui::End();

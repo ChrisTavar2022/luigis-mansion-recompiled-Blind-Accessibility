@@ -200,7 +200,7 @@ void particleSection(bool inGame) {
     for (size_t i = 0; i < std::size(kParticles); i++) {
         char label[48];
         std::snprintf(label, sizeof label, "%s##pt%zu", kParticles[i].pcr, i);
-        if (ImGui::SmallButton(label)) sParticle = int(i);
+        if (recomp::menu::SmallButton(label)) sParticle = int(i);
         ImGui::SameLine();
         ImGui::TextDisabled("%s", kParticles[i].note);
     }
@@ -283,7 +283,7 @@ void spawnSection(bool inGame) {
             char label[32];
             std::snprintf(label, sizeof label, "Spawn##sp%zu", i);
             ImGui::BeginDisabled(!s.safe);
-            if (ImGui::SmallButton(label)) sRequest = int(i);
+            if (recomp::menu::SmallButton(label)) sRequest = int(i);
             ImGui::EndDisabled();
             ImGui::TableNextColumn();
             ImGui::Text("%3u  %s", s.type, s.name);

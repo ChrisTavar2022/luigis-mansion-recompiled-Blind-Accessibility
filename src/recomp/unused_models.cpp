@@ -308,6 +308,8 @@ void swapToadIcon(bool green) {
 
 }  // namespace
 
+void unusedModelsMapSetup();
+
 // Once per gameplay frame (GBH HUD hook, both versions). The type's texture set only reaches
 // an actor when its model's .txp files were already loaded when the actor was set up
 // (fn_80067B04/fn_80067F84 -> fn_80187974 -> S3DModel +0xA4). Toad's archive is a loose disc
@@ -319,6 +321,13 @@ void unusedModelsFrame() {
     static const bool sEnv = envFlag("LM_GREEN_TOAD");
     const bool green = sEnv || port::settings().enhancements.greenToad;
     swapToadIcon(green);
+    // Switched in the menu mid-map: the type's texture set follows at once, so Toads set up later
+    // in this map (not only after the next map load) match the option.
+    static int sTypeSet = -1;
+    if (int(green) != sTypeSet) {
+        sTypeSet = green;
+        unusedModelsMapSetup();
+    }
     static bool sApplied = false;
     if (!green && !sApplied) return;
     const u32 typeEntry = kTypeTableVA + 0x1C * kTypeKinopio;

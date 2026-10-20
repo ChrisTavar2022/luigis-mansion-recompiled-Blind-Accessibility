@@ -12,6 +12,7 @@
 #include "recomp/hle.h"
 #include "recomp/interp.h"
 
+#include <aurora/aurora.h>
 #include <aurora/efb_ram.h>
 
 #include <cstdio>
@@ -181,6 +182,38 @@ void onFrame(u32 frameNo) {
         log("[efb] copies to RAM %s", want ? "on" : "off");
     }
     aurora_efb_ram_apply();
+    // Test aid LM_SHOT=<dir>,<first>,<last>[,<step>[,<count>]]: the game image at render resolution (before
+    // post-processing and UI) of those guest frames (count consecutive ones every step; 2 with
+    // LM_AO_AB gives off/on pairs) as <dir>/s<frame>.ppm (Aurora 0224). Taken at
+    // the next presented frame, so with frame interpolation set 30 fps for exact game frames.
+    static struct Shot {
+        std::string dir;
+        unsigned first = 0, last = 0, step = 1, count = 1;
+        bool on = false;
+    } sShot = [] {
+        Shot s;
+        if (const char* v = std::getenv("LM_SHOT")) {
+            const std::string str = v;
+            const auto c = str.find(',');
+            if (c != std::string::npos &&
+                std::sscanf(str.c_str() + c + 1, "%u,%u,%u,%u", &s.first, &s.last, &s.step, &s.count) >= 2) {
+                s.dir = str.substr(0, c);
+                s.step = s.step ? s.step : 1;
+                s.on = true;
+            }
+        }
+        return s;
+    }();
+    if (sShot.on && frameNo >= sShot.first && frameNo <= sShot.last && (frameNo - sShot.first) % sShot.step < sShot.count) {
+        char path[512];
+        std::snprintf(path, sizeof path, "%s/s%05u.ppm", sShot.dir.c_str(), frameNo);
+        aurora_request_screenshot(path);
+    }
+    if (sShot.on && envInt("LM_DUMP_EXIT", 0) != 0 && !sDump.active && frameNo > sShot.last + 10) {
+        log("[efb] screenshot range done, exiting (LM_DUMP_EXIT)");
+        std::fflush(nullptr);
+        std::_Exit(0);
+    }
     // Test aid LM_DUMP_EXIT=1: quit once the LM_FRAME_DUMP range is written (automated runs).
     static const bool sDumpExit = envInt("LM_DUMP_EXIT", 0) != 0;
     if (sDumpExit && sDump.active && frameNo > sDump.last + 10) {

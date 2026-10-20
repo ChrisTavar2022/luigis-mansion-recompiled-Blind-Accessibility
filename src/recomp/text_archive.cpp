@@ -21,6 +21,7 @@
 #include "recomp/hle.h"
 #include "recomp/rarc.h"
 #include "recomp/unused2.h"
+#include "recomp/menu.h"
 #include "recomp/version.h"
 
 #include <aurora/imgui.h>
@@ -434,7 +435,7 @@ bool sTextOpen = false;
 }  // namespace
 
 void textArchiveButton() {
-    if (ImGui::Button(sTextOpen ? "Close text archive###textarchive" : "Text archive (unused lines)###textarchive")) sTextOpen = !sTextOpen;
+    if (recomp::menu::Button(sTextOpen ? "Close text archive###textarchive" : "Text archive (unused lines)###textarchive")) sTextOpen = !sTextOpen;
     ImGui::SetItemTooltip("Opens a window with the game's text, unused lines included, drawn in the game font.");
 }
 
@@ -450,7 +451,7 @@ void textArchiveWindow() {
         return;
     }
     static float sScale = 0.6f;
-    ImGui::SliderFloat("Text size", &sScale, 0.3f, 1.0f, "%.2f");
+    recomp::menu::SliderFloat("Text size", &sScale, 0.3f, 1.0f, "%.2f");
     if (sScanNext <= kMaxEvent) ImGui::TextDisabled("Reading event archives... %d / %d", sScanNext, kMaxEvent);
     static const char* sEnvTab = std::getenv("LM_TEXT_ARCHIVE");
     auto tabFlags = [&](const char* name) {

@@ -265,10 +265,9 @@ struct EnhancedLightingSettings {
     float bloomFlashlightSuppress = 0.6f;  // 0..1: less glow from walls lit by the flashlight
     float bloomScene = 0.12f;          // 0..1: glow of ordinary bright surfaces (above the threshold)
     float bloomEmissive = 0.6f;        // 0..2: glow of light-emitting effects (glows, fire, beams, sparks)
-    // Screen-space ambient occlusion (contact darkening in corners and under furniture).
-    // Disabled for now (forced off in enhanced_lighting.cpp, hidden in the menu): it shades some
-    // characters polygonal and blocky. The saved value is kept for when it returns.
-    bool ssao = false;
+    // Screen-space ambient occlusion (contact darkening in corners and under furniture;
+    // horizon-based since Aurora 0224). On by default, so it comes on with the master switch.
+    bool ssao = true;
     float ssaoIntensity = 0.4f;        // 0..2
     float ssaoRadius = 60.0f;          // world units
 };
