@@ -303,7 +303,14 @@ void afterItem(const char* label) {
     // Once found, the widget is followed by its ID: a button whose label changes when clicked
     // ("Gallery" -> "Close gallery###gallery") keeps its ID, not its label.
     static ImGuiID sId = 0;
-    if (sStep >= 0 ? ImGui::GetItemID() != sId : sActions.front().what != label) return;
+    // A "###id" label matches by its id part (the shown text in front of it may change).
+    auto matches = [&] {
+        const std::string& w = sActions.front().what;
+        const size_t a = w.find("###");
+        const char* b = std::strstr(label, "###");
+        return a != std::string::npos && b ? w.compare(a, std::string::npos, b) == 0 : w == label;
+    };
+    if (sStep >= 0 ? ImGui::GetItemID() != sId : !matches()) return;
     if (sStep < 0) {
         ImGui::SetScrollHereY(0.5f);
         sId = ImGui::GetItemID();
