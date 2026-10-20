@@ -83,7 +83,14 @@ Limitations: ghosts are drawn in view 1 only by the direct pass
 with the early direct shading described below. The camera image is not mirrored in the
 PAL mirror mode.
 
-## Early ghost shading ("Early (opaque) ghost shading")
+## Early ghost shading ("Ghost shading: Beta")
+
+The F1 option ("Ghost shading", Retail / Beta) is the known beta-shading cheat, not the direct
+draw described below: `HLE(fn_8005A5D4)` changes the channel setup call at 0x80058290 in the ghost
+lighting function `fn_800581E8` (light mask 0x80 -> 0x40, attenuation function 0 -> 2), so ghosts
+are lit brighter and flatter and keep the retail glowing ghost layer. The direct-draw path below
+is a dev-only experiment (`LM_EARLY_GHOSTS=1`). (The menu tooltip described the direct draw until
+the options audit, docs/OPTIONS_AUDIT.md.)
 
 Retail ghosts get the glowy see-through look from a separate **ghost layer**:
 

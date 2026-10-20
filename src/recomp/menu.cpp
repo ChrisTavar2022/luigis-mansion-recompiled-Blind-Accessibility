@@ -1216,9 +1216,10 @@ void unusedContentTab() {
             e.earlyGhostLighting = gs == 1;
             sDirty = true;
         }
-        ImGui::SetItemTooltip("Retail: ghosts are drawn into their own layer and added to the picture (the glowing,\n"
-                              "see-through look). Beta: ghosts are drawn directly with the room, solid and opaque\n"
-                              "as in early builds.");
+        ImGui::SetItemTooltip("Retail: the shipped ghost lighting. Beta: the ghost lighting setup of the known\n"
+                              "beta-shading cheat (the ghost's own light is a different light without distance\n"
+                              "falloff), so ghosts are lit brighter and flatter. Both keep the glowing, see-through\n"
+                              "ghost layer.");
     }
     item("Early Bogmire model", e.earlyBogmire,
          "Bogmire uses his unused early model (/model/shadow.szp): longer wings, thinner\n"
