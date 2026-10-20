@@ -432,6 +432,7 @@ const bool sTagLogInit = [] {
     return sTagLog != nullptr;
 }();
 std::string sTagChain;  // guest call chain of the current GX call (only while logging)
+const bool sTagLogChains = std::getenv("LM_TAG_LOG_CHAINS") != nullptr;  // LM_TAG_LOG: call chains of tagged values too
 
 f32 loadBE(const u8* p) { return std::bit_cast<f32>(u32(p[0]) << 24 | u32(p[1]) << 16 | u32(p[2]) << 8 | p[3]); }
 void storeBE(u8* p, f32 f) {
@@ -1022,10 +1023,12 @@ bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -
     Rigid ra, rb;
     if (!decompose(wa, 4, ra) || !decompose(wb, 4, rb)) {
         for (int i = 0; i < 12; i++)
-            if (std::fabs(wa[i] - wb[i]) > ((i & 3) == 3 ? 400.0f : 0.35f)) return false;
+            if (std::fabs(wa[i] - wb[i]) > ((i & 3) == 3 ? 400.0f : anyScale ? 1e30f : 0.35f)) return false;
         return true;
     }
-    if (flatMatrix(wa) || flatMatrix(wb) || skewFlip(wa, wb)) {
+    // (A tumbler whose random orientation came out mirrored in one game frame only: entrywise, like a
+    // flat matrix; ceiling splashes switched.)
+    if (flatMatrix(wa) || flatMatrix(wb) || skewFlip(wa, wb) || (anyScale && (ra.u[2][2] < 0) != (rb.u[2][2] < 0))) {
         // Squashed flat: only its axes' lengths (appearing/vanishing by scale) and place count.
         for (int k = 0; k < 3; k++) {
             const float sa = std::sqrt(wa[k] * wa[k] + wa[4 + k] * wa[4 + k] + wa[8 + k] * wa[8 + k]);
@@ -1121,6 +1124,9 @@ float noteTurn(const Tape* a, s32 j, const Tape& b, u32 i, const f32* wa, const 
 // A tumbler (tagTumbler: the element streams' drops, a random orientation every game frame) always
 // counts as one: its turns over ~150 degrees blend the short way from its first game frame on.
 float turnPolicy(const Patch& p, float prevTurn) { return p.tumble ? std::max(prevTurn, 1000.0f) : prevTurn; }
+// A tumbler whose random orientation came out mirrored in one of the two game frames: blended
+// entrywise (each vertex in a straight line), like a sheared flip (ceiling splashes).
+bool tumblerMirror(const Patch& p, const f32* wa, const f32* wb) { return p.tumble && (det3(wa) < 0) != (det3(wb) < 0); }
 u32 sFlips = 0;  // pairs blended through an equivalent flipped orientation (stats)
 u32 sFlatBlends = 0;  // squashed-flat model matrices blended entrywise in world space (stats)
 u32 sUntwists = 0;    // pairs whose fast twist was taken from b (stats)
@@ -1763,7 +1769,8 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
                      : kind == Kind::Projection ? "proj" : kind == Kind::Light ? "light" : "?",
                      kCatName[u32(p.cat)], (unsigned long long)p.key, sCallLr, slot, source, sTagDepth, int(p.view),
                      nFloats == 12 ? loadBE(&sScratch[p.offset + 12]) : 0.0f, nFloats == 12 ? loadBE(&sScratch[p.offset + 28]) : 0.0f,
-                     nFloats == 12 ? loadBE(&sScratch[p.offset + 44]) : 0.0f, p.key ? "" : " chain ", p.key ? "" : sTagChain.c_str());
+                     nFloats == 12 ? loadBE(&sScratch[p.offset + 44]) : 0.0f, p.key && !sTagLogChains ? "" : " chain ",
+                     p.key && !sTagLogChains ? "" : sTagChain.c_str());
     sPatches.push_back(p);
 }
 
@@ -3134,7 +3141,7 @@ bool blendFactored(const Tape& a, const Patch& q, const f32* va, const Tape& b, 
         M34 wa, wb, wt;
         compose(vp->ia.data(), va, wa.data());
         compose(vp->ib.data(), vb, wb.data());
-        const bool skew = skewFlip(wa.data(), wb.data());
+        const bool skew = skewFlip(wa.data(), wb.data()) || tumblerMirror(p, wa.data(), wb.data());
         if (!sLinearBlend && !skew && resolveFlip(wa.data(), wb.data(), 4)) sFlips++;
         if (!sLinearBlend && !skew && untwist(wa.data(), wb.data())) sUntwists++;
         // LM_TWIST_LOG=<file> (test aid): model matrices that turn by over 30 degrees in one game
@@ -3498,7 +3505,7 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 compose(iq.data(), ma, Wa.data());
                 compose(ib.data(), m, Wb.data());
                 const float prevTurn = turnPolicy(P, noteTurn(a, j, b, pb, Wa.data(), Wb.data(), 4));
-                const bool skew = skewFlip(Wa.data(), Wb.data());
+                const bool skew = skewFlip(Wa.data(), Wb.data()) || tumblerMirror(P, Wa.data(), Wb.data());
                 if (!skew) {
                     resolveFlip(Wa.data(), Wb.data(), 4);
                     untwist(Wa.data(), Wb.data());
@@ -3992,7 +3999,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 // the instance is at a pose its skin cannot follow rigidly, so all of it goes entrywise.
                 // Members blended rigidly next to entrywise ones skinned from different poses and
                 // Chauncey's body tore into shards for half an interval at a spin (sweep C, frame 6990).
-                const bool skew = skewFlip(wa.data(), wb.data());
+                const bool skew = skewFlip(wa.data(), wb.data()) || tumblerMirror(p, wa.data(), wb.data());
                 if (skew) fast = skin = true;
                 if (fast) fastGroups.insert(p.group);
                 if (skin) skinGroups.insert(p.group);
@@ -4281,7 +4288,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     compose(vp->ia.data(), va, wa.data());
                     compose(vp->ib.data(), vb, wb.data());
                     const float prevTurn = turnPolicy(p, noteTurn(a, j, b, i, wa.data(), wb.data(), 4));
-                    const bool skew = skewFlip(wa.data(), wb.data());
+                    const bool skew = skewFlip(wa.data(), wb.data()) || tumblerMirror(p, wa.data(), wb.data());
                     // (Not for a member of an articulated / skinned instance: its draw's centre is the
                     // centre of the whole mesh, not of what this matrix moves. Each spinning member of
                     // Luigi's model was shifted by its own correction of up to 115 units while the
