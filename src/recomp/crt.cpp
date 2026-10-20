@@ -524,7 +524,7 @@ void update() {
 bool drawMenu() {
     using namespace port;
     auto& s = settings().crt;
-    bool changed = ImGui::Checkbox("CRT filter", &s.enabled);
+    bool changed = recomp::menu::Checkbox("CRT filter", &s.enabled);
     ImGui::SetItemTooltip("Makes the picture look like a CRT television: scanlines, a phosphor mask, glow and\n"
                           "screen curvature. One post-processing pass chain on the finished image.");
     if (s.enabled && !aurora_postfx_active()) {
@@ -603,7 +603,7 @@ bool drawMenu() {
         ImGui::SetItemTooltip("Bulge of the screen glass (0 = flat)");
         custom |= sliderF("Corner radius", s.cornerRadius, 0.0f, 0.2f, "%.3f");
         ImGui::SetItemTooltip("Rounding of the picture's corners (0 = square)");
-        if (ImGui::Button("Reset to preset")) {
+        if (recomp::menu::Button("Reset to preset")) {
             applyPreset(s, s.preset == CrtPreset::Custom ? CrtPreset::ApertureGrille : s.preset);
             changed = true;
         }

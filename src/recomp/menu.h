@@ -12,4 +12,11 @@ void shutdown();                          // saves changes not yet written (wind
 // LM_MENU_ID_CHECK sweep: tree nodes and collapsible sections in the menu call this right
 // before their TreeNode() so the sweep sees (and checks) their contents too.
 void openTreesForCheck();
+
+// ImGui::Checkbox / Button / SmallButton for the menu's options: the same widgets, plus the
+// LM_MENU_CLICK test aid (menu.cpp), which clicks an option by its label at a guest frame
+// through the widget's own activation path, as a player's click would.
+bool Checkbox(const char* label, bool* v);
+bool Button(const char* label);
+bool SmallButton(const char* label);
 }  // namespace recomp::menu
