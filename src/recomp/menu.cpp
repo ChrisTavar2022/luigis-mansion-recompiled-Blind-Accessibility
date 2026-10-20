@@ -792,21 +792,8 @@ void enhancedLightingTab() {
                           "than actual light sources.");
     ImGui::Unindent();
     ImGui::EndDisabled();
-    sDirty |= ImGui::Checkbox("Ambient occlusion (experimental)", &l.ssao);
-    ImGui::SetItemTooltip(
-        "Darkens corners, creases and the floor under furniture (screen-space, from the depth\n"
-        "buffer). Applied only to solid surfaces, so ghosts, the flashlight beam, glows, particles\n"
-        "and glass in front of a corner keep their brightness. One half-resolution pass.\n"
-        "Experimental: can darken large areas. Switching it rebuilds some shaders once.");
-    ImGui::BeginDisabled(!l.ssao);
-    ImGui::Indent();
-    sDirty |= ImGui::SliderFloat("Occlusion intensity", &l.ssaoIntensity, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("How dark occluded corners get.");
-    sDirty |= ImGui::SliderFloat("Occlusion radius", &l.ssaoRadius, 10.0f, 200.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SetItemTooltip("How far around a pixel (world units) nearby surfaces darken it. Larger: broader,\n"
-                          "softer darkening.");
-    ImGui::Unindent();
-    ImGui::EndDisabled();
+    // Ambient occlusion is disabled for now (it shades some characters polygonal and blocky), so
+    // its options are hidden; enhanced_lighting.cpp keeps it off (LM_AO=1 for testing).
     ImGui::EndDisabled();
 }
 

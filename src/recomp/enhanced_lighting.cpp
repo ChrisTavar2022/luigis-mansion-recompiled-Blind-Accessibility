@@ -460,7 +460,10 @@ void applySettings() {
     c.bloomFlashlightSuppress = l.bloomFlashlightSuppress;
     c.bloomScene = l.bloomScene;
     c.bloomEmissive = l.bloomEmissive;
-    c.ssao = l.ssao;
+    // Ambient occlusion is disabled for now (blocky, polygonal shading on some characters);
+    // LM_AO=1 brings it back for testing.
+    static const bool sAoTest = std::getenv("LM_AO") && std::atoi(std::getenv("LM_AO")) != 0;
+    c.ssao = sAoTest && l.ssao;
     c.ssaoIntensity = l.ssaoIntensity;
     c.ssaoRadius = l.ssaoRadius;
     // Test aid LM_AO_AB=1: ambient occlusion only on odd dump frames (intensity 0 on even ones, so
