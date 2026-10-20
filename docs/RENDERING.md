@@ -630,6 +630,101 @@ LM_TEST_STATE=poltergust LM_LIGHTNING=0,90,1`, flashlight + GBH; window captures
 - Test aid: `LM_SMOOTH_BANDING=0|1|2` (off / on / on without the sub-step noise) overrides the
   setting; `LM_ACCURACY=<mask>` with bits 0x20 (smooth) and 0x40 (noise).
 
+## CRT filter: video signal paths (S-Video, composite, RF)
+
+F1 > Visuals > CRT filter > **Signal**: RGB (clean, the old behaviour), S-Video, Composite, RF
+(antenna / coax). It is a separate choice next to the tube preset rather than more presets: the
+cable and the tube are independent (any tube could be fed any signal), so four signals x four
+tubes would otherwise be sixteen presets, and choosing a tube preset keeps the signal (and the
+other way round). Choosing a signal loads its defaults; "Signal advanced" has the sliders (luma
+bandwidth = sharpness, chroma bandwidth, sharpening, colour, Y/C separation and artifact strength
+for composite/RF, and for RF noise, ghost + delay, jitter, hum bar, interference) and "Reset signal".
+Settings `[crt] signal, separation, luma_bandwidth, chroma_bandwidth, sharpening, artifacts,
+saturation, noise, ghost, ghost_delay, jitter, hum, interference`. An original model written
+from the NTSC signal definitions (no shader code from other projects).
+
+### The model (`src/recomp/crt.cpp`, passes `ntsc_encode/filter/separate/decode`)
+
+The passes run on the game's NTSC line, not the output: one row per scanline (480, or 240 with
+"240 lines") sampled at 4 x the colour subcarrier (4fsc = 14.318 MHz). A 640-pixel game line lasts
+47.4 us at the GameCube's 13.5 MHz pixel clock, 679 samples; a wider (Hor+) frame gets
+proportionally more (the postfx ASPECT size mode), so the bandwidths are the same per screen width
+at every aspect and the result is independent of the output resolution (the CRT passes upscale it
+as before). Values stay gamma-encoded, as in the real signal.
+
+At 4fsc the subcarrier advances exactly 90 degrees per sample, so every carrier sample is +-1 or 0
+and the modulated chroma of a sample is +-I or +-Q. That makes the whole chain exact and cheap
+while the textures hold Y, I, Q (the composite signal is Y + I cos + Q sin, formed on the fly):
+1. `ntsc_encode`: box-average of the game frame over each sample, R'G'B' -> Y'IQ (FCC matrix).
+2. `ntsc_filter`: the console's encoder band limits (luma 6 MHz, chroma 1.5 MHz, Hann-windowed
+   sinc FIRs, 33 taps). RF adds the modulator + tuner/IF channel limit (4.2 MHz) applied to the
+   *modulated* signal: on the I/Q pair that is the low-pass shifted to the subcarrier, a complex
+   kernel (in-phase + quadrature taps), so the tuner's cut of the upper chroma sideband costs some
+   saturation and smears hue as on a real set. RF also adds a multipath ghost (a delayed, weaker
+   copy; its chroma arrives at another carrier phase, rotated by the delay in quarter cycles), a
+   hum bar (mains 60 Hz against 59.94 Hz fields: one dark band per field rolling up every ~17 s),
+   an optional interfering carrier (diagonal bars) and white noise per sample, new every field.
+3. `ntsc_separate`: the TV's Y/C separation. S-Video keeps them apart. Composite/RF only have
+   Y + C: a notch set takes chroma with a +-1.3 MHz band-pass and removes a narrower +-0.8 MHz
+   trap from luma (luma keeps more detail; the chroma sidebands outside the trap stay in luma =
+   dot crawl, luma detail near 3.58 MHz is decoded as colour = rainbows); a 2-line / 3-line comb
+   subtracts lines of the same field (opposite subcarrier phase) then band-passes, so flat colour
+   separates cleanly and the dots hang on horizontal colour edges instead. Linear, so Y and C go
+   through separately and the crosstalk terms are scaled by "Artifact strength" (1 = the true
+   composite sum). Then demodulation (x 2cos / 2sin of the burst-locked carrier).
+4. `ntsc_decode`: TV luma channel (low-pass at "Luma bandwidth" + peaking "Sharpening"), chroma
+   low-pass: an analog-style causal filter (three real poles at "Chroma bandwidth", zero at fs/2
+   for the 2fsc demodulation product) advanced by two time constants as the TV's luma delay line
+   does, so colour trails to the right of edges; colour control, RF black lift / gain (AGC: a
+   slightly flat picture); Y'IQ -> R'G'B'. RF line jitter (per line per field + slow wobble) is
+   applied where `crt_linearize` reads the decoded line.
+
+Line ends read the nearest sample with the same carrier phase (no colour fringe at the borders).
+Defaults: S-Video luma 5.0 / chroma 1.3 MHz; Composite 4.2 / 1.0 MHz, notch, colour 0.92,
+sharpening 0.25; RF 3.4 / 0.8 MHz, colour 0.85, noise 0.2, ghost 0.08 at 1.2 us, jitter 0.2 px,
+hum 0.25.
+
+### Subcarrier phase and frame interpolation
+
+Phase per row in quarter cycles: 227.5 cycles per line (+180 degrees per line of a field) and
+262.5 lines per field (+90 degrees per field), so in the 480-line picture the rows of one field
+alternate by 180 degrees, the two fields are interleaved a quarter cycle apart, the pattern moves
+every field and repeats after four (two frames): dot crawl. Rows of the field not being sent keep
+the phase of their last field. "240 lines" uses 263-line double strike timing (+180 degrees per
+line and per field).
+
+The field counter runs on **real time at 59.94 Hz** (steady clock, `fillSignal`), not on game frames
+or presented frames. The console sends 59.94 fields per second whatever the game's frame rate
+(LM renders 30 fps, each game frame goes out in two fields with different subcarrier phases), and
+the TV shows each field for 1/59.94 s: at 120 fps each field is presented twice, exactly what a
+set would show, and the crawl speed does not change with the frame-rate setting, interpolation,
+pauses or slowdowns. Game frames would halve the crawl and freeze it in menus; presented frames
+would make it twice as fast at 120 fps. The CRT's 480i scan field now uses the same clock
+(before, it toggled every presented frame).
+
+### Cost and checks
+
+GPU (RTX 3090 Ti, `AURORA_GPU_PROFILE`, render scale 5 = 2400-line source, frozen title or foyer;
+the light load keeps the clocks low, so these are upper bounds): composite with a 3-line comb
++0.27 ms per presented frame (encode 0.01-0.02, filter 0.04-0.06, separate 0.12-0.13, decode
+0.07), RF +0.28-0.44 ms; the CRT passes after them are unchanged. The signal textures are
+~680-910 x 480 at any output size, so the cost does not grow at 4K output.
+
+With the CRT filter off the chain is the display-copy pass only, as before; window captures of a
+frozen frame (`LM_FREEZE_AT`) from the build before and after are identical except the title's
+pulsing "PRESS START" (the freeze lands on a different blink frame). ImGui ID sweep
+(`LM_MENU_ID_CHECK`) of Visuals: no conflicts.
+
+Comparison captures (title + foyer with Luigi and the HUD, aperture grille, 480 lines, 1920x1080
+16:9 Hor+): `out/crt_signals/` (not in git). Test aids:
+- `LM_CRT=<preset 0-3>[,<scanlines 0-2>[,<signal 0-3>]]` (signal 0 RGB, 1 S-Video, 2 composite, 3 RF);
+- `LM_CRT_FIELD=<n>` holds the field clock (identical screenshots);
+- `LM_CRT_CYCLE=<seconds>[,<start s>]` steps RGB -> S-Video -> composite -> RF (logs `[crt] signal`);
+- `LM_FREEZE_AT=<frame>` (main.cpp) holds the game from that frame (copyDispCount) while the host
+  keeps presenting its last tape through the post chain (needs a frame rate above 30): A/B shots
+  of one game frame, e.g. `LM_CRT_CYCLE=5,25 LM_FREEZE_AT=550` (title) or `3400` (foyer with the
+  HUD on the `600:START*10,1000:A*6` route).
+
 ## Indirect effects
 
 Aurora patch `0014-indirect-and-copy-format-accuracy.patch`; logging and test aids in

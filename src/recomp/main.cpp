@@ -38,6 +38,7 @@
 #include <chrono>
 
 namespace recomp {
+u32 copyDispCount();  // hle_gx.cpp
 #ifdef LM_STATIC_MODULE
 extern const GameModule kGameModule;  // generated func_table.cpp, linked in (lmrecomp)
 #endif
@@ -327,7 +328,16 @@ int main(int argc, char* argv[]) {
             sHoldAudio = hold;
             if (!paused) audio::outSetPaused(hold);
         }
-        frame::setHostPaused(paused || hold);
+        // Test aid LM_FREEZE_AT=<frame>: from that game frame (copyDispCount) on, the guest is held
+        // as for a focus loss while the host keeps presenting its last tape with the post-process
+        // chain (A/B screenshots of one game frame, e.g. CRT signals with LM_CRT_CYCLE). Needs
+        // interpolated presentation (frame rate above 30).
+        static const u32 sFreezeAt = [] {
+            const char* v = std::getenv("LM_FREEZE_AT");
+            return v ? u32(std::strtoul(v, nullptr, 10)) : 0u;
+        }();
+        const bool frozen = sFreezeAt && copyDispCount() >= sFreezeAt;
+        frame::setHostPaused(paused || hold || frozen);
         if (exiting || paused) continue;
         if (hold) {
             if (!aurora_begin_frame()) continue;

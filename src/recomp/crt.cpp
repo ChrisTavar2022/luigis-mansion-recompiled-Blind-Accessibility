@@ -27,6 +27,10 @@
 #include <imgui.h>
 
 #include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -45,11 +49,238 @@ struct Crt {
     gamma: vec4f,    // gamma in, gamma out, curvature, corner radius
     dcopy: vec4f,    // display copy filter weights: line above, this line, line below; -
     dcopy2: vec4f,   // display copy gamma, EFB lines, -, -
+    sig0: vec4f,     // signal (0 RGB, 1 S-Video, 2 composite, 3 RF), crosstalk, saturation, comb line step
+    sig1: vec4f,     // field mod 4, separation (0 notch, 1 2-line comb, 2 3-line comb), 480i timing, field mod 65536
+    sig2: vec4f,     // noise sigma, ghost gain, ghost delay (samples), line jitter (game px)
+    sig3: vec4f,     // hum depth, hum phase, interference amplitude, interference phase
+    sig4: vec4f,     // black level, gain, field parity (480i scan), -
+    sigr: vec4f,     // kernel radii (taps each side, <= 16): encoder/RF, Y/C separation, chroma, luma
+    k_y: array<vec4f, 9>,    // FIR taps -16..16 (index n + 16): encoder (+ RF tuner) luma
+    k_ca: array<vec4f, 9>,   // encoder (+ RF tuner) chroma, in phase
+    k_cb: array<vec4f, 9>,   // RF tuner chroma, quadrature (tuner response around the subcarrier)
+    k_sep: array<vec4f, 9>,  // TV chroma band-pass (Y/C separation)
+    k_trap: array<vec4f, 9>, // TV luma subcarrier trap, as the band-pass it removes (notch: narrower)
+    k_dc: array<vec4f, 9>,   // TV chroma low-pass after demodulation (causal: colour trails to the right)
+    k_dy: array<vec4f, 9>,   // TV luma low-pass + peaking
 };
 @group(0) @binding(1) var<uniform> crt: Crt;
 @group(0) @binding(3) var tex0: texture_2d<f32>;
 @group(0) @binding(4) var tex1: texture_2d<f32>;
 @group(0) @binding(5) var tex2: texture_2d<f32>;
+
+// ---- signal path (S-Video / composite / RF). The game frame is resampled to the NTSC line
+// at 4 x the colour subcarrier (14.318 MHz, 4fsc: the subcarrier phase advances exactly 90 degrees
+// per sample), one row per scanline, so every carrier is +-1 or 0 and the modulated chroma of
+// any sample is +-I or +-Q. A 640-pixel game line lasts 47.4 us (13.5 MHz pixel clock), 679
+// samples; wider (Hor+) frames get proportionally more samples, so bandwidths stay the same per
+// screen width at any aspect. Values are gamma-encoded (video signals are), linear filters only.
+fn kat(n: i32) -> vec2i {
+    let i = n + 16;
+    return vec2i(i >> 2, i & 3);
+}
+fn tap_y(n: i32) -> f32 { let i = kat(n); return crt.k_y[i.x][i.y]; }
+fn tap_ca(n: i32) -> f32 { let i = kat(n); return crt.k_ca[i.x][i.y]; }
+fn tap_cb(n: i32) -> f32 { let i = kat(n); return crt.k_cb[i.x][i.y]; }
+fn tap_sep(n: i32) -> f32 { let i = kat(n); return crt.k_sep[i.x][i.y]; }
+fn tap_trap(n: i32) -> f32 { let i = kat(n); return crt.k_trap[i.x][i.y]; }
+fn tap_dc(n: i32) -> f32 { let i = kat(n); return crt.k_dc[i.x][i.y]; }
+fn tap_dy(n: i32) -> f32 { let i = kat(n); return crt.k_dy[i.x][i.y]; }
+
+fn rgb_to_yiq(c: vec3f) -> vec3f {
+    return vec3f(dot(c, vec3f(0.299, 0.587, 0.114)), dot(c, vec3f(0.5959, -0.2746, -0.3213)),
+                 dot(c, vec3f(0.2115, -0.5227, 0.3112)));
+}
+fn yiq_to_rgb(c: vec3f) -> vec3f {
+    return vec3f(c.x + 0.9563 * c.y + 0.6210 * c.z, c.x - 0.2721 * c.y - 0.6474 * c.z,
+                 c.x - 1.1070 * c.y + 1.7046 * c.z);
+}
+
+fn hash3(a: u32, b: u32, c: u32) -> u32 {
+    var h = (a * 0x8da6b343u) ^ (b * 0xd8163841u) ^ (c * 0xcb1ab31fu);
+    h ^= h >> 16u;
+    h *= 0x7feb352du;
+    h ^= h >> 15u;
+    h *= 0x846ca68bu;
+    h ^= h >> 16u;
+    return h;
+}
+fn rnd(h: u32) -> f32 { return f32(h >> 8u) / 16777216.0; }
+
+// (I, Q) of a chroma signal delayed by q samples, seen at the current sample's carrier phase.
+fn rot_quarter(iq: vec2f, q: i32) -> vec2f {
+    switch (q & 3) {
+        case 1: { return vec2f(-iq.y, iq.x); }
+        case 2: { return -iq; }
+        case 3: { return vec2f(iq.y, -iq.x); }
+        default: { return iq; }
+    }
+}
+
+// Subcarrier phase of a row in quarter cycles. 480i: 227.5 cycles per line (+half a cycle per
+// field line) and 262.5 lines per field (+a quarter cycle per field), so the rows of one field
+// alternate by 180 degrees, the two fields are interleaved a quarter cycle apart and the pattern
+// moves every field (dot crawl), repeating after 4 fields. The rows of the field not being drawn
+// keep the phase of their last field. 240p (double strike, 263 lines): +180 degrees per line and
+// per field.
+fn row_quarter(row: i32) -> i32 {
+    let k = i32(crt.sig1.x);
+    if (crt.sig1.z > 0.5) {
+        let field = select(k - 1, k, (k & 1) == (row & 1));
+        return (field + 2 * (row >> 1)) & 3;
+    }
+    return (2 * row + 2 * k) & 3;
+}
+fn carrier(x: i32, q: i32) -> vec2f {  // (cos, sin) of the subcarrier at sample x
+    switch ((x + q) & 3) {
+        case 0: { return vec2f(1.0, 0.0); }
+        case 1: { return vec2f(0.0, 1.0); }
+        case 2: { return vec2f(-1.0, 0.0); }
+        default: { return vec2f(0.0, -1.0); }
+    }
+}
+// Past the line ends, read the nearest sample with the same carrier phase (no colour fringe).
+fn fold4(x: i32, w: i32) -> i32 {
+    if (x < 0) {
+        return x + 4 * ((3 - x) / 4);
+    }
+    if (x >= w) {
+        return x - 4 * ((x - w + 4) / 4);
+    }
+    return x;
+}
+
+// ---- pass: the console's encoder input: game frame -> Y'IQ at 4fsc, one row per line
+@fragment
+fn ntsc_encode(in: AuroraPostFxVertex) -> @location(0) vec4f {
+    let src = vec2f(textureDimensions(tex0));
+    let dst = aurora_postfx.output_size;
+    let n = vec2i(clamp(ceil(src / dst * 0.5), vec2f(1.0), vec2f(4.0, 8.0)));
+    let base = floor(in.position.xy) / dst;
+    var acc = vec3f(0.0);
+    for (var j = 0; j < n.y; j++) {
+        for (var i = 0; i < n.x; i++) {
+            let o = (vec2f(f32(i), f32(j)) + 0.5) / vec2f(n);
+            acc += textureSampleLevel(tex0, aurora_linear, base + o / dst, 0.0).rgb;
+        }
+    }
+    return vec4f(rgb_to_yiq(clamp(acc / f32(n.x * n.y), vec3f(0.0), vec3f(1.0))), 1.0);
+}
+
+// ---- pass: encoder band limits, then (RF) the tuner response, multipath ghost, hum, interference
+// and noise. The tuner filters the modulated signal; on the I/Q pair that is a complex kernel
+// (in-phase k_ca, quadrature k_cb), exact at 4fsc.
+fn enc_filter(p: vec2i, w: i32) -> vec3f {
+    let r = i32(crt.sigr.x);
+    var y = 0.0;
+    var iq = vec2f(0.0);
+    for (var k = -r; k <= r; k++) {
+        let t = textureLoad(tex0, vec2i(clamp(p.x - k, 0, w - 1), p.y), 0).xyz;
+        y += tap_y(k) * t.x;
+        iq += tap_ca(k) * t.yz + tap_cb(k) * vec2f(-t.z, t.y);
+    }
+    return vec3f(y, iq);
+}
+
+@fragment
+fn ntsc_filter(in: AuroraPostFxVertex) -> @location(0) vec4f {
+    let p = vec2i(in.position.xy);
+    let dims = vec2i(textureDimensions(tex0));
+    var v = enc_filter(p, dims.x);
+    if (crt.sig2.y > 0.0) {  // echo arriving later: to the right, its chroma at another carrier phase
+        let d = i32(crt.sig2.z);
+        let e = enc_filter(vec2i(p.x - d, p.y), dims.x);
+        v += crt.sig2.y * vec3f(e.x, rot_quarter(e.yz, d));
+    }
+    // Hum: mains ripple (60 Hz) on the gain beats against the 59.94 Hz fields, so one dark band
+    // per field rolls slowly up the screen.
+    let rowf = f32(p.y) / f32(dims.y);
+    v *= 1.0 - crt.sig3.x * (0.5 + 0.5 * sin(6.2831853 * (rowf + crt.sig3.y)));
+    if (crt.sig3.z > 0.0) {  // an interfering carrier ~1.6 MHz off: fine diagonal bars
+        v.x += crt.sig3.z * sin(6.2831853 * (f32(p.x) * 0.113 + f32(p.y) * 0.31 + crt.sig3.w));
+    }
+    if (crt.sig2.x > 0.0) {  // white noise over the channel (snow after the TV's filters), new every field
+        let seed = u32(crt.sig1.w);
+        let a = rnd(hash3(u32(p.x), u32(p.y), seed));
+        let b = rnd(hash3(u32(p.x) + 7919u, u32(p.y), seed ^ 0x5bd1e995u));
+        v.x += crt.sig2.x * (a + b - 1.0) * 2.449;
+    }
+    return vec4f(v, 1.0);
+}
+
+// ---- pass: the TV's Y/C separation and chroma demodulation. S-Video keeps Y and C apart;
+// composite / RF only have Y + C: a notch (band-pass for chroma, the rest is luma) or a comb
+// (difference of lines of the same field, whose chroma is in opposite phase), then band-pass.
+// Linear, so Y and C go through separately: the C left in luma (dot crawl) and the Y taken as
+// chroma (cross-colour, rainbows) are scaled by the crosstalk setting (1 = the true sum).
+fn yc(x: i32, row: i32, w: i32) -> vec2f {
+    let xf = fold4(x, w);
+    let t = textureLoad(tex0, vec2i(xf, row), 0).xyz;
+    return vec2f(t.x, dot(t.yz, carrier(xf, row_quarter(row))));
+}
+fn comb(x: i32, row: i32, w: i32, h: i32) -> vec2f {
+    let sep = i32(crt.sig1.y);
+    let here = yc(x, row, w);
+    if (sep == 0) {
+        return here;
+    }
+    let s = i32(crt.sig0.w);
+    var up = row - s;
+    var dn = row + s;
+    if (up < 0) {
+        up = dn;
+    }
+    if (dn >= h) {
+        dn = up;
+    }
+    if (sep == 1) {
+        return 0.5 * (here - yc(x, up, w));
+    }
+    return 0.25 * (2.0 * here - yc(x, up, w) - yc(x, dn, w));
+}
+
+@fragment
+fn ntsc_separate(in: AuroraPostFxVertex) -> @location(0) vec4f {
+    let p = vec2i(in.position.xy);
+    let dims = vec2i(textureDimensions(tex0));
+    let here = yc(p.x, p.y, dims.x);
+    var luma = here.x;
+    var chroma = here.y;
+    if (crt.sig0.x > 1.5) {
+        let r = i32(crt.sigr.y);
+        var c = vec2f(0.0);  // chroma band-pass of (Y part, C part)
+        var t = vec2f(0.0);  // what the luma trap removes
+        for (var k = -r; k <= r; k++) {
+            let v = comb(p.x - k, p.y, dims.x, dims.y);
+            c += tap_sep(k) * v;
+            t += tap_trap(k) * v;
+        }
+        let a = crt.sig0.y;
+        luma = (here.x - t.x) + a * (here.y - t.y);
+        chroma = c.y + a * c.x;
+    }
+    // Demodulation: chroma x 2 cos / 2 sin of the burst-locked carrier, low-passed next pass.
+    return vec4f(luma, 2.0 * chroma * carrier(p.x, row_quarter(p.y)), 1.0);
+}
+
+// ---- pass: TV luma channel (bandwidth, peaking) and chroma low-pass, Y'IQ -> R'G'B'
+@fragment
+fn ntsc_decode(in: AuroraPostFxVertex) -> @location(0) vec4f {
+    let p = vec2i(in.position.xy);
+    let w = i32(textureDimensions(tex0).x);
+    let ry = i32(crt.sigr.w);
+    var y = 0.0;
+    for (var k = -ry; k <= ry; k++) {
+        y += tap_dy(k) * textureLoad(tex0, vec2i(fold4(p.x - k, w), p.y), 0).x;
+    }
+    let rc = i32(crt.sigr.z);
+    var iq = vec2f(0.0);
+    for (var k = -rc; k <= rc; k++) {
+        iq += tap_dc(k) * textureLoad(tex0, vec2i(fold4(p.x - k, w), p.y), 0).yz;
+    }
+    y = crt.sig4.x + crt.sig4.y * y;
+    iq *= crt.sig4.y * crt.sig0.z;
+    return vec4f(clamp(yiq_to_rgb(vec3f(y, iq)), vec3f(0.0), vec3f(1.0)), 1.0);
+}
 
 // ---- pass: the display copy (GXCopyDisp) as the console's pixel engine does it: the
 // vertical filter of GXSetCopyFilter over the line above / this line / the line below (in EFB
@@ -89,7 +320,16 @@ fn crt_linearize(in: AuroraPostFxVertex) -> @location(0) vec4f {
     let dst = aurora_postfx.output_size;
     let band = src / dst;
     let n = vec2i(clamp(ceil(band * 0.5), vec2f(1.0), vec2f(4.0, 8.0)));
-    let base = floor(in.position.xy) / dst;
+    var base = floor(in.position.xy) / dst;
+    if (crt.sig2.w > 0.0) {
+        // RF line jitter: the TV's horizontal sync locks a little differently on every line of
+        // every field (noise on the sync pulses), plus a slow wobble. In game pixels.
+        let row = u32(in.position.y);
+        let h = rnd(hash3(row, u32(crt.sig1.w), 0x68e31da4u)) - 0.5;
+        let wobble = sin(f32(row) * 0.045 + crt.sig1.w * 0.37);
+        let src43 = 480.0 * aurora_postfx.source_size.x / aurora_postfx.source_size.y;
+        base.x += crt.sig2.w * (1.2 * h + 0.3 * wobble) / src43;
+    }
     var acc = vec3f(0.0);
     for (var j = 0; j < n.y; j++) {
         for (var i = 0; i < n.x; i++) {
@@ -185,7 +425,7 @@ fn scan_setup(uv: vec2f, off: vec2f) -> Scan {
     s.lines = dims.y;
     let interlaced = crt.mask.w > 0.5;
     s.spacing = select(1.0, 2.0, interlaced);
-    s.field = select(0.0, f32(aurora_postfx.frame & 1u), interlaced);
+    s.field = select(0.0, crt.sig4.z, interlaced);  // 59.94 Hz field clock (real time)
     let yf = (uv.y * s.lines - 0.5 + off.y - s.field) / s.spacing;
     s.l0 = floor(yf);
     s.d0 = yf - s.l0;
@@ -359,16 +599,193 @@ struct Uniforms {
     float gamma[4];
     float dcopy[4];
     float dcopy2[4];
+    float sig0[4];
+    float sig1[4];
+    float sig2[4];
+    float sig3[4];
+    float sig4[4];
+    float sigr[4];
+    float kY[36];
+    float kCa[36];
+    float kCb[36];
+    float kSep[36];
+    float kTrap[36];
+    float kDc[36];
+    float kDy[36];
 };
+static_assert(sizeof(Uniforms) <= AURORA_POSTFX_MAX_UNIFORM_SIZE);
 
 int lineCount(port::CrtScanlines s) { return s == port::CrtScanlines::DoubleStrike240 ? 240 : 480; }
+
+// ---- signal path filters (FIR taps -16..16 at 4fsc), designed here from the bandwidths.
+constexpr double kFs = 4.0 * 315.0 / 88.0;  // MHz: 4 x the NTSC colour subcarrier (3.579545 MHz)
+constexpr double kPi = 3.14159265358979323846;
+constexpr int kR = 16;
+using Kernel = std::array<double, 2 * kR + 1>;
+// Samples of the line per game pixel: 640 pixels at 13.5 MHz (47.4 us) take 679 samples.
+constexpr double kSamplesPerPixel = kFs / 13.5;
+
+Kernel delta() {
+    Kernel k{};
+    k[kR] = 1.0;
+    return k;
+}
+
+// Linear-phase low-pass (Hann-windowed sinc), -6 dB at fc, unit DC gain.
+Kernel lowpass(double fc) {
+    Kernel k{};
+    double sum = 0.0;
+    for (int n = -kR; n <= kR; n++) {
+        const double w = 0.5 * (1.0 + std::cos(kPi * n / (kR + 1)));
+        const double x = 2.0 * fc / kFs;
+        const double s = n == 0 ? x : std::sin(kPi * x * n) / (kPi * n);
+        k[n + kR] = s * w;
+        sum += s * w;
+    }
+    for (double& v : k) v /= sum;
+    return k;
+}
+
+// Analog-style causal low-pass (three equal real poles, -3 dB at fc) with a zero at fs/2 (removes
+// the 2fsc demodulation product), advanced by 2 time constants: the TV's luma delay line cancels
+// most of the chroma filter's delay, the tail is left and colour trails to the right of edges.
+Kernel causal(double fc) {
+    const double tau = 0.5098 / (2.0 * kPi * fc) * kFs;  // samples; sqrt(2^(1/3) - 1) = 0.5098
+    std::array<double, 4 * kR> h{};
+    for (int n = 0; n < int(h.size()); n++) {
+        const double t = n + 0.5;
+        h[n] = t * t * std::exp(-t / tau);
+    }
+    const int shift = int(std::lround(2.0 * tau));
+    Kernel k{};
+    double sum = 0.0;
+    for (int n = -kR; n <= kR; n++) {
+        const int i = n + shift;  // tap n of the output = sample i of the causal response
+        double v = 0.0;
+        if (i >= 0 && i < int(h.size())) v += 0.5 * h[i];
+        if (i >= 1 && i - 1 < int(h.size())) v += 0.5 * h[i - 1];
+        k[n + kR] = v;
+        sum += v;
+    }
+    for (double& v : k) v /= sum;
+    return k;
+}
+
+Kernel convolve(const Kernel& a, const Kernel& b) {
+    Kernel k{};
+    for (int n = -kR; n <= kR; n++) {
+        double v = 0.0;
+        for (int m = -kR; m <= kR; m++) {
+            const int j = n - m;
+            if (j >= -kR && j <= kR) v += a[m + kR] * b[j + kR];
+        }
+        k[n + kR] = v;
+    }
+    return k;
+}
+
+int radius(const Kernel& k, const Kernel* also = nullptr) {
+    for (int r = kR; r > 0; r--) {
+        const auto big = [r](const Kernel& q) {
+            return std::abs(q[kR + r]) > 1e-4 || std::abs(q[kR - r]) > 1e-4;
+        };
+        if (big(k) || (also && big(*also))) return r;
+    }
+    return 0;
+}
+
+void store(float (&dst)[36], const Kernel& k) {
+    std::fill(std::begin(dst), std::end(dst), 0.0f);
+    for (int i = 0; i <= 2 * kR; i++) dst[i] = float(k[i]);
+}
+
+void fillSignal(Uniforms& u, const port::CrtSettings& s, int lines) {
+    using port::CrtSignal;
+    // The 59.94 Hz field clock runs in real time, independent of the game frame rate and of the
+    // presented frame rate: at 120 fps every field is shown for two presents, as a TV would.
+    static const auto t0 = std::chrono::steady_clock::now();
+    const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    // Test aid LM_CRT_FIELD=<n>: hold the field clock at field n (identical screenshots).
+    static const char* sHold = std::getenv("LM_CRT_FIELD");
+    const int64_t field = sHold ? int64_t(std::atoll(sHold)) : int64_t(t * 60000.0 / 1001.0);
+    u.sig4[2] = float(field & 1);
+    const int mode = s.signal == CrtSignal::Rgb ? 0 : s.signal == CrtSignal::SVideo ? 1 : s.signal == CrtSignal::Composite ? 2 : 3;
+    if (mode == 0) return;
+    const bool rf = mode == 3;
+    const bool interlaced = lines >= 480;
+    const int sep = mode == 1 ? 0 : int(s.separation);
+    u.sig0[0] = float(mode);
+    u.sig0[1] = mode == 1 ? 0.0f : s.artifacts;
+    u.sig0[2] = s.saturation;
+    u.sig0[3] = interlaced ? 2.0f : 1.0f;  // comb: the previous line of the same field
+    u.sig1[0] = float(field & 3);
+    u.sig1[1] = float(sep);
+    u.sig1[2] = interlaced ? 1.0f : 0.0f;
+    u.sig1[3] = float(field & 0xFFFF);
+    if (rf) {
+        u.sig2[0] = 0.08f * s.noise;
+        u.sig2[1] = s.ghost;
+        u.sig2[2] = float(std::lround(s.ghostDelay * kFs));
+        u.sig2[3] = s.jitter;
+        u.sig3[0] = 0.08f * s.hum;
+        u.sig3[1] = float(std::fmod(t * (60.0 - 60000.0 / 1001.0), 1.0));
+        u.sig3[2] = 0.04f * s.interference;
+        u.sig3[3] = float(std::fmod(double(field) * 0.137, 1.0));
+    }
+    // RF: the demodulated picture comes out a little flat (AGC, black level lifted).
+    u.sig4[0] = rf ? 0.035f : 0.0f;
+    u.sig4[1] = rf ? 0.93f : 1.0f;
+
+    // Encoder (the console's video DAC/encoder): luma to ~6 MHz, chroma 1.5 MHz. RF: then the
+    // modulator + the TV tuner/IF strip limit the whole channel to 4.2 MHz; on the modulated
+    // chroma that is the low-pass shifted to the subcarrier (complex on I/Q, exact at 4fsc).
+    const Kernel tuner = rf ? lowpass(4.2) : delta();
+    const Kernel ey = convolve(lowpass(6.0), tuner);
+    const Kernel ec = lowpass(1.5);
+    Kernel tc{}, ts{};
+    for (int n = -kR; n <= kR; n++) {
+        tc[n + kR] = tuner[n + kR] * std::cos(kPi * 0.5 * n);
+        ts[n + kR] = tuner[n + kR] * std::sin(kPi * 0.5 * n);
+    }
+    const Kernel ca = convolve(ec, tc), cb = convolve(ec, ts);
+    // TV Y/C separation: a band-pass is a low-pass moved to the subcarrier (cos(pi n / 2) at 4fsc).
+    // Notch sets: chroma band-pass +-1.3 MHz, and a separate, narrower luma trap (+-0.8 MHz) so
+    // luma keeps more detail (the chroma sidebands outside the trap stay in luma: dot crawl).
+    // Comb sets: luma = composite - comb chroma, band-passed +-1.8 MHz (the comb does the work).
+    const auto bandpass = [](double halfWidth) {
+        const Kernel l = lowpass(halfWidth);
+        Kernel b{};
+        for (int n = -kR; n <= kR; n++) b[n + kR] = 2.0 * l[n + kR] * std::cos(kPi * 0.5 * n);
+        return b;
+    };
+    const Kernel bp = bandpass(sep == 0 ? 1.3 : 1.8);
+    const Kernel trap = sep == 0 ? bandpass(0.8) : bp;
+    // TV luma channel: low-pass at the luma bandwidth plus peaking (boosted upper mids).
+    const Kernel ly = lowpass(s.lumaBandwidth), lh = lowpass(s.lumaBandwidth * 0.5);
+    Kernel dy{};
+    for (int i = 0; i <= 2 * kR; i++) dy[i] = ly[i] + s.sharpening * (ly[i] - lh[i]);
+    const Kernel dc = causal(s.chromaBandwidth);
+
+    store(u.kY, ey);
+    store(u.kCa, ca);
+    store(u.kCb, cb);
+    store(u.kSep, bp);
+    store(u.kTrap, trap);
+    store(u.kDc, dc);
+    store(u.kDy, dy);
+    u.sigr[0] = float(std::max(radius(ey), radius(ca, &cb)));
+    u.sigr[1] = float(mode == 1 ? 0 : radius(bp, &trap));
+    u.sigr[2] = float(radius(dc));
+    u.sigr[3] = float(radius(dy));
+}
 
 int sAppliedKey = -1;  // -1 = chain disabled
 
 // lines < 0: no CRT passes. filter: the display copy filter pass runs first (alone when the
-// CRT filter is off), and every CRT pass input moves up by one.
-void setChain(int lines, bool filter) {
-    const int key = lines < 0 && !filter ? -1 : (std::max(lines, 0) * 2 + (filter ? 1 : 0));
+// CRT filter is off), and every CRT pass input moves up by one. signal: the S-Video / composite /
+// RF passes run between them and the CRT passes.
+void setChain(int lines, bool filter, bool signal) {
+    const int key = lines < 0 && !filter ? -1 : ((std::max(lines, 0) * 2 + (filter ? 1 : 0)) * 2 + (signal ? 1 : 0));
     if (key == sAppliedKey) return;
     sAppliedKey = key;
     if (key < 0) {
@@ -378,8 +795,18 @@ void setChain(int lines, bool filter) {
     const auto rel = [](AuroraPostFxSizeMode m, float v) { return AuroraPostFxSize{m, v}; };
     const AuroraPostFxSize same = rel(AURORA_POSTFX_SIZE_INPUT, 1.0f), half = rel(AURORA_POSTFX_SIZE_INPUT, 0.5f);
     std::vector<AuroraPostFxPass> passes;
-    const uint32_t o = filter ? 1 : 0;
+    uint32_t o = filter ? 1 : 0;
     if (filter) passes.push_back({"dcopy_filter", rel(AURORA_POSTFX_SIZE_SOURCE, 1.0f), rel(AURORA_POSTFX_SIZE_SOURCE, 1.0f), false, 1, {0}});
+    if (lines >= 0 && signal) {
+        // One row per scanline, 679 samples per 4:3 picture width (more for wider frames).
+        const AuroraPostFxSize w = rel(AURORA_POSTFX_SIZE_ASPECT, float(kSamplesPerPixel * 480.0 / lines));
+        const AuroraPostFxSize h = rel(AURORA_POSTFX_SIZE_ABSOLUTE, float(lines));
+        passes.push_back({"ntsc_encode", w, h, true, 1, {o}});
+        passes.push_back({"ntsc_filter", same, same, true, 1, {o + 1}});
+        passes.push_back({"ntsc_separate", same, same, true, 1, {o + 2}});
+        passes.push_back({"ntsc_decode", same, same, true, 1, {o + 3}});
+        o += 4;
+    }
     if (lines >= 0) {
         passes.push_back({"crt_linearize", rel(AURORA_POSTFX_SIZE_ASPECT, 1.0f), rel(AURORA_POSTFX_SIZE_ABSOLUTE, float(lines)), true, 1, {o}});
         passes.push_back({"crt_hsoft", same, same, true, 1, {o + 1}});
@@ -406,14 +833,62 @@ bool comboE(const char* label, E& value, const char* const* names, int count) {
 
 }  // namespace
 
+void applySignal(port::CrtSettings& s, port::CrtSignal signal) {
+    using namespace port;
+    s.signal = signal;
+    s.separation = CrtSeparation::Notch;
+    s.artifacts = 1.0f;
+    s.noise = s.ghost = s.jitter = s.hum = s.interference = 0.0f;
+    s.ghostDelay = 1.0f;
+    switch (signal) {
+    case CrtSignal::Rgb:
+    case CrtSignal::SVideo:  // separate Y and C: only the band limits
+        s.lumaBandwidth = 5.0f;
+        s.chromaBandwidth = 1.3f;
+        s.sharpening = 0.1f;
+        s.saturation = 1.0f;
+        break;
+    case CrtSignal::Composite:
+        s.lumaBandwidth = 4.2f;
+        s.chromaBandwidth = 1.0f;
+        s.sharpening = 0.25f;
+        s.saturation = 0.92f;
+        break;
+    case CrtSignal::Rf:  // channel 3 through the antenna input
+        s.lumaBandwidth = 3.4f;
+        s.chromaBandwidth = 0.8f;
+        s.sharpening = 0.3f;
+        s.saturation = 0.85f;
+        s.noise = 0.2f;
+        s.ghost = 0.08f;
+        s.ghostDelay = 1.2f;
+        s.jitter = 0.2f;
+        s.hum = 0.25f;
+        break;
+    }
+}
+
 void applyPreset(port::CrtSettings& s, port::CrtPreset preset) {
     using namespace port;
-    const bool enabled = s.enabled;
-    const CrtScanlines scanlines = s.scanlines;
+    const CrtSettings old = s;
     s = CrtSettings{};  // defaults = aperture grille
-    s.enabled = enabled;
-    s.scanlines = scanlines;
+    s.enabled = old.enabled;
+    s.scanlines = old.scanlines;
     s.preset = preset;
+    // The signal path is its own choice: a tube preset keeps it.
+    s.signal = old.signal;
+    s.separation = old.separation;
+    s.lumaBandwidth = old.lumaBandwidth;
+    s.chromaBandwidth = old.chromaBandwidth;
+    s.sharpening = old.sharpening;
+    s.artifacts = old.artifacts;
+    s.saturation = old.saturation;
+    s.noise = old.noise;
+    s.ghost = old.ghost;
+    s.ghostDelay = old.ghostDelay;
+    s.jitter = old.jitter;
+    s.hum = old.hum;
+    s.interference = old.interference;
     switch (preset) {
     case CrtPreset::ApertureGrille:
     case CrtPreset::Custom:
@@ -472,14 +947,36 @@ void applyPreset(port::CrtSettings& s, port::CrtPreset preset) {
 void update() {
     static bool sEnvChecked = false;
     if (!sEnvChecked) {
-        // Test override (not saved unless the menu changes something): LM_CRT=<preset 0-3>[,<scanlines 0-2>]
+        // Test override (not saved unless the menu changes something):
+        // LM_CRT=<preset 0-3>[,<scanlines 0-2>[,<signal 0 RGB, 1 S-Video, 2 composite, 3 RF>]]
         sEnvChecked = true;
         if (const char* env = std::getenv("LM_CRT")) {
             auto& s = port::settings().crt;
             s.enabled = true;
             applyPreset(s, port::CrtPreset(std::clamp(std::atoi(env), 0, 3)));
-            if (const char* comma = std::strchr(env, ','))
+            if (const char* comma = std::strchr(env, ',')) {
                 s.scanlines = port::CrtScanlines(std::clamp(std::atoi(comma + 1), 0, 2));
+                if (const char* c2 = std::strchr(comma + 1, ','))
+                    applySignal(s, port::CrtSignal(std::clamp(std::atoi(c2 + 1), 0, 3)));
+            }
+        }
+    }
+    // Test aid LM_CRT_CYCLE=<seconds>[,<start s>]: from <start> seconds after launch, the signal
+    // steps RGB -> S-Video -> composite -> RF every <seconds> (A/B screenshots; with LM_FREEZE_AT).
+    static const char* sCycle = std::getenv("LM_CRT_CYCLE");
+    if (sCycle) {
+        static const auto t0 = std::chrono::steady_clock::now();
+        static int sLast = -1;
+        const double period = std::max(std::atof(sCycle), 0.1);
+        const char* comma = std::strchr(sCycle, ',');
+        const double start = comma ? std::atof(comma + 1) : 0.0;
+        const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() - start;
+        const int step = t < 0.0 ? 0 : int(t / period) % 4;
+        if (step != sLast) {
+            sLast = step;
+            applySignal(port::settings().crt, port::CrtSignal(step));
+            std::printf("[crt] signal %d at %.2f s\n", step, t + start);
+            std::fflush(stdout);
         }
     }
     const auto& s = port::settings().crt;
@@ -501,7 +998,7 @@ void update() {
             std::memcpy(u.dcopy2, dcopy2, sizeof(dcopy2));
             aurora_postfx_set_uniforms(&u, sizeof(u));
         }
-        setChain(-1, filter);
+        setChain(-1, filter, false);
         return;
     }
     const bool conv = std::any_of(std::begin(s.convergence), std::end(s.convergence), [](float v) { return v != 0.0f; });
@@ -517,8 +1014,9 @@ void update() {
     };
     std::memcpy(u.dcopy, dcopy, sizeof(dcopy));
     std::memcpy(u.dcopy2, dcopy2, sizeof(dcopy2));
+    fillSignal(u, s, lineCount(s.scanlines));
     aurora_postfx_set_uniforms(&u, sizeof(u));
-    setChain(lineCount(s.scanlines), filter);
+    setChain(lineCount(s.scanlines), filter, s.signal != port::CrtSignal::Rgb);
 }
 
 bool drawMenu() {
@@ -547,9 +1045,72 @@ bool drawMenu() {
     changed |= comboE("Scanlines", s.scanlines, kLines, 3);
     ImGui::SetItemTooltip("480 lines: the game's progressive output. 240 lines: thick visible scanlines like a\n"
                           "240p signal. 480i: alternating interlaced fields, as a TV shows the 480i signal.");
+    static const char* kSignals[] = {"RGB (clean)", "S-Video", "Composite", "RF (antenna / coax)"};
+    int signal = int(s.signal);
+    if (ImGui::Combo("Signal", &signal, kSignals, 4)) {
+        applySignal(s, CrtSignal(signal));
+        changed = true;
+    }
+    ImGui::SetItemTooltip("The cable between the console and the TV, modelled on the game's NTSC signal:\n"
+                          "RGB: the clean picture.\n"
+                          "S-Video: luma and chroma on separate wires; slightly soft luma, softer colour edges,\n"
+                          "no dot crawl.\n"
+                          "Composite: luma and chroma share one wire on the 3.58 MHz colour subcarrier; the TV\n"
+                          "has to split them again: dot crawl on colour edges, rainbows on fine detail, softer\n"
+                          "picture, colour bleeding to the right.\n"
+                          "RF: composite through an RF modulator and the TV's tuner: softer still, faint ghost,\n"
+                          "snow, line jitter and a weak rolling hum bar.\n"
+                          "Works with any tube preset (choosing a preset keeps the signal).");
     bool custom = false;
 
     recomp::menu::openTreesForCheck();
+    if (s.signal != CrtSignal::Rgb && ImGui::TreeNode("Signal advanced")) {
+        const bool composite = s.signal == CrtSignal::Composite || s.signal == CrtSignal::Rf;
+        changed |= sliderF("Luma bandwidth", s.lumaBandwidth, 1.5f, 6.0f, "%.1f MHz");
+        ImGui::SetItemTooltip("Sharpness: bandwidth of the TV's brightness channel. NTSC broadcast is 4.2 MHz;\n"
+                              "lower is softer (an old set on RF ~3 MHz), higher keeps more of the game's detail.");
+        changed |= sliderF("Chroma bandwidth", s.chromaBandwidth, 0.3f, 2.0f, "%.2f MHz");
+        ImGui::SetItemTooltip("Bandwidth of the colour signal: lower smears colour edges more (to the right,\n"
+                              "as the TV's analog colour filter does). 1.3 MHz is the NTSC I channel.");
+        changed |= sliderF("Sharpening", s.sharpening, 0.0f, 1.0f);
+        ImGui::SetItemTooltip("The TV's sharpness control (peaking): boosts edges, with a slight halo");
+        changed |= sliderF("Color", s.saturation, 0.0f, 1.5f);
+        ImGui::SetItemTooltip("The TV's colour (saturation) control. Composite and RF sets lose a little colour.");
+        if (composite) {
+            static const char* kSep[] = {"Notch filter (cheap TV)", "2-line comb filter", "3-line comb filter"};
+            changed |= comboE("Y/C separation", s.separation, kSep, 3);
+            ImGui::SetItemTooltip("How the TV splits the composite signal into brightness and colour.\n"
+                                  "Notch: removes everything near the subcarrier from luma (softer), strong dot\n"
+                                  "crawl along vertical colour edges and rainbows on fine detail.\n"
+                                  "Comb: subtracts lines of the same field (their colour is in opposite phase):\n"
+                                  "sharper, clean flat colour; dots 'hang' on horizontal colour edges instead.");
+            changed |= sliderF("Artifact strength", s.artifacts, 0.0f, 1.0f);
+            ImGui::SetItemTooltip("How much luma/chroma crosstalk gets through: the dot crawl (colour left in the\n"
+                                  "brightness) and the rainbows (fine detail decoded as colour). 1 = as the signal\n"
+                                  "model gives it; 0 keeps the bandwidth limits only.");
+        }
+        if (s.signal == CrtSignal::Rf) {
+            changed |= sliderF("Noise", s.noise, 0.0f, 1.0f);
+            ImGui::SetItemTooltip("Snow from a weak signal (new grain every field)");
+            changed |= sliderF("Ghost", s.ghost, 0.0f, 0.5f);
+            ImGui::SetItemTooltip("Strength of a reflected copy of the signal (multipath echo), seen to the right");
+            changed |= sliderF("Ghost delay", s.ghostDelay, 0.2f, 4.0f, "%.2f us");
+            ImGui::SetItemTooltip("How much later the echo arrives (1 us is about 13 game pixels to the right)");
+            changed |= sliderF("Jitter", s.jitter, 0.0f, 2.0f, "%.2f px");
+            ImGui::SetItemTooltip("Horizontal instability: every line locks a little off (game pixels)");
+            changed |= sliderF("Hum bar", s.hum, 0.0f, 1.0f);
+            ImGui::SetItemTooltip("Mains hum: a soft dark band that rolls slowly up the picture (60 Hz against\n"
+                                  "the 59.94 Hz fields: one turn every 17 seconds)");
+            changed |= sliderF("Interference", s.interference, 0.0f, 1.0f);
+            ImGui::SetItemTooltip("Beat with another carrier: fine moving diagonal bars");
+        }
+        if (recomp::menu::Button("Reset signal")) {
+            applySignal(s, s.signal);
+            changed = true;
+        }
+        ImGui::SetItemTooltip("Puts the signal values back to the defaults of the chosen signal");
+        ImGui::TreePop();
+    }
     if (ImGui::TreeNode("CRT advanced")) {
         ImGui::SeparatorText("Beam");
         custom |= sliderF("Min beam width", s.beamMinSigma, 0.05f, 0.6f);

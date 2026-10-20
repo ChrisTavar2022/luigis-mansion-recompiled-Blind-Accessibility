@@ -80,6 +80,7 @@ Status: **OK** works as described, nothing found; **fixed** a problem was found 
 | Option | Status | What was checked / found |
 |--------|--------|---------------------------|
 | CRT filter | OK | on (phosphor mask and scanlines in the window capture) and off live |
+| CRT signal (S-Video / composite / RF) | OK | all four on a frozen title and foyer frame (`LM_CRT_CYCLE`, `LM_FREEZE_AT`; `out/crt_signals/`), 240 lines + comb and 480i; off unchanged |
 | Jukebox | OK | Play / Stop through the menu buttons (`LM_JUKEBOX_UI`), music id follows |
 
 ## Save / load and map changes
