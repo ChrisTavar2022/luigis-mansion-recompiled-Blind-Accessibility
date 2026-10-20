@@ -92,7 +92,15 @@ try {
     Step "Publishing GitHub release $tag"
     $gh = Get-Command gh -ErrorAction SilentlyContinue
     $ghOk = $false
-    if ($gh) { & gh auth status *> $null; $ghOk = ($LASTEXITCODE -eq 0) }
+    if ($gh) {
+        # gh prints its status to stderr, which Windows PowerShell turns into an error record
+        # (fatal under ErrorActionPreference=Stop): only the exit code matters here.
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & gh auth status *> $null
+        $ghOk = ($LASTEXITCODE -eq 0)
+        $ErrorActionPreference = $prev
+    }
     if ($ghOk) {
         & gh release create $tag @($assets | ForEach-Object { $_.File }) --repo $repo --target main --title $title --notes-file $notesFile
         if ($LASTEXITCODE) { throw "gh release create failed" }
