@@ -1016,7 +1016,9 @@ float det3(const f32* m, int cols = 4) {
 bool skewFlip(const f32* wa, const f32* wb, int cols = 4) {
     return !sSkewFlipSwitch && (det3(wa, cols) < 0) != (det3(wb, cols) < 0) && (shearedMatrix(wa, cols) || shearedMatrix(wb, cols));
 }
-bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -1.0f, float prevTurn = -1.0f) {
+// `anyScale`: no limit on scale changes (an element stream's drop, tumbler: splashes grow from almost
+// nothing within a game frame, 5-8x along one axis; a 16x limit on a flat drop switched them).
+bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -1.0f, float prevTurn = -1.0f, bool anyScale = false) {
     Rigid ra, rb;
     if (!decompose(wa, 4, ra) || !decompose(wb, 4, rb)) {
         for (int i = 0; i < 12; i++)
@@ -1028,7 +1030,7 @@ bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -
         for (int k = 0; k < 3; k++) {
             const float sa = std::sqrt(wa[k] * wa[k] + wa[4 + k] * wa[4 + k] + wa[8 + k] * wa[8 + k]);
             const float sb = std::sqrt(wb[k] * wb[k] + wb[4 + k] * wb[4 + k] + wb[8 + k] * wb[8 + k]);
-            if (std::max(sa, sb) > 0.05f && (sb > 16.0f * sa + 1e-4f || sa > 16.0f * sb + 1e-4f)) return false;
+            if (!anyScale && std::max(sa, sb) > 0.05f && (sb > 16.0f * sa + 1e-4f || sa > 16.0f * sb + 1e-4f)) return false;
         }
     } else {
         if ((ra.u[2][2] < 0) != (rb.u[2][2] < 0)) return false;
@@ -1037,7 +1039,7 @@ bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -
             return false;
         for (int k = 0; k < 3; k++) {
             const float sa = std::fabs(ra.u[k][k]), sb = std::fabs(rb.u[k][k]);
-            if (std::max(sa, sb) > 0.05f && (sb > 16.0f * sa + 1e-4f || sa > 16.0f * sb + 1e-4f)) return false;
+            if (!anyScale && std::max(sa, sb) > 0.05f && (sb > 16.0f * sa + 1e-4f || sa > 16.0f * sb + 1e-4f)) return false;
         }
     }
     float dd = 0;
@@ -3504,7 +3506,7 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 const u8 groupPolicy = b.groupSnap ? b.groupSnap[pb].load(std::memory_order_relaxed) : 0;
                 if (groupPolicy != 2 &&
                     !blendableWorld(Wa.data(), Wb.data(), std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]),
-                                    a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f, prevTurn)) {
+                                    a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f, prevTurn, P.tumble)) {
                     cause = 1;
                     Rigid ra, rb;
                     if (decompose(Wa.data(), 4, ra) && decompose(Wb.data(), 4, rb)) {
@@ -3961,8 +3963,8 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     if (groupLog && (held > 0 || now)) sExcluded[i] = now ? 2 : 3;
                     if (held > 0 || now) continue;
                 }
-                const bool near = blendableWorld(wa.data(), wb.data(), dist, prev, prevTurn);
-                const bool anyDist = blendableWorld(wa.data(), wb.data(), 1e9f, -1.0f, prevTurn);
+                const bool near = blendableWorld(wa.data(), wb.data(), dist, prev, prevTurn, p.tumble);
+                const bool anyDist = blendableWorld(wa.data(), wb.data(), 1e9f, -1.0f, prevTurn, p.tumble);
                 jumpVotes[p.group].second++;
                 if (!near && anyDist) {  // only the place jumped
                     if (sTrace && jumpVotes[p.group].first == 0)
@@ -4299,7 +4301,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
                     if (b.worldStep) b.worldStep[i].store(step, std::memory_order_relaxed);
                     const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
-                    ok = forced || blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev, prevTurn);
+                    ok = forced || blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev, prevTurn, p.tumble);
                     if (excl) {
                         ExclStat& st = sExclStats[p.group];
                         st.n++, st.snapped += !ok, st.flipped += flipped && !forced, st.untwisted += untwisted && !forced;

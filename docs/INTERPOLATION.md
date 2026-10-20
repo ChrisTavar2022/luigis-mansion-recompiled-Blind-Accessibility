@@ -173,6 +173,9 @@ A value of game frame b pairs with the value of frame a that has the same key an
   indexed positions when the display list is parsed, `Tape::bundleCentre`) moves in a straight line:
   turned 150-180 degrees about an origin outside the mesh, the spray's chunks swung along an arc and
   sat above both game-frame places mid-interval (sweep C, blips.py). The detector's ideal does the same.
+  Only for rigid things: never for a member of a model instance with two or more matrices (its draw's
+  centre is the whole mesh's; "Water and the hose" below). The element streams' drops are tumblers
+  from their first game frame (`interp::tagTumbler`).
 - Squashed-flat matrices (columns nearly coplanar: |det| < 0.1 x the product of the column lengths;
   Chauncey's squash-and-stretch bones) have no meaningful rotation or mirroring (their Gram-Schmidt
   frame flips between frames): only the axis lengths (16x) and the place are checked, and they blend
@@ -252,9 +255,9 @@ A value of game frame b pairs with the value of frame a that has the same key an
 | Particle | call-site tag in `fn_8016169C` (JPA-style emitters, `fn_801604FC`) | particle r19, renderer r30, birth stamp from the age at +0x32 (counts up) |
 | Particle | call-site tags in `fn_801620AC` (particle r19, renderer r26, age +0x32) and `fn_801611CC` (child item r30, owner r29): the other JPA-style renderers (Bowser's flames, boss arenas) | as listed |
 | Object | `fn_8005E110` (one CPU-built quad per ghost, from `fn_80061690`'s loop over the ghost list 0x803D48A0; large in Bogmire's arena) | the ghost (its position pointer r5 - 8) |
-| Particle | `fn_800F3120` called from `fn_8011FB40`'s item loops (0x801201F4: items of 0x34 bytes at [r31+0x4C]+r27; 0x801202F8: 0x68 bytes at [r31+0x48]+r26): the element streams' drops, one shared S3D model drawn per item; `fn_80059F6C` inside groups by item | the item |
+| Particle | `fn_800F3120` called from `fn_8011FB40`'s item loops (0x801201F4: items of 0x34 bytes at [r31+0x4C]+r27; 0x801202F8: 0x68 bytes at [r31+0x48]+r26): the element streams' drops, one shared S3D model drawn per item; `fn_80059F6C` inside groups by item | loop 1: the drop's track (followed by place, the list is rebuilt every game frame); loop 2: the item, new generation when its life counter (+3) rises; tumblers, born moving along a neighbour's step ("Water and the hose") |
 | World | `fn_80015BDC(room lighting, ambient colour)` from the room loop `fn_80011824`: the room's lights and ambient colour (0x100A); World-scope colours blend without the draw check | r3 |
-| Particle | `fn_80120C30` (one GX point per call: the water spray's and other element streams' points, from `fn_8011FB40` / `fn_80120514`) | the point (24-byte entry: position, velocity); a new generation when it is not at its last position + velocity or was not drawn the game frame before (refilled from the nozzle: idle ice mist identity flags 538 -> 27 per run; `LM_POINT_PEEK=<n>`) |
+| Particle | `fn_80120C30` (one GX point per call: the water spray's and other element streams' points, from `fn_8011FB40` / `fn_80120514`) | the point; a new generation unless it was drawn the game frame before and moved by its own velocity, kept its last step, or (its second game frame) moved by up to 30 units ("Water and the hose"; first version: within half its speed of last position + velocity; `LM_POINT_PEEK=<n>`, `LM_POINT_LOG`); tracked (a bounce is blended), born moving along its velocity |
 | Effect | `fn_80118E44` (CPU-built strips of 0xA8-byte items, from `fn_80118D3C`) | the item |
 | Hud | `draw__7J2DPaneFiiPC14J2DGrafContextb` | the pane |
 | (lights) | GX light objects (`GXLoadLightObjImm`) | light object address + slot, in the current scope |
