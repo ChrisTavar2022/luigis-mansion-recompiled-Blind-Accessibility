@@ -684,6 +684,119 @@ menu option: the blended sky is the only behaviour.
 - Original 30 byte-identical (141 frames 3150-3290 of Chauncey's arena, no cutscene skip; runs
   with `LM_SKIP_CUTSCENES` are not deterministic from run to run).
 
+### Water and the hose (October 2026, after 1.0)
+
+User's known issues after 1.0: "A few things appear erratic while interpolating higher framerates:
+mostly water spray effects, sometimes the tube on the Poltergust 3000 jumps for a frame or two".
+On the hose: "only rarely does it freak out for just a second". Every water effect goes through the
+same element-stream code: `fn_8011FB40` draws each stream's points (`fn_80120C30`, one GX point
+each) and its drops (`fn_800F3120`, one shared S3D model per item in two item loops). Water effects
+checked: the Poltergust's water spray (nursery), the courtyard fountain (map 2 room 24,
+`LM_SKIP_TEST=2650:pos:-450,0,-5650`), the kitchen faucet's drip and splashes (room 7,
+`2650:pos:-3050,0,-1950`), and Spooky's garden in the Boneyard (room 11, `2650:pos:-3000,0,-2700`).
+
+**What was wrong**
+1. *Points re-placed or not, by the wrong test.* A point was "born anew" unless it was within half
+   its last speed of last place + last velocity. `LM_POINT_LOG` shows three kinds of points:
+   - 24-byte points move by their new velocity exactly: p = last p + v, to the float, in 92,095 of
+     92,095 continuing points;
+   - points whose +12 is stale or zero (0xF0-byte objects in the spray, the fountain's arcs, the
+     garden's falling drops) move smoothly 10-35 units per game frame. The test took them for new
+     points every game frame, so they had no partner and moved at 30 Hz;
+   - a point that hits the ground in the garden or a fountain basin bounces: the game reflects its
+     velocity (p = last p + v exactly). The interpolator's turn-back rule for CPU-built blocks then
+     held it at the game frame's place for the interval of every bounce.
+2. *Loop 1's drops have no stable slot.* The item list is rebuilt every game frame. Of the drops
+   followed in the nursery, 12% kept their item. Paired by item, drops blended toward other drops
+   100-700 units away, or were switched at the game frame ("jump" and "turn" in the detector).
+3. *Drops' first game frames.* Drops take a random orientation every game frame. A turn over 150
+   degrees switched until the drop had tumble evidence. A new drop or point stood at its place for
+   its first interval, then moved on. Splashes growing 5-8x along one axis in a game frame failed
+   the scale limit and switched.
+4. *The hose.* `LM_GROUP_LOG` (per tape: each model instance's members, outliers, erratic members,
+   votes, fast turns, sheared flips, unpaired members and the policy) found no instance-level
+   trigger in 3 x 5 minutes of varied play. The trigger was in the per-matrix path. A member that
+   turned by more than 60 degrees counted as a spinner for the next game frame. One that tumbled
+   counted for 8 game frames. Either way, while the instance blended per matrix, the member got the
+   spinner rule's straight-line centre correction. That centre is the draw's bounding-box centre,
+   which for a member of a skinned model is the centre of the whole mesh, so each member was
+   shifted by its own amount. In Luigi's model (the hose included) shifts reached 115 units, more
+   than 30 units in 60 game frames of a 4-minute run, each for one interval: the hose and limbs
+   tore "for a frame or two". The judder detector's ideal used the same rule, so it never flagged it.
+
+**What it does now** (tags.cpp, interp.cpp)
+- Points continue when drawn the game frame before and either
+  - moved by their own velocity (0.05 units),
+  - kept their last step (3 units + 25%: gravity and drag change it by ~1 per game frame), or
+  - in their second game frame, moved by up to 30 units.
+
+  Otherwise they get a new generation. They are tracked (`interp::tagTracked`): turning back is a
+  bounce and blends.
+- Loop-1 drops are followed by place (`DropTracker`: nearest drop of the game frame before, carried
+  by its own last step; tolerance 8 units + 30% of the step). The track is the identity. Loop 2
+  keeps its items, with a new generation when the life counter (+3) rises.
+- All drops are tumblers from their first game frame (`interp::tagTumbler`): turns blend the short
+  way, the drawn centre moves in a straight line, and scale changes have no limit.
+- Born moving (`interp::tagBackStep`). A point without a partner is shown at b - (1 - alpha) v,
+  where v is its velocity (for the exact-velocity kind). A drop without a partner uses the step of
+  the nearest followed drop within 80 units, or else of the nearest exact point within 120 units. So
+  new spray leaves the nozzle moving instead of standing still for an interval. The detector's ideal
+  does the same.
+- The spinner centre rule applies to rigid things only (`Tape::multiMember`: not to a position matrix
+  of an instance with two or more). The detector judges members by their own rigid motion, also with
+  the old rule (`LM_PIVOT_MEMBERS=1`), so that run shows what the rule did.
+- Test aids: `LM_POINT_OLD=1` (old points test, no tracking or back step), `LM_STREAM_OLD=1` (items
+  as identities, no tumblers or back steps), `LM_PIVOT_MEMBERS=1`. Logs: `LM_POINT_LOG`,
+  `LM_STREAM_LOG`, `LM_SPRAY_LOG` (every point / drop per replay: key, how shown, world place)
+  with `tools/interp/spray_check.py`, and `LM_GROUP_LOG` (+ `.x`: excluded members' treatment and
+  pivot shifts) with `tools/interp/group_check.py`. `tools/interp/present_blips.py` compares
+  `LM_PRESENT_DUMP` runs.
+
+**Evidence.** Conditions: the user's settings.ini with the frame rate overridden (120 with VSync off,
+60 with VSync on), `--window 1920x1080` off-screen, `LM_INPUT_CLOCK=frames`, about 4 minutes per run.
+Old = `LM_POINT_OLD=1 LM_STREAM_OLD=1 LM_PIVOT_MEMBERS=1` on the same build. The machine was shared
+with five other game instances, so 120 fps targets presented 75-85 fps.
+
+`spray_check.py` follows every point and drop present by present and judges each interval and each
+game-frame join:
+- hold/n: a thing without a partner standing still for an interval;
+- gap: the next interval starts away from where the last one ended (a snap or a wrong pair);
+- nonlinear: off the straight line inside an interval.
+
+The judder detector's visible counts come from the same runs; switches exclude the teleport's game
+frame.
+
+| scene, fps | points hold/n | points gap | drops hold/n | drops gap + nonlinear | detector visible blend defects | visible switches |
+|---|---|---|---|---|---|---|
+| nursery spray 120, old / new | 7372 (5.5%) / 352 | 4 / 0 | 2226 / 50 | 802 / 12 | 1794 / **0** | 191 / 11 |
+| nursery spray 60, old / new | 1234 / 275 | 0 / 0 | 316 / 47 | 92 / 10 | 650 / **0** | 341 / 7 |
+| courtyard fountain 120 | 54757 (2.3%) / 1105 | 57 / 0 | 12477 / 113 | 502 / 0 | 4643 / **0** | 107 / 0 |
+| courtyard fountain 60 | 47205 / 965 | 44 / 0 | 9048 / 96 | 440 / 0 | 3337 / **0** | 64 / 3 |
+| Spooky's garden 120 | 30041 (5.7%) / 677 | 136 / 0 | 12061 / 57 | 4834 / 1 | 1410 / **0** | 1172 / 1 |
+| Spooky's garden 60 | 27086 / 591 | 109 / 0 | 10863 / 51 | 4130 / 1 | 947 / **0** | 807 / 1 |
+| kitchen faucet 120 | 14183 (6.5%) / 185 | 111 / 0 | 5196 / 6 | 2404 / 0 | 2386 / **0** | 792 / 3 |
+| kitchen faucet 60 | 16118 / 173 | 116 / 0 | 5748 / 6 | 2877 / 0 | 2160 / **0** | 536 / 3 |
+
+(The new nursery's 11 / 7 switches were ceiling splashes growing past the scale limit, fixed
+afterwards by the tumblers' unlimited scale.)
+
+Also flagged as "hold", in old and new alike, are drops resting with an unchanged matrix in both
+game frames (the game's own; 7-18% of drop intervals) and drops born next to resting drops (moving
+along a zero step).
+
+Hose, the varied-play A/B: foyer, water element, fast vacuum swings, R taps, turning on the spot,
+walking, reversals, spraying, a hit every 450 game frames; 10 minutes, same input. Old: 223,494
+blend defects (Luigi's model members, `loadPosMtxIndx` draws), more than 30 px off in 814 game
+frames (2160-line picture). New: 0.
+
+Original 30 is byte-identical to main (db02360) with the user's settings at a 30 target: 71 frames
+2690-2760 of the nursery water spray, and 71 frames of the courtyard fountain (`LM_INPUT_CLOCK=frames`,
+`AURORA_BEAM_FREEZE_TIME=1`). The new code runs only while tapes are captured.
+
+Remaining: the 98-matrix J3D instance at about (0, 600, 50) in the foyer (src 8136BEC0-8136C1F0) has erratic
+members that switch (590 "jump" lines in 10 minutes, the same with the old rule). It is not part of
+the hose or the water; it was left alone.
+
 ### Results (first build, October 2026)
 
 Test mode (`LM_INTERP_TEST=3`, 640x480 dumps; metrics.py and tint.py; "before" = the heuristic design):
