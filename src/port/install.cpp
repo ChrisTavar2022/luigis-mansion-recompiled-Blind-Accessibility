@@ -1,5 +1,6 @@
 #include "port/install.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -142,10 +143,11 @@ void saveInstall() {
 
 void setLaunchArgs(int argc, char** argv) { sArgs.assign(argv, argv + argc); }
 
-void relaunch(bool setup) {
+void relaunch(bool setup, const std::filesystem::path& exePath) {
 #ifdef _WIN32
     wchar_t exe[MAX_PATH * 4];
     GetModuleFileNameW(nullptr, exe, DWORD(std::size(exe)));
+    if (!exePath.empty()) wcsncpy_s(exe, exePath.wstring().c_str(), _TRUNCATE);
     // Re-use the original command line (minus the program name).
     std::wstring cmd = L"\"" + std::wstring(exe) + L"\"";
     int argc = 0;
@@ -163,6 +165,8 @@ void relaunch(bool setup) {
     if (CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
+    } else if (!exePath.empty()) {
+        return;  // the updater reports it
     }
 #else
     std::vector<char*> argv;
@@ -170,6 +174,11 @@ void relaunch(bool setup) {
     static char setupArg[] = "--setup";
     if (setup) argv.push_back(setupArg);
     argv.push_back(nullptr);
+    if (!exePath.empty()) {
+        std::fflush(nullptr);
+        execv(exePath.c_str(), argv.data());
+        return;  // exec failed: the caller reports it
+    }
     if (fork() == 0) execv("/proc/self/exe", argv.data());
 #endif
     std::_Exit(0);

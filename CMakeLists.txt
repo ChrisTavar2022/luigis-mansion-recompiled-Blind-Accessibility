@@ -89,7 +89,7 @@ add_executable(lmport ${PORT_SOURCES} ${GAME_SOURCES})
 target_include_directories(lmport PRIVATE src)
 target_link_libraries(lmport PRIVATE aurora::main ${GAME_LIBS} ${JSYSTEM_LIBRARIES})
 if (WIN32)
-    target_link_libraries(lmport PRIVATE dbghelp)
+    target_link_libraries(lmport PRIVATE dbghelp winhttp bcrypt)
 endif ()
 
 if (WIN32)
@@ -120,7 +120,11 @@ target_link_libraries(lmrecompile PRIVATE lm_recompiler)
 file(GLOB RECOMP_RUNTIME_SOURCES CONFIGURE_DEPENDS src/recomp/*.cpp)
 list(REMOVE_ITEM RECOMP_RUNTIME_SOURCES ${CMAKE_SOURCE_DIR}/src/recomp/module_rt.cpp)
 list(APPEND RECOMP_RUNTIME_SOURCES src/port/crash_handler.cpp src/port/options.cpp src/port/dol.cpp
-    src/port/settings.cpp src/port/install.cpp)
+    src/port/settings.cpp src/port/install.cpp src/port/update.cpp)
+# The program's version (F1 > Game, the updater's comparison with the latest GitHub release, the
+# game module's cache key; docs/SETUP.md "Updates"). Only this file sees it, so a version bump
+# rebuilds one file.
+set_source_files_properties(src/port/update.cpp PROPERTIES COMPILE_DEFINITIONS "LM_VERSION=\"${PROJECT_VERSION}\"")
 
 function(lm_runtime_target tgt)
     target_include_directories(${tgt} PRIVATE src
@@ -132,7 +136,7 @@ function(lm_runtime_target tgt)
     add_custom_command(TARGET ${tgt} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/data/pipelines.bin $<TARGET_FILE_DIR:${tgt}>)
     if (WIN32)
-        target_link_libraries(${tgt} PRIVATE dbghelp)
+        target_link_libraries(${tgt} PRIVATE dbghelp winhttp bcrypt)  # winhttp/bcrypt: updater
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:${tgt}> $<TARGET_FILE_DIR:${tgt}>
             COMMAND_EXPAND_LISTS)

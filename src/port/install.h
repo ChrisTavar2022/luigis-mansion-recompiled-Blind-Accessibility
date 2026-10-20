@@ -63,8 +63,10 @@ void loadInstall();
 void saveInstall();
 
 // Restarts the executable with the same arguments (after the user changed the install);
-// `setup` opens the setup screen (add or change discs).
-void relaunch(bool setup = false);
+// `setup` opens the setup screen (add or change discs). `exe`: the program to start instead of
+// the running one's file (the updater: on Linux /proc/self/exe names the replaced file); on Linux
+// it is exec'd in place of this process (same PID, so a launcher script keeps waiting for it).
+void relaunch(bool setup = false, const std::filesystem::path& exe = {});
 void setLaunchArgs(int argc, char** argv);
 
 }  // namespace port

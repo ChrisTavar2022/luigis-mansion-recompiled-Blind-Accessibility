@@ -14,6 +14,7 @@
 #include "port/install.h"
 #include "port/options.h"
 #include "port/settings.h"
+#include "port/update.h"
 #include "recomp/audio.h"
 #include "recomp/frame.h"
 #include "recomp/menu.h"
@@ -158,6 +159,10 @@ int main(int argc, char* argv[]) {
     config.appName = "Luigi's Mansion PC";
     config.logCallback = &logCallback;
     port::loadSettings();
+    // Updates (docs/SETUP.md "Updates"): remove what a finished update left, then look for a newer
+    // release in the background (never blocks; the F1 menu shows the result).
+    port::update::cleanupAfterUpdate();
+    port::update::startupCheck();
     config.msaa = u32(port::settings().video.msaa);
     config.vsync = port::settings().video.vsync;
     // LM_BACKEND=d3d12|d3d11|vulkan (testing): graphics backend instead of Aurora's choice.

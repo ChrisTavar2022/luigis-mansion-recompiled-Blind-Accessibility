@@ -41,6 +41,9 @@ Field flag(const char* section, const char* key, bool& v) {
     return {section, key, [&v] { return std::string(v ? "true" : "false"); },
             [&v](const std::string& s) { v = s == "true" || s == "1"; }};
 }
+Field str(const char* section, const char* key, std::string& v) {
+    return {section, key, [&v] { return v; }, [&v](const std::string& s) { v = s; }};
+}
 template <typename E>
 Field enm(const char* section, const char* key, E& v) {
     return {section, key, [&v] { return std::to_string(int(v)); },
@@ -252,6 +255,8 @@ std::vector<Field> fields() {
         flag("unused2", "pink_mice", u.pinkMice),
         flag("unused2", "blue_ghost_guys", u.blueGhostGuys),
         flag("unused2", "extra_speedy_spirits", u.extraSpeedySpirits),
+        flag("updates", "check_at_startup", sSettings.updates.checkAtStartup),
+        str("updates", "skip_version", sSettings.updates.skipVersion),
     };
 }
 

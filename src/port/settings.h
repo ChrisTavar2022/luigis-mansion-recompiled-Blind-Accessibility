@@ -313,6 +313,12 @@ struct Unused2Settings {
     bool extraSpeedySpirits = false;  // Speedy Spirits 16-20 at invented spots (NOT original placements)
 };
 
+// Self-updater (F1 > Game > Updates; src/port/update.cpp, docs/SETUP.md "Updates").
+struct UpdateSettings {
+    bool checkAtStartup = true;  // look for a newer GitHub release in the background at startup
+    std::string skipVersion;     // release tag the player chose "Skip this version" for ("v1.2")
+};
+
 struct Settings {
     VideoSettings video;
     RenderingSettings rendering;
@@ -324,6 +330,7 @@ struct Settings {
     EnhancementSettings enhancements;
     GameplaySettings gameplay;
     Unused2Settings unused2;
+    UpdateSettings updates;
 };
 
 Settings& settings();

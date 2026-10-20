@@ -7,6 +7,7 @@
 #include "port/install.h"
 #include "port/options.h"
 #include "port/settings.h"
+#include "port/update.h"
 #include "recomp/audio.h"
 #include "recomp/controls.h"
 #include "recomp/crt.h"
@@ -265,6 +266,7 @@ std::vector<Action> sActions = [] {
     return out;
 }();
 int sStep = -1;
+int sLastSeen = 0;  // ImGui frame the pending widget was last drawn
 
 bool due() { return !sActions.empty() && skip::guestFrames() >= sActions.front().frame; }
 void done(const char* what) {
@@ -278,6 +280,12 @@ void done(const char* what) {
 void frame() {
     if (!due()) return;
     const std::string& w = sActions.front().what;
+    // A clicked widget that is no longer drawn (its click changed the page, e.g. "Download and
+    // install" becomes a progress bar) is done.
+    if (sStep >= 3 && ImGui::GetFrameCount() - sLastSeen > 2) {
+        done((w + " (gone after the click)").c_str());
+        return;
+    }
     if (w.rfind("open=", 0) == 0) {
         const std::string t = w.substr(5);
         const size_t slash = t.find('/');
@@ -311,6 +319,7 @@ void afterItem(const char* label) {
         return a != std::string::npos && b ? w.compare(a, std::string::npos, b) == 0 : w == label;
     };
     if (sStep >= 0 ? ImGui::GetItemID() != sId : !matches()) return;
+    sLastSeen = ImGui::GetFrameCount();
     if (sStep < 0) {
         ImGui::SetScrollHereY(0.5f);
         sId = ImGui::GetItemID();
@@ -378,6 +387,174 @@ struct Gate {
     }
 };
 
+// ---- Updates (src/port/update.cpp, docs/SETUP.md "Updates") ----------------------------------
+// The release notes of the available version, markdown reduced to headings, bullets and text.
+void releaseNotes(const port::update::Info& info) {
+    ImGui::BeginChild("##release_notes", ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 9), ImGuiChildFlags_Borders);
+    for (const auto& l : info.lines) {
+        switch (l.kind) {
+        case port::update::NoteLine::Heading: ImGui::SeparatorText(l.text.c_str()); break;
+        case port::update::NoteLine::Bullet:
+            if (l.indent) ImGui::Indent(float(l.indent) * ImGui::GetStyle().IndentSpacing);
+            ImGui::Bullet();
+            ImGui::TextWrapped("%s", l.text.c_str());
+            if (l.indent) ImGui::Unindent(float(l.indent) * ImGui::GetStyle().IndentSpacing);
+            break;
+        case port::update::NoteLine::Blank: ImGui::Spacing(); break;
+        default: ImGui::TextWrapped("%s", l.text.c_str()); break;
+        }
+    }
+    if (info.lines.empty()) ImGui::TextDisabled("(no release notes)");
+    ImGui::EndChild();
+}
+
+void updatesSection() {
+    namespace up = port::update;
+    ImGui::SeparatorText("Updates");
+    const up::State st = up::state();
+    if (std::strcmp(up::currentVersion(), up::buildVersion()) != 0)
+        ImGui::Text("Luigi's Mansion PC %s (LM_UPDATE_VERSION: checking as %s)", up::buildVersion(), up::currentVersion());
+    else
+        ImGui::Text("Luigi's Mansion PC %s", up::buildVersion());
+    auto& u = port::settings().updates;
+    sDirty |= recomp::menu::Checkbox("Check for updates at startup", &u.checkAtStartup);
+    ImGui::SetItemTooltip("When the game starts, asks GitHub in the background whether a newer release is out\n"
+                          "and shows a short notice. Nothing is downloaded or installed without your click.");
+    const bool busy = st.phase == up::Phase::Checking || st.phase == up::Phase::Downloading ||
+                      st.phase == up::Phase::Verifying || st.phase == up::Phase::Extracting ||
+                      st.phase == up::Phase::Installing;
+    ImGui::BeginDisabled(busy);
+    if (recomp::menu::Button("Check for updates")) up::checkNow();
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Asks GitHub for the latest release now (also shows a version you chose to skip).");
+    const bool offer = st.phase == up::Phase::Available || st.phase == up::Phase::Downloading ||
+                       st.phase == up::Phase::Verifying || st.phase == up::Phase::Extracting ||
+                       st.phase == up::Phase::Ready || st.phase == up::Phase::Installing ||
+                       (st.phase == up::Phase::Failed && !st.info.tag.empty());
+    if (st.phase == up::Phase::Checking) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("checking...");
+    } else if (st.phase == up::Phase::UpToDate) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", st.message.c_str());
+    } else if (st.phase == up::Phase::CheckFailed) {
+        ImGui::TextWrapped("%s", st.message.c_str());
+    }
+    if (!offer) return;
+    if (!st.manual && u.skipVersion == st.info.tag) {
+        ImGui::TextDisabled("Version %s is available; you chose to skip it ('Check for updates' shows it again).",
+                            st.info.tag.c_str());
+        return;
+    }
+    if (up::dismissed() && st.phase == up::Phase::Available) {
+        ImGui::TextDisabled("Update available: %s (Later; 'Check for updates' shows it again).", st.info.tag.c_str());
+        return;
+    }
+    ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.45f, 1.0f), "Update available: %s", st.info.tag.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s%s%s", st.info.title.c_str(), st.info.published.empty() ? "" : ", ", st.info.published.c_str());
+    releaseNotes(st.info);
+    const bool canInstall = st.packaged && st.installWritable && !st.info.assetName.empty();
+    switch (st.phase) {
+    case up::Phase::Downloading: {
+        const float frac = st.total ? float(double(st.got) / double(st.total)) : 0.0f;
+        char label[64];
+        std::snprintf(label, sizeof(label), "%.1f / %.1f MB", double(st.got) / 1048576.0, double(st.total) / 1048576.0);
+        ImGui::ProgressBar(frac, ImVec2(ImGui::GetContentRegionAvail().x * 0.6f, 0), label);
+        ImGui::SameLine();
+        if (recomp::menu::Button("Cancel download")) up::cancel();
+        break;
+    }
+    case up::Phase::Verifying:
+    case up::Phase::Extracting:
+        ImGui::TextUnformatted(st.message.c_str());
+        ImGui::SameLine();
+        if (recomp::menu::Button("Cancel download")) up::cancel();
+        break;
+    case up::Phase::Installing: ImGui::TextUnformatted("Installing..."); break;
+    case up::Phase::Ready:
+        ImGui::TextWrapped("%s is downloaded and verified. Save your game first: installing restarts the game, and "
+                           "progress since your last save is lost. Settings, saves and the installed discs are kept.",
+                           st.info.tag.c_str());
+        if (recomp::menu::Button("Install and restart")) ImGui::OpenPopup("Install update?");
+        ImGui::SameLine();
+        if (recomp::menu::Button("Later")) up::later();
+        if (ImGui::BeginPopupModal("Install update?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Install %s and restart now?", st.info.tag.c_str());
+            ImGui::TextDisabled("Unsaved game progress is lost.");
+            if (recomp::menu::Button("Install and restart##confirm")) {
+                if (sDirty) {
+                    port::saveSettings();
+                    sDirty = false;
+                }
+                ImGui::CloseCurrentPopup();
+                up::installAndRestart();  // returns only on failure (message shown)
+            }
+            ImGui::SameLine();
+            if (recomp::menu::Button("Not now")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        break;
+    default:  // Available, Failed
+        if (!st.message.empty()) {
+            if (st.phase == up::Phase::Failed) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.45f, 1.0f));
+            ImGui::TextWrapped("%s", st.message.c_str());
+            if (st.phase == up::Phase::Failed) ImGui::PopStyleColor();
+        }
+        ImGui::BeginDisabled(!canInstall);
+        if (recomp::menu::Button("Download and install")) up::download();
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Downloads %s (%.0f MB) from GitHub, checks its SHA-256 and unpacks it next to the game.\n"
+                              "Nothing is replaced until you click 'Install and restart' afterwards.",
+                              st.info.assetName.empty() ? "the package" : st.info.assetName.c_str(),
+                              double(st.info.assetSize) / 1048576.0);
+        ImGui::SameLine();
+        if (recomp::menu::Button("Skip this version")) up::skipThisVersion();
+        ImGui::SetItemTooltip("No notice for %s again (a newer release is still announced).", st.info.tag.c_str());
+        ImGui::SameLine();
+        if (recomp::menu::Button("Later")) up::later();
+        ImGui::SetItemTooltip("Hides the notice until the next start.");
+        if (!canInstall || st.phase == up::Phase::Failed) {
+            if (recomp::menu::Button("Open download page")) SDL_OpenURL(st.info.page.c_str());
+            ImGui::SetItemTooltip("%s", st.info.page.c_str());
+        }
+        break;
+    }
+}
+
+// A short notice when a newer release was found (startup check): bottom-right corner for a few
+// seconds, takes no input, once per session. The details are in F1 > Game.
+void updateToast() {
+    static double sShownAt = -1.0;
+    if (sOpen || !port::update::shouldNotify()) return;
+    const double now = ImGui::GetTime();
+    if (sShownAt < 0.0) {
+        sShownAt = now;
+        std::printf("[update] notice shown: %s\n", port::update::state().info.tag.c_str());
+        std::fflush(stdout);
+    }
+    const double age = now - sShownAt;
+    constexpr double kShow = 12.0;
+    if (age > kShow) return;
+    const float alpha = age > kShow - 1.0 ? float(kShow - age) : 1.0f;
+    const auto st = port::update::state();
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 16.0f, vp->WorkPos.y + vp->WorkSize.y - 16.0f),
+                            ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.8f);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                        ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                                        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings |
+                                        ImGuiWindowFlags_NoMove;
+    if (ImGui::Begin("##update_toast", nullptr, kFlags)) {
+        ImGui::Text("Update available: %s", st.info.tag.c_str());
+        ImGui::TextDisabled("F1 > Game to see what's new");
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
+
 void gameTab() {
     if (idcheck::selfTest()) {  // LM_MENU_ID_CHECK=selftest: a deliberate ID conflict
         recomp::menu::Button("ID check self-test");
@@ -443,6 +620,7 @@ void gameTab() {
     }
     if (port::palBaseFeature() == port::Avail::Yes)
         ImGui::TextDisabled("Used for a new save; an existing save keeps its language (in-game Options).");
+    updatesSection();
 }
 
 // Hardware-accuracy toggles (all on by default). Each entry: checkbox bound to
@@ -1559,6 +1737,7 @@ void draw() {
             if (v >> (31 - i) & 1)
                 dl->AddRectFilled(ImVec2(o.x + s * (2 + i), o.y), ImVec2(o.x + s * (3 + i), o.y + s), IM_COL32(255, 255, 255, 255));
     }
+    updateToast();
     if (!sOpen) return;
     ImGui::SetNextWindowSize(ImVec2(680, 400), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));

@@ -1,6 +1,7 @@
 #include "setup/module_builder.h"
 
 #include "port/dol.h"
+#include "port/update.h"
 #include "recomp/ctx.h"
 #include "recompiler/recompiler.h"
 #include "setup/embedded.h"
@@ -168,6 +169,10 @@ std::filesystem::path modulePath(port::GameVersion v) { return moduleDir(v) / kM
 std::string moduleKey(const Disc& disc) {
     const bool pal = disc.version() == port::GameVersion::PAL;
     std::string text = "abi " + std::to_string(recomp::kModuleAbiVersion) + "\n";
+    // The program version: an update (docs/SETUP.md "Updates") always rebuilds the module, also
+    // for changes the embedded sources below do not show (headers the recompiler includes, the
+    // bundled clang/lld).
+    text += std::string("program ") + port::update::buildVersion() + "\n";
     text += std::string("game ") + port::gameId(disc.version()) + " " + disc.dolSha1() + "\n";
     for (auto& f : kCompileFlags) text += f + " ";
     for (auto& f : kLinkFlags) text += f + " ";
