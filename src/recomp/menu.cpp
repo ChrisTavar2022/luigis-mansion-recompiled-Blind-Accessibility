@@ -297,14 +297,21 @@ void frame() {
 
 // After an option's widget: click it when it is the pending action.
 void afterItem(const char* label) {
-    if (!due() || sActions.front().what != label) return;
+    if (!due()) return;
+    static const bool sLog = std::getenv("LM_MENU_CLICK_LOG") != nullptr;  // labels seen while a click waits
+    if (sLog) std::printf("[menu-click] seen '%s' (waiting for '%s')\n", label, sActions.front().what.c_str());
+    // Once found, the widget is followed by its ID: a button whose label changes when clicked
+    // ("Gallery" -> "Close gallery###gallery") keeps its ID, not its label.
+    static ImGuiID sId = 0;
+    if (sStep >= 0 ? ImGui::GetItemID() != sId : sActions.front().what != label) return;
     if (sStep < 0) {
         ImGui::SetScrollHereY(0.5f);
+        sId = ImGui::GetItemID();
         sStep = 0;
         return;
     }
-    if (++sStep == 3) ImGui::ActivateItemByID(ImGui::GetItemID());
-    else if (sStep == 5) done(label);
+    if (++sStep == 3) ImGui::ActivateItemByID(sId);
+    else if (sStep == 5) done(sActions.front().what.c_str());
 }
 }  // namespace click
 
@@ -1342,7 +1349,8 @@ void init() {
 }
 
 void openTreesForCheck() {
-    if (idcheck::active()) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    // (also while an LM_MENU_CLICK click is pending, so options inside tree nodes can be reached)
+    if (idcheck::active() || click::due()) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
 }
 
 bool isOpen() { return sOpen || recomp::dev::capturesInput(); }
