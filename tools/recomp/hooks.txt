@@ -95,6 +95,7 @@ fn_800B9488 us pal
 fn_800AD5AC us pal
 fn_800AE1A4 us pal
 fn_800C0F08 us pal
+fn_800C08DC us pal
 fn_80081BCC us pal
 getValue__Q24Koga8ToolDataCFiPCcPPCc us pal
 fn_800D1458 us pal

@@ -37,6 +37,7 @@
 #include "port/settings.h"
 #include "recomp/coop.h"
 #include "recomp/dev_tools.h"
+#include "recomp/gameplay.h"
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
@@ -466,7 +467,7 @@ HLE(fn_800AEEA8) {
         c.r[3] = 1;
         return;
     }
-    callOriginal(c, "fn_800AEEA8");
+    gameplay::callLuigiMessage(c);  // gameplay_hooks.cpp (Luigi's health, recovery hearts)
     if (id == 2 && c.r[3] && crawlOn() && gptr(msg)) {
         const u32 src = gu::call(c, GU_SYM("fn_800AD504"), {rd32(msg + 4), rd32(msg + 8)});
         if (gptr(src)) {
