@@ -2541,6 +2541,59 @@ changed (the shock no longer counts as switching the flashlight on). Nursery scr
 Test aid: `AURORA_BEAM_SHOW=3` shows the scattering amount v as a heat map (red 0..2, green 2..6,
 blue 8..16) instead of the picture.
 
+### Ambient occlusion, horizon-based (branch `ao-gtao`, Aurora 0224)
+
+User report: the forward AO (0032/0186/0187) shaded some characters "polygonal and blocky"; it was
+switched off (93255c4). Images: `out/ao/` (not in the repo).
+
+**Cause.** The AO was 12 hemisphere samples oriented by the normal reconstructed from the
+pre-pass depth (`mask_normal`: the flatter neighbour on each axis), i.e. the triangle's face
+normal. On a round low-poly model (Toad's cap and body, E. Gadd's head, Luigi's arms and legs)
+every facet then got its own constant grey (`AURORA_ENH_AO_SHOW=1`: `ao_show_toad_before_after.png`),
+and samples off a facet near a silhouette landed behind the model's own front surface, so the
+facets near the outline were darker still. Walls had blotches from the same hemisphere sampling.
+
+**New AO** (all in the mask pass, still forward: only opaque world draws receive it):
+
+| Part | What |
+|---|---|
+| Normals | The depth pre-pass also writes the interpolated vertex normal (`depth_normal_layout`: a write-masked placeholder color + the gx shader's existing normal attachment, RGBA8). Draws without normals and uncovered texels fall back to the depth-derived normal (its one-sided normal at one-pixel ledges: the view vector there drew a dashed dark line along rug edges) |
+| Horizon search (`fs_aomask`) | GTAO-style (Jimenez et al. 2016): two view-aligned slices per pixel, each searched on both sides over 6 depth samples quadratically spaced out to the projected radius (capped at 15% of the mask height), and the visible arc integrated against the projected normal's cosine. Angle bias 0.12 rad and a height bias (4-10% of the radius plus depth) so facets, decals, rug edges and depth precision make no creases. Thickness: 3D falloff to the radius, offsets toward the camera count double (a character in front of a wall does not halo it), and a horizon decays toward lower samples after it (thin rails and legs) |
+| Resolution | Half the mask's (mask above 900 lines; the user's Ultra mask is 2560x1440, so 1280x720), else the mask's |
+| Noise / denoise (`fs_aodenoise`, `fs_aodenoise2`) | Slice rotation and step jitter follow a 4x4 interleaved pattern (32 directions per block, the same every frame: no temporal noise, stable when the camera stops and across interpolated replays). Two 4x4 depth- (plane distance) and normal-aware box passes at AO resolution (a 7x7 tent in all; one pass left blotches where an occluder covers only some directions) |
+| Upsample (`fs_aoblur4`) | To the mask: the 2x2 AO texels around each mask texel, bilinear x the same plane-distance/normal weights against the texel's own surface. The receivers' depth-matched 4x4 tent (`enh_mask`, 0186) is unchanged |
+| Incremental masks (0211) | The passes recompute within 1/2/3/4 tiles of changed pre-pass depth (upsample / second denoise / first denoise / horizon), each covering what the next reads |
+| Precache | The pre-pass variants are built for the normal target too while AO is on (`PrecacheDepthNormalTarget`, 0217 expansion); the AO pipelines are built in `init_gpu` with the other effect passes |
+
+F1 > Visuals > Enhanced lighting > "Ambient occlusion" (intensity, radius sliders) is back, on by
+default with the master switch (master off by default: vanilla is untouched). Output mapping as
+before: darkening = 1 - visibility^(1 + 2 x intensity).
+
+Test aids: `LM_AO=0/1` overrides the setting; `AURORA_ENH_AO_SHOW=1` (occlusion each surface
+receives), `LM_AO_AB=1` (AO on odd frames only); new `LM_SHOT=<dir>,<first>,<last>[,<step>[,<count>]]`
+saves the game image at render resolution (before post-processing and UI) of those guest frames
+as `.ppm` (Aurora `aurora_request_screenshot`; use 30 fps for exact game frames; `count` 2 with
+`LM_AO_AB` gives off/on pairs; `LM_DUMP_EXIT=1` quits after the range).
+
+Verified (US, the user's settings: Enhanced Ultra, render scale 4 = 3413x1920, mask 2560x1440):
+Washroom Toad (`LM_START_MAP=2 LM_TELEPORT=-2210,0,-4150,100`), E. Gadd in the lab
+(`LM_START_MAP=1`, frame 3050), Luigi in the nursery: characters shade smoothly (no facets),
+contact shadows under feet, the ball, the crib and the shelf bears, wall/floor creases, no halo
+around characters. 120 fps `LM_INTERP_TEST=3` nursery walk (frames 2610-2690): within-interval
+back-and-forth pixels median 2016 with AO vs 2100 without (no added flicker). Vanilla
+(enhanced lighting off) nursery frames 2600-2660: byte-identical to main (21 dumps).
+
+Cost (`AURORA_GPU_PROFILE`, nursery, two masks per frame, GPU shared with other runs so +-30%):
+| Run (same route, alternating builds) | EFB pass 1 (reference) | AO passes per frame | AO / EFB pass 1 |
+|---|---|---|---|
+| new, quietest run | 2.55 ms | 0.82 ms (horizon 0.30, denoise x2 0.26, upsample 0.26) + pre-pass normals ~0.03 | 0.32 |
+| old (0187), quietest run | 3.02 ms | 1.14 ms (mask 0.86, blur 0.28) | 0.38 |
+
+So about the old cost: ~0.8 ms per frame at the user's 3413x1920 (two masks per frame in the
+nursery, the second incremental). The mask is capped at 1440 lines, so true 4K costs the same.
+Mask resolution below 900 lines (High and below: half-resolution masks) runs the horizon pass at
+the mask's own resolution.
+
 ## GPU cost (branch `gpu-opt`, Aurora 0210-0213)
 
 Goal: the same picture for less GPU time, in every configuration (vanilla, each enhanced-lighting
