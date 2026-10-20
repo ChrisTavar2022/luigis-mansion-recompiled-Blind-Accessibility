@@ -110,6 +110,8 @@ struct Patch {
     u16 tgroup = 0;  // text box group (pushTextGroup): index + 1 into Tape::textGroups, 0 none
     s32 mtxPatch = -1;  // 2D blocks: the position matrix patch current at its GXBegin (-1: none noted)
     s32 projPatch = -1;  // 2D blocks: the projection patch its vertices were written under (-1: none noted)
+    bool tumble = false;  // noted in a tagTumbler scope: model matrices blend the short way
+    s32 backStep = -1;    // tagBackStep: index into Tape::backSteps (world step per game frame), -1 none
 };
 
 // A text box drawn in one game frame (pushTextGroup): its patches [first, end) are blended as one
@@ -190,6 +192,7 @@ struct Tape {
     std::vector<u64> lightKeys;               // per extra light (flattened, command order): identity, 0 none
     std::vector<TextGroupRec> textGroups;  // text boxes drawn in this game frame
     std::vector<TextView> textViews;       // their viewports and scissor boxes
+    std::vector<std::array<f32, 3>> backSteps;  // tagBackStep: world steps of things just born (Patch::backStep)
     // Host (replays only): per patch the block of pairedWith it shows the same glyph/picture as,
     // in a text group (sequence alignment, computed at the first replay of the pair; -1 none).
     mutable std::vector<s32> textMatch;
@@ -234,6 +237,7 @@ bool sOrtho = false;
 std::vector<TextGroupRec> sTextGroups;
 int sTextDepth = 0;
 std::vector<TextView> sTextViews;
+std::vector<std::array<f32, 3>> sBackSteps;  // tagBackStep of the tape being captured
 u32 sTextViewJoin = 0;  // pushTextViewJoin's group id (0 none)
 int sTextViewJoinDepth = 0;
 u16 sTextCur = 0;   // the open text group (index + 1), 0 none
@@ -278,6 +282,8 @@ struct TagFrame {
     u64 structural;  // identity of the structural (View) scopes only: the camera's identity
     bool ownCamera = false;  // inside a SubView: drawn with a camera other than the game camera
     u64 group = 0;  // the model instance it belongs to (tagGroup: a J3D model's skinned meshes), 0: none
+    bool tumble = false;  // tagTumbler, inherited
+    s32 backStep = -1;    // tagBackStep (index into sBackSteps), inherited
 };
 constexpr int kMaxTagDepth = 64;
 TagFrame sTagStack[kMaxTagDepth];
@@ -1091,6 +1097,9 @@ float noteTurn(const Tape* a, s32 j, const Tape& b, u32 i, const f32* wa, const 
     if (prev > kSpinnerTurn) return prev;
     return prevTumble > 0 || axisEvidence ? 1000.0f : -1.0f;
 }
+// A tumbler (tagTumbler: the element streams' drops, a random orientation every game frame) always
+// counts as one: its turns over ~150 degrees blend the short way from its first game frame on.
+float turnPolicy(const Patch& p, float prevTurn) { return p.tumble ? std::max(prevTurn, 1000.0f) : prevTurn; }
 u32 sFlips = 0;  // pairs blended through an equivalent flipped orientation (stats)
 u32 sFlatBlends = 0;  // squashed-flat model matrices blended entrywise in world space (stats)
 u32 sUntwists = 0;    // pairs whose fast twist was taken from b (stats)
@@ -1098,7 +1107,17 @@ u32 sGroupSnaps = 0;  // model instances switched as a whole (stats)
 u32 sColorsBlended = 0, sColorsSwitched = 0;  // colour registers (stats)
 std::vector<s32> sBundleToA;  // replayPair: per draw of b, the draw of a it pairs with (-1 none, -2 ambiguous)
 u32 sReversals = 0;   // CPU-built blocks shown as captured because they turned back (another particle)
+u32 sSprayPresent = 0;  // LM_SPRAY_LOG: the present being replayed
+u32 sBornMoving = 0;  // values without partner shown moving along their step into place (tagBackStep; stats)
 u32 sGroupForced = 0; // model instances blended linearly as a whole (stats)
+// LM_GROUP_LOG: members of a model instance without a say this replay (1 outlier, 2 erratic now, 3 held
+// erratic), per patch of b, and how the per-matrix path then treated them (X lines).
+std::vector<u8> sExcluded;
+bool sGroupLogNow = false;
+struct ExclStat {
+    u32 n = 0, snapped = 0, flipped = 0, untwisted = 0, turn90 = 0, policy = 0;
+};
+std::unordered_map<u64, ExclStat> sExclStats;
 // Set by replayPair around blendFactored for the matrices of a model instance blended linearly
 // (groupSnap 2): entrywise in world space, no flip or twist resolution.
 bool sLinearBlend = false;
@@ -1300,6 +1319,7 @@ void beginTape() {
     sUngrouped = 0;
     sTextGroups.clear();
     sTextViews.clear();
+    sBackSteps.clear();
     sTextCur = 0;
     sTextDepth = 0;
     std::fill(std::begin(sLastPosMtx), std::end(sLastPosMtx), -1);
@@ -1370,6 +1390,8 @@ void endTape(u32 retraceCount) {
     sTextGroups = {};
     tape->textViews = std::move(sTextViews);
     sTextViews = {};
+    tape->backSteps = std::move(sBackSteps);
+    sBackSteps = {};
     tape->arrays = std::move(arrays);
     tape->arrayRecs = std::move(arrayRecs);
     tape->arrayBytes = arrayBytes;
@@ -1573,6 +1595,8 @@ void pushTag(TagCat cat, u32 object, u32 type, u32 sub) {
         const u64 sp = parent ? parent->structural : rootInst();
         f.structural = structural ? mix(sp ^ mix(u64(object) << 8 ^ sub ^ u64(cat) << 40 ^ 0x51E3ull << 48)) : sp;
         f.group = parent ? parent->group : 0;  // set by tagGroup (J3D models), inherited
+        f.tumble = parent && parent->tumble;
+        f.backStep = parent ? parent->backStep : -1;
     }
     sTagStack[sTagDepth++] = f;
 }
@@ -1594,6 +1618,15 @@ void addSiteTag(const SiteTag& t) { sSiteTags.push_back(t); }
 
 void tagGroup(u32 id) {
     if (sCapturing && sTagDepth > 0 && sTagDepth <= kMaxTagDepth) sTagStack[sTagDepth - 1].group = mix(u64(id) ^ 0x6A0Full << 48);
+}
+void tagTumbler() {
+    if (sCapturing && sTagDepth > 0 && sTagDepth <= kMaxTagDepth) sTagStack[sTagDepth - 1].tumble = true;
+}
+void tagBackStep(const float step[3]) {
+    if (!sCapturing || sTagDepth <= 0 || sTagDepth > kMaxTagDepth || sBackSteps.size() >= (1u << 20)) return;
+    if (!(std::isfinite(step[0]) && std::isfinite(step[1]) && std::isfinite(step[2]))) return;
+    sTagStack[sTagDepth - 1].backStep = s32(sBackSteps.size());
+    sBackSteps.push_back({step[0], step[1], step[2]});
 }
 void tagGroupIfNone(u32 id) {
     if (sCapturing && sTagDepth > 0 && sTagDepth <= kMaxTagDepth && !sTagStack[sTagDepth - 1].group) tagGroup(id);
@@ -1631,6 +1664,8 @@ void gxCall(const Ctx& c) {
         sVirt.structural = parent ? parent->structural : rootInst();
         sVirt.ownCamera = parent && parent->ownCamera;
         sVirt.group = parent ? parent->group : 0;
+        sVirt.tumble = parent && parent->tumble;
+        sVirt.backStep = parent ? parent->backStep : -1;
         sVirtActive = true;
         break;
     }
@@ -1674,7 +1709,7 @@ void note(u32 at, Kind kind, u32 source, u32 slot, int nFloats, int first) {
     p.slot = slot;
     p.site = sCallLr;
     p.key = valueKey(kind, source, slot, p.cat);
-    if (const TagFrame* g = topTag(); g && p.key) p.group = g->group;
+    if (const TagFrame* g = topTag(); g && p.key) p.group = g->group, p.tumble = g->tumble, p.backStep = g->backStep;
     p.inScope = sTagDepth > 0 || sVirtActive;
     if (kind == Kind::TexMtx && sShadowRecv > 0) p.role = 1;
     else if (sOrtho && kind != Kind::Projection) p.role = 2;
@@ -2673,6 +2708,7 @@ u64 detail::arrayKey() {
 
 namespace {
 u64 sVertsKey = 0;
+s32 sVertsBack = -1;  // tagBackStep of the scope the block was begun in
 bool sVertsLocked = false;  // begun inside a text box (pushFrameLock): its vertices are not noted
 TagCat sVertsCat = TagCat::None;
 u32 sVertsSite = 0;
@@ -2688,6 +2724,10 @@ void detail::vertsBegin(bool ortho) {
     if (sVertsLocked) return;
     sVertsSite = sCallLr;
     sVertsKey = valueKey(Kind::Verts, 0, 0, sVertsCat);
+    {
+        const TagFrame* t = topTag();
+        sVertsBack = sVertsKey && t ? t->backStep : -1;
+    }
     if (!sVertsKey && ortho) {
         // An untagged 2D quad (a fade, a full-screen picture): the structural scope, call site and
         // occurrence; its colours blend only while its positions are identical (replayPair).
@@ -2720,7 +2760,9 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, 
     p.site = sVertsSite;
     p.cat = sVertsCat;
     p.key = sVertsKey ? mix(sVertsKey ^ id) : 0;  // the same layout (vertex count is checked when pairing)
+    p.backStep = p.key && !posBytes2D ? sVertsBack : -1;
     sVertsKey = 0;
+    sVertsBack = -1;
     if (sTagLogFrame != ~0ull && p.role == 2 && (p.posFmt & 0x100) && at + count * stride <= sBase + AuroraCapturePos()) {
         const u32 type = p.posFmt & 7, frac = (p.posFmt >> 3) & 31;
         const u32 csize = type == GX_F32 ? 4 : type >= GX_U16 ? 2 : 1;
@@ -3419,7 +3461,7 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 M34 Wa, Wb, Wt;
                 compose(iq.data(), ma, Wa.data());
                 compose(ib.data(), m, Wb.data());
-                const float prevTurn = noteTurn(a, j, b, pb, Wa.data(), Wb.data(), 4);
+                const float prevTurn = turnPolicy(P, noteTurn(a, j, b, pb, Wa.data(), Wb.data(), 4));
                 const bool skew = skewFlip(Wa.data(), Wb.data());
                 if (!skew) {
                     resolveFlip(Wa.data(), Wb.data(), 4);
@@ -3467,6 +3509,9 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
             }
         } else {
             cause = 2;
+            // Born moving along its step (tagBackStep): its place is b's less (1 - alpha) steps.
+            if (j < 0 && P.backStep >= 0 && u32(P.backStep) < b.backSteps.size())
+                for (int c = 0; c < 3; c++) wt[c] -= (1.0f - pr.alpha) * b.backSteps[P.backStep][c];
         }
         f32 vtw[3], av[3];
         xform34(vt.data(), wt, vtw);
@@ -3673,6 +3718,36 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             }
             placeUnderCamera(*a, b, p, alpha);
         };
+        // A thing just born (no partner, or its slot re-placed) with a known step per game frame
+        // (tagBackStep): shown moving along that step into its place, b - (1 - alpha) step, in world
+        // space under the in-between camera, instead of standing at b's place for the whole interval
+        // (the water spray's new points and drops stood still for one interval, then moved on).
+        const auto backStep = [&](const Patch& p) -> bool {
+            if (p.backStep < 0 || u32(p.backStep) >= b.backSteps.size()) return false;
+            const auto& st = b.backSteps[p.backStep];
+            const float k = 1.0f - alpha;
+            if (p.kind == Kind::Verts && p.role == 0) {
+                for (u32 v = 0; v < p.count; v++)
+                    for (int c = 0; c < 3; c++)
+                        storeBE(sReplay.data() + p.offset + v * p.stride + p.posOffset + 4 * c, vtx(b, p, v, c) - k * st[c]);
+                sBornMoving++;
+                return true;
+            }
+            if (p.kind != Kind::PosMtx || p.count != 12 || p.role != 0 || p.ownCamera || p.view >= sViewToA.size() || sViewToA[p.view] < 0)
+                return false;
+            const ViewPair* vp = viewPair(*a, u16(sViewToA[p.view]), b, p.view, alpha);
+            if (!vp || !vp->ok || vp->cut) return false;
+            f32 vb[12];
+            M34 wb;
+            for (int c = 0; c < 12; c++) vb[c] = val(b, p, c);
+            compose(vp->ib.data(), vb, wb.data());
+            for (int r = 0; r < 3; r++) wb[4 * r + 3] -= k * st[r];
+            f32 out[12];
+            compose(vp->vt.data(), wb.data(), out);
+            for (int c = 0; c < 12; c++) storeBE(sReplay.data() + p.offset + 4 * c, out[c]);
+            sBornMoving++;
+            return true;
+        };
         // A model instance (an S3D model: fn_80059C54 & co., or a J3D model: its packets' matrix buffer;
         // tagGroup) is handled as one. Skinned parts are drawn with weighted sums of its joints (sheared,
         // nearly flat where two joints differ a lot), so the skin only stays together if every matrix of
@@ -3768,6 +3843,44 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             // after a quiet spell switched all of Luigi, sweep B).
             static std::unordered_map<u64, std::pair<u32, u32>> jumpVotes;
             jumpVotes.clear();
+            // Test aid LM_GROUP_LOG=<file>: per tape (its first in-between replay), every model instance of 4
+            // or more paired members: members, outliers, erratic (now / held), voters, jumped, fast, skin,
+            // sheared flips, members without partner, the members' source range, and the policy taken
+            // (0 per matrix, 1 switched, 2 entrywise); E lines name each erratic / outlier member.
+            static FILE* sGroupLog = [] {
+                const char* v = std::getenv("LM_GROUP_LOG");
+                return v && *v ? std::fopen(v, "w") : nullptr;
+            }();
+            static u64 sGroupLogSeq = 0;
+            const bool groupLog = sGroupLog && b.seq != sGroupLogSeq;
+            if (groupLog) sGroupLogSeq = b.seq;
+            sGroupLogNow = groupLog;
+            if (groupLog) {
+                sExcluded.assign(b.patches.size(), 0);
+                sExclStats.clear();
+            }
+            struct GStat {
+                u32 members = 0, outliers = 0, erraticNow = 0, erraticHeld = 0, fast = 0, skin = 0, skew = 0, turn90 = 0, unpaired = 0;
+                u32 srcLo = ~0u, srcHi = 0;
+            };
+            static std::unordered_map<u64, GStat> gstat;
+            gstat.clear();
+            if (groupLog) {
+                for (auto& [g, idx] : byGroup) {
+                    GStat& st = gstat[g];
+                    st.members = u32(idx.size());
+                    for (const u32 m : idx) {
+                        const u32 src = b.patches[members[m].i].source;
+                        st.srcLo = std::min(st.srcLo, src), st.srcHi = std::max(st.srcHi, src);
+                        st.outliers += outlier[m];
+                    }
+                }
+                for (u32 i = 0; i < b.patches.size(); i++) {
+                    const Patch& p = b.patches[i];
+                    if (p.group && b.partner[i] < 0 && p.kind == Kind::PosMtx && p.count == 12 && p.role == 0 && gstat.count(p.group))
+                        gstat[p.group].unpaired++;
+                }
+            }
             for (size_t mi = 0; mi < members.size(); mi++) {
                 const u32 i = members[mi].i;
                 const s32 j = members[mi].j;
@@ -3782,8 +3895,11 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 // (Recorded here too: a switched instance skips the per-matrix path that records it.)
                 if (b.worldStep && b.worldStep[i].load(std::memory_order_relaxed) < 0.0f)
                     b.worldStep[i].store(step, std::memory_order_relaxed);
-                const float prevTurn = noteTurn(a, j, b, i, wa.data(), wb.data(), 4);
-                if (outlier[mi]) continue;
+                const float prevTurn = turnPolicy(p, noteTurn(a, j, b, i, wa.data(), wb.data(), 4));
+                if (outlier[mi]) {
+                    if (groupLog) sExcluded[i] = 1;
+                    continue;
+                }
                 // An erratic member has no say for the instance (it is still blended or switched on its
                 // own below): one that moves by over 150 units, a quarter of its camera distance and three
                 // times its instance's median step (+60) in one game frame, or did so in the last 16 game
@@ -3796,6 +3912,15 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     const u8 held = a->worldErratic ? a->worldErratic[j].load(std::memory_order_relaxed) : 0;
                     const bool now = step > 150.0f && step > 0.25f * dist && step > 3.0f * groupStep[mi] + 60.0f;
                     if (b.worldErratic) b.worldErratic[i].store(now ? 16 : held > 0 ? u8(held - 1) : 0, std::memory_order_relaxed);
+                    if (groupLog && (held > 0 || now)) {
+                        GStat& st = gstat[p.group];
+                        (now ? st.erraticNow : st.erraticHeld)++;
+                        if (st.members >= 4)
+                            std::fprintf(sGroupLog, "E %llu %016llX key %016llX src %08X site %08X %s step %.0f median %.0f dist %.0f\n",
+                                         (unsigned long long)b.seq, (unsigned long long)p.group, (unsigned long long)p.key, p.source, p.site,
+                                         now ? "erratic" : "held", step, groupStep[mi], dist);
+                    }
+                    if (groupLog && (held > 0 || now)) sExcluded[i] = now ? 2 : 3;
                     if (held > 0 || now) continue;
                 }
                 const bool near = blendableWorld(wa.data(), wb.data(), dist, prev, prevTurn);
@@ -3831,6 +3956,14 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 if (skew) fast = skin = true;
                 if (fast) fastGroups.insert(p.group);
                 if (skin) skinGroups.insert(p.group);
+                if (groupLog) {
+                    GStat& st = gstat[p.group];
+                    st.fast += fast, st.skin += skin, st.skew += skew;
+                    Rigid r1, r2;
+                    if (decompose(wa.data(), 4, r1) && decompose(wb.data(), 4, r2) &&
+                        std::fabs(r1.q[0] * r2.q[0] + r1.q[1] * r2.q[1] + r1.q[2] * r2.q[2] + r1.q[3] * r2.q[3]) < 0.7071f)
+                        st.turn90++;
+                }
                 static const long long sGroupTape = [] { const char* v = std::getenv("LM_GROUP_TAPE"); return v ? std::atoll(v) : -1ll; }();
                 if (sGroupTape >= 0 && u64(sGroupTape) == b.seq)
                     log("[group] tape %llu group %016llX key %016llX near %d any %d flat %d skew %d fast %d skin %d",
@@ -3855,6 +3988,17 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             }
             sGroupSnaps += u32(snapGroups.size());
             sGroupForced += u32(forceGroups.size());
+            if (groupLog) {
+                for (const auto& [g, st] : gstat) {
+                    if (st.members < 4) continue;
+                    const auto v = jumpVotes.count(g) ? jumpVotes[g] : std::pair<u32, u32>{0, 0};
+                    std::fprintf(sGroupLog, "G %llu f%u %016llX members %u outliers %u erratic %u held %u voters %u jumped %u fast %u turn90 %u skin %u skew %u unpaired %u src %08X-%08X policy %d\n",
+                                 (unsigned long long)b.seq, b.dumpFrame ? b.dumpFrame : b.gameFrame, (unsigned long long)g, st.members, st.outliers,
+                                 st.erraticNow, st.erraticHeld, v.second, v.first, st.fast, st.turn90, st.skin, st.skew, st.unpaired, st.srcLo,
+                                 st.srcHi, snapGroups.count(g) ? 1 : forceGroups.count(g) ? 2 : 0);
+                }
+                std::fflush(sGroupLog);
+            }
         }
         // Which draw of a each draw of b is, by its own paired matrices / vertices (-1: none, -2: they
         // disagree): colours blend only within the same pair of draws.
@@ -3914,6 +4058,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 const Patch& q = a->patches[b.partner[i]];
                 for (int k = 0; k < p.count && k < 16; k++) va[k] = val(*a, q, k), vb[k] = val(b, p, k);
                 snap(p, va, vb);
+                backStep(p);
                 continue;
             }
             const s32 j = b.partner[i];
@@ -3937,6 +4082,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 continue;
             }
             if (j < 0 || cameraOnly) {
+                if (j < 0 && backStep(p)) continue;
                 if (placeUnderCamera(*a, b, p, alpha)) sCamOnly++;
                 continue;
             }
@@ -3979,6 +4125,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     for (int c = 0; c < 3; c++) jump = std::max(jump, std::fabs(vtx(*a, q, v, c) - vtx(b, p, v, c)));
                 if (!(jump <= 200.0f)) {
                     snap(p, nullptr, nullptr);
+                    backStep(p);
                     continue;
                 }
                 // A slot reused by another particle (the water spray's points: a stream's slots are
@@ -4000,6 +4147,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     if (std::isfinite(pp) && dd > 16.0f && pp > 1.0f && dp < -0.25f * std::sqrt(dd * pp)) {
                         sReversals++;
                         snap(p, nullptr, nullptr);
+                        backStep(p);
                         continue;
                     }
                 }
@@ -4088,17 +4236,26 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     M34 wa, wb;
                     compose(vp->ia.data(), va, wa.data());
                     compose(vp->ib.data(), vb, wb.data());
-                    const float prevTurn = noteTurn(a, j, b, i, wa.data(), wb.data(), 4);
+                    const float prevTurn = turnPolicy(p, noteTurn(a, j, b, i, wa.data(), wb.data(), 4));
                     const bool skew = skewFlip(wa.data(), wb.data());
                     if (prevTurn > kSpinnerTurn && !forced && !skew) pivotVp = vp;
+                    const bool excl = sGroupLogNow && i < sExcluded.size() && sExcluded[i];
+                    const float turn = excl ? turnDegrees(wa.data(), wb.data(), 4) : 0.0f;
+                    bool flipped = false, untwisted = false;
                     if (!skew) {
-                        resolveFlip(wa.data(), wb.data(), 4);
-                        untwist(wa.data(), wb.data());
+                        flipped = resolveFlip(wa.data(), wb.data(), 4);
+                        untwisted = untwist(wa.data(), wb.data());
                     }
                     const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
                     if (b.worldStep) b.worldStep[i].store(step, std::memory_order_relaxed);
                     const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
                     ok = forced || blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev, prevTurn);
+                    if (excl) {
+                        ExclStat& st = sExclStats[p.group];
+                        st.n++, st.snapped += !ok, st.flipped += flipped && !forced, st.untwisted += untwisted && !forced;
+                        st.turn90 += turn > 90.0f && !forced;
+                        st.policy = groupPolicy;
+                    }
                 } else {
                     ok = blendable(p.kind, va, vb, p.count);
                 }
@@ -4112,7 +4269,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                             na[3 * r + c2] = vp->va[r] * va[c2] + vp->va[4 + r] * va[3 + c2] + vp->va[8 + r] * va[6 + c2];
                             nb[3 * r + c2] = vp->vb[r] * vb[c2] + vp->vb[4 + r] * vb[3 + c2] + vp->vb[8 + r] * vb[6 + c2];
                         }
-                    const float prevTurn = noteTurn(a, j, b, i, na, nb, 3);
+                    const float prevTurn = turnPolicy(p, noteTurn(a, j, b, i, na, nb, 3));
                     const bool skew = skewFlip(na, nb, 3);  // (blended entrywise in blendFactored)
                     if (!skew) {
                         resolveFlip(na, nb, 3);
@@ -4140,6 +4297,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             }
             if (jump2D || !ok) {
                 snap(p, va, vb);
+                backStep(p);
                 continue;
             }
             if (p.kind == Kind::Projection && p.count == 6 && p.bundle < b.bundlePass.size() && b.bundlePass[p.bundle] == 1) {
@@ -4185,6 +4343,18 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             if (p.kind == Kind::Projection && p.count == 6) blendedProj.push_back(i);
         }
         sLinearBlend = false;
+        if (sGroupLogNow) {
+            static FILE* sXLog = [] {
+                const char* v = std::getenv("LM_GROUP_LOG");
+                return v && *v ? std::fopen((std::string(v) + ".x").c_str(), "w") : nullptr;
+            }();
+            for (const auto& [g, st] : sExclStats)
+                if (sXLog)
+                    std::fprintf(sXLog, "X %llu %016llX excluded %u snapped %u flipped %u untwisted %u turn90 %u policy %u\n", (unsigned long long)b.seq,
+                                 (unsigned long long)g, st.n, st.snapped, st.flipped, st.untwisted, st.turn90, st.policy);
+            if (sXLog) std::fflush(sXLog);
+            sGroupLogNow = false;
+        }
         // A projection without a partner that is the very projection of another (blended) one of this
         // game frame: the camera's, set again inside an effect's scope (fn_801191B4 in the foyer: its
         // scope's identity alternates between game frames, so it paired only every third one). Left
@@ -4440,6 +4610,49 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
     if (dump && b.dumpOffset != ~0u) {
         const u64 ptr = u64(reinterpret_cast<uintptr_t>(dump));
         for (int k = 0; k < 8; k++) sReplay[b.dumpOffset + k] = u8(ptr >> (56 - 8 * k));
+    }
+    // Test aid LM_SPRAY_LOG=<file>: per replay, every element-stream drop (tumbler model matrices) and
+    // particle point (single-vertex blocks of particles) with its key, how it was shown (b: paired
+    // and blended, n: no partner, s: born moving along its step) and its place in the world as shown
+    // (tools/interp/spray_check.py follows each key across presents).
+    {
+        static FILE* sSprayLog = [] {
+            const char* v = std::getenv("LM_SPRAY_LOG");
+            return v && *v ? std::fopen(v, "w") : nullptr;
+        }();
+        if (sSprayLog) {
+            const bool blend = a && alpha < 1.0f;
+            std::fprintf(sSprayLog, "P %u %llu %.4f %d\n", sSprayPresent, (unsigned long long)b.seq, blend ? alpha : 1.0f, int(blend));
+            for (u32 i = 0; i < b.patches.size(); i++) {
+                const Patch& p = b.patches[i];
+                if (!p.key || p.bundle >= b.bundlePass.size() || b.bundlePass[p.bundle] != 0) continue;
+                const bool point = p.kind == Kind::Verts && p.count == 1 && p.role == 0 && p.cat == TagCat::Particle;
+                const bool drop = p.kind == Kind::PosMtx && p.count == 12 && p.tumble;
+                if (!point && !drop) continue;
+                const char how = !blend ? 'b' : b.partner[i] >= 0 ? 'b' : p.backStep >= 0 ? 's' : 'n';
+                f32 w[3], o[3] = {0, 0, 0};
+                if (point) {
+                    for (int c = 0; c < 3; c++) w[c] = loadBE(sReplay.data() + p.offset + p.posOffset + 4 * c);
+                } else {
+                    if (p.view >= b.views.size()) continue;
+                    M34 inv;
+                    const ViewPair* vp = blend && p.view < sViewToA.size() && sViewToA[p.view] >= 0
+                                             ? viewPair(*a, u16(sViewToA[p.view]), b, p.view, alpha)
+                                             : nullptr;
+                    if (vp && vp->ok && !vp->cut) inv = vp->it;
+                    else if (!invertAffine(b.views[p.view].data(), inv.data())) continue;
+                    f32 m[12], wm[12];
+                    for (int c = 0; c < 12; c++) m[c] = loadBE(sReplay.data() + p.offset + 4 * c);
+                    compose(inv.data(), m, wm);
+                    const f32 zero[3] = {0, 0, 0};
+                    const f32* ctr = p.bundle < b.bundleCentre.size() && std::isfinite(b.bundleCentre[p.bundle][0]) ? b.bundleCentre[p.bundle].data() : zero;
+                    xform34(wm, ctr, w);
+                    o[0] = wm[3], o[1] = wm[7], o[2] = wm[11];
+                }
+                std::fprintf(sSprayLog, "%c %c %016llX %.2f %.2f %.2f %.2f %.2f %.2f\n", point ? 'p' : 'd', how, (unsigned long long)p.key, w[0],
+                             w[1], w[2], o[0], o[1], o[2]);
+            }
+        }
     }
     // Each replay starts from the GX state the tape started from on the console: the state after
     // the previous tape (Aurora replay state slots, patch 0021; from the SMS port). The end state of
@@ -4885,6 +5098,7 @@ bool replay(bool final) {
                       int(std::lround(sLastPresent.alpha * 1000.0f)));
         presentDump = efbcopy::namedDumpTarget(nm);
     }
+    sSprayPresent = sLastPresent.present;
     replayPair(final ? nullptr : a.get(), *b, alpha, presentDump);
     probeFill(a, b);
     if (sJudder && a && !final && alpha < 1.0f) {
@@ -4982,10 +5196,11 @@ bool replay(bool final) {
         sProjShared = 0;
         if (sColorsBlended + sColorsSwitched)
             log("[interp] colour registers per present: %.1f blended, %.1f switched (jumped); model instances blended linearly %.1f, "
-                "switched %.1f; particles shown at the game frame (turned back) %.1f",
+                "switched %.1f; particles shown at the game frame (turned back) %.1f; born moving along their step %.1f",
                 double(sColorsBlended) / presentedWindow, double(sColorsSwitched) / presentedWindow,
-                double(sGroupForced) / presentedWindow, double(sGroupSnaps) / presentedWindow, double(sReversals) / presentedWindow);
-        sColorsBlended = sColorsSwitched = sGroupForced = sGroupSnaps = sReversals = 0;
+                double(sGroupForced) / presentedWindow, double(sGroupSnaps) / presentedWindow, double(sReversals) / presentedWindow,
+                double(sBornMoving) / presentedWindow);
+        sColorsBlended = sColorsSwitched = sGroupForced = sGroupSnaps = sReversals = sBornMoving = 0;
         if (s2DBlended + s2DKept)
             log("[interp] 2D pictures that moved, per present: %.2f blended, %.2f as captured (not the same picture, glyph-sized or jumped)",
                 double(s2DBlended) / presentedWindow, double(s2DKept) / presentedWindow);

@@ -59,6 +59,15 @@ void tagGroup(u32 id);
 // tagGroup only when the scope did not inherit an instance (a model's node or mesh drawn directly,
 // not through its model draw).
 void tagGroupIfNone(u32 id);
+// The innermost open scope (and what is drawn inside it) takes a random orientation every game frame
+// (the element streams' drops): its model matrices always blend the short way (never switched for a
+// turn over ~150 degrees), their drawn centre moving in a straight line.
+void tagTumbler();
+// The innermost open scope moves by `step` (world units) per game frame: drawn without a partner in
+// the game frame before (just born, or its slot re-placed), it is shown moving along that step into
+// its place (at b - (1 - alpha) step) instead of standing still for the whole interval. Positions of
+// CPU-built vertex blocks noted inside must be in world space.
+void tagBackStep(const float step[3]);
 // Every GX HLE call (hle_gx.cpp GXHLE): the guest call site and registers, for value keys and for
 // call-site tags (a draw loop inside one game function, e.g. particles: tags.cpp registers the
 // function's range and which register holds the item).
