@@ -1378,8 +1378,18 @@ void drawAll(Ctx& c, bool ghostLayerOnly) {
     u8 savedView[0x30];
     std::memcpy(savedView, hostp(gameView), 0x30);
     std::memcpy(hostp(gameView), hostp(kScratch + 0x140), 0x30);
+    // S3D material textures on. The material setup only binds its textures while the flag that
+    // fn_8005C2B8 sets (read back by fn_8005C2C0) is 1; the element streams (fn_8011FB40: water
+    // drops, fire, ice bits) draw with it 0 and leave it so, and the actor draw sets it to 1 again
+    // (fn_8005A550) before the next frame's models. The viewer draws after the game frame, so in a
+    // room where the streams ran (every room once Luigi has the Poltergust) every viewer model was
+    // drawn white, untextured: "the viewer loads in a broken state when opened while playing".
+    // On the title screen and right after starting, no stream had drawn yet, so it looked right.
+    const u32 savedTex = gu::call(c, GU_SYM("fn_8005C2C0"));
+    gu::call(c, GU_SYM("fn_8005C2B8"), {1});
     for (const Drawable& d : sDraw)
         if (d.kind == Kind::Mdl) drawMdl(c, d, ghostLayerOnly);
+    gu::call(c, GU_SYM("fn_8005C2B8"), {savedTex & 0xFF});
     std::memcpy(hostp(gameView), savedView, 0x30);
     if (!ghostLayerOnly) {
         drawGraphs(c, 0);
@@ -2224,6 +2234,16 @@ void guestFrame(Ctx& c) {
         }
     }
     fitBeforeDraw();
+    // Test aid LM_DEV_VIEWER_STATE=1: the S3D material state the game frame left (small data
+    // r13+0x700..0x75F: +0x740-0x742 stage/texgen counters, +0x744 the texture flag drawAll sets)
+    // every 60 frames. How the "white models when opened during play" bug was found.
+    static const bool sStateLog = std::getenv("LM_DEV_VIEWER_STATE") != nullptr;
+    if (sStateLog && sGuestFrames % 60 == 1) {
+        std::string sda;
+        char b[4];
+        for (u32 i = 0x700; i < 0x760; i++) std::snprintf(b, sizeof b, "%02X", rd8(c.r[13] + i)), sda += b;
+        log("[viewer] state f%u r13 %08X +700: %s", sGuestFrames.load(), c.r[13], sda.c_str());
+    }
     // Every animation at the current timeline position (each wraps at its own length).
     for (const Drawable& d : sDraw) {
         if (d.kind == Kind::Mdl) poseMdl(c, d, sFrame);
