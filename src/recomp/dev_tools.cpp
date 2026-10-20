@@ -456,7 +456,7 @@ void mapTable(const char* id, bool unusedOnly) {
             char label[32];
             std::snprintf(label, sizeof(label), "Go##%s%d", id, m[i].no);
             ImGui::BeginDisabled(!m[i].loads);
-            if (ImGui::SmallButton(label)) requestWarp(m[i].no, 0);
+            if (recomp::menu::SmallButton(label)) requestWarp(m[i].no, 0);
             ImGui::EndDisabled();
             if (!m[i].loads) ImGui::SetItemTooltip("This map does not load.");
             ImGui::TableNextColumn();
@@ -478,7 +478,7 @@ void mapTable(const char* id, bool unusedOnly) {
 
 void unusedSection() {
     auto& e = port::settings().enhancements;
-    if (ImGui::Checkbox("Unused depth blur pass", &e.dbgDepthBlur)) port::saveSettings();
+    if (recomp::menu::Checkbox("Unused depth blur pass", &e.dbgDepthBlur)) port::saveSettings();
     helpMarker("A screen pass in the game-scene draw (fn_8005E9EC) behind a flag nothing sets\n"
                "(0x804D86B0): the frame is copied at quarter size and blended back by depth,\n"
                "blurring everything away from the camera.");
@@ -500,7 +500,7 @@ void unusedSection() {
             ImGui::TableNextColumn();
             char label[32];
             std::snprintf(label, sizeof(label), "Go##room%d", i);
-            if (ImGui::SmallButton(label)) rooms::visit(i);
+            if (recomp::menu::SmallButton(label)) rooms::visit(i);
             ImGui::TableNextColumn();
             ImGui::Text("%s%s", lr[i].name, rooms::active() == i ? "  (showing)" : "");
             ImGui::SetItemTooltip("%s\nmap %d%s", lr[i].note, lr[i].map, lr[i].room >= 0 ? ", room swap" : "");
@@ -514,40 +514,40 @@ void debugSection() {
     auto& e = port::settings().enhancements;
     ImGui::TextDisabled("Debug features left in the retail game, plus port-side viewers. All off by default.");
     ImGui::SeparatorText("Overlays and viewers");
-    if (ImGui::Checkbox("Particle manager report (JUTReport)", &e.dbgParticleReport)) port::saveSettings();
+    if (recomp::menu::Checkbox("Particle manager report (JUTReport)", &e.dbgParticleReport)) port::saveSettings();
     helpMarker("Emitter / particle / child counts and per-group usage printed by the game's particle\n"
                "manager with JUTReport (flag 0x804D8E04; retail never sets it nor creates the print queue).");
-    ImGui::Checkbox("Info overlay (F3)", &sInfoOverlay);
+    recomp::menu::Checkbox("Info overlay (F3)", &sInfoOverlay);
     helpMarker("Port-side: current map, room and Luigi's position.");
     // "###" keeps one ID while the label changes (the click lands on the same button).
-    if (ImGui::Button(viewer::isOpen() ? "Close model viewer (F4)###modelviewer" : "Model viewer (F4)###modelviewer"))
+    if (recomp::menu::Button(viewer::isOpen() ? "Close model viewer (F4)###modelviewer" : "Model viewer (F4)###modelviewer"))
         viewer::setOpen(!viewer::isOpen());
     helpMarker("Port-side viewer for every model on the disc (and whole maps), drawn with the game's own\n"
                "model code. F4 opens and closes it in game.");
 
     ImGui::SeparatorText("Debug modes (Action Replay codes)");
     bool dirty = false;
-    dirty |= ImGui::Checkbox("Debug mode (Luigi debug flags)", &e.dbgLuigiFlags);
+    dirty |= recomp::menu::Checkbox("Debug mode (Luigi debug flags)", &e.dbgLuigiFlags);
     helpMarker("AR 403A2B84 001325CB: Luigi's debug flags (+0x1324) low byte = 0xCB every frame.\n"
                "Turns on the debug text and the scan boxes together and changes some of Luigi's\n"
                "drawing (his model uses a slightly different shading).");
-    dirty |= ImGui::Checkbox("Debug info display", &e.dbgInfoDisplay);
+    dirty |= recomp::menu::Checkbox("Debug info display", &e.dbgInfoDisplay);
     helpMarker("Japanese text at the top left: dust (mg), aura / ghosts captured, water, heart.\n"
                "AR: NOP 0x800B17E4 (originally on D-pad Left + A).");
-    dirty |= ImGui::Checkbox("Game Boy Horror scan boxes", &e.dbgScanBoxes);
+    dirty |= recomp::menu::Checkbox("Game Boy Horror scan boxes", &e.dbgScanBoxes);
     helpMarker("Frames around what the Game Boy Horror can scan. AR: NOP 0x800B17CC.");
-    dirty |= ImGui::Checkbox("XYZ axes at Luigi", &e.dbgAxes);
+    dirty |= recomp::menu::Checkbox("XYZ axes at Luigi", &e.dbgAxes);
     helpMarker("Axis vectors at Luigi's position and facing. AR: NOP 0x800B1794.");
     static const char* kHud[] = {"Off", "Icons", "Numbers", "Element meter"};
     dirty |= ImGui::Combo("HUD test", &e.dbgHudTest, kHud, 4);
     helpMarker("The HUD sprite test (flag 0x804D854A) and its three sprite sets.\n"
                "AR: 0x80043910 addi r16, r16, 0xA90 / -0x300 / 0xFA0.");
-    dirty |= ImGui::Checkbox("Font test", &e.dbgFontTest);
+    dirty |= recomp::menu::Checkbox("Font test", &e.dbgFontTest);
     helpMarker("Twelve lines of kanji / kana / symbols printed with the game font (flag 0x804D8488;\n"
                "PAL code 0A4B8590 0201 / 024C5B58 0001).");
     ImGui::BeginDisabled(!e.dbgFontTest || ver::pal());
     ImGui::SameLine();
-    dirty |= ImGui::Checkbox("Latin last line (PAL fix)", &e.dbgFontTestLatin);
+    dirty |= recomp::menu::Checkbox("Latin last line (PAL fix)", &e.dbgFontTestLatin);
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("%s", ver::pal() ? "The European version's font test already prints Latin lines."
                                            : "The font test's last line prints \"alphabet 123\" in Latin letters, as the\n"
@@ -555,7 +555,7 @@ void debugSection() {
     if (dirty) port::saveSettings();
 
     ImGui::SeparatorText("Visit area");
-    if (ImGui::Checkbox("Skip entry cutscenes", &e.dbgWarpSkipEvents)) port::saveSettings();
+    if (recomp::menu::Checkbox("Skip entry cutscenes", &e.dbgWarpSkipEvents)) port::saveSettings();
     helpMarker("A warp does not start the cutscene or event the destination plays on arrival\n"
                "(E. Gadd in the lab and the Portrificationizer room, the training explanation,\n"
                "boss intros, King Boo at the Secret Altar), so Luigi can walk around freely.\n"
@@ -570,7 +570,7 @@ void debugSection() {
         for (int i = 0; i < na; i++) {
             char label[64];
             std::snprintf(label, sizeof(label), "Go##ap%d", a[i].point);
-            if (ImGui::SmallButton(label)) requestWarp(2, a[i].point);
+            if (recomp::menu::SmallButton(label)) requestWarp(2, a[i].point);
             ImGui::SameLine();
             ImGui::Text("%s  (room %d, point %d)", a[i].where, a[i].room, a[i].point);
         }

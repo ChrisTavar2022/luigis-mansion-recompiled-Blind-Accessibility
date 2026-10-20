@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 namespace recomp {
 u32 copyDispCount();  // hle_gx.cpp
@@ -235,6 +236,78 @@ void afterWindow() {
 }
 }  // namespace idcheck
 
+// ---- Test aid LM_MENU_CLICK=<frame>:<action>[;<frame>:<action>...] -----------------------
+// Drives the menu the way a player does, at guest frames (skip::guestFrames). Actions:
+//   open=<Tab>[/<Sub-tab>]  opens the menu on that tab (e.g. open=Enhancements/Unused content)
+//   close                   closes it (changes are saved as on Esc)
+//   <label>                 clicks the checkbox / button with exactly that label (as passed to
+//                           ImGui, "##" suffix included) once it is drawn: scrolled into view,
+//                           then activated through ImGui's item activation (the widget's own
+//                           behaviour, as a mouse click). Logs "[menu-click]".
+// The game keeps running while the menu is open (scripted --input still reaches it).
+namespace click {
+struct Action {
+    u32 frame;
+    std::string what;
+};
+std::vector<Action> sActions = [] {
+    std::vector<Action> out;
+    const char* v = std::getenv("LM_MENU_CLICK");
+    for (const char* p = v; p && *p;) {
+        const char* end = std::strchr(p, ';');
+        const std::string item(p, end ? size_t(end - p) : std::strlen(p));
+        const size_t colon = item.find(':');
+        if (colon != std::string::npos)
+            out.push_back({u32(std::strtoul(item.c_str(), nullptr, 10)), item.substr(colon + 1)});
+        if (!end) break;
+        p = end + 1;
+    }
+    return out;
+}();
+int sStep = -1;
+
+bool due() { return !sActions.empty() && skip::guestFrames() >= sActions.front().frame; }
+void done(const char* what) {
+    std::printf("[menu-click] %s frame %u\n", what, skip::guestFrames());
+    std::fflush(stdout);
+    sActions.erase(sActions.begin());
+    sStep = -1;
+}
+
+// Menu-level actions, once per host frame before the menu is drawn.
+void frame() {
+    if (!due()) return;
+    const std::string& w = sActions.front().what;
+    if (w.rfind("open=", 0) == 0) {
+        const std::string t = w.substr(5);
+        const size_t slash = t.find('/');
+        sOpen = true;
+        sOpenTab = t.substr(0, slash);
+        if (slash != std::string::npos) sOpenSub = t.substr(slash + 1);
+        done(w.c_str());
+    } else if (w == "close") {
+        sOpen = false;  // as Esc (handleEvent): changes are saved when the menu closes
+        if (sDirty) {
+            port::saveSettings();
+            sDirty = false;
+        }
+        done("close");
+    }
+}
+
+// After an option's widget: click it when it is the pending action.
+void afterItem(const char* label) {
+    if (!due() || sActions.front().what != label) return;
+    if (sStep < 0) {
+        ImGui::SetScrollHereY(0.5f);
+        sStep = 0;
+        return;
+    }
+    if (++sStep == 3) ImGui::ActivateItemByID(ImGui::GetItemID());
+    else if (sStep == 5) done(label);
+}
+}  // namespace click
+
 bool tab(const char* name) {
     const bool select = sOpenTab == name;
     if (select) sOpenTab.clear();
@@ -293,9 +366,9 @@ struct Gate {
 
 void gameTab() {
     if (idcheck::selfTest()) {  // LM_MENU_ID_CHECK=selftest: a deliberate ID conflict
-        ImGui::Button("ID check self-test");
+        recomp::menu::Button("ID check self-test");
         ImGui::SameLine();
-        ImGui::Button("ID check self-test");
+        recomp::menu::Button("ID check self-test");
     }
     auto& inst = port::install();
     if (inst.staticBuild) {
@@ -327,14 +400,14 @@ void gameTab() {
             }
             if (inst.base != inst.running) {
                 pending("restart to switch");
-                if (ImGui::Button("Restart now")) {
+                if (recomp::menu::Button("Restart now")) {
                     port::saveSettings();
                     port::relaunch();
                 }
                 ImGui::SetItemTooltip("Saves the settings and restarts with the chosen version (unsaved game progress is lost).");
             }
         }
-        if (ImGui::Button("Add or change discs...")) {
+        if (recomp::menu::Button("Add or change discs...")) {
             port::saveSettings();
             port::relaunch(true);
         }
@@ -366,7 +439,7 @@ void renderingTab() {
     ImGui::TextDisabled("turn features off only if your PC needs the speed.");
     auto& r = port::settings().rendering;
     ImGui::SeparatorText("Color and depth");
-    sDirty |= ImGui::Checkbox("Integer-accurate TEV", &r.integerTev);
+    sDirty |= recomp::menu::Checkbox("Integer-accurate TEV", &r.integerTev);
     ImGui::SetItemTooltip(
         "Color combiner math as on the GameCube: 8-bit inputs, signed 11-bit registers and rounding\n"
         "after every stage. Slightly darker multi-stage shading and exact overflow; tiny GPU cost.");
@@ -380,7 +453,7 @@ void renderingTab() {
     {
         ImGui::BeginDisabled(enhOverride);
         bool shown = r.efbColorDepth && !enhOverride;
-        if (ImGui::Checkbox("EFB color depth (6-bit + dither)", &shown) && !enhOverride) {
+        if (recomp::menu::Checkbox("EFB color depth (6-bit + dither)", &shown) && !enhOverride) {
             r.efbColorDepth = shown;
             sDirty = true;
         }
@@ -397,7 +470,7 @@ void renderingTab() {
     ImGui::Indent();
     {
         bool shown = r.efbBlend6 && !enhOverride;
-        if (ImGui::Checkbox("6-bit blending", &shown) && !enhOverride) {
+        if (recomp::menu::Checkbox("6-bit blending", &shown) && !enhOverride) {
             r.efbBlend6 = shown;
             sDirty = true;
         }
@@ -416,7 +489,7 @@ void renderingTab() {
         const bool forced = recomp::gx::smoothBandingForced();
         bool on = (forced || r.smoothBanding) && !enhOverride;
         ImGui::BeginDisabled(forced);
-        if (ImGui::Checkbox("Smooth color banding", &on) && !enhOverride) {
+        if (recomp::menu::Checkbox("Smooth color banding", &on) && !enhOverride) {
             r.smoothBanding = on;
             sDirty = true;
         }
@@ -434,37 +507,37 @@ void renderingTab() {
     }
     ImGui::Unindent();
     ImGui::EndDisabled();
-    sDirty |= ImGui::Checkbox("Early depth for cut-out textures", &r.earlyZAlphaDepth);
+    sDirty |= recomp::menu::Checkbox("Early depth for cut-out textures", &r.earlyZAlphaDepth);
     ImGui::SetItemTooltip(
         "Room geometry and Luigi test depth before texturing. On the console that also writes the\n"
         "depth of pixels the alpha test then cuts out (transparent texels of cut-out textures), so\n"
         "things drawn behind them later are hidden there. Off: cut-out pixels write no depth (PC\n"
         "behaviour). Costs one extra depth-only draw for each such draw.");
     ImGui::SeparatorText("Screen copies");
-    sDirty |= ImGui::Checkbox("Display copy filter", &r.displayCopyFilter);
+    sDirty |= recomp::menu::Checkbox("Display copy filter", &r.displayCopyFilter);
     ImGui::SetItemTooltip(
         "The vertical filter (and gamma) the console applies when copying the frame to the TV\n"
         "image: slightly softer vertical detail, smooths the dither. One extra full-screen pass.");
-    sDirty |= ImGui::Checkbox("Texture copy filter", &r.textureCopyFilter);
+    sDirty |= recomp::menu::Checkbox("Texture copy filter", &r.textureCopyFilter);
     ImGui::SetItemTooltip(
         "The console applies the same vertical filter to the game's screen copies (the full-screen\n"
         "copy it redraws every frame, the half-size and transition copies): the picture is a little\n"
         "softer vertically, as on the GameCube. Off: sharper. Tiny GPU cost.");
-    sDirty |= ImGui::Checkbox("EFB copies to RAM (accurate)", &r.efbCopyToRam);
+    sDirty |= recomp::menu::Checkbox("EFB copies to RAM (accurate)", &r.efbCopyToRam);
     ImGui::SetItemTooltip("Screen copies also exist in console memory format, like on the GameCube.\n"
                           "Textures that read a copy in another format (the shadow depth map is\n"
                           "read as an IA8 texture) get the console's exact bytes, and memory the game\n"
                           "overwrites stops showing a stale copy. Aimed at the rare Luigi mouth/hose flicker.\n"
                           "Off: copies stay GPU-only textures (saves ~0.6 ms CPU per frame).");
     ImGui::SeparatorText("Timing");
-    sDirty |= ImGui::Checkbox("Snapshot vertex data at draw time", &r.vtxSnapshot);
+    sDirty |= recomp::menu::Checkbox("Snapshot vertex data at draw time", &r.vtxSnapshot);
     ImGui::SetItemTooltip(
         "The vertex data each draw uses is copied when the game issues the draw, as the\n"
         "GameCube's GPU reads it, instead of when the renderer thread gets to it. Without it,\n"
         "a draw can pick up data the game already rewrote for a later draw: Luigi's mouth or\n"
         "the Poltergust hose flicker now and then. Off: saves the copies (about 0.2-0.3 ms CPU per frame).\n"
         "Above 30 fps (interpolation) vertex data is always snapshotted.");
-    sDirty |= ImGui::Checkbox("Keep GPU clocks up in menus", &r.gpuKeepWarm);
+    sDirty |= recomp::menu::Checkbox("Keep GPU clocks up in menus", &r.gpuKeepWarm);
     ImGui::SetItemTooltip(
         "When a frame is much lighter than play (a menu over a still picture), the GPU drops to its\n"
         "power-saving clocks within a second; the first frames of the full scene after the menu then\n"
@@ -473,19 +546,19 @@ void renderingTab() {
         "about as busy as in play while the frame is light. Costs GPU power in menus, never frame time.\n"
         "Only active when recent frames were heavy (more than 3 ms of GPU work).");
     ImGui::SeparatorText("Shadows (flashlight and lightning)");
-    sDirty |= ImGui::Checkbox("Shadow map at render resolution", &r.shadowRenderResolution);
+    sDirty |= recomp::menu::Checkbox("Shadow map at render resolution", &r.shadowRenderResolution);
     ImGui::SetItemTooltip(
         "The game draws its shadows from a depth map rendered from the light. On: that map uses the\n"
         "internal render resolution, so shadow edges stay sharp at high resolutions.\n"
         "Off: the console's 640x480 map (blockier, stair-stepped edges at high resolution).\n"
         "Without 'EFB copies to RAM' the map always follows the render resolution. Tiny GPU cost.");
-    sDirty |= ImGui::Checkbox("Widescreen shadows", &r.shadowWidescreen);
+    sDirty |= recomp::menu::Checkbox("Widescreen shadows", &r.shadowWidescreen);
     ImGui::SetItemTooltip(
         "The game only renders shadows for what a 4:3 screen shows. On: the light's view is widened\n"
         "with the screen, so lightning and flashlight shadows reach the left/right edges at 16:9 and\n"
         "wider (slightly lower horizontal shadow detail). Off: objects near the edges cast no\n"
         "shadows, like widescreen hacks on the original. No cost. Only matters in widescreen.");
-    sDirty |= ImGui::Checkbox("Shadows at any distance", &r.shadowAnyDistance);
+    sDirty |= recomp::menu::Checkbox("Shadows at any distance", &r.shadowAnyDistance);
     ImGui::SetItemTooltip(
         "The original game only draws shadows within a limited distance band around Luigi: in big\n"
         "rooms, shadows of things farther away (or close to the camera) drop out as he walks.\n"
@@ -501,7 +574,7 @@ const char* presetNote(bool custom) {
 // ---- Enhanced lighting > Lights > World lights (src/recomp/world_lights.cpp) ----
 void worldLightsSection() {
     auto& w = port::settings().worldLights;
-    sDirty |= ImGui::Checkbox("World lights", &w.enabled);
+    sDirty |= recomp::menu::Checkbox("World lights", &w.enabled);
     ImGui::SetItemTooltip(
         "Candles, fireplaces, lamps, the Poltergust's element sprays, fire, lightning and sparkles\n"
         "light the room around them in color, like the ghost lights. Positions come from the game's\n"
@@ -527,7 +600,7 @@ void worldLightsSection() {
     };
     for (const Row& r : kRows) {
         ImGui::PushID(r.cat);
-        sDirty |= ImGui::Checkbox(r.name, &w.on[r.cat]);
+        sDirty |= recomp::menu::Checkbox(r.name, &w.on[r.cat]);
         ImGui::SetItemTooltip("%s", r.tip);
         ImGui::SameLine(ImGui::GetWindowWidth() * 0.42f);
         ImGui::SetNextItemWidth(ImGui::GetWindowWidth() * 0.3f);
@@ -537,9 +610,9 @@ void worldLightsSection() {
         ImGui::EndDisabled();
         ImGui::PopID();
     }
-    sDirty |= ImGui::Checkbox("Flame flicker", &w.flicker);
+    sDirty |= recomp::menu::Checkbox("Flame flicker", &w.flicker);
     ImGui::SetItemTooltip("Flames flicker naturally. Off: steady flames.");
-    sDirty |= ImGui::Checkbox("Merge nearby flames", &w.mergeNearby);
+    sDirty |= recomp::menu::Checkbox("Merge nearby flames", &w.mergeNearby);
     ImGui::SetItemTooltip("Flames of one kind close together (a candelabra) become one light. Faster; off: one light per flame.");
     ImGui::Unindent();
     ImGui::EndDisabled();
@@ -548,7 +621,7 @@ void worldLightsSection() {
 // ---- Enhanced lighting > Lights > Ghost lights (src/recomp/ghost_lights.cpp) ----
 void ghostLightsSection() {
     auto& g = port::settings().ghostLights;
-    sDirty |= ImGui::Checkbox("Ghost lights", &g.enabled);
+    sDirty |= recomp::menu::Checkbox("Ghost lights", &g.enabled);
     ImGui::SetItemTooltip(
         "Every visible ghost lights the room around it in its own glow colour (the colour the game\n"
         "uses for that ghost's light effects; fire, water and ice ghosts glow orange, blue, cyan).\n"
@@ -559,7 +632,7 @@ void ghostLightsSection() {
     ImGui::SetItemTooltip("Brightness of every ghost light (1 = default).");
     sDirty |= ImGui::SliderFloat("Ghost light radius", &g.radiusScale, 0.25f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("How far each ghost's light reaches (scaled by the ghost's size; bosses reach farthest).");
-    sDirty |= ImGui::Checkbox("Dramatic ghost light effects", &g.dramatic);
+    sDirty |= recomp::menu::Checkbox("Dramatic ghost light effects", &g.dramatic);
     ImGui::SetItemTooltip(
         "The light pulses gently, flares when a ghost appears, ramps up and flickers while the\n"
         "Poltergust drains the ghost, and bursts then fades when it is captured.\n"
@@ -567,7 +640,7 @@ void ghostLightsSection() {
     sDirty |= ImGui::SliderInt("Max ghost lights", &g.maxLights, 1, 64, "%d lights", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Most ghost lights at once (the strongest/nearest first; all colored lights share\n"
                           "a budget of 64). Lower is faster.");
-    sDirty |= ImGui::Checkbox("Shadows from ghost lights", &g.shadows);
+    sDirty |= recomp::menu::Checkbox("Shadows from ghost lights", &g.shadows);
     ImGui::SetItemTooltip("The one or two strongest ghost lights cast shadows (with \"Colored light shadows\"\n"
                           "under Shadows). Costs a shadow pass per light.");
     ImGui::Unindent();
@@ -582,7 +655,7 @@ void enhancedLightingTab() {
     ImGui::TextDisabled("Optional effects on top of the accurate rendering. Off by default: the original");
     ImGui::TextDisabled("look is one click away. Each part can be switched and tuned on its own.");
     ImGui::Separator();
-    sDirty |= ImGui::Checkbox("Enhanced lighting", &l.enabled);
+    sDirty |= recomp::menu::Checkbox("Enhanced lighting", &l.enabled);
     ImGui::SetItemTooltip(
         "Master switch for everything on this page. Off: the game renders exactly as the accurate\n"
         "renderer does (no extra cost). Turning it on builds extra shader variants once (brief hitch).");
@@ -597,12 +670,12 @@ void enhancedLightingTab() {
 
     // ---- Lights ----
     ImGui::SeparatorText("Lights");
-    sDirty |= ImGui::Checkbox("Per-pixel lighting", &l.perPixelLighting);
+    sDirty |= recomp::menu::Checkbox("Per-pixel lighting", &l.perPixelLighting);
     ImGui::SetItemTooltip(
         "The game's own lights (room lights, flashlight, specular) are computed for every pixel\n"
         "instead of every vertex, with the same formulas. Smoother, rounder light pools on walls\n"
         "and floors instead of blotchy triangles. Small GPU cost.");
-    sDirty |= ImGui::Checkbox("Dynamic colored lights", &l.extraLights);
+    sDirty |= recomp::menu::Checkbox("Dynamic colored lights", &l.extraLights);
     ImGui::SetItemTooltip(
         "Colored real-time light from ghosts and other light-emitting objects, lighting the room\n"
         "around them (through the game's own materials). Cost grows with the number of lights.\n"
@@ -621,7 +694,7 @@ void enhancedLightingTab() {
 
     // ---- Shadows ----
     ImGui::SeparatorText("Shadows");
-    sDirty |= ImGui::Checkbox("Soft shadows", &l.softShadows);
+    sDirty |= recomp::menu::Checkbox("Soft shadows", &l.softShadows);
     ImGui::SetItemTooltip(
         "Filters the game's flashlight/lightning shadow map: soft edges instead of hard, stair-stepped\n"
         "ones, and (High/Ultra) contact hardening: sharp where an object touches the surface, softer\n"
@@ -663,7 +736,7 @@ void enhancedLightingTab() {
         "pass per frame (4096: noticeable on weak GPUs).",
         port::settings().rendering.shadowRenderResolution ? "" : " (currently off)");
     ImGui::BeginDisabled(!l.extraLights);
-    sDirty |= ImGui::Checkbox("Colored light shadows", &l.extraLightShadows);
+    sDirty |= recomp::menu::Checkbox("Colored light shadows", &l.extraLightShadows);
     ImGui::SetItemTooltip(
         "The strongest colored lights (ghosts, fireplaces and braziers, candelabras, the fire spray)\n"
         "cast shadows: furniture and characters between a light and a wall block its glow.%s",
@@ -711,7 +784,7 @@ void enhancedLightingTab() {
 
     // ---- Flashlight ----
     ImGui::SeparatorText("Flashlight");
-    sDirty |= ImGui::Checkbox("Flashlight quality", &l.flashlightQuality);
+    sDirty |= recomp::menu::Checkbox("Flashlight quality", &l.flashlightQuality);
     ImGui::SetItemTooltip(
         "The flashlight cone is evaluated per pixel with a smooth penumbra: a clean round beam\n"
         "edge without a hard rim.");
@@ -747,7 +820,7 @@ void enhancedLightingTab() {
     ImGui::Unindent();
     ImGui::EndDisabled();
     ImGui::BeginDisabled(l.realisticFlashlight != 0);
-    sDirty |= ImGui::Checkbox("Volumetric flashlight beam", &l.volumetricBeam);
+    sDirty |= recomp::menu::Checkbox("Volumetric flashlight beam", &l.volumetricBeam);
     ImGui::SetItemTooltip(
         "Light scattering in the air of the flashlight beam (dusty haze), stopped by walls and\n"
         "objects. One reduced-resolution pass; quality = ray-march steps/resolution.%s",
@@ -768,7 +841,7 @@ void enhancedLightingTab() {
 
     // ---- Effects ----
     ImGui::SeparatorText("Effects");
-    sDirty |= ImGui::Checkbox("Bloom / glow", &l.bloom);
+    sDirty |= recomp::menu::Checkbox("Bloom / glow", &l.bloom);
     ImGui::SetItemTooltip(
         "Light sources glow: lamps, candles, fireplaces, the flashlight lens, ghost auras,\n"
         "lightning, nozzle effects. The HUD never glows. Computed at a capped resolution, so the\n"
@@ -811,10 +884,10 @@ void frameRateControls(port::VideoSettings& v) {
     ImGui::EndDisabled();
     const bool sliderHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
     ImGui::BeginDisabled(v.unlimitedFps);
-    sDirty |= ImGui::Checkbox("Match display refresh rate", &v.matchDisplay);
+    sDirty |= recomp::menu::Checkbox("Match display refresh rate", &v.matchDisplay);
     ImGui::EndDisabled();
     const bool checkHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
-    sDirty |= ImGui::Checkbox("Unlimited frame rate", &v.unlimitedFps);
+    sDirty |= recomp::menu::Checkbox("Unlimited frame rate", &v.unlimitedFps);
     ImGui::SetItemTooltip("Interpolated frames as fast as the PC can draw them: no frame-rate target, no frame\n"
                           "pacing and no cap below the display's refresh rate (the game itself still runs at 30).\n"
                           "With VSync on, the display's refresh rate still limits it (with G-SYNC the frame\n"
@@ -867,7 +940,7 @@ void visualsTab() {
     sDirty |= combo("Aspect ratio", v.aspect, kAspects, 6);
     ImGui::SetItemTooltip("Shape of the 3D view. Original 4:3: as on the console, with black bars in a wider\n"
                           "window. Match window: fills the window. The fixed ratios add black bars as needed.");
-    sDirty |= ImGui::Checkbox("Keep HUD at 4:3", &v.hudKeep4x3);
+    sDirty |= recomp::menu::Checkbox("Keep HUD at 4:3", &v.hudKeep4x3);
     ImGui::SetItemTooltip("On: the HUD stays where it is on a 4:3 screen, centred. Off: in widescreen the health\n"
                           "counter moves to the left edge and the Game Boy Horror to the right edge.");
     if (!v.hudKeep4x3) pending("in-game HUD moves to the screen edges");
@@ -894,12 +967,12 @@ void visualsTab() {
         ImGui::SetItemTooltip("Internal resolution as a multiple of the console's 480 lines (1x = 640x480).\n"
                               "Match window: the window's own resolution. Higher is sharper and costs GPU time.");
     }
-    if (ImGui::Checkbox("Fullscreen", &v.fullscreen)) {
+    if (recomp::menu::Checkbox("Fullscreen", &v.fullscreen)) {
         sDirty = true;
         applyWindowSettings();
     }
     ImGui::SetItemTooltip("The game window fills the whole screen.");
-    sDirty |= ImGui::Checkbox("VSync", &v.vsync);
+    sDirty |= recomp::menu::Checkbox("VSync", &v.vsync);
     ImGui::SetItemTooltip("Frames wait for the display's refresh: no tearing, but the frame rate is limited to\n"
                           "the refresh rate. Applies on the next launch.");
     pending("next launch");
@@ -965,17 +1038,17 @@ void soundTab() {
         if (dev > 0) ImGui::TextDisabled("Device: %d channels. Playing: %s", dev, recomp::audio::outStatus());
         else ImGui::TextDisabled("Playing: %s", recomp::audio::outStatus());
     }
-    sDirty |= ImGui::Checkbox("Swap left/right", &a.swapChannels);
+    sDirty |= recomp::menu::Checkbox("Swap left/right", &a.swapChannels);
     ImGui::SetItemTooltip("Exchanges the left and right channels (e.g. for headphones worn the other way round).");
-    sDirty |= ImGui::Checkbox("High-quality resampler", &a.sincResampler);
+    sDirty |= recomp::menu::Checkbox("High-quality resampler", &a.sincResampler);
     ImGui::SetItemTooltip("Converts the console's 32028 Hz output to the device rate with a 64-tap\n"
                           "windowed-sinc filter (flat to 13.8 kHz, images above 16 kHz removed).\n"
                           "Off: SDL's resampler, slightly cheaper.");
     ImGui::SeparatorText("DSP accuracy");
-    sDirty |= ImGui::Checkbox("Reverb / echo", &a.reverb);
+    sDirty |= recomp::menu::Checkbox("Reverb / echo", &a.reverb);
     ImGui::SetItemTooltip("The DSP's effect lines (feedback delays used as room echo) and its chorus bus.\n"
                           "Off: dry sound only, slightly cheaper.");
-    sDirty |= ImGui::Checkbox("Voice filters", &a.voiceFilters);
+    sDirty |= recomp::menu::Checkbox("Voice filters", &a.voiceFilters);
     ImGui::SetItemTooltip("Per-voice FIR / IIR / distortion stages the game asks the DSP for (muffled or\n"
                           "distorted sounds). Off: those sounds play unfiltered, slightly cheaper.");
     recomp::unused2::soundSection();
@@ -987,7 +1060,7 @@ void gameplaySection() {
     auto& g = port::settings().gameplay;
     ImGui::TextDisabled("Neutral by default: the original game is unchanged until you move something.");
     ImGui::SeparatorText("Lighting");
-    sDirty |= ImGui::Checkbox("Hidden Mansion darkness everywhere", &g.palDarknessEverywhere);
+    sDirty |= recomp::menu::Checkbox("Hidden Mansion darkness everywhere", &g.palDarknessEverywhere);
     ImGui::SetItemTooltip("Room ambient light x0.2 in every mansion, as in the European Hidden Mansion.");
     sDirty |= ImGui::SliderFloat("Ambient light", &g.ambientScale, 0.05f, 1.5f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Multiplies room ambient light (1 = original; also on top of the darkness above).");
@@ -1000,12 +1073,12 @@ void gameplaySection() {
     ImGui::SetItemTooltip("Multiplies every ghost's HP (1 = original): higher takes longer to vacuum up.");
     sDirty |= ImGui::SliderFloat("Poltergust strength", &g.vacuumStrength, 0.25f, 4.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("How fast the vacuum drains a captured ghost's HP (1 = original).");
-    sDirty |= ImGui::Checkbox("Disable recovery hearts", &g.noHeartDrops);
+    sDirty |= recomp::menu::Checkbox("Disable recovery hearts", &g.noHeartDrops);
     ImGui::SetItemTooltip("Recovery hearts never appear (and any that do heal nothing).");
     ImGui::SeparatorText("Movement");
-    sDirty |= ImGui::Checkbox("Always ride the Poltergust", &g.alwaysRide);
+    sDirty |= recomp::menu::Checkbox("Always ride the Poltergust", &g.alwaysRide);
     ImGui::SetItemTooltip("Luigi glides with momentum everywhere (the European Boolossus-fight movement).");
-    if (ImGui::Button("Reset gameplay options")) {
+    if (recomp::menu::Button("Reset gameplay options")) {
         g = port::GameplaySettings{};
         sDirty = true;
     }
@@ -1017,23 +1090,23 @@ void gameplaySection() {
 void generalEnhancementsTab() {
     auto& e = port::settings().enhancements;
     ImGui::SeparatorText("Interface");
-    sDirty |= ImGui::Checkbox("Show FPS", &e.showFps);
+    sDirty |= recomp::menu::Checkbox("Show FPS", &e.showFps);
     ImGui::SetItemTooltip("Frames per second shown in the top-left corner.");
-    if (ImGui::Checkbox("Pause when window loses focus", &e.pauseOnFocusLoss)) {
+    if (recomp::menu::Checkbox("Pause when window loses focus", &e.pauseOnFocusLoss)) {
         sDirty = true;
         applyWindowSettings();
     }
     ImGui::SetItemTooltip("The game pauses (and goes quiet) while another window is in front.");
     ImGui::SeparatorText("Cutscenes");
-    sDirty |= ImGui::Checkbox("Skippable cutscenes", &e.skipCutscenes);
+    sDirty |= recomp::menu::Checkbox("Skippable cutscenes", &e.skipCutscenes);
     ImGui::SetItemTooltip("Press START during a cutscene to skip it. The game plays the rest of the\n"
                           "cutscene at high speed behind a black screen, so everything it sets up\n"
                           "(items, keys, doors, story progress) is the same as after watching it.\n"
                           "Choices and the save screen still wait for you.");
-    sDirty |= ImGui::Checkbox("Hold Tab to fast-forward", &e.fastForwardKey);
+    sDirty |= recomp::menu::Checkbox("Hold Tab to fast-forward", &e.fastForwardKey);
     ImGui::SetItemTooltip("While Tab is held the game runs as fast as it can, muted.");
     ImGui::SeparatorText("Fixes");
-    sDirty |= ImGui::Checkbox("Fix rooms vanishing near doorways", &e.portalClipFix);
+    sDirty |= recomp::menu::Checkbox("Fix rooms vanishing near doorways", &e.portalClipFix);
     ImGui::SetItemTooltip("The game hides a whole room behind a doorway when the camera gets so close\n"
                           "to the doorway that part of it is behind the camera (an original bug, e.g.\n"
                           "the upper foyer during the cutscene when Luigi first enters). On: the doorway\n"
@@ -1093,7 +1166,7 @@ void unusedContentTab() {
     ImGui::TextDisabled("Content left unused in the retail game. Everything here is off by default.");
     // Checkbox + tooltip + "(note)" after it (the tooltip belongs to the checkbox, not the note).
     auto item = [&](const char* label, bool& v, const char* tip, const char* note) {
-        sDirty |= ImGui::Checkbox(label, &v);
+        sDirty |= recomp::menu::Checkbox(label, &v);
         ImGui::SetItemTooltip("%s", tip);
         if (note) pending(note);
     };
@@ -1346,7 +1419,24 @@ void scriptedSettings() {
     }
 }
 
+bool Checkbox(const char* label, bool* v) {
+    const bool changed = ImGui::Checkbox(label, v);
+    click::afterItem(label);
+    return changed;
+}
+bool Button(const char* label) {
+    const bool pressed = ImGui::Button(label);
+    click::afterItem(label);
+    return pressed;
+}
+bool SmallButton(const char* label) {
+    const bool pressed = ImGui::SmallButton(label);
+    click::afterItem(label);
+    return pressed;
+}
+
 void draw() {
+    click::frame();
     scriptedSettings();
     skip::drawOverlay();
     recomp::gx::applyAccuracySettings();
@@ -1433,13 +1523,13 @@ void draw() {
         ImGui::PopItemWidth();
         // Quit (with confirmation): ends the host loop the same way closing the window does.
         ImGui::Separator();
-        if (ImGui::Button("Restore all defaults")) ImGui::OpenPopup("Restore defaults?");
+        if (recomp::menu::Button("Restore all defaults")) ImGui::OpenPopup("Restore defaults?");
         ImGui::SetItemTooltip("Every setting in this menu (including controller bindings) goes back to its\n"
                               "first-install default. Save files are not touched.");
         if (ImGui::BeginPopupModal("Restore defaults?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::Text("Restore every setting to its default? This cannot be undone.");
             ImGui::TextDisabled("A few options (marked in their tooltips) apply on the next launch.");
-            if (ImGui::Button("Restore defaults")) {
+            if (recomp::menu::Button("Restore defaults")) {
                 port::resetSettingsToDefaults();
                 // Settings applied only when their control changes: apply the defaults now too.
                 applyWindowSettings();
@@ -1451,15 +1541,15 @@ void draw() {
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            if (recomp::menu::Button("Cancel")) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Quit game")) ImGui::OpenPopup("Quit?");
+        if (recomp::menu::Button("Quit game")) ImGui::OpenPopup("Quit?");
         ImGui::SetItemTooltip("Closes the game (asks first). Settings are saved; unsaved game progress is lost.");
         if (ImGui::BeginPopupModal("Quit?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::Text("Quit Luigi's Mansion? Unsaved progress will be lost.");
-            if (ImGui::Button("Quit")) {
+            if (recomp::menu::Button("Quit")) {
                 if (sDirty) {
                     port::saveSettings();
                     sDirty = false;
@@ -1468,7 +1558,7 @@ void draw() {
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            if (recomp::menu::Button("Cancel")) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
         idcheck::insideWindow();

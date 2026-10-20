@@ -20,6 +20,8 @@
 #include "recomp/unused2.h"
 #include "recomp/version.h"
 
+#include "recomp/menu.h"
+
 #include <imgui.h>
 #include <imgui_internal.h>
 
@@ -185,7 +187,7 @@ void soundSection() {
     }
     ImGui::TextDisabled("Plays the game's sequenced music (the mansion's streamed ambience is separate).\n"
                         "The game may change the music again on its own, e.g. when Luigi enters a room.");
-    if (ImGui::Button("Stop music")) {
+    if (recomp::menu::Button("Stop music")) {
         sStop = true;
         log("[jukebox] menu: stop");
         sNowPlaying = -1;
@@ -193,7 +195,7 @@ void soundSection() {
     ui::atButton(0);
     ImGui::SetItemTooltip("Stops the sequenced music the jukebox (or the game) is playing.");
     ImGui::SameLine();
-    ImGui::Checkbox("Only tracks not heard in retail", &sUnusedOnly);
+    recomp::menu::Checkbox("Only tracks not heard in retail", &sUnusedOnly);
     ImGui::SetItemTooltip("Lists only the music the retail game never plays (USA version).");
     const bool us = !ver::pal();
     // "Playing" only while the game's music player still runs the picked track (it ended, was
@@ -209,7 +211,7 @@ void soundSection() {
             ImGui::TableNextColumn();
             char label[32];
             std::snprintf(label, sizeof label, "%s###jb%d", sNowPlaying == t.index ? "Playing" : "Play", t.index);
-            if (ImGui::SmallButton(label)) {
+            if (recomp::menu::SmallButton(label)) {
                 sPending = true;
                 sPlay = t.index;
                 log("[jukebox] menu: play %d", t.index);

@@ -13,6 +13,8 @@
 #include "recomp/runtime.h"
 #include "recomp/version.h"
 
+#include "recomp/menu.h"
+
 #include <imgui.h>
 
 #include <algorithm>
@@ -130,7 +132,7 @@ void unusedSection(UnusedGroup group) {
     auto& u = port::settings().unused2;
     switch (group) {
     case UnusedGroup::Player:
-        sDirty |= ImGui::Checkbox("Play as Mario", &u.playAsMario);
+        sDirty |= recomp::menu::Checkbox("Play as Mario", &u.playAsMario);
         tip("The player uses the unused Mario model left in the game (bmario: the character table has a\n"
             "whole Mario player set that nothing places). Mario has Luigi's skeleton, so Luigi's\n"
             "animations, Poltergust, flashlight and Game Boy Horror work unchanged. Mario's model has\n"
@@ -139,33 +141,33 @@ void unusedSection(UnusedGroup group) {
         note("next map load");
         break;
     case UnusedGroup::Characters:
-        sDirty |= ImGui::Checkbox("Unused ghost placements", &u.ghostPlacements);
+        sDirty |= recomp::menu::Checkbox("Unused ghost placements", &u.ghostPlacements);
         tip("Places ghosts on paths the mansion's map data has but no ghost uses: Slim Bankshot in the\n"
             "Hidden Room (hustler_01), two of Mr. Bones' skeletons in the Courtyard (skul_23_1/2), a\n"
             "ghost in room 8 (topoo_8_1), nine more Ghost Guys and a ghost on the roof (heypo_60_4..12,\n"
             "poo_60_1), and three more ghost generators in the training room (mg_path).");
         note("next mansion / training load");
-        sDirty |= ImGui::Checkbox("Pink mice", &u.pinkMice);
+        sDirty |= recomp::menu::Checkbox("Pink mice", &u.pinkMice);
         tip("The mice use the unused rat2 colour set (pink) and its parameter file rat2.prm.");
-        sDirty |= ImGui::Checkbox("Blue Ghost Guys", &u.blueGhostGuys);
+        sDirty |= recomp::menu::Checkbox("Blue Ghost Guys", &u.blueGhostGuys);
         tip("Two kinds of Ghost Guys use the unused heypo9 / heypo10 colour sets and parameter files\n"
             "(blue / cyan glow).");
-        sDirty |= ImGui::Checkbox("Extra Speedy Spirits 16-20 (not original)", &u.extraSpeedySpirits);
+        sDirty |= recomp::menu::Checkbox("Extra Speedy Spirits 16-20 (not original)", &u.extraSpeedySpirits);
         tip("NOT ORIGINAL CONTENT: the game has Speedy Spirit types 16-20 that were never placed and have\n"
             "no rewards. This places them in five rooms that have none (chosen by the port) with rewards\n"
             "modelled on the retail ones. They appear like the others when the room's lights are off.");
         note("next mansion load");
         break;
     case UnusedGroup::Screens:
-        sDirty |= ImGui::Checkbox("Bordered view", &u.borderedView);
+        sDirty |= recomp::menu::Checkbox("Bordered view", &u.borderedView);
         tip("The game's view setup has a third, unused layout: a fixed 560x400 3D view (40,30 to\n"
             "560,430) with a black border, like a TV-safe window. The HUD stays where it is.");
-        sDirty |= ImGui::Checkbox("Ending pictures of Luigi", &u.endingPictures);
+        sDirty |= recomp::menu::Checkbox("Ending pictures of Luigi", &u.endingPictures);
         tip("The ending's rank screen shows one of three unused pictures of Luigi next to its\n"
             "message: sitting with a flower (ranks H to D), one V sign (C, B) or two V signs (A).");
         break;
     case UnusedGroup::TwoPlayer:
-        sDirty |= ImGui::Checkbox("Mario as player 2", &u.marioP2);
+        sDirty |= recomp::menu::Checkbox("Mario as player 2", &u.marioP2);
         tip("In the 2-player mode, player 2 is Mario (the unused bmario model) instead of a\n"
             "second Luigi. Needs \"2-player mode (unfinished)\".");
         break;
@@ -180,7 +182,7 @@ void gameplaySection() {
     auto& u = port::settings().unused2;
     ImGui::SeparatorText("Unfinished Luigi states");
     ImGui::TextDisabled("Restored from code left in the game. All off by default.");
-    sDirty |= ImGui::Checkbox("Poison mushrooms poison Luigi", &u.poisonState);
+    sDirty |= recomp::menu::Checkbox("Poison mushrooms poison Luigi", &u.poisonState);
     tip("Touching a poison mushroom no longer shrinks Luigi. Instead he plays the unused poisoned\n"
         "animation (doku_lp, with the dark \"poisoned\" eyes), stands still and loses health slowly.\n"
         "The mushroom still takes 10 coins. Poison alone never takes Luigi's last point of health.");
@@ -194,12 +196,12 @@ void gameplaySection() {
         ImGui::Unindent();
         ImGui::EndDisabled();
     }
-    sDirty |= ImGui::Checkbox("Crawling fear", &u.crawlFear);
+    sDirty |= recomp::menu::Checkbox("Crawling fear", &u.crawlFear);
     tip("When a ghost startles Luigi from behind, he falls into the game's unused panic state:\n"
         "about 5 seconds sitting and scooting along the floor (unused cow1wait / cow1move\n"
         "animations), unable to use the Poltergust, taking half damage, then he gets up.\n"
         "The game's fear system has this mode but nothing ever triggers it.");
-    sDirty |= ImGui::Checkbox("Vacuum overheat", &u.overheat);
+    sDirty |= recomp::menu::Checkbox("Vacuum overheat", &u.overheat);
     tip("Cut feature: vacuuming too long overheats the Poltergust. The heat shows on the element\n"
         "meter (fire colours) while it is above zero. When it is full the Poltergust catches fire,\n"
         "Luigi is burned (the game's own on-fire state) and the vacuum stops working until it\n"

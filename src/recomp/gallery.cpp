@@ -16,6 +16,7 @@
 #include "port/settings.h"
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
+#include "recomp/menu.h"
 #include "recomp/rarc.h"
 #include "recomp/skip.h"
 #include "recomp/unused2.h"
@@ -288,7 +289,7 @@ void loadItem(GalleryItem& it) {
 }  // namespace
 
 void galleryButton() {
-    if (ImGui::Button(sGalleryOpen ? "Close gallery###gallery" : "Gallery (unused textures)###gallery")) sGalleryOpen = !sGalleryOpen;
+    if (recomp::menu::Button(sGalleryOpen ? "Close gallery###gallery" : "Gallery (unused textures)###gallery")) sGalleryOpen = !sGalleryOpen;
     ImGui::SetItemTooltip("Opens a window with unused textures and pictures left on the disc.");
 }
 
