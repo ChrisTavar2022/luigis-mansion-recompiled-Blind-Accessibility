@@ -543,7 +543,9 @@ void scanStep(double budgetMs) {
 // LM_DEV_VIEWER_MAP=<map>[:<room>] opens a map (room -1 or absent = every room).
 const char* sEnvArchive = std::getenv("LM_DEV_VIEWER");
 const char* sEnvMap = std::getenv("LM_DEV_VIEWER_MAP");
-bool sOpen = sEnvArchive != nullptr || sEnvMap != nullptr || std::getenv("LM_DEV_VIEWER_SWEEP") != nullptr;
+// With LM_DEV_VIEWER_TOGGLE (dev_tools.cpp) the viewer opens at the first toggle frame instead.
+bool sOpen = (sEnvArchive != nullptr || sEnvMap != nullptr || std::getenv("LM_DEV_VIEWER_SWEEP") != nullptr) &&
+             std::getenv("LM_DEV_VIEWER_TOGGLE") == nullptr;
 
 int sArchiveSel = -1;
 std::vector<Member> sMembers;    // the selected archive's files

@@ -168,6 +168,21 @@ void marioModelLoaded(Ctx& c, u32 entry) {
     }
 }
 
+// Vertex morphs (S3DModel +0xAC + 12 * slot, 8 slots: weight, morph data, key; fn_8005C760 runs
+// fn_8005C464 for each). Luigi's face and mouth shapes (lip sync, expressions) are morph targets
+// of luige.mdl: per target a list of *Luigi's* vertex indices and the positions to blend there,
+// written straight into the drawn model's position array (S3DModel +4 = .mdl, +0x48 positions).
+// On Mario's model those indices name unrelated vertices, so every morph frame overwrote parts
+// of Mario's cap, hair, face and back with Luigi's face positions: holes in the cap, hair through
+// the face, spikes out of the back, worse each frame (the writes are absolute and stick, the copy
+// is shared by every Mario draw). Mario has no morph targets of his own, so his model is left
+// out of the morph pass (his face keeps its modelled shape, as his eyes keep theirs).
+HLE(fn_8005C760) {
+    const u32 s3d = c.r[3];
+    if (gu::inMem1(s3d) && isMarioCopy(rd32(s3d + 4))) return;
+    callOriginal(c, "fn_8005C760");
+}
+
 // Every frame: player 2's model in the 2-player mode.
 void marioFrame(Ctx& c) {
     static bool sApplied = false;
