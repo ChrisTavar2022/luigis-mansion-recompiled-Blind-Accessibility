@@ -135,7 +135,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
  };
  std::vector<GlowDraw> g_glowDraws;
  
-@@ -623,87 +624,206 @@
+@@ -623,87 +624,247 @@
  // applied inside the opaque world draws (ubuf.enh_flags bit 16) instead of multiplying the whole
  // picture at scene end, which also darkened what is drawn in front of occluded geometry: the
  // ghost layer, the flashlight beam, light effects, particles, glass and water.
@@ -206,21 +206,23 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 +    n = select(v, n * inverseSqrt(max(l, 1e-12)), l > 1e-6);
 +    if (dot(n, v) < -0.25) { n = -n; } // back face of a two-sided surface
 +  } else {
-+    let dn = mask_normal(mp, p);
-+    n = select(v, dn.xyz, dn.w > 0.5);
++    // (w = 0 marks a one-pixel ledge; its one-sided normal is still far better than the view
++    // vector, which made the edge rows of rugs and steps a dashed dark line)
++    n = mask_normal(mp, p).xyz;
 +  }
 +  let nv = dot(n, v);
 +  if (nv < 0.04) { n = normalize(n + v * (0.04 - nv)); } // silhouettes: just inside the view
 +  return n;
 +}
-+fn ao_needed(mp: vec2f) -> bool {
-+  // 0210 incremental masks, with a tile more around changed depth than mask_needed: the filter
-+  // reads AO texels up to two AO texels away.
++fn ao_needed(mp: vec2f, r: i32) -> bool {
++  // 0210 incremental masks, with r tiles around changed depth (mask_needed: 1): the upsample
++  // reads denoised texels one AO texel away (needs 2), each denoise pass reads its input two
++  // away (second pass 3, first pass 4 for the raw AO).
 +  if (fx.ao.z < 0.5) { return true; }
 +  let td = vec2i(textureDimensions(t1));
 +  let t = vec2i(mp) / vec2i(8);
-+  for (var y = -2; y <= 2; y++) {
-+    for (var x = -2; x <= 2; x++) {
++  for (var y = -r; y <= r; y++) {
++    for (var x = -r; x <= r; x++) {
 +      let c = clamp(t + vec2i(x, y), vec2i(0), td - vec2i(1));
 +      if (textureLoad(t1, c, 0).r > 0.5) { return true; }
 +    }
@@ -251,7 +253,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 -    if (any(sp < vec2f(0.0)) || any(sp >= dims)) { continue; }
 +  // Height bias: occluders count from a little above the tangent plane (decals, rug edges, small
 +  // steps and depth precision make no crease line).
-+  let hb = n * (radius * 0.04 + abs(p.z) * 0.002);
++  let hb = n * (radius * 0.1 + abs(p.z) * 0.004);
 +  var h = low;
 +  for (var k = 0u; k < AO_STEPS; k++) {
 +    let t = (f32(k) + jit) / f32(AO_STEPS);
@@ -296,7 +298,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 +  let ap = floor(in.pos.xy);
 +  let dims = vec2f(textureDimensions(tdepth));
 +  let mp = min(ap * s, dims - vec2f(1.0));
-+  if (!ao_needed(mp)) { discard; }
++  if (!ao_needed(mp, 4)) { discard; }
    let d0 = textureLoad(tdepth, vec2i(mp), 0).r;
 -  if (d0 <= 1e-7) { return vec4f(0.0); } // nothing drawn (cleared to far)
 +  if (d0 <= 1e-7) { return vec4f(1.0, 0.0, 0.0, 0.0); } // nothing drawn (z 0 marks it)
@@ -342,10 +344,49 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 +  }
 +  return vec4f(vis, p.z, oct_enc(n));
 +}
-+// 0224: depth- and normal-aware 4x4 filter of the raw AO (t0, fx.ao.w mask texels per AO texel)
-+// at mask resolution: cancels the interleaved pattern and upsamples, without bleeding across
-+// silhouettes (plane distance against this texel's surface) or creases (normal similarity).
-+// Output: the darkening amount the receivers multiply by (0 = none). t2: the normal target.
++// 0224: depth- and normal-aware 4x4 denoise of the raw AO (t0) at AO resolution: cancels the
++// interleaved pattern on smooth surfaces without bleeding across silhouettes (plane distance
++// against this texel's surface) or creases (normal similarity). Same output layout as the raw.
++fn ao_weight(n0: vec3f, p0: vec3f, r: vec4f, q: vec3f, tol: f32) -> f32 {
++  let pd = abs(dot(n0, q - p0));
++  return (1.0 - smoothstep(tol, tol * 3.0, pd)) * smoothstep(0.55, 0.9, dot(n0, oct_dec(r.ba)));
++}
++// Two passes (the second over the first's output, a 7x7 tent in all): one 4x4 box cancels the
++// pattern on flat surfaces but left blotches where an occluder covers only some of the 32
++// directions (a wall below the bathtub's rim).
++@fragment
++fn fs_aodenoise(in: VsOut) -> @location(0) vec4f { return ao_denoise(in, 3, -2); }
++@fragment
++fn fs_aodenoise2(in: VsOut) -> @location(0) vec4f { return ao_denoise(in, 2, -1); }  // (offset the other way: centred in all)
++fn ao_denoise(in: VsOut, need: i32, o0: i32) -> vec4f {
++  let s = max(fx.ao.w, 1.0);
++  let ap = floor(in.pos.xy);
++  let dims = vec2f(textureDimensions(tdepth));
++  if (!ao_needed(min(ap * s, dims - vec2f(1.0)), need)) { discard; }
++  let adims = vec2i(textureDimensions(t0));
++  let r0 = textureLoad(t0, vec2i(ap), 0);
++  if (r0.g > -1e-3) { return r0; } // nothing drawn
++  let p0 = view_pos_z((min(ap * s, dims - vec2f(1.0)) + vec2f(0.5)) * fx.pp.y, r0.g);
++  let n0 = oct_dec(r0.ba);
++  let tol = 1.0 + abs(p0.z) * 0.01;
++  var sum = 0.0;
++  var ws = 0.0;
++  for (var y = o0; y < o0 + 4; y++) {
++    for (var x = o0; x < o0 + 4; x++) {
++      let c = clamp(vec2i(ap) + vec2i(x, y), vec2i(0), adims - vec2i(1));
++      let r = textureLoad(t0, c, 0);
++      if (r.g > -1e-3) { continue; }
++      let q = view_pos_z((min(vec2f(c) * s, dims - vec2f(1.0)) + vec2f(0.5)) * fx.pp.y, r.g);
++      let w = ao_weight(n0, p0, r, q, tol);
++      sum = sum + r.r * w;
++      ws = ws + w;
++    }
++  }
++  return vec4f(select(r0.r, sum / ws, ws > 1e-3), r0.gba);
++}
++// 0224: upsample of the denoised AO (t0) to the mask: the 2x2 AO texels around the mask texel,
++// bilinear weights times the same depth/normal weights against this texel's own surface (t2: the
++// normal target). Output: the darkening amount the receivers multiply by (0 = none).
  @fragment
  fn fs_aoblur4(in: VsOut) -> @location(0) vec4f {
    let mp = floor(in.pos.xy);
@@ -360,8 +401,10 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 +  let n0 = ao_normal(textureLoad(t2, vec2i(mp), 0), mp, p0);
 +  let s = max(fx.ao.w, 1.0);
 +  let adims = vec2i(textureDimensions(t0));
-+  let a = (mp + vec2f(0.5)) / s - vec2f(0.5);
-+  let base = vec2i(floor(a)) - vec2i(1);
++  // (AO texel c was computed at mask texel c * s)
++  let a = mp / s;
++  let base = vec2i(floor(a));
++  let f = a - floor(a);
 +  let tol = 1.0 + abs(p0.z) * 0.01;
    var sum = 0.0;
    var ws = 0.0;
@@ -374,33 +417,34 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 -      let z = view_pos((vec2f(c) + vec2f(0.5)) * fx.pp.y, dc).z; // 0210: = mask_view_pos(vec2f(c)).z, one load
 -      let w = 1.0 - smoothstep(tol, tol * 3.0, abs(z - z0));
 -      sum = sum + textureLoad(t0, c, 0).r * w;
+-      ws = ws + w;
+-    }
+-  }
+-  return vec4f(select(textureLoad(t0, vec2i(mp), 0).r, sum / ws, ws > 1e-4), 0.0, 0.0, 0.0);
 +  var near = 1.0;
 +  var nearD = 1e30;
-+  for (var y = 0; y < 4; y++) {
-+    for (var x = 0; x < 4; x++) {
-+      let c = clamp(base + vec2i(x, y), vec2i(0), adims - vec2i(1));
-+      let r = textureLoad(t0, c, 0);
-+      if (r.g > -1e-3) { continue; } // nothing drawn there
-+      let q = view_pos_z((min(vec2f(c) * s, dims - vec2f(1.0)) + vec2f(0.5)) * fx.pp.y, r.g);
-+      let pd = abs(dot(n0, q - p0));
-+      if (pd < nearD) {
-+        nearD = pd;
-+        near = r.r;
-+      }
-+      let wd = 1.0 - smoothstep(tol, tol * 3.0, pd);
-+      let wn = smoothstep(0.55, 0.9, dot(n0, oct_dec(r.ba)));
-+      let w = wd * wn;
-+      sum = sum + r.r * w;
-       ws = ws + w;
-     }
-   }
--  return vec4f(select(textureLoad(t0, vec2i(mp), 0).r, sum / ws, ws > 1e-4), 0.0, 0.0, 0.0);
-+  let vis = clamp(select(near, sum / ws, ws > 1e-3), 0.0, 1.0);
++  for (var k = 0; k < 4; k++) {
++    let o = vec2i(k & 1, k >> 1u);
++    let c = clamp(base + o, vec2i(0), adims - vec2i(1));
++    let r = textureLoad(t0, c, 0);
++    if (r.g > -1e-3) { continue; }
++    let q = view_pos_z((min(vec2f(c) * s, dims - vec2f(1.0)) + vec2f(0.5)) * fx.pp.y, r.g);
++    let pd = abs(dot(n0, q - p0));
++    if (pd < nearD) {
++      nearD = pd;
++      near = r.r;
++    }
++    let bw = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1) + 1e-3;
++    let w = bw * ao_weight(n0, p0, r, q, tol);
++    sum = sum + r.r * w;
++    ws = ws + w;
++  }
++  let vis = clamp(select(near, sum / ws, ws > 1e-4), 0.0, 1.0);
 +  return vec4f(1.0 - pow(vis, 1.0 + fx.ao.x * 2.0), 0.0, 0.0, 0.0);
  }
  
  // Downsample (13-tap, as above without threshold).
-@@ -1282,9 +1402,13 @@
+@@ -1282,9 +1443,15 @@
    // 0032 forward ambient occlusion (third mask plane)
    Tex maskAo;
    wgpu::RenderPipeline aoMaskPipe;
@@ -412,10 +456,25 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 +  // depth so far was rendered with normals (an incremental mask keeps adding to both)
 +  Tex maskNormal, maskNormalColor;
 +  bool maskNormalValid = false;
++  Tex maskAoDen; // 0224: denoised AO (AO resolution); the second pass writes back into maskAoRaw
++  wgpu::RenderPipeline aoDenoisePipe, aoDenoise2Pipe;
    // 0196 realistic flashlight
    wgpu::RenderPipeline beam, beamBlur;
    Tex beamTex, beamTmp;
-@@ -1773,7 +1897,23 @@
+@@ -1400,6 +1567,12 @@
+   g_gpu.aoblur = make_pipeline("fs_aoblur", HdrFormat, 1, nullptr, all);
+   g_gpu.beam = make_pipeline("fs_beam", HdrFormat, 1, nullptr, all);
+   g_gpu.beamBlur = make_pipeline("fs_beamblur", HdrFormat, 1, nullptr, all);
++  // 0224: the forward AO passes are built with the rest (they were built on first use, a hitch
++  // when AO first ran).
++  g_gpu.aoMaskPipe = make_pipeline("fs_aomask", wgpu::TextureFormat::RGBA16Float, 1, nullptr, all);
++  g_gpu.aoDenoisePipe = make_pipeline("fs_aodenoise", wgpu::TextureFormat::RGBA16Float, 1, nullptr, all);
++  g_gpu.aoDenoise2Pipe = make_pipeline("fs_aodenoise2", wgpu::TextureFormat::RGBA16Float, 1, nullptr, all);
++  g_gpu.aoBlur4Pipe = make_pipeline("fs_aoblur4", wgpu::TextureFormat::RGBA8Unorm, 1, nullptr, all);
+   if (!g_gpu.beam || !g_gpu.beamBlur) {
+     Log.error("Realistic flashlight pass failed to build");
+   }
+@@ -1773,7 +1946,23 @@
    const auto* prevDepth = g_gpu.maskDepth.texture.Get();
    ensure_tex(g_gpu.maskDepth, w, h, depthFormat, wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding,
               "Enhanced light-shadow depth");
@@ -440,7 +499,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
    ensure_tex(g_gpu.maskDepthR, w, h, wgpu::TextureFormat::R32Float,
               wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopySrc,
               "Enhanced light-shadow depth R");
-@@ -1790,8 +1930,21 @@
+@@ -1790,8 +1979,21 @@
          .depthStoreOp = wgpu::StoreOp::Store,
          .depthClearValue = gx::UseReversedZ ? 0.f : 1.f,
      };
@@ -464,7 +523,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
      const auto pass = cmd.BeginRenderPass(&desc);
      reset_bound_pipeline();
      pass.SetBindGroup(0, detail::resources().staticBindGroup);
-@@ -1800,6 +1953,9 @@
+@@ -1800,6 +2002,9 @@
      const float sx = 1.f / std::max(job.scaleBack, 1e-3f), sy = sx;
      for (size_t i = fromDepth; i < job.draws.size(); ++i) {
        const auto& g = job.draws[i];
@@ -474,7 +533,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
        const auto& vp = g.viewport;
        const float minDepth = gx::UseReversedZ ? 1.f - vp.zfar : vp.znear;
        const float maxDepth = gx::UseReversedZ ? 1.f - vp.znear : vp.zfar;
-@@ -1815,6 +1971,7 @@
+@@ -1815,6 +2020,7 @@
      }
      pass.End();
      reset_bound_pipeline();
@@ -482,7 +541,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
    }
    // 0210: an incremental mask (this frame's previous mask, same lights/layout, only new draws
    // added to the pre-pass) recomputes its planes only around the texels whose pre-pass depth
-@@ -1872,28 +2029,36 @@
+@@ -1872,28 +2078,68 @@
      cmd.CopyTextureToBuffer(&srcD, &dstD, &extent);
    }
    if (job.ao) {
@@ -506,6 +565,11 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
      if (!g_gpu.aoBlur4Pipe) {
        g_gpu.aoBlur4Pipe = make_pipeline("fs_aoblur4", wgpu::TextureFormat::RGBA8Unorm, 1, nullptr, wgpu::ColorWriteMask::All);
      }
++    if (!g_gpu.aoDenoisePipe) {
++      g_gpu.aoDenoisePipe = make_pipeline("fs_aodenoise", wgpu::TextureFormat::RGBA16Float, 1, nullptr, wgpu::ColorWriteMask::All);
++    }
++    ensure_tex(g_gpu.maskAoDen, aw, ah, wgpu::TextureFormat::RGBA16Float,
++               wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::TextureBinding, "Enhanced ambient occlusion denoised");
 +    const wgpu::TextureView normalView = normals ? g_gpu.maskNormal.view : wgpu::TextureView{};
      {
 +      // (texels outside the needed tiles of an incremental mask are never read by the filter)
@@ -522,10 +586,37 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
        pass.SetPipeline(g_gpu.aoMaskPipe);
 -      pass.SetBindGroup(0, bind(job.uniform, {}, dirtyView, {}, g_gpu.maskDepthR.view));
 +      pass.SetBindGroup(0, bind(job.uniform, normalView, dirtyView, {}, g_gpu.maskDepthR.view));
++      pass.Draw(3);
++      pass.End();
++    }
++    {
++      const wgpu::RenderPassColorAttachment att{.view = g_gpu.maskAoDen.view,
++                                                .loadOp = incremental ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear,
++                                                .storeOp = wgpu::StoreOp::Store,
++                                                .clearValue = {1, 0, 0, 0}};
++      const wgpu::RenderPassDescriptor desc{.label = "Ambient occlusion denoise", .colorAttachmentCount = 1, .colorAttachments = &att,
++                                            .timestampWrites = webgpu::gpu_prof::pass_writes("Ambient occlusion denoise")};
++      const auto pass = cmd.BeginRenderPass(&desc);
++      pass.SetPipeline(g_gpu.aoDenoisePipe);
++      pass.SetBindGroup(0, bind(job.uniform, g_gpu.maskAoRaw.view, dirtyView, {}, g_gpu.maskDepthR.view));
++      pass.Draw(3);
++      pass.End();
++    }
++    {
++      // second denoise pass: maskAoDen -> maskAoRaw (the raw AO is not needed any more)
++      const wgpu::RenderPassColorAttachment att{.view = g_gpu.maskAoRaw.view,
++                                                .loadOp = incremental ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear,
++                                                .storeOp = wgpu::StoreOp::Store,
++                                                .clearValue = {1, 0, 0, 0}};
++      const wgpu::RenderPassDescriptor desc{.label = "Ambient occlusion denoise", .colorAttachmentCount = 1, .colorAttachments = &att,
++                                            .timestampWrites = webgpu::gpu_prof::pass_writes("Ambient occlusion denoise")};
++      const auto pass = cmd.BeginRenderPass(&desc);
++      pass.SetPipeline(g_gpu.aoDenoise2Pipe);
++      pass.SetBindGroup(0, bind(job.uniform, g_gpu.maskAoDen.view, dirtyView, {}, g_gpu.maskDepthR.view));
        pass.Draw(3);
        pass.End();
      }
-@@ -1903,7 +2068,7 @@
+@@ -1903,7 +2149,7 @@
                                            .timestampWrites = webgpu::gpu_prof::pass_writes("Ambient occlusion blur")};
      const auto pass = cmd.BeginRenderPass(&desc);
      pass.SetPipeline(g_gpu.aoBlur4Pipe);
@@ -534,7 +625,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
      pass.Draw(3);
      pass.End();
      const wgpu::TexelCopyTextureInfo src3{.texture = g_gpu.maskAo.texture};
-@@ -2476,6 +2641,23 @@
+@@ -2476,6 +2722,23 @@
    return layout;
  }
  
@@ -558,7 +649,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
  // The depth pre-pass and the light shadow maps (depth only).
  RenderTargetLayout depth_layout() noexcept {
    RenderTargetLayout l{
-@@ -2548,7 +2730,8 @@
+@@ -2548,7 +2811,8 @@
                         const std::function<void(const gx::PipelineConfig&, uint8_t targets)>& emit) noexcept {
    if (c.shaderConfig.depthOnly || c.shaderConfig.lightDepth) {
      if (bits & PrecacheEnabled) {
@@ -568,7 +659,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
      }
      return;
    }
-@@ -2610,7 +2793,8 @@
+@@ -2610,7 +2874,8 @@
        dc.alphaUpdate = false;
        dc.dstAlpha = UINT32_MAX;
        dc.shaderConfig.depthOnly = 1;
@@ -578,7 +669,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
        if ((bits & PrecacheCasters) && v.shaderConfig.lineMode == 0 && v.shaderConfig.zTexOp == 0) {
          gx::PipelineConfig lc = dc;
          lc.shaderConfig.lightDepth = 1;
-@@ -2971,13 +3155,17 @@
+@@ -2971,13 +3236,17 @@
      dc.dstAlpha = UINT32_MAX;
      dc.shaderConfig.depthOnly = 1; // the enhanced shading of the copy would be wasted (depth only)
      static const RenderTargetLayout layout = depth_layout();
@@ -600,7 +691,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
      }
      g.data.dstAlpha = UINT32_MAX;
      if (pointShadows && shadow_maps() && config.shaderConfig.lineMode == 0 && config.shaderConfig.zTexOp == 0) {
-@@ -3216,6 +3404,7 @@
+@@ -3216,6 +3485,7 @@
    job.ao = ao_forward();
    u.ao[0] = std::clamp(g_cfg.ssaoIntensity, 0.f, 2.f);
    u.ao[1] = std::max(g_cfg.ssaoRadius, 1.f);

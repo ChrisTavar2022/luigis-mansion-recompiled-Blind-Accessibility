@@ -182,12 +182,13 @@ void onFrame(u32 frameNo) {
         log("[efb] copies to RAM %s", want ? "on" : "off");
     }
     aurora_efb_ram_apply();
-    // Test aid LM_SHOT=<dir>,<first>,<last>[,<step>]: the game image at render resolution (before
-    // post-processing and UI) of those guest frames as <dir>/s<frame>.ppm (Aurora 0224). Taken at
+    // Test aid LM_SHOT=<dir>,<first>,<last>[,<step>[,<count>]]: the game image at render resolution (before
+    // post-processing and UI) of those guest frames (count consecutive ones every step; 2 with
+    // LM_AO_AB gives off/on pairs) as <dir>/s<frame>.ppm (Aurora 0224). Taken at
     // the next presented frame, so with frame interpolation set 30 fps for exact game frames.
     static struct Shot {
         std::string dir;
-        unsigned first = 0, last = 0, step = 1;
+        unsigned first = 0, last = 0, step = 1, count = 1;
         bool on = false;
     } sShot = [] {
         Shot s;
@@ -195,7 +196,7 @@ void onFrame(u32 frameNo) {
             const std::string str = v;
             const auto c = str.find(',');
             if (c != std::string::npos &&
-                std::sscanf(str.c_str() + c + 1, "%u,%u,%u", &s.first, &s.last, &s.step) >= 2) {
+                std::sscanf(str.c_str() + c + 1, "%u,%u,%u,%u", &s.first, &s.last, &s.step, &s.count) >= 2) {
                 s.dir = str.substr(0, c);
                 s.step = s.step ? s.step : 1;
                 s.on = true;
@@ -203,7 +204,7 @@ void onFrame(u32 frameNo) {
         }
         return s;
     }();
-    if (sShot.on && frameNo >= sShot.first && frameNo <= sShot.last && (frameNo - sShot.first) % sShot.step == 0) {
+    if (sShot.on && frameNo >= sShot.first && frameNo <= sShot.last && (frameNo - sShot.first) % sShot.step < sShot.count) {
         char path[512];
         std::snprintf(path, sizeof path, "%s/s%05u.ppm", sShot.dir.c_str(), frameNo);
         aurora_request_screenshot(path);

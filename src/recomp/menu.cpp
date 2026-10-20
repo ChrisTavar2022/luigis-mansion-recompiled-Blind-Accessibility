@@ -792,8 +792,22 @@ void enhancedLightingTab() {
                           "than actual light sources.");
     ImGui::Unindent();
     ImGui::EndDisabled();
-    // Ambient occlusion is disabled for now (it shades some characters polygonal and blocky), so
-    // its options are hidden; enhanced_lighting.cpp keeps it off (LM_AO=1 for testing).
+    sDirty |= ImGui::Checkbox("Ambient occlusion", &l.ssao);
+    ImGui::SetItemTooltip(
+        "Soft contact shading: darkens corners, creases, the floor under furniture and around\n"
+        "characters' feet (horizon-based, from the depth buffer and the models' own normals, so\n"
+        "round characters shade smoothly). Applied only to solid surfaces: ghosts, the flashlight\n"
+        "beam, glows, particles and glass keep their brightness. About 0.5-1 ms per frame at 4K.\n"
+        "Switching it rebuilds some shaders once.");
+    ImGui::BeginDisabled(!l.ssao);
+    ImGui::Indent();
+    sDirty |= ImGui::SliderFloat("Occlusion intensity", &l.ssaoIntensity, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("How dark occluded corners and contact areas get.");
+    sDirty |= ImGui::SliderFloat("Occlusion radius", &l.ssaoRadius, 10.0f, 200.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::SetItemTooltip("How far (world units; Luigi is about 100 tall) nearby surfaces darken a point.\n"
+                          "Larger: broader, softer darkening; smaller: tight contact shadows.");
+    ImGui::Unindent();
+    ImGui::EndDisabled();
     ImGui::EndDisabled();
 }
 
