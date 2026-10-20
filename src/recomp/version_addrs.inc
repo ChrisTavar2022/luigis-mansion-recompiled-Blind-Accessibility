@@ -25,6 +25,7 @@
     {0x801202F8u, 0x80123894u},  // fn_8011FB40+0x7b8
     {0x8012B6C4u, 0x8012EB40u},  // start of fn_8012B6C4
     {0x8012B918u, 0x8012ED94u},  // start of fn_8012B918
+    {0x8012BF4Cu, 0x8012F3C8u},  // start of fn_8012BF4C
     {0x8012FD14u, 0x80133190u},  // start of fn_8012FD14
     {0x8012FE84u, 0x80133300u},  // start of fn_8012FE84
     {0x801611CCu, 0x80164664u},  // start of fn_801611CC
@@ -61,6 +62,7 @@
     {0x803D2D40u, 0x803C0300u},  // lbl_803D2D40: 9 matching reference(s)
     {0x803D48A0u, 0x803C1E60u},  // lbl_803D48A0: 19 matching reference(s)
     {0x803D5CD0u, 0x803C3290u},  // lbl_803D5CD0: 2 matching reference(s)
+    {0x803D8B40u, 0x803C6100u},  // lbl_803D8B40: 10 matching reference(s)
     {0x803D990Cu, 0x803C6ECCu},  // lbl_803D990C: 179 matching reference(s)
     {0x804C8898u, 0x804B5E58u},  // j3dSys: 60 matching reference(s)
     {0x804CFF84u, 0x804BD644u},  // lbl_804CFF84: 5 matching reference(s)
@@ -69,6 +71,8 @@
     {0x804CFF98u, 0x804BD660u},  // sCurScene: 5 matching reference(s)
     {0x804CFFACu, 0x804BD674u},  // lbl_804CFFAC: 3 matching reference(s)
     {0x804CFFF0u, 0x804BD6B8u},  // lbl_804CFFF0: 1 matching reference(s)
+    {0x804D0008u, 0x804BD6D0u},  // lbl_804D0008: 1 matching reference(s)
+    {0x804D000Au, 0x804BD6D2u},  // lbl_804D000A: 1 matching reference(s)
     {0x804D0558u, 0x804BDC20u},  // lbl_804D0558: 3 matching reference(s)
     {0x804D07C8u, 0x804BDE80u},  // lbl_804D07C8: 2 matching reference(s)
     {0x804D07E0u, 0x804BDE98u},  // lbl_804D07E0: 2 matching reference(s)
@@ -86,6 +90,8 @@
     {0x804D8100u, 0x804C57C0u},  // lbl_804D8100: 12 matching reference(s)
     {0x804D8108u, 0x804C57C8u},  // lbl_804D8108: 3 matching reference(s)
     {0x804D8158u, 0x804C5828u},  // lbl_804D8158: 24 matching reference(s)
+    {0x804D8162u, 0x804C5832u},  // lbl_804D8162: 1 matching reference(s)
+    {0x804D8164u, 0x804C5834u},  // lbl_804D8164: 3 matching reference(s)
     {0x804D8170u, 0x804C5840u},  // lbl_804D8170: 19 matching reference(s)
     {0x804D8178u, 0x804C5848u},  // lbl_804D8178: 103 matching reference(s)
     {0x804D8180u, 0x804C5850u},  // lbl_804D8180: 119 matching reference(s)

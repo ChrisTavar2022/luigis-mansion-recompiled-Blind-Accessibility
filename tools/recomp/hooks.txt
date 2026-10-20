@@ -271,6 +271,9 @@ fn_80029250 us pal
 # (0x80011BB4).
 patch 50 80010FD4 480000D8
 patch 50 80011BB4 480000D8 pal
+# With the bordered view and the Game Boy Horror camera both on, views 1/2 get the rectangles
+# the two-view case would set (unused2.cpp).
+fn_80010F20 us pal
 # Luigi's message handler (poison mushroom, startle -> crawling fear) and the element-meter HUD
 # (overheat meter): luigi_states.cpp.
 fn_800AEEA8 us pal

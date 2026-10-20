@@ -8,6 +8,7 @@
 #include "port/settings.h"
 #include "recomp/coop.h"
 #include "recomp/dev_tools.h"
+#include "recomp/guest_util.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
@@ -127,6 +128,37 @@ void onFrame(Ctx& c) {
 }
 
 void onModelLoaded(Ctx& c, u32 entry) { marioModelLoaded(c, entry); }
+
+}  // namespace recomp::unused2
+
+namespace recomp {
+// Game-scene view setup (fn_80010F20): two views while the Game Boy Horror camera asks for its
+// view (r13-0x7F70 = 2, "Game Boy Horror camera" option), then view 0 = screen, view 1 = the GBH
+// screen rectangle the HUD reported (fn_80010EBC: lbl_804D0008/0A, lbl_804D8162/64), view 2 the
+// full-screen 2D view. The bordered view (patch 50) branches to the case that only sets view 0's
+// framed rectangle, so with both options on, views 1 and 2 kept stale rectangles and the GBH
+// camera's view covered the screen. Their rectangles are written first, as the two-view case
+// does; the bordered case then sets view 0 (views +0xD0 x, +0xD4 y, +0xD8 w, +0xDC h).
+HLE(fn_80010F20) {
+    if (g_patches[50] && rd32(VA(0x804CFFF0)) == 2) {
+        const u32 views = VA(0x803A4C80);
+        const u32 v1 = rd32(views + 4), v2 = rd32(views + 8);
+        if (gu::inMem1(v1) && gu::inMem1(v2)) {
+            wr32(v1 + 0xD0, u32(s32(s16(rd16(VA(0x804D0008))))));
+            wr32(v1 + 0xD4, u32(s32(s16(rd16(VA(0x804D000A))))));
+            wr32(v1 + 0xD8, u32(s32(s16(rd16(VA(0x804D8162))))));
+            wr32(v1 + 0xDC, u32(s32(s16(rd16(VA(0x804D8164))))));
+            wr32(v2 + 0xD0, 1);
+            wr32(v2 + 0xD4, 1);
+            wr32(v2 + 0xD8, 0x27F);
+            wr32(v2 + 0xDC, 0x1DF);
+        }
+    }
+    callOriginal(c, "fn_80010F20");
+}
+}  // namespace recomp
+
+namespace recomp::unused2 {
 
 void unusedSection(UnusedGroup group) {
     auto& u = port::settings().unused2;
