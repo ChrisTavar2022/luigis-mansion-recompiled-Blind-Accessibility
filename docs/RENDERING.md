@@ -1440,6 +1440,50 @@ Checked:
 - with `LM_PIPELINE_WAIT=0` the log lists the skips (up to 912 per second at startup, 19 distinct
   pipelines with their configs).
 
+### Enhanced-lighting passes before the first foyer (Aurora 0223)
+
+**User report (v1.0):** "a pretty major performance issue when first loading into the foyer". It
+happens only on the first foyer of a session.
+
+**Cause.** The foyer is the first scene with enhanced lighting: the title, the file menu, the lab
+and the opening's outdoor shots give it no lights. Its first frame built everything enhanced lighting
+draws outside the GX pipelines, on the render thread. That was
+the effect module's ten scene-end passes (bloom, volumetric/realistic flashlight, AO, composite),
+the shadow-map mask, the tile-flag and glow-depth pipelines (13-160 ms each with a fresh shader
+cache), and some 20 render targets. LM_PIPELINE_LOG does not see them: they are not GX pipelines
+and not in the precache list. Measured on the first foyer frame of a new game (intro route, user
+settings, 1920x1080 window, 120 fps target):
+
+| | fresh shader cache (first launch, new install, cleared cache) | warm cache |
+|---|---|---|
+| before, other games on the PC | 1552 ms render-worker stall | 50-70 ms |
+| before, quiet PC | **532 ms** | 39 ms |
+| after (0223), quiet PC | **24 ms** (no creation in the worker) | 20-34 ms |
+
+The light shadow-map atlas also followed the frame's number of shadowed lights (cols x rows from
+that count). It was released and reallocated (3072x4096 / 3072x6144 / 6144x4096 depth, 3-4 ms each,
+plus a full caster redraw) every time a light gained or lost its slot. That happened 5-6 times while
+the intro foyer's candles fade in. It never happened on later arrivals.
+
+**Fix** (`patches/aurora/0223-enhanced-prewarm.patch`):
+- `enhanced::start_prewarm`: the precache rebuild (startup, and any settings change that
+  rebuilds) also starts a background thread. It builds those pipelines for the latest
+  configuration (the composite for the EFB format and sample count). Before the first enhanced
+  pass, it also creates the render targets at the current EFB size. The thread is counted in
+  `rebuildPending`, so the "Preparing shaders" hold waits for it (32-44 ms warm). Every lazy creation is now
+  done under one lock (`g_initMutex`; it holds no lock that a Dawn callback takes). The encode
+  functions create only what is still missing. `AURORA_ENH_PREWARM=0` restores the old behaviour (A/B).
+- The atlas grid's column count follows the configured number of shadow-casting lights, and its
+  rows only grow. Tiles keep their size and content, so frame dumps are byte-identical against
+  the old layout (enhanced Ultra, original 30, intro foyer frames 1300-1500, `AURORA_BEAM_FREEZE_TIME=1`).
+  `AURORA_ENH_ATLAS_GROW=0` restores the old sizing (A/B).
+- Debug aid `AURORA_CREATE_LOG=1`: every synchronous pipeline or render-target creation over
+  0.5 ms, with its name and thread. In play only the atlas (once, ~3.5 ms) and the post-FX chain
+  remain.
+
+The rest of the first-arrival slowdown was the frame-rate governor (docs/INTERPOLATION.md, Pass 5,
+"First foyer arrival").
+
 ## Enhanced lighting
 
 Optional effects layered on top of the accurate GX rendering: F1 > Visuals > Enhanced lighting

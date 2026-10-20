@@ -1571,6 +1571,38 @@ Remaining: at 120 with enhanced Ultra the first ~5-8 frames after a menu closes 
 GPU time (the scene and its enhanced passes return; at 60 they fit the period), and a rare 37-80 ms
 gap between frames outside the frame itself (seen 1-4 times per 10 minutes; not a compile).
 
+### First foyer arrival (branch foyer-first-load)
+
+The user reported that only the first foyer of a session was slow. One cause was a 0.5-1.5 s stall
+from the enhanced-lighting passes being built on first use (docs/RENDERING.md, Aurora 0223). The
+other cause was the governor. On the save route (file -> lab -> "The Mansion" -> exterior
+cutscene -> foyer), the arrival brings a burst of uneven frames. The keep-warm filler of the light
+cutscene is still queued when the full scene returns, and lights, shadow maps and the atlas come up
+for the first time. Each burst was judged as "not sustained", and
+because the window was cleared and judged again after only 15 frames, one burst cut the rate three
+times in 260 ms (120 -> 112.7 -> 107.4 -> 102.3 fps). The 10 s floor then held ~100-105 fps in the
+foyer for 30+ s, with a frame cost of 6 ms. The second arrival in the same session (a warp from the
+lab) has no burst and stayed at 120.
+
+Fix (pacing.cpp): there is no slowdown within 1 s of a hitch (a frame more than 3 periods late: a
+load, a room change) or of a previous slowdown. During that second the window is kept empty, so it
+is then judged on fresh frames. `LM_PACING_GRACE=0` restores the old rule (A/B).
+
+Quiet PC, user settings, 1920x1080 window, 120 target (VSync off), warm cache, save route, first
+foyer (fps over 12 s / slowdowns in the run):
+
+| build | runs | first foyer fps | slowdowns per run |
+|---|---|---|---|
+| before (0223 off, grace off) | 2 | 119.3 / 107.5 | 1 / 10 |
+| 0223, grace off | 3 | 103.9 / 119.9 / 119.9 | 6 / 0 / 4 |
+| 0223 + grace | 2 | **119.8 / 119.9** | **0 / 0** |
+
+The intro's foyer (new game) can still drop to ~106-111 fps at 120. These are real slowdowns: the
+host replay plus the render worker take 10-12 ms per frame there (1 MB tape, 7000 values per
+tape). The second intro arrival and the save route's foyer hold 120. At 60 the user's settings
+held their cap on both routes. Offscreen test windows falsely detect VRR and cap at 57 = 60 - 3,
+which is the VRR cap, not a slowdown.
+
 ## Known limitations
 
 - On the test machine presentation never exceeded the display's 60 Hz even with VSync off
