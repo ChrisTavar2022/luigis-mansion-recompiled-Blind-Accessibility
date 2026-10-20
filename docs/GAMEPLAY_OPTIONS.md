@@ -24,7 +24,7 @@ Testing override (not saved): `LM_GAMEPLAY="dark=1,ambient=0.4,damage=2,health=2
 | Luigi's health | `health_scale` | 0.25–5 | Starting and maximum health (100 → 25..500, capped at 999) |
 | Ghost health | `ghost_health_scale` | 0.25–5 | Ghost HP when a ghost's HP is set |
 | Poltergust strength | `vacuum_strength` | 0.25–4 | HP the vacuum drains per drain tick |
-| Disable recovery hearts | `no_heart_drops` | on/off | Heart items are removed from all item tables; any remaining heart heals 0 |
+| Disable recovery hearts | `no_heart_drops` | on/off | Recovery hearts never spawn (item tables, every item spawn, map placements); safety net: a heart that still appears heals nothing |
 | Always ride the Poltergust | `always_ride` | on/off | Luigi's riding/gliding movement mode (the one PAL enables for Boolossus) everywhere |
 
 ## Details
@@ -94,15 +94,28 @@ drains half as fast and 2 twice as fast. The suction *pull* (`fn_80081B5C`, scal
 `0x804D8C00`) is unchanged. Nothing is stored; portrait ghosts' remaining HP reaches the
 record through the ghost-health rule above.
 
-**Recovery hearts.** Hearts are spawned by item name (`sheart`, `mheart`, `lheart`,
-`move_*heart`) from the map's JMP tables (furniture item tables, `itemappeartable`,
-`iteminfotable`, ghost drops), all read through `ToolData::getValue(row, field, const char**)`.
-With the option on, the hook returns `nothing` for any heart name. As a backstop the heart
-item's setup (`fn_800D1458`, `EnHeartItem`) sets its heal amount (+0x238) to a marker; its
-pickup (`fn_800D1A24`) sends the amount to Luigi as message 13, and the wrapped handler
-swallows a message 13 carrying the marker, so a heart from any other source heals nothing.
-*v1.0 bug:* the backstop wrote 0, which message 13 treats as "heal to full health". Tables are read when a map loads, so the option takes full
-effect at the next map load.
+**Recovery hearts.** With the option on, no recovery heart is ever created (user requirement:
+a heart that appears but heals nothing is not acceptable). Recovery hearts are characters of
+type 205 (`sheart`: 10 HP, 20 past the heart counter of `fn_800E70BC`, raised to 400 / 1000 in
+the Hidden Mansions) and 206 (`lheart`: 50 HP); the tables' `mheart` and `move_*heart` names
+are the same two types (`iteminfotable` → `character_name`). How a heart can appear, and where
+it is stopped:
+
+| Source | Path | Stopped at |
+|--------|------|------------|
+| Furniture searched (A) or vacuumed, vases, stumps, lamps; ghost drops | `itemappeartable` / `iteminfotable` row → `ToolData::getValue(row, field, const char**)` → `ToolDataRef::fn_800E8EF4` (spawn the item at a position) → `fn_800E8904` | the drop decision: `getValue` returns `nothing` for a heart name, so `ToolDataRef::isNameValid` fails and nothing is spawned (the slot is empty, as a `nothing` slot is in retail) |
+| Every item spawned by code: the random heart/mushroom of `fn_800A9DE0`, ghost drops from the AI (`fn_800C4BFC`, type from its data), table-driven spawns (`fn_800CB708`), events and boss items (`fn_801350FC`, `fn_8015438C`..`fn_8015491C`, `AEnAtPlane`) | `fn_800E8904(type, pos, dir)` → `EnManager::create` (`fn_800E977C` → `fn_800E5868` → `fn_800E58D4`) | `fn_800E8904` (hooked, `us pal`) returns -1 for types 205/206 before anything is created: the result of an empty pool, which every caller handles (furniture and the events ignore it, the others test it) |
+| Hearts placed in a map's character data | `EnManager::vt_0C` → `fn_800E58D4` | `fn_800E58D4` (hooked) refuses types 205/206 when called from `vt_0C` (0 = not placed, handled). No retail map places one; this is for completeness |
+| Anything else | `EnManager::create` with a variable type (`EnemyGenerator`, `fn_800CF314`, `fn_80088B08`, `fn_8010B7CC`, `fn_801226AC`/`fn_80122FAC`): `fn_800CF314` creates types 166/167 only; the others take their type from tables or captured objects and were not seen with a heart type | logged by `LM_HEART_LOG=1` as `NOT through fn_800E8904`, never seen in testing |
+| Safety net | a heart set up anyway (`EnHeartItem` setup `fn_800D1458`) | its heal amount (+0x238) becomes a marker; its pickup (`fn_800D1A24`, Luigi's message 13, where 0 would mean "heal to full") is swallowed by `gameplay::callLuigiMessage`; logged as `hearts disabled, but a heart item was set up` |
+
+Not touched: the money, gems, mushroom, Mario items and keys in the same tables (other types),
+and nothing raises Luigi's maximum health in this game (event-script message 15 sets it; the
+option leaves it alone). Tables are read when a map loads and spawns are checked when they
+happen, so the option applies at once for spawns and at the next map load for the tables.
+Test aids: `LM_HEART_LOG=1` (every heart creation or blocked spawn with its guest call chain),
+`LM_HEART_TABLES=0` (leave the table names alone, so the spawn-level block is what stops the
+hearts).
 
 **Always ride the Poltergust.** The US Luigi contains a complete alternate movement mode
 behind byte +0x134C (PAL +0x1350): faster run (38 vs 17/18), momentum/gliding physics, its own
@@ -149,7 +162,7 @@ second run on the same card), `LM_SPAWN=46@2600,...` (portrait ghosts), `LM_STAR
 | Ghost health | Luigi's own AI gets message 6 with his carried health on every map load and was scaled: x0.5 gave 100 → 50 → 25 → 13 → 7 → 4 over five loads, saved. Portrait ghosts' stored HP was scaled again at every encounter and saved | Luigi stays 100/100 through 6 loads at x0.5; ghosts x0.5 every load without compounding (Chauncey 100 → 50 each entry, map 10 ↔ 2); portrait ghosts 50 in play, record 100 |
 | Luigi's health | Scaled maximum stored in the record/save: slider back at 1 kept 200 (or 50); a heal reaching exactly 100 became a full scaled heal; boss portrait rank compared scaled health with 90/60 | x2: 200/200, hit 30 → 170/200, record 85/100 on every map exit; the save loads as 85/100 at x1 and 43/50 at x0.5 |
 | Damage taken | none (the scripted-100 special case moved to Luigi's health) | unchanged |
-| Disable recovery hearts | backstop heal 0 = "heal to full" in Luigi's message 13 | marker swallowed (code path; a non-table heart was not staged) |
+| Disable recovery hearts | backstop heal 0 = "heal to full" in Luigi's message 13; hearts from sources other than the tables still appeared | hearts are no longer spawned at all (see *Recovery hearts* and *Recovery hearts: verification* below); the marker stays as a safety net |
 | Poltergust strength | fraction carry shared by all ghosts | per ghost; stored HP goes through the ghost-health rule |
 | Darkness / ambient | none: room RGB scaled only during `fn_800168EC` and restored | — |
 | Always ride | none: byte set per frame, US/PAL offsets via the PAL hook | — |
@@ -159,3 +172,31 @@ European base (`LuigisMansionRecomp --pal-disc`, setup-built module): the same r
 same numbers (record at `0x803C3290`, portrait path, 85/100 stored at x2). All options at their
 defaults: Original 30 frame dumps (`LM_FRAME_DUMP`, frames 2300-3100, with `LM_TEST_HIT` hits)
 byte-identical to the build before these changes.
+
+### Recovery hearts: verification
+
+Route: new game (`LM_SKIP_CUTSCENES=1 LM_SKIP_AUTO=30 LM_TEST_STATE=poltergust`), `LM_TELEPORT`
+to the furniture at HUD frame 2300, then `--input` from guest frame 5000: `STICKUP*12`, `A`,
+`A`, `STICKUP+R*200` (search, then vacuum toward it), repeated; `LM_HEART_LOG=1`,
+`LM_FRAME_DUMP` frames 5200/5400.
+
+| Run | Furniture | Option off | Option on | Option on, `LM_HEART_TABLES=0` |
+|-----|-----------|------------|-----------|--------------------------------|
+| US | 1F hallway vase `tubo30_1` (-230,160,-1200), `itemappeartable` row 9 (`move_sheart`) | heart created (`create type 205 (pool)` from `fn_800316FC` → `ToolDataRef` → `fn_800E8904`) | `table item move_sheart -> nothing`, no heart, nothing else appears | `blocked item spawn type 205`, no heart |
+| US | garden stump `a_stam_1` (-1380,5,-5990), row 15 (`move_sheart`) | heart created | `table item move_sheart -> nothing`, nothing in its place | — |
+| European | the same vase | — | — | `blocked item spawn type 205` (PAL addresses), no heart |
+| European, PAL Hidden Mansion (`LM_HM_FORCE=1`, mirrored) | the same stump, HM row 18 (`move_lheart`) | `create type 206 (pool)` | — | `blocked item spawn type 206`, no heart |
+
+No `heart item was set up` line (the safety net) and no crash in any run. Not staged in play:
+ghost-capture drops (the ghost-hunt test aid did not land a capture on this build) and the
+boss arenas' hearts (maps 9 and 11 carry heart models). The ghost AI's drops go through the same
+funnel the furniture runs exercised (`fn_800C4BFC` → `fn_800E8904`, `fn_800E83A0` →
+`ToolDataRef::fn_800E8EF4`); for the bosses no other heart-creating path was found in the code,
+and `LM_HEART_LOG=1` names any creation that bypasses `fn_800E8904`.
+
+Option off (retail): Original 30 frame dumps byte-identical to main before this change (frames
+3000-7600, every 200, on a route without cutscene skipping that teleports to the vase and
+vacuums it, a heart spawning). Routes with `LM_SKIP_CUTSCENES` are not comparable between two
+builds: the fast-forward depends on host speed, so the frames that are presented, and with them
+the HUD-frame count `LM_TELEPORT` waits for, differ from build to build (the same build repeats
+exactly).

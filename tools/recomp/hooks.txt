@@ -99,6 +99,8 @@ fn_800C08DC us pal
 fn_80081BCC us pal
 getValue__Q24Koga8ToolDataCFiPCcPPCc us pal
 fn_800D1458 us pal
+fn_800E8904 us pal
+fn_800E58D4__Q24Koga9EnManagerFUlPQ24Koga8ToolDatal us pal
 # In-game HUD elements, anchored to the screen edges as units in widescreen
 # (src/recomp/widescreen.cpp): Game Boy Horror, its screen noise, the frame loop's view
 # setup (GBH live 3D view, the scan view's small main view), event portraits (E. Gadd's call

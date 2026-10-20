@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -434,24 +435,94 @@ u32 guestNothing() {
 HLE(getValue__Q24Koga8ToolDataCFiPCcPPCc) {
     const u32 out = c.r[6];
     callOriginal(c, "getValue__Q24Koga8ToolDataCFiPCcPPCc");
-    if (!current().noHeartDrops || !inMem1(out)) return;
+    // LM_HEART_TABLES=0 (testing): leave the table names alone, so the spawn-level block in
+    // fn_800E8904 below is what stops the hearts.
+    static const bool sTables = [] {
+        const char* v = std::getenv("LM_HEART_TABLES");
+        return !(v && v[0] == '0');
+    }();
+    if (!sTables || !current().noHeartDrops || !inMem1(out)) return;
     const u32 str = rd32(out);
     if (!inMem1(str) || !isHeartName(gstr(str))) return;
     GP_FIRST("hearts disabled: table item %s -> nothing", gstr(str));
     wr32(out, guestNothing());
 }
 
-// EnHeartItem setup (sets how much the heart heals, +0x238; 10/20/50): with hearts disabled, a
-// heart that still appears from a source not driven by the tables heals nothing. Its pickup
-// (fn_800D1A24) sends the amount to Luigi as message 13, where 0 means "heal to full" (v1.0
-// wrote 0 here, so such a heart healed Luigi completely); the marker is swallowed in
-// gameplay::callLuigiMessage instead.
+// Recovery hearts are characters of type 205 (sheart: 10, or 20 past the heart counter) and 206
+// (lheart: 50); "mheart" and the move_* names in the tables are the same two types. Every item
+// that appears in the mansion (furniture searched or vacuumed, ghost drops, scripted items, the
+// random heart/mushroom of fn_800A9DE0, boss items) is spawned by fn_800E8904(type, pos, dir),
+// which takes a character of that type from the map's pool (EnManager::create) and places it.
+// It returns the pool index, or -1 when the pool has none: a result every caller handles (the
+// item simply does not appear). With hearts disabled it returns -1 for the two heart types
+// before anything is created.
+namespace {
+bool isHeartType(u32 type) { return type == 205 || type == 206; }
+bool heartLog() {
+    static const bool on = std::getenv("LM_HEART_LOG") != nullptr;
+    return on;
+}
+// The guest call chain (return addresses) for the logs.
+void callChain(Ctx& c, char* out, size_t size) {
+    int n = std::snprintf(out, size, "%08X", c.lr);
+    u32 sp = c.r[1];
+    for (int i = 0; i < 6 && inMem1(sp) && n > 0 && size_t(n) < size; i++) {
+        sp = rd32(sp);
+        if (!inMem1(sp)) break;
+        n += std::snprintf(out + n, size - size_t(n), " %08X", rd32(sp + 4));
+    }
+}
+}  // namespace
+
+HLE(fn_800E8904) {
+    const u32 type = c.r[3];
+    if (isHeartType(type) && current().noHeartDrops) {
+        if (heartLog()) {
+            char chain[160];
+            callChain(c, chain, sizeof chain);
+            log("[hearts] blocked item spawn type %u: %s", type, chain);
+        }
+        GP_FIRST("hearts disabled: heart item (type %u) not spawned", type);
+        c.r[3] = u32(-1);
+        return;
+    }
+    callOriginal(c, "fn_800E8904");
+}
+
+// The character pools: EnManager::create(type, toolData, -1) and the map's own placements
+// (vt_0C, characters listed in the map data) both take a character here. A map-placed heart
+// is refused here (vt_0C treats 0 as "not placed"); a heart from any path that bypasses
+// fn_800E8904 is logged (LM_HEART_LOG) so a new source shows up in testing.
+HLE(fn_800E58D4__Q24Koga9EnManagerFUlPQ24Koga8ToolDatal) {
+    const u32 type = c.r[4];
+    if (isHeartType(type) && (heartLog() || current().noHeartDrops)) {
+        static const u32 sPlace = guestSymbol("vt_0C__Q24Koga9EnManagerFP11ToolDataRef");
+        const bool placed = c.lr >= sPlace && c.lr < sPlace + 0x3BC;  // size of vt_0C (both releases)
+        if (heartLog()) {
+            char chain[160];
+            callChain(c, chain, sizeof chain);
+            log("[hearts] create type %u (%s)%s: %s", type, placed ? "map placement" : "pool",
+                current().noHeartDrops ? (placed ? ", refused" : ", NOT through fn_800E8904") : "", chain);
+        }
+        if (placed && current().noHeartDrops) {
+            GP_FIRST("hearts disabled: map-placed heart not created");
+            c.r[3] = 0;
+            return;
+        }
+    }
+    callOriginal(c, "fn_800E58D4__Q24Koga9EnManagerFUlPQ24Koga8ToolDatal");
+}
+
+// EnHeartItem setup (sets how much the heart heals, +0x238; 10/20/50). Safety net only: a heart
+// that still appears with hearts disabled heals nothing. Its pickup (fn_800D1A24) sends the
+// amount to Luigi as message 13, where 0 means "heal to full" (v1.0 wrote 0 here, so such a
+// heart healed Luigi completely); a marker is swallowed in gameplay::callLuigiMessage instead.
 HLE(fn_800D1458) {
     const u32 self = c.r[3];
     callOriginal(c, "fn_800D1458");
     if (!current().noHeartDrops || !inMem1(self)) return;
     wr32(self + 0x238, gameplay::kNoHeal);
-    GP_FIRST("hearts disabled: heart item heals nothing");
+    log("[gameplay] hearts disabled, but a heart item was set up (%08X): it heals nothing", self);
 }
 
 }  // namespace recomp
