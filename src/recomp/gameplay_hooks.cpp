@@ -121,17 +121,11 @@ using gameplay::rds16;
 HLE(fn_800B9488) {
     // Calls from Luigi's message handler (fn_800AEEA8: event/script commands such as "set
     // health", e.g. the new game's health = 100 on arriving in the mansion) are not damage.
+    // Their values are scaled for "Luigi's health" in callLuigiMessage below.
     static const u32 sMsg = guestSymbol("fn_800AEEA8");
-    const bool scripted = c.lr >= sMsg && c.lr < sMsg + 0x2884;  // US size of fn_800AEEA8
-    const port::GameplaySettings g = current();
-    if (scripted) {
-        if (g.healthScale != 1.0f && s16(c.r[4]) == 100) {  // "full health" (100) -> scaled full health
-            c.r[4] = u32(std::clamp(s32(std::lround(100 * g.healthScale)), 1, 999));
-            GP_FIRST("health x%.2f: scripted full health -> %d", g.healthScale, s32(c.r[4]));
-        }
-        return callOriginal(c, "fn_800B9488");
-    }
-    const float k = g.damageScale;
+    const bool scripted = c.lr >= sMsg && c.lr < sMsg + 0x2884;  // size of fn_800AEEA8 (both releases)
+    if (scripted) return callOriginal(c, "fn_800B9488");
+    const float k = current().damageScale;
     if (k != 1.0f) {
         const u32 luigi = c.r[3];
         const s32 cur = rds16(luigi + 0xFC);
@@ -149,37 +143,198 @@ HLE(fn_800B9488) {
 }
 
 // ---- Luigi's health ---------------------------------------------------------------------
-// Luigi's constructor sets health and maximum health (+0xFC / +0xFFC) to 100; the game then
-// carries both between maps. Scaling them once here scales the starting and maximum health.
+// Luigi's health and maximum (+0xFC / +0xFFC) live in his actor during a map; between maps and
+// in the save file they are kept in his persistent player record (Luigi +0x79C = lbl_803D5CD0
+// + 0x16C * player: +0 health, +2 maximum, also saved to the memory card). The record is only
+// written by Luigi's message 59 (leaving a map) and read by fn_800AE1A4 (entering one).
+//
+// The record always holds the ORIGINAL scale (maximum 100): the actor's values are scaled up
+// when a map restores them and scaled back down when he leaves, so nothing scaled reaches the
+// save, a slider change never compounds, and the slider back at 1 gives the retail values.
+// (Before this, the scaled values went into the record, so a save made with the option kept
+// the changed maximum after the slider went back to 1.)
+namespace gameplay {
+namespace {
+s32 scaleUp(s32 v, float k, s32 hi) { return v <= 0 ? v : std::clamp(s32(std::lround(v * k)), 1, hi); }
+s32 scaleDown(s32 v, float k) { return v <= 0 ? v : std::clamp(s32(std::lround(v / k)), 1, 32767); }
+bool logOn() {
+    static const bool on = std::getenv("LM_GAMEPLAY_LOG") != nullptr;
+    return on;
+}
+
+// Health scale each live Luigi actor was set up with (a slider change applies at the next map,
+// and a Luigi is always converted back with the factor it was converted up with).
+struct LuigiScale {
+    u32 actor = 0;
+    float k = 1.0f;
+};
+LuigiScale sLuigiScale[4];
+float luigiScale(u32 luigi) {
+    for (const LuigiScale& s : sLuigiScale)
+        if (s.actor == luigi) return s.k;
+    return 1.0f;
+}
+void setLuigiScale(u32 luigi, float k) {
+    LuigiScale* slot = nullptr;
+    for (LuigiScale& s : sLuigiScale)
+        if (s.actor == luigi) slot = &s;
+    if (!slot) {
+        static u32 sNext = 0;
+        slot = &sLuigiScale[sNext++ % 4];
+    }
+    slot->actor = luigi;
+    slot->k = k;
+}
+
+// Heal amount given to recovery hearts set up while "Disable recovery hearts" is on. A heal of
+// 0 would mean "full health" to Luigi's message 13, so a marker is used and swallowed below.
+constexpr u32 kNoHeal = 0x4E4F4845u;  // "NOHE"
+}  // namespace
+
+// Luigi's message handler fn_800AEEA8(luigi, id, data), wrapped by HLE(fn_800AEEA8) in
+// luigi_states.cpp. Message ids are the same in both releases.
+void callLuigiMessage(Ctx& c) {
+    const u32 luigi = c.r[3], id = c.r[4], data = c.r[5];
+    // 13: heal by data+0x44 (0 = to full); a heart set up with hearts disabled heals nothing.
+    if (id == 13 && inMem1(data) && rd32(data + 0x44) == kNoHeal) {
+        GP_FIRST("hearts disabled: heart heals nothing");
+        c.r[3] = 1;
+        return;
+    }
+    const float k = inMem1(luigi) ? luigiScale(luigi) : 1.0f;
+    // 14 / 15: event script commands that set health / maximum health to data+0x48 / +0x4C
+    // (e.g. health = 100 when a new game arrives in the mansion), in original units.
+    u32 field = 0, fieldOrig = 0;
+    if (k != 1.0f && inMem1(data) && (id == 14 || id == 15)) {
+        field = data + (id == 14 ? 0x48 : 0x4C);
+        fieldOrig = rd32(field);
+        if (s32(fieldOrig) > 0) {
+            wr32(field, u32(scaleUp(s32(fieldOrig), k, 999)));
+            GP_FIRST("health x%.2f: scripted %s %d -> %d", k, id == 14 ? "health" : "maximum", s32(fieldOrig),
+                     s32(rd32(field)));
+        } else {
+            field = 0;
+        }
+    }
+    // 21: a capture; for the boss portraits (types 64, 213, 220, 221) the portrait's rank comes
+    // from Luigi's health (>= 90 / >= 60), so the handler sees it in original units.
+    s32 hpOrig = 0;
+    const bool rank = k != 1.0f && id == 21 && inMem1(luigi);
+    if (rank) {
+        hpOrig = rds16(luigi + 0xFC);
+        wr16(luigi + 0xFC, u32(scaleDown(hpOrig, k)) & 0xFFFF);
+    }
+    callOriginal(c, "fn_800AEEA8");
+    if (rank) wr16(luigi + 0xFC, u32(hpOrig) & 0xFFFF);
+    if (field) wr32(field, fieldOrig);
+    // 59: leaving the map, health and maximum were copied into the record: store them in
+    // original units.
+    if (id == 59 && inMem1(luigi)) {
+        const u32 rec = rd32(luigi + 0x79C);
+        if (!inMem1(rec)) return;
+        if (k != 1.0f) {
+            wr16(rec + 0, u32(scaleDown(rds16(rec + 0), k)) & 0xFFFF);
+            wr16(rec + 2, u32(scaleDown(rds16(rec + 2), k)) & 0xFFFF);
+        }
+        if (logOn())
+            log("[gameplay] Luigi %08X leaves: hp %d max %d (x%.2f) -> record %08X hp %d max %d", luigi,
+                rds16(luigi + 0xFC), rds16(luigi + 0xFFC), k, rec, rds16(rec), rds16(rec + 2));
+    }
+}
+
+}  // namespace gameplay
+
+// Luigi's constructor sets health and maximum to 100. Scaled here for a Luigi that no record
+// restores (fn_800AE1A4 below normally follows and sets both from the record).
 HLE(fn_800AD5AC) {
     const u32 luigi = c.r[3];
     callOriginal(c, "fn_800AD5AC");
+    if (!inMem1(luigi)) return;
     const float k = current().healthScale;
-    if (k == 1.0f || !inMem1(luigi)) return;
-    const s32 maxHp = std::clamp(s32(std::lround(rds16(luigi + 0xFFC) * k)), 1, 999);
+    gameplay::setLuigiScale(luigi, k);
+    if (k == 1.0f) return;
+    const s32 maxHp = gameplay::scaleUp(rds16(luigi + 0xFFC), k, 999);
     wr16(luigi + 0xFFC, u32(maxHp));
     wr16(luigi + 0xFC, u32(maxHp));
     GP_FIRST("health x%.2f: Luigi starts with %d", k, maxHp);
 }
 
-// Restoring Luigi between maps copies health/max from the carried-over state; apply the
-// scale to a maximum that is still the original 100 (i.e. a state created without the option).
+// Entering a map: health and maximum come from the record (original units) and are scaled.
 HLE(fn_800AE1A4) {
     const u32 luigi = c.r[3];
     callOriginal(c, "fn_800AE1A4");
+    if (!inMem1(luigi)) return;
     const float k = current().healthScale;
-    if (k == 1.0f || !inMem1(luigi) || rds16(luigi + 0xFFC) != 100) return;
-    const s32 maxHp = std::clamp(s32(std::lround(100 * k)), 1, 999);
-    const s32 hp = rds16(luigi + 0xFC);
-    wr16(luigi + 0xFFC, u32(maxHp));
-    if (hp == 100) wr16(luigi + 0xFC, u32(maxHp));
-    GP_FIRST("health x%.2f: restored Luigi max %d", k, maxHp);
+    gameplay::setLuigiScale(luigi, k);
+    const u32 rec = rd32(luigi + 0x79C);
+    if (k != 1.0f && inMem1(rec)) {
+        const s32 maxHp = gameplay::scaleUp(rds16(rec + 2), k, 999);
+        const s32 hp = rds16(rec + 0) > 0 ? std::min(gameplay::scaleUp(rds16(rec + 0), k, 999), maxHp) : 1;
+        wr16(luigi + 0xFFC, u32(maxHp) & 0xFFFF);
+        wr16(luigi + 0xFC, u32(hp) & 0xFFFF);
+        static const u32 sHudHealth = VA(0x80188D04);  // the original passes the restored health here
+        const Ctx saved = c;
+        guestCall(c, sHudHealth, u32(hp));
+        c = saved;
+        GP_FIRST("health x%.2f: restored Luigi %d / %d (record %d / %d)", k, hp, maxHp, rds16(rec), rds16(rec + 2));
+    }
+    if (gameplay::logOn())
+        log("[gameplay] restore Luigi %08X hp %d max %d (x%.2f; record %08X hp %d max %d)", luigi,
+            rds16(luigi + 0xFC), rds16(luigi + 0xFFC), k, rec, inMem1(rec) ? rds16(rec) : 0,
+            inMem1(rec) ? rds16(rec + 2) : 0);
 }
 
 // ---- Ghost HP ---------------------------------------------------------------------------
-// EnThought (every ghost's AI) sets its actor's HP (+0xFC) on messages 6 (HP from the spawn
-// data) and 7 (HP from the per-type table / EnTypesManager::getEnemyLife), and mirrors it in
-// +0x89C. Scale both right after.
+// EnThought (the AI of every character, Luigi's included) sets its actor's HP (+0xFC) on
+// messages 6 (HP from the spawn data) and 7 (HP from the per-type table / EnTypesManager::
+// getEnemyLife), and mirrors it in +0x89C. Scaled right after, for ghosts only: Luigi (type 0)
+// gets message 6 with his carried-over health from fn_800AE1A4 on every map load (the v1.0
+// bug: "Ghost health" below 1 lowered Luigi's health at each map load, compounding).
+//
+// Portrait ghosts keep their HP between encounters in player 1's record (+4 + 2 * index, index
+// from the portrait table fn_800553FC; saved to the card): message 7 reads it and the thought's
+// update fn_800C08DC writes the current HP back every frame. The record keeps original units:
+// scaled when read, scaled back when written, with the factor the ghost was set up with.
+namespace gameplay {
+namespace {
+struct GhostScale {
+    u32 thought = 0;
+    float k = 1.0f;
+};
+GhostScale sGhostScale[64];
+float ghostScale(u32 thought) {
+    for (const GhostScale& s : sGhostScale)
+        if (s.thought == thought) return s.k;
+    return 1.0f;
+}
+void setGhostScale(u32 thought, float k) {
+    GhostScale* slot = nullptr;
+    for (GhostScale& s : sGhostScale)
+        if (s.thought == thought) slot = &s;
+    if (!slot && k == 1.0f) return;
+    if (!slot) {
+        for (GhostScale& s : sGhostScale)
+            if (!s.thought) slot = &s;
+        static u32 sNext = 0;
+        if (!slot) slot = &sGhostScale[sNext++ % 64];
+    }
+    slot->thought = k == 1.0f ? 0 : thought;
+    slot->k = k;
+}
+// Portrait-table index of a ghost whose HP the record keeps, else -1 (the same two tests as
+// the original message 7 and fn_800C08DC).
+s32 portraitIndex(Ctx& c, u32 actor) {
+    static const u32 sIsPortrait = VA(0x800E9E48), sIndex = VA(0x800553FC);
+    const u32 type = rd32(actor + 0x3C);
+    const Ctx saved = c;
+    const s32 idx = (guestCall(c, sIsPortrait, type) & 0xFF) == 0 ? -1 : s32(guestCall(c, sIndex, type));
+    c = saved;
+    return idx;
+}
+u32 portraitRecord(s32 idx) { return VA(0x803D5CD0) + 4 + 2 * u32(idx); }  // player 1's record
+}  // namespace
+}  // namespace gameplay
+
 HLE(fn_800C0F08) {
     const u32 self = c.r[3];
     const u32 msg = inMem1(c.r[4]) ? rd32(c.r[4]) : 0;
@@ -189,22 +344,51 @@ HLE(fn_800C0F08) {
     if (msg == 2 && inMem1(self)) enh::onGhostInBeam(rd32(self + 0x808));  // realistic flashlight flare
     callOriginal(c, "fn_800C0F08");
     if (msg == 21 && inMem1(self) && ghostlights::testForceLit(rd32(self + 0x808))) c.r[3] = 1;  // LM_GHOST_HUNT_BEAM
-    const float k = current().ghostHealthScale;
-    if (k == 1.0f || (msg != 6 && msg != 7)) return;
+    if ((msg != 6 && msg != 7) || !inMem1(self)) return;
     const u32 actor = rd32(self + 0x808);
-    if (!inMem1(actor)) return;
+    if (!inMem1(actor) || rd32(actor + 0x3C) == 0) return;  // type 0: Luigi (both players, Mario)
+    const float k = current().ghostHealthScale;
+    gameplay::setGhostScale(self, k);
+    if (k == 1.0f) return;
+    const s32 idx = msg == 7 ? gameplay::portraitIndex(c, actor) : -1;
     const s32 hp = rds16(actor + 0xFC);
     if (hp <= 0) return;
-    const s32 scaled = std::clamp(s32(std::lround(hp * k)), 1, 32767);
+    const s32 scaled = gameplay::scaleUp(hp, k, 32767);
+    if (gameplay::logOn())
+        log("[gameplay] ghost HP msg %u thought %08X actor %08X type %u%s: %d -> %d", msg, self, actor,
+            rd32(actor + 0x3C), idx >= 0 ? " (portrait, HP from the record)" : "", hp, scaled);
     wr16(actor + 0xFC, u32(scaled));
     wr32(self + 0x89C, u32(scaled));
     GP_FIRST("ghost HP x%.2f: %d -> %d", k, hp, scaled);
 }
 
+// The thought's update: after the original wrote a portrait ghost's current HP into the
+// record, store it in original units.
+HLE(fn_800C08DC) {
+    const u32 self = c.r[3];
+    callOriginal(c, "fn_800C08DC");
+    if (!inMem1(self)) return;
+    const float k = gameplay::ghostScale(self);
+    if (k == 1.0f) return;
+    const u32 actor = rd32(self + 0x808);
+    if (!inMem1(actor)) return;
+    const s32 idx = gameplay::portraitIndex(c, actor);
+    if (idx < 0 || idx >= 23) return;
+    const u32 rec = gameplay::portraitRecord(idx);
+    const s32 hp = rds16(actor + 0xFC);
+    const s32 orig = gameplay::scaleDown(hp, k);
+    if (gameplay::logOn() && rds16(rec) != orig) {
+        static s32 sLast[23];
+        if (sLast[idx] != orig) log("[gameplay] portrait ghost %d HP %d (x%.2f) -> record %d", idx, hp, k, orig);
+        sLast[idx] = orig;
+    }
+    wr16(rec, u32(orig) & 0xFFFF);
+}
+
 // ---- Vacuum strength --------------------------------------------------------------------
 // The Poltergust capture update drains the captured ghost's HP by one on each drain tick
 // (capture +0x98 = ghost HP - 1, ghost at capture +0x18). The strength scales the ticks: each
-// tick removes `strength` HP, with fractions carried over.
+// tick removes `strength` HP, with fractions carried over (per ghost).
 HLE(fn_80081BCC) {
     const float k = current().vacuumStrength;
     const u32 cap = c.r[3];
@@ -215,12 +399,15 @@ HLE(fn_80081BCC) {
     hm::callWithFlag(c, "fn_80081BCC");
     const s32 after = rds16(cap + 0x98);
     if (before <= 0 || after != before - 1) return;  // no drain tick this frame
+    static u32 sGhost = 0;
     static float sCarry = 0.0f;
+    if (ghost != sGhost) sGhost = ghost, sCarry = 0.0f;
     sCarry += k;
     const s32 n = s32(sCarry);
     sCarry -= float(n);
     wr16(cap + 0x98, u32(std::max(0, before - n)));
     GP_FIRST("vacuum x%.2f: drain tick removes %d (ghost HP %d)", k, n, before);
+    if (gameplay::logOn()) log("[gameplay] vacuum x%.2f: ghost %08X HP %d -> %d", k, ghost, before, std::max(0, before - n));
 }
 
 // ---- Recovery hearts --------------------------------------------------------------------
@@ -254,14 +441,17 @@ HLE(getValue__Q24Koga8ToolDataCFiPCcPPCc) {
     wr32(out, guestNothing());
 }
 
-// EnHeartItem setup (sets how much the heart heals, +0x238): with hearts disabled, a heart
-// that still appears from a source not driven by the tables heals nothing.
+// EnHeartItem setup (sets how much the heart heals, +0x238; 10/20/50): with hearts disabled, a
+// heart that still appears from a source not driven by the tables heals nothing. Its pickup
+// (fn_800D1A24) sends the amount to Luigi as message 13, where 0 means "heal to full" (v1.0
+// wrote 0 here, so such a heart healed Luigi completely); the marker is swallowed in
+// gameplay::callLuigiMessage instead.
 HLE(fn_800D1458) {
     const u32 self = c.r[3];
     callOriginal(c, "fn_800D1458");
     if (!current().noHeartDrops || !inMem1(self)) return;
-    wr32(self + 0x238, 0);
-    GP_FIRST("hearts disabled: heart item heals 0");
+    wr32(self + 0x238, gameplay::kNoHeal);
+    GP_FIRST("hearts disabled: heart item heals nothing");
 }
 
 }  // namespace recomp

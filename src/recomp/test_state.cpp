@@ -74,12 +74,15 @@ void testStateFrame(Ctx& c) {
     // LM_HEALTH_LOG=1 (testing): log Luigi's health whenever it changes, with the frame number.
     static const bool sHealthLog = std::getenv("LM_HEALTH_LOG") != nullptr;
     if (sHealthLog) {
-        static s32 sLast = -1;
+        static s32 sLast = -1, sLastMax = -1;
         const u32 l = rd32(kActorSlots);
         if (l >= 0x80000000u && l < 0x81800000u) {
-            const s32 hp = s16(rd16(l + 0xFC));
-            if (hp != sLast) log("[test] Luigi health %d at frame %u", hp, copyDispCount());
+            const s32 hp = s16(rd16(l + 0xFC)), maxHp = s16(rd16(l + 0xFFC));
+            if (hp != sLast || maxHp != sLastMax)
+                log("[test] Luigi health %d max %d at frame %u (map %u)", hp, maxHp, copyDispCount(),
+                    rd32(VA(0x804D80C8)));
             sLast = hp;
+            sLastMax = maxHp;
         }
     }
     if (sHitOn) {
