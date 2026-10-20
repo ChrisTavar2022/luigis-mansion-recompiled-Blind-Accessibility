@@ -12,6 +12,7 @@
 #include "recomp/interp.h"
 #include "recomp/version.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
@@ -116,6 +117,20 @@ HLE(fn_800F3120) {
     if (!item) {
         callOriginal(c, "fn_800F3120");
         return;
+    }
+    // LM_STREAM_LOG=<file> (test aid): per drawn item, the game frame, loop, item address and the
+    // world place of its matrix (item + 4 holds view x model by now: the camera at 0x803A39AC).
+    static FILE* sStreamLog = [] {
+        const char* v = std::getenv("LM_STREAM_LOG");
+        return v && *v ? std::fopen(v, "w") : nullptr;
+    }();
+    if (sStreamLog && interp::capturing()) {
+        const u32 m = item + (c.lr == VA(0x801201F4) ? 4 : 0x34), v = VA(0x803A3820) + 0x18C;
+        float d[3], w[3];
+        for (int r = 0; r < 3; r++) d[r] = rdf32(m + 16 * r + 12) - rdf32(v + 16 * r + 12);
+        for (int r = 0; r < 3; r++) w[r] = rdf32(v + r * 4) * d[0] + rdf32(v + 16 + r * 4) * d[1] + rdf32(v + 32 + r * 4) * d[2];
+        std::fprintf(sStreamLog, "f%u L%d %08X %08X %.1f %.1f %.1f\n", copyDispCount(), c.lr == VA(0x801201F4) ? 1 : 2, item,
+                     rd32(item), w[0], w[1], w[2]);
     }
     TagScope t(TagCat::Particle, item, 0x11FB40);
     sStreamItem = item;
@@ -294,6 +309,27 @@ HLE(fn_80120C30) {
                     d2 += e * e, v2 += it->second.v[k] * it->second.v[k];
                 }
                 reborn = !(d2 <= std::max(25.0f, 0.25f * v2));
+            }
+            // LM_POINT_LOG=<file> (test aid): every point once per game frame: its slot, caller, place,
+            // velocity, how far it is from last frame's place + last velocity (e1) and + its own
+            // velocity (e2), and the rebirth decision.
+            static FILE* sPointLog = [] {
+                const char* v = std::getenv("LM_POINT_LOG");
+                return v && *v ? std::fopen(v, "w") : nullptr;
+            }();
+            if (sPointLog) {
+                float e1 = -1, e2 = -1;
+                if (it != last.end()) {
+                    e1 = e2 = 0;
+                    for (int k = 0; k < 3; k++) {
+                        const float a1 = p[k] - (it->second.p[k] + it->second.v[k]), a2 = p[k] - (it->second.p[k] + v[k]);
+                        e1 += a1 * a1, e2 += a2 * a2;
+                    }
+                    e1 = std::sqrt(e1), e2 = std::sqrt(e2);
+                }
+                std::fprintf(sPointLog, "f%u %08X lr %08X p %.2f %.2f %.2f v %.3f %.3f %.3f e1 %.3f e2 %.3f last %d reborn %d\n", frame, c.r[3],
+                             c.lr, p[0], p[1], p[2], v[0], v[1], v[2], e1, e2, it == last.end() ? -1 : int(frame - it->second.frame),
+                             int(reborn));
             }
             if (reborn && it != last.end()) interp::tagGeneration(c.r[3]);
             if (last.size() > 8192) last.clear();
