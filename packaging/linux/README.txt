@@ -48,6 +48,9 @@ Useful options (add them after ./LuigisMansionPC.sh):
 
 In the game, press F1 for the options menu (graphics, sound, controls, enhancements);
 Esc closes it. Controllers are detected automatically; bindings are in F1 > Controls.
+Updates: the game tells you when a new release is out; F1 > Game > Updates downloads,
+verifies and installs it into this folder when you click (needs libcurl, settings and
+saves stay).
 
 
 WHERE FILES GO

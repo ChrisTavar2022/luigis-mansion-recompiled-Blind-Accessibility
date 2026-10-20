@@ -25,6 +25,8 @@ FIRST RUN
    shaders"). Later starts go straight to the game.
 With both discs you choose which release to play; the European disc also unlocks the
 European Hidden Mansion. F1 > Game > "Add or change discs..." reopens setup later.
+Updates: the game tells you when a new release is out; F1 > Game > Updates downloads,
+verifies and installs it into this folder when you click (settings and saves stay).
 
 
 KEYS

@@ -78,6 +78,9 @@ try {
         }
     }
 
+    # The in-game updater (docs/SETUP.md "Updates") relies on: tag v<version>, the asset names
+    # <prefix>-<version>-windows-x64.zip / -linux-x86_64.tar.gz, and this table's
+    # "| `<file>` | <platform> | `<sha256>` |" rows (its fallback when GitHub gives no digest).
     $rows = foreach ($a in $assets) {
         $h = (Get-FileHash -Algorithm SHA256 $a.File).Hash.ToLower()
         $leaf = Split-Path -Leaf $a.File

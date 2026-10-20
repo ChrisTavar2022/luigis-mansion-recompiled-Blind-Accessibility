@@ -45,6 +45,7 @@ found from `--disc <iso>` or `orig/GLME01.iso` above the working directory.
 | Crash reports | SEH filter + vectored handler, dbghelp symbols | `SIGSEGV/SIGBUS/SIGILL/SIGFPE` handler on an alternate stack: signal, pc as `binary+offset` (`dladdr`), fault address, `backtrace_symbols_fd` |
 | Graphics backend | D3D12 (auto) | Vulkan (auto); OpenGL ES fallback |
 | File dialogs | SDL3 | SDL3 (xdg-desktop-portal, or zenity/kdialog) |
+| Updater (docs/SETUP.md "Updates") | WinHTTP, BCrypt SHA-256, `System32\tar.exe`; running files renamed to `.old`, deleted at the next start; new process started | libcurl `dlopen`ed (`libcurl.so.4`, else `libcurl-gnutls.so.4`; none: the menu offers the download page), own SHA-256, `tar -xzf`; files replaced by rename, old ones deleted at once, executable bits set, `execv` of the installed program (same PID) |
 
 `port::configDir()`, `port::dataDir()` and `port::cacheDir()` (`src/port/install.h`) are the
 only places that decide where files go; on Windows all three are the old `%APPDATA%`

@@ -86,6 +86,81 @@ Command-line helpers (testing): `--us-disc <path>`, `--pal-disc <path>` prefill 
 `LM_CACHE_DIR` separates the GPU caches of test runs; pointing `APPDATA` at an empty folder
 gives a fresh install.
 
+## Updates
+
+`src/port/update.cpp` (UI in `src/recomp/menu.cpp`, F1 > Game > *Updates*). The player always
+clicks: nothing is downloaded or replaced on its own.
+
+1. **Version.** The CMake project version (`project(lmport ... VERSION x.y[.z])`) is compiled into
+   `update.cpp` as `LM_VERSION` and shown in F1 > Game. Versions compare numerically by
+   component, missing components are 0: 1.1 > 1.0.1 > 1.0 = 1.0.0.
+2. **Check.** In the background at startup (setting *Check for updates at startup*,
+   `[updates] check_at_startup`, default on) and with the *Check for updates* button: one
+   unauthenticated `GET https://api.github.com/repos/rob646464/luigis-mansion-recompiled/releases/latest`
+   (User-Agent `LuigisMansionPC/<ver> (updater)`, 8 s connect/receive timeouts, 15 s total).
+   Drafts and prereleases are ignored. Offline, an unknown host, HTTP errors and the rate limit
+   (403 with `x-ratelimit-remaining: 0` or 429; the message names the reset time) end as a line
+   in the menu and the log, nothing else. The startup check is skipped in build trees (no
+   `llvm/bin/clang` next to the exe) and with `LM_UPDATE_CHECK=0`.
+3. **Notice.** A newer release shows a small corner notice for 12 s once per session (takes no
+   input) and, in F1 > Game, "Update available: vX.Y" with the release notes (markdown reduced to
+   headings, bullets and text) and *Download and install*, *Skip this version* (remembered as
+   `[updates] skip_version=<tag>`: no notice for that tag; *Check for updates* still shows it) and
+   *Later* (hidden until the next start).
+4. **Download.** The asset for this platform: `LuigisMansionRecompiled-<ver>-windows-x64.zip` /
+   `LuigisMansionRecompiled-<ver>-linux-x86_64.tar.gz` (v1.0 and v1.0.1 used the prefix
+   `LuigisMansionPC-`, still accepted). Its URL must be the repository's release download
+   (`https://github.com/rob646464/luigis-mansion-recompiled/releases/download/<tag>/<name>`, or the
+   old repository name); redirects are followed by hand, at most 6, HTTPS only, to `github.com`,
+   `objects.githubusercontent.com` or `release-assets.githubusercontent.com`. Progress and *Cancel*
+   in the menu. Integrity: the API asset `digest` (`sha256:<hex>`), else the SHA-256 in the release
+   notes' download table row for that file; a mismatch or no hash at all refuses the package (it is
+   deleted) and offers the release page.
+5. **Stage.** Before downloading, the install folder must be a release folder and writable (a probe
+   file); otherwise (e.g. Program Files) the menu explains and offers *Open download page*. The
+   package goes to `<install>/update.tmp/`, is unpacked there with the system `tar` (Windows 10
+   1803+ `System32\tar.exe`, bsdtar, reads zip; Linux GNU tar), any link in it is refused, and the
+   folder holding the program (top level or its single subfolder) must contain the program,
+   `pipelines.bin`, `llvm/bin/clang` and `lld-link` / `ld.lld`.
+6. **Install** (*Install and restart*, confirmed in a popup that says to save first; the game state
+   is not saved): every file of the package is moved over the install: an existing file is first
+   renamed to `<name>.old` (Windows cannot overwrite a running exe or a loaded DLL, but can rename
+   them), then the new one is moved in; any failure moves everything back. Linux deletes the `.old`
+   files at once and sets the executable bits of the program, launcher, clang and ld.lld; Windows
+   lists them in `<install>/update-cleanup.txt` and the next start deletes them (retrying for 10 s
+   while the old process exits) along with `update.tmp`. Then settings are saved and the program
+   restarts with the same arguments: Windows starts the exe at its original path and exits; Linux
+   `execv`s the installed file in place of the running process (same PID, so `LuigisMansionPC.sh`
+   keeps logging). Files the new package no longer has are left alone.
+7. **Data stays.** `%APPDATA%` / the XDG folders (settings, saves, install.ini, game modules,
+   overlays, shader caches) are never touched. The module key includes the program version, so the
+   first start of a new version rebuilds the game module automatically (about 20 s, setup's
+   progress screen, no clicks), even when the embedded sources it hashes did not change.
+
+Every step logs a `[update]` line.
+
+**Release contract** (tools/release_windows.ps1, tools/release_linux.sh): tags `v<version>`, asset
+names as above (one top folder or the files at the top, the `cmake --install` layout), the
+`| \`<asset>\` | <platform> | \`<sha256>\` |` download table in the notes (GitHub's own `digest`
+covers assets uploaded since 2025, the table is the fallback), and no prerelease/draft flags for a
+release players should get.
+
+**Testing** (scratch `APPDATA`, `LM_CARD_DIR`, a scratch install from `cmake --install`):
+`LM_UPDATE_VERSION=<version>` pretends to be that version; `LM_UPDATE_FEED=<file, file:// URL or
+URL>` replaces the API answer with a saved release object or array (`http://` only for
+`localhost`/`127.0.0.1`); assets must still come from the real repository. The menu can be driven
+with `LM_MENU_CLICK="60:open=Game;90:Download and install;120:Install and restart;130:Install and restart##confirm"`.
+Checked (October 2026), Windows: pretending 1.0 against the real v1.0.1 (detect, notice, download
+87.7 MB via release-assets.githubusercontent.com, digest verified, staged, installed, restarted into
+v1.0.1, which rebuilt its module and reached the title screen); our build installed over that
+folder deleted the 14 `.old` files at its start; a feed with a wrong digest (refused, file deleted),
+no digest but the notes' table (verified from the notes), no hash at all and a non-GitHub asset URL
+(both refused before downloading); prerelease and draft entries with higher tags ignored; offline
+(unresolvable host, refused connection), rate limit 403/429 from a mock server; *Skip this version*
+(no notice at the next start, shown again by the button); cancel mid-download (staging removed);
+read-only install folder (message + download page); the current version against v1.0.1 ("latest").
+Linux (WSL Ubuntu 24.04, libcurl): see docs/LINUX.md.
+
 ## Module boundary
 
 ```

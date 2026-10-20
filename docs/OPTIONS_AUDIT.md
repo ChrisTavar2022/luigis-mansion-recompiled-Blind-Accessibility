@@ -83,6 +83,15 @@ Status: **OK** works as described, nothing found; **fixed** a problem was found 
 | CRT signal (S-Video / composite / RF) | OK | all four on a frozen title and foyer frame (`LM_CRT_CYCLE`, `LM_FREEZE_AT`; `out/crt_signals/`), 240 lines + comb and 480i; off unchanged |
 | Jukebox | OK | Play / Stop through the menu buttons (`LM_JUKEBOX_UI`), music id follows |
 
+## Game > Updates (added after v1.1)
+
+| Option | Status | What was checked / found |
+|--------|--------|---------------------------|
+| Check for updates at startup | OK | on: background check at startup, corner notice for a newer release; off: no request (`[update] startup check off`) |
+| Check for updates | OK | manual check; shows a skipped version again; offline / rate limit messages |
+| Download and install / Install and restart | OK | pretending 1.0: v1.0.1 downloaded, digest verified, installed, restarted into v1.0.1; bad digest, no hash, foreign URL refused; cancel; read-only folder offers the download page (docs/SETUP.md "Updates") |
+| Skip this version / Later | OK | skip saved as `[updates] skip_version`, no notice at the next start; Later hides it for the session |
+
 ## Save / load and map changes
 
 A save made with every option above on (`LM_TEST_SAVE`) loads with every option off (the lab
