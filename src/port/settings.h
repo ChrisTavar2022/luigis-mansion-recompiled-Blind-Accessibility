@@ -42,6 +42,11 @@ struct VideoSettings {
 enum class CrtPreset { ApertureGrille, SlotMask, ShadowMask, ConsumerTv, Custom };
 enum class CrtScanlines { Progressive480, DoubleStrike240, Interlaced480i };
 enum class CrtMask { ApertureGrille, SlotMask, ShadowMask, None };
+// Video signal between the console and the tube (crt.cpp "signal path"): RGB is the clean
+// picture; the others model the NTSC encoder, the cable / RF channel and the TV's decoder.
+enum class CrtSignal { Rgb, SVideo, Composite, Rf };
+// How the TV splits a composite signal into luma and chroma.
+enum class CrtSeparation { Notch, Comb2Line, Comb3Line };
 
 struct CrtSettings {
     bool enabled = false;
@@ -57,6 +62,20 @@ struct CrtSettings {
     float gammaIn = 2.4f, gammaOut = 2.2f;
     float curvature = 0.0f, cornerRadius = 0.02f;
     float brightness = 1.2f;
+    // Signal path. Bandwidths in MHz of the NTSC baseband; crt::applySignal sets the signal's
+    // defaults when a signal is chosen (applying a tube preset keeps them).
+    CrtSignal signal = CrtSignal::Rgb;
+    CrtSeparation separation = CrtSeparation::Notch;
+    float lumaBandwidth = 4.2f;    // TV luma channel
+    float chromaBandwidth = 1.0f;  // TV chroma demodulator low-pass
+    float sharpening = 0.25f;      // TV luma peaking
+    float artifacts = 1.0f;        // Y/C crosstalk (dot crawl, cross-colour): 1 = as modelled, 0 = none
+    float saturation = 0.92f;      // TV colour control
+    float noise = 0.0f;            // RF snow
+    float ghost = 0.0f, ghostDelay = 1.0f;  // multipath echo: gain, delay in microseconds
+    float jitter = 0.0f;           // RF line jitter, game pixels
+    float hum = 0.0f;              // rolling hum bar depth
+    float interference = 0.0f;     // beat with an interfering carrier (diagonal bars)
 };
 
 struct AudioSettings {

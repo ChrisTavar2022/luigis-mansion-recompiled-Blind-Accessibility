@@ -5,10 +5,12 @@
 namespace port {
 struct CrtSettings;
 enum class CrtPreset;
+enum class CrtSignal;
 }
 
 namespace recomp::crt {
 void update();                                         // host thread, once per frame: pushes settings to Aurora
 bool drawMenu();                                       // Visuals tab section; returns true when a setting changed
-void applyPreset(port::CrtSettings& s, port::CrtPreset preset);
+void applyPreset(port::CrtSettings& s, port::CrtPreset preset);  // tube preset (keeps the signal)
+void applySignal(port::CrtSettings& s, port::CrtSignal signal);  // signal + its default parameters
 }  // namespace recomp::crt

@@ -173,6 +173,19 @@ std::vector<Field> fields() {
         num("crt", "curvature", c.curvature),
         num("crt", "corner_radius", c.cornerRadius),
         num("crt", "brightness", c.brightness),
+        enm("crt", "signal", c.signal),
+        enm("crt", "separation", c.separation),
+        num("crt", "luma_bandwidth", c.lumaBandwidth),
+        num("crt", "chroma_bandwidth", c.chromaBandwidth),
+        num("crt", "sharpening", c.sharpening),
+        num("crt", "artifacts", c.artifacts),
+        num("crt", "saturation", c.saturation),
+        num("crt", "noise", c.noise),
+        num("crt", "ghost", c.ghost),
+        num("crt", "ghost_delay", c.ghostDelay),
+        num("crt", "jitter", c.jitter),
+        num("crt", "hum", c.hum),
+        num("crt", "interference", c.interference),
         num("audio", "master_volume", a.masterVolume),
         num("audio", "music_volume", a.musicVolume),
         num("audio", "sfx_volume", a.sfxVolume),
@@ -268,6 +281,19 @@ void sanitize() {
     clampEnum(c.preset, CrtPreset::Custom);
     clampEnum(c.scanlines, CrtScanlines::Interlaced480i);
     clampEnum(c.mask, CrtMask::None);
+    clampEnum(c.signal, CrtSignal::Rf);
+    clampEnum(c.separation, CrtSeparation::Comb3Line);
+    clampTo(c.lumaBandwidth, 1.5f, 6.0f);
+    clampTo(c.chromaBandwidth, 0.3f, 2.0f);
+    clampTo(c.sharpening, 0.0f, 1.0f);
+    clampTo(c.artifacts, 0.0f, 1.0f);
+    clampTo(c.saturation, 0.0f, 1.5f);
+    clampTo(c.noise, 0.0f, 1.0f);
+    clampTo(c.ghost, 0.0f, 0.5f);
+    clampTo(c.ghostDelay, 0.2f, 4.0f);
+    clampTo(c.jitter, 0.0f, 2.0f);
+    clampTo(c.hum, 0.0f, 1.0f);
+    clampTo(c.interference, 0.0f, 1.0f);
     auto& a = sSettings.audio;
     clampTo(a.masterVolume, 0.0f, 1.0f);
     clampTo(a.musicVolume, 0.0f, 1.0f);
