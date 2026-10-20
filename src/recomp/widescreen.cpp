@@ -218,10 +218,16 @@ HLE(fn_8003BE9C) {
 // half of the split screen, which spans the full width like view 0; with the co-op
 // improvements the views are the side-by-side halves, drawn Hor+ in place (ws::splitHalf), so
 // they are not in a HUD scope at all.
+namespace {
+bool sMainViewSetup = false;
+}
+bool inMainViewSetup() { return sMainViewSetup; }
 HLE(fn_800115F8) {
     if (coop::fixes() && !coop::gbhView()) return callOriginal(c, "fn_800115F8");
     AnchorScope s(c.r[3] == 1 && !coop::active() ? 1 : 0);
+    sMainViewSetup = c.r[3] == 0 && !coop::active();
     callOriginal(c, "fn_800115F8");
+    sMainViewSetup = false;
 }
 // Event portrait renderer (<PDEMO>): 3D drawn into its own viewport. During E. Gadd's call
 // (GBH screen mode lbl_804D846C = 3) that viewport is the GBH screen.

@@ -64,6 +64,11 @@ constexpr int kAnchorBySide = 2;
 // anchoring off.
 int hudAnchor();
 bool inHudScope();   // inside any scope (widescreen active), and not in a RenderToTextureScope
+// True while the frame loop sets up view 0, the main view (fn_800115F8(0)). A main view smaller
+// than the screen (the game's unused bordered view, patch 50) follows the centered frame there;
+// the same rectangle set again later for that view's passes (ghost layer, effects) follows too
+// (hle_gx.cpp), so the whole view stays in one place.
+bool inMainViewSetup();
 
 // A render-to-texture pass run from inside a HUD element's scope (the event-scene renderer
 // fn_80114E18 draws the door knob's reflection into a 128x128 viewport at the EFB origin and
