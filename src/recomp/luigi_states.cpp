@@ -344,8 +344,12 @@ void statesMapSetup(Ctx&) {
 void statesFrame(Ctx& c) {
     if (!usCode()) return;
     static int sPanicPatch = -1;
-    if (int(crawlOn()) != sPanicPatch) {
-        sPanicPatch = crawlOn();
+    // A panic that is still running keeps both fixes until it ends, even when the option was
+    // turned off meanwhile: with the retail factor back, mode 4 would halve Luigi's health
+    // every frame and kill him within a few frames.
+    const bool panicFix = crawlOn() || sCrawlActor != 0;
+    if (int(panicFix) != sPanicPatch) {
+        sPanicPatch = panicFix;
         setPatch(51, sPanicPatch != 0);  // patch 51: no panic effect 0xE
         // fn_800B61C8 multiplies the maximum health by the fear mode's factor every frame (mode 4:
         // 0.5, so Luigi's health halves each frame and he dies in a few frames). With the option on,
