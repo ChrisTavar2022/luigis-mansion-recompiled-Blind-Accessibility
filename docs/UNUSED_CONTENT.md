@@ -1006,6 +1006,19 @@ always 1 or 2; its third case, a fixed 40,30-560,430 view with a black border, i
 Verified: `bordered_view.png`. European line: `patch 50 80011BB4 480000D8 pal` (`fn_80011B00`, the
 same function), verified (`pal_mario_border_overheat_poison.png`).
 
+Fixes from the options audit (docs/OPTIONS_AUDIT.md):
+- Widescreen: the bordered rectangle follows the centered 4:3 frame where the frame loop sets view 0
+  up (`fn_800115F8`, a HUD scope); the view's later passes (ghost layer, effects, portraits) set the
+  same rectangle again outside any scope and drew into the raw one, so particles and the beam spilled
+  into the border. The same rectangle set again now follows too (`hle_gx.cpp` setViewport,
+  `ws::inMainViewSetup`).
+- Enhanced lighting: bloom, the realistic flashlight and AO are composited over the whole target;
+  Aurora 0225 scissors the composite to the main view when it does not cover the target.
+- With the Game Boy Horror camera also on, the patched branch skips the two-view case, so views 1/2
+  kept stale rectangles and the camera's view covered the screen. `HLE(fn_80010F20)` writes views 1/2
+  the rectangles the two-view case sets (the GBH screen rectangle from `fn_80010EBC`, and the
+  full-screen 2D view) before the bordered case sets view 0.
+
 ### Luigi states (`luigi_states.cpp`, Enhancements > Gameplay)
 
 Luigi's action controller (`[Luigi+0x7E4]`: +0x310 state, +0x314 sub-state, +0x68 motion-slot
