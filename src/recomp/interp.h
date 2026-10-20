@@ -68,6 +68,10 @@ void tagTumbler();
 // its place (at b - (1 - alpha) step) instead of standing still for the whole interval. Positions of
 // CPU-built vertex blocks noted inside must be in world space.
 void tagBackStep(const float step[3]);
+// The innermost open scope's identity follows the thing itself (the hook detects when its slot holds a
+// new one and gives it a new generation): a CPU-built block noted inside that turns back against its
+// last step is bouncing (blended), not another particle in its slot (shown at the game frame).
+void tagTracked();
 // Every GX HLE call (hle_gx.cpp GXHLE): the guest call site and registers, for value keys and for
 // call-site tags (a draw loop inside one game function, e.g. particles: tags.cpp registers the
 // function's range and which register holds the item).

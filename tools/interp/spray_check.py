@@ -95,7 +95,7 @@ def main():
             how = uniq[-1][2]
             if speed >= 3.0 and vl < 0.05 * speed:
                 flags[(kind, "hold", how)] += 1
-                examples.append((speed, kind, "hold", key, sq, uniq[0][3], f"still for the interval, speed {speed:.1f}", uniq[-1][1]))
+                examples.append((speed, kind, "hold", key, sq, uniq[0][3], f"still for the interval ({how}), speed {speed:.1f}", uniq[-1][1]))
             # inside: every sample on the line start + alpha v
             worst = 0.0
             for al, p, _, _ in uniq[1:-1]:

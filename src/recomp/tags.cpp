@@ -454,7 +454,8 @@ HLE(fn_80120C30) {
     //    while they move smoothly 20-35 units per game frame.
     // A point continues when it was drawn in the game frame before and either moved by its own
     // velocity (to 0.05 units) or kept its last step (to 3 units + a quarter of the step: gravity and
-    // drag change it by ~1.2 per game frame); otherwise it was placed anew. (The old test, within half
+    // drag change it by ~1.2 per game frame), or, in the game frame after its birth, moved by up to 30
+    // units; otherwise it was placed anew. (The old test, within half
     // the last velocity of last place + last velocity, took the 0xF0 points for new points every game
     // frame, so they never blended and stepped at 30 Hz, and let points re-placed near their slot's
     // last place pass as the same point.) A new point moves into its place along its step
@@ -504,8 +505,14 @@ HLE(fn_80120C30) {
                 } else {
                     const bool byVel = e2 <= 0.05f + 1e-3f * std::sqrt(v2);
                     const bool byStep = it->second.stepKnown && e3 <= 3.0f + 0.25f * std::sqrt(s2);
+                    // Its second game frame (no step known yet: born, or placed anew, last game frame):
+                    // a short step continues it (the courtyard fountain's points keep a stale +12 and
+                    // were taken for new points every game frame of their arc, as they never had a step).
+                    float d2 = 0;
+                    for (int k = 0; k < 3; k++) d2 += (p[k] - it->second.p[k]) * (p[k] - it->second.p[k]);
+                    const bool byNear = !it->second.stepKnown && d2 <= 30.0f * 30.0f;
                     exactV |= byVel;
-                    reborn = !byVel && !byStep;
+                    reborn = !byVel && !byStep && !byNear;
                 }
             }
             Last rec{};
@@ -551,6 +558,9 @@ HLE(fn_80120C30) {
         }
     }
     TagScope t(TagCat::Particle, c.r[3], 0x120C30);
+    // (Its rebirth is detected above: a point turning back is bouncing. LM_POINT_OLD: as before.)
+    static const bool sOldPoints = std::getenv("LM_POINT_OLD") != nullptr;
+    if (!sOldPoints) interp::tagTracked();
     if (haveStep) interp::tagBackStep(step);
     callOriginal(c, "fn_80120C30");
 }

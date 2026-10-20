@@ -111,6 +111,7 @@ struct Patch {
     s32 mtxPatch = -1;  // 2D blocks: the position matrix patch current at its GXBegin (-1: none noted)
     s32 projPatch = -1;  // 2D blocks: the projection patch its vertices were written under (-1: none noted)
     bool tumble = false;  // noted in a tagTumbler scope: model matrices blend the short way
+    bool tracked = false;  // noted in a tagTracked scope: a CPU-built block turning back is a bounce
     s32 backStep = -1;    // tagBackStep: index into Tape::backSteps (world step per game frame), -1 none
 };
 
@@ -283,6 +284,7 @@ struct TagFrame {
     bool ownCamera = false;  // inside a SubView: drawn with a camera other than the game camera
     u64 group = 0;  // the model instance it belongs to (tagGroup: a J3D model's skinned meshes), 0: none
     bool tumble = false;  // tagTumbler, inherited
+    bool tracked = false;  // tagTracked, inherited
     s32 backStep = -1;    // tagBackStep (index into sBackSteps), inherited
 };
 constexpr int kMaxTagDepth = 64;
@@ -1596,6 +1598,7 @@ void pushTag(TagCat cat, u32 object, u32 type, u32 sub) {
         f.structural = structural ? mix(sp ^ mix(u64(object) << 8 ^ sub ^ u64(cat) << 40 ^ 0x51E3ull << 48)) : sp;
         f.group = parent ? parent->group : 0;  // set by tagGroup (J3D models), inherited
         f.tumble = parent && parent->tumble;
+        f.tracked = parent && parent->tracked;
         f.backStep = parent ? parent->backStep : -1;
     }
     sTagStack[sTagDepth++] = f;
@@ -1621,6 +1624,9 @@ void tagGroup(u32 id) {
 }
 void tagTumbler() {
     if (sCapturing && sTagDepth > 0 && sTagDepth <= kMaxTagDepth) sTagStack[sTagDepth - 1].tumble = true;
+}
+void tagTracked() {
+    if (sCapturing && sTagDepth > 0 && sTagDepth <= kMaxTagDepth) sTagStack[sTagDepth - 1].tracked = true;
 }
 void tagBackStep(const float step[3]) {
     if (!sCapturing || sTagDepth <= 0 || sTagDepth > kMaxTagDepth || sBackSteps.size() >= (1u << 20)) return;
@@ -1665,6 +1671,7 @@ void gxCall(const Ctx& c) {
         sVirt.ownCamera = parent && parent->ownCamera;
         sVirt.group = parent ? parent->group : 0;
         sVirt.tumble = parent && parent->tumble;
+        sVirt.tracked = parent && parent->tracked;
         sVirt.backStep = parent ? parent->backStep : -1;
         sVirtActive = true;
         break;
@@ -2709,6 +2716,7 @@ u64 detail::arrayKey() {
 namespace {
 u64 sVertsKey = 0;
 s32 sVertsBack = -1;  // tagBackStep of the scope the block was begun in
+bool sVertsTracked = false;  // tagTracked of that scope
 bool sVertsLocked = false;  // begun inside a text box (pushFrameLock): its vertices are not noted
 TagCat sVertsCat = TagCat::None;
 u32 sVertsSite = 0;
@@ -2727,6 +2735,7 @@ void detail::vertsBegin(bool ortho) {
     {
         const TagFrame* t = topTag();
         sVertsBack = sVertsKey && t ? t->backStep : -1;
+        sVertsTracked = sVertsKey && t && t->tracked;
     }
     if (!sVertsKey && ortho) {
         // An untagged 2D quad (a fade, a full-screen picture): the structural scope, call site and
@@ -2761,6 +2770,8 @@ void detail::noteVertices(u32 at, u32 count, u32 stride, u32 posOffset, u64 id, 
     p.cat = sVertsCat;
     p.key = sVertsKey ? mix(sVertsKey ^ id) : 0;  // the same layout (vertex count is checked when pairing)
     p.backStep = p.key && !posBytes2D ? sVertsBack : -1;
+    p.tracked = p.key && sVertsTracked;
+    sVertsTracked = false;
     sVertsKey = 0;
     sVertsBack = -1;
     if (sTagLogFrame != ~0ull && p.role == 2 && (p.posFmt & 0x100) && at + count * stride <= sBase + AuroraCapturePos()) {
@@ -4144,7 +4155,11 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                         if (b.vertStep) b.vertStep[3 * i + c].store(d[c], std::memory_order_relaxed);
                         dd += d[c] * d[c], pp += pd[c] * pd[c], dp += d[c] * pd[c];
                     }
-                    if (std::isfinite(pp) && dd > 16.0f && pp > 1.0f && dp < -0.25f * std::sqrt(dd * pp)) {
+                    // (Not for a tracked block, tagTracked: its rebirth is detected where it is drawn, so
+                    // turning back is its own motion: the element streams' points bounce off the ground
+                    // in Spooky's garden and the courtyard fountain's basins, and were held at the game
+                    // frame's place for the interval of every bounce.)
+                    if (!p.tracked && std::isfinite(pp) && dd > 16.0f && pp > 1.0f && dp < -0.25f * std::sqrt(dd * pp)) {
                         sReversals++;
                         snap(p, nullptr, nullptr);
                         backStep(p);
