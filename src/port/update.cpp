@@ -113,13 +113,14 @@ struct Json {
     double n = 0;
     std::string s;
     std::vector<Json> a;
-    std::vector<std::pair<std::string, Json>> o;
+    std::vector<std::string> keys;  // object members (two vectors: a pair of an incomplete Json
+    std::vector<Json> vals;         // is not allowed in a member vector with libstdc++)
 
     const Json& operator[](const char* key) const {
         static const Json kNull;
         if (type == Object)
-            for (auto& [k, v] : o)
-                if (k == key) return v;
+            for (size_t i = 0; i < keys.size(); i++)
+                if (keys[i] == key) return vals[i];
         return kNull;
     }
     std::string str() const { return type == String ? s : std::string(); }
@@ -236,7 +237,8 @@ struct JsonParser {
                     }
                     p++;
                     Json item = value();
-                    v.o.emplace_back(std::move(k), std::move(item));
+                    v.keys.push_back(std::move(k));
+                    v.vals.push_back(std::move(item));
                     ws();
                     if (p < end && *p == ',') {
                         p++;
