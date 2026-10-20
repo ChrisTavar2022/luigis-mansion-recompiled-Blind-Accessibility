@@ -164,6 +164,10 @@ struct Tape {
     const Tape* pairedWith = nullptr;
     u64 seq = 0;  // capture order (consecutive tapes differ by 1); replay state slots
     std::vector<s32> partner;  // per patch: index into pairedWith->patches, or -1
+    // Per patch: 1 when it is a position matrix of a model instance (tagGroup) with two or more of them in
+    // this tape (an articulated or skinned model; set at pairing). The spinner centre rule is for rigid
+    // things only.
+    std::vector<u8> multiMember;
     // Per patch (host, set by the replays from pairedWith): how far the model matrix moved in world
     // space since pairedWith (-1: not known). A pair that keeps moving fast is motion, not a jump.
     std::unique_ptr<std::atomic<float>[]> worldStep;
@@ -744,6 +748,17 @@ void pairTapes(const Tape& a, Tape& b) {
         b.paired++;
     }
     texWrapPairs(a, b);
+    {
+        static std::unordered_map<u64, u32> perGroup;
+        perGroup.clear();
+        for (const Patch& p : b.patches)
+            if (p.group && p.kind == Kind::PosMtx && p.count == 12 && p.role == 0) perGroup[p.group]++;
+        b.multiMember.assign(b.patches.size(), 0);
+        for (u32 i = 0; i < b.patches.size(); i++) {
+            const Patch& p = b.patches[i];
+            if (p.group && !p.tumble && p.kind == Kind::PosMtx && p.count == 12 && p.role == 0 && perGroup[p.group] >= 2) b.multiMember[i] = 1;
+        }
+    }
     // Cameras by key.
     b.viewToA.assign(b.views.size(), -1);
     {
@@ -3509,7 +3524,10 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                 const bool flat = skew || flatMatrix(Wa.data()) || flatMatrix(Wb.data());  // entrywise, as the replay
                 if (cause == 0 && !flat && groupPolicy != 2 && blendRigid(Wa.data(), Wb.data(), 4, pr.alpha, Wt.data())) {
                     // (A spinner / tumbler: its drawn centre moves in a straight line, as replayed.)
-                    if (prevTurn > kSpinnerTurn && P.bundle < b.bundleCentre.size() && std::isfinite(b.bundleCentre[P.bundle][0])) {
+                    // (The ideal of a member of an articulated instance is its own rigid motion, also with
+                    // LM_PIVOT_MEMBERS: so that test aid's replays show what the old rule did.)
+                    const bool member = u32(pb) < b.multiMember.size() && b.multiMember[pb];
+                    if (prevTurn > kSpinnerTurn && !member && P.bundle < b.bundleCentre.size() && std::isfinite(b.bundleCentre[P.bundle][0])) {
                         const f32* c = b.bundleCentre[P.bundle].data();
                         M34 ra, rb;
                         compose(iq.data(), ma, ra.data());
@@ -4262,7 +4280,15 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     compose(vp->ib.data(), vb, wb.data());
                     const float prevTurn = turnPolicy(p, noteTurn(a, j, b, i, wa.data(), wb.data(), 4));
                     const bool skew = skewFlip(wa.data(), wb.data());
-                    if (prevTurn > kSpinnerTurn && !forced && !skew) pivotVp = vp;
+                    // (Not for a member of an articulated / skinned instance: its draw's centre is the
+                    // centre of the whole mesh, not of what this matrix moves. Each spinning member of
+                    // Luigi's model was shifted by its own correction of up to 115 units while the
+                    // instance blended per matrix, for the 8 game frames a member counts as tumbling:
+                    // the Poltergust hose and his limbs tore for a moment; LM_GROUP_LOG V lines.
+                    // LM_PIVOT_MEMBERS=1: old behaviour.)
+                    static const bool sPivotMembers = std::getenv("LM_PIVOT_MEMBERS") != nullptr;
+                    const bool member = !sPivotMembers && i < b.multiMember.size() && b.multiMember[i];
+                    if (prevTurn > kSpinnerTurn && !forced && !skew && !member) pivotVp = vp;
                     const bool excl = sGroupLogNow && i < sExcluded.size() && sExcluded[i];
                     const float turn = excl ? turnDegrees(wa.data(), wb.data(), 4) : 0.0f;
                     bool flipped = false, untwisted = false;
