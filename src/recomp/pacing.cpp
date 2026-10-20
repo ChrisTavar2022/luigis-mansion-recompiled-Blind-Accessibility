@@ -387,10 +387,16 @@ double median(const std::deque<double>& d) {
 // second's frames, at least 4) or frames that are a little late most of the time (half of them by
 // more than 8%: uneven intervals) lower the rate, to the rate actually achieved; after 1 s without
 // misses it speeds up again (2% per frame), not below a rate that failed in the last 10 s.
+// Not judged within 1 s of a hitch (the first frames after a load or a room change: new textures,
+// shadow maps and lights for the first time, the GPU clocking back up), nor within 1 s of a
+// slowdown (the window is judged afresh, not from its first 15 frames): on the first arrival in
+// the foyer one burst of uneven frames cut 120 -> 112 -> 107 -> 102 fps within 260 ms, and the
+// 10 s floor then held ~100 fps for half a minute while the frames cost 6 ms.
 struct Governor {
     double limit = 0;  // s: the frame period the PC sustains (0: the target holds)
     double floor = 0;  // s: a period that failed recently
     Clock::time_point floorUntil{}, holdUntil{}, prevStart{};
+    Clock::time_point judgeFrom{};  // no slowdown before this (after a hitch or a slowdown)
     struct Interval {
         Clock::time_point t;
         double iv;   // s
@@ -412,6 +418,17 @@ void governFrame(Clock::time_point start, double expected, double target, bool s
     while (!g.intervals.empty() && start - g.intervals.front().t > std::chrono::milliseconds(1000)) g.intervals.pop_front();
     if (iv > std::max(3.0 * expected, expected + 0.05)) {
         g.hitches++;  // a load or compile: not a sign the PC cannot hold the rate
+        g.judgeFrom = std::max(g.judgeFrom, start + std::chrono::milliseconds(1000));
+        g.intervals.clear();
+        return;
+    }
+    // LM_PACING_GRACE=0 (A/B): judge right after hitches and slowdowns again.
+    static const bool sGrace = [] {
+        const char* v = std::getenv("LM_PACING_GRACE");
+        return !(v && std::atoi(v) == 0);
+    }();
+    if (sGrace && start < g.judgeFrom) {
+        g.intervals.clear();  // the window starts after the grace (not with its burst in it)
         return;
     }
     // Each interval is judged against the period it was scheduled at (while speeding up, the
@@ -446,6 +463,7 @@ void governFrame(Clock::time_point start, double expected, double target, bool s
         g.floor = lim * 0.97;
         g.floorUntil = start + std::chrono::seconds(10);
         g.holdUntil = start + std::chrono::milliseconds(1000);
+        g.judgeFrom = start + std::chrono::milliseconds(1000);
         g.intervals.clear();  // judged afresh at the new period
         g.slowdowns++;
         return;

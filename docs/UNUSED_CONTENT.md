@@ -969,6 +969,19 @@ as Luigi's own, so the body model is the only Mario-specific asset. `bmario.mdl`
   Mario's sampler 5 (N = the Luigi model's sampler count, every value a pattern can write),
   followed by Mario's own samplers, and every Mario material is re-pointed into the second part.
   The patterns then leave Mario unchanged (he does not blink; his model has no patterns).
+- Face morphs (fix, October 2026: "the Mario model is completely borked"): Luigi's face and
+  mouth shapes are vertex morphs, S3DModel +0xAC + 12 * slot (8 slots: weight, morph data, key),
+  applied by `fn_8005C760` (-> `fn_8005C464` per slot). Each morph target lists *Luigi's* vertex
+  indices and writes positions straight into the drawn `.mdl`'s position array (+0x48). On
+  Mario's copy those indices name unrelated vertices: from the first morph frame on, parts of
+  his cap, hair, face and back were overwritten (holes in the cap, hair over the face, spikes out
+  of the back), in every frame-rate mode and with vertex snapshots on or off. The writes stick
+  in the shared copy, so it got worse over time. `fn_8005C760` is now skipped when the
+  S3DModel's model is a Mario copy (hook `us pal`), so his face keeps its modelled shape, the
+  same way his eyes keep theirs. Evidence: `out/mario_viewer/mario_before_after_nursery.png`
+  (top before, bottom after), `mario_after_usersettings_120fps_presents.png` (user settings:
+  Enhanced lighting, 120 fps; interpolated presents), `mario_lab_cutscene_after.png` (lab event
+  scenes, `dluige03`), `mario_as_player2_after.png`.
 - Voice: stays Luigi's. The sequence table has `Mario.com`/`Mario02.com` (music), but no Mario
   voice clips for player actions.
 - Mario as player 2: the 2-player mode's player 2 S3DModel (+4 of the actor, model at +4) is
@@ -1196,6 +1209,30 @@ Debug > Text archive, which is enough.
 Debug tab "Model viewer" (F4), `src/recomp/model_viewer.cpp`. Everything is drawn by the game's
 own code at the end of every game frame (`LMChangeFrameBuffer__Fv` hook), so it works on any
 screen (title, menus, in game) and in every frame-rate mode.
+
+While the viewer is open the game runs at its own 30 fps without interpolation (`frame.cpp`
+`interpolationWanted`): only real frames are presented, and the frame-rate setting applies again
+once it is closed. The viewer's camera, spin and picture fit change per guest frame, and blending
+its draws between tapes only distorted them. Test aid `LM_VIEWER_INTERP=1` keeps interpolating
+(the old behaviour); `LM_DEV_VIEWER_TOGGLE=<frame>,...` opens/closes the viewer at those frames
+(with `LM_DEV_VIEWER` it loads that model when first opened), e.g. during play.
+
+**Opened during play: white, untextured models (fixed October 2026).** "Sometimes the viewer
+doesn't load properly": it worked when opened right after starting but not in a mansion room.
+Every S3D model was drawn plain white (only vertex-coloured parts such as Mario's buttons kept
+their colour), in every frame-rate mode, interpolated or not. Cause: the S3D material setup binds
+its textures only while a small-data flag (r13+0x744, set by `fn_8005C2B8`, read by
+`fn_8005C2C0`) is 1. The element streams (`fn_8011FB40`: water drops, fire and ice bits, run in
+every room once Luigi has the Poltergust) draw with it 0 and leave it so; the actor draw
+(`fn_8005A550`) sets it back to 1 before the next frame's models. The viewer draws after the game
+frame, so it inherited 0. It now sets the flag to 1 around its S3D draws and restores the game's
+value. Found by comparing the small data at the viewer's draw on the title screen and in play
+(test aid `LM_DEV_VIEWER_STATE=1`). Verified at the user's settings (Enhanced lighting, 120 fps):
+opened in the nursery, closed and reopened, a ghost (`waiter`) through the ghost layer, closed,
+warped to the lab, reopened twice; a map room (`2:61`); and a sweep of all 297 `/model/` models
+opened in play (292 drawn, the 5 empty ones are the known dummies, 0 failed). Evidence:
+`out/mario_viewer/viewer_before_opened_in_play.png` / `viewer_after_opened_in_play.png`,
+`viewer_after_ghost_close_warp_reopen.png`, `viewer_sweep_in_play_1.png`/`_2.png`.
 
 ### Catalogue: every model on the disc
 

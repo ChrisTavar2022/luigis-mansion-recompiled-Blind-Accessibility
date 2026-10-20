@@ -5,6 +5,7 @@
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
 #include "recomp/interp.h"
+#include "recomp/model_viewer.h"
 #include "recomp/sched.h"
 #include "recomp/skip.h"
 
@@ -13,6 +14,7 @@
 #include <SDL3/SDL_video.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <atomic>
 #include <cmath>
 #include <chrono>
@@ -52,7 +54,18 @@ bool sGuestDecoupled = false;   // guest thread
 bool sHostDecoupled = false;    // host thread
 constexpr u32 kDecoupleAfter = 60;  // presents; keeps boot (GXInit, first loads) in lockstep
 
-bool interpolationWanted() { return targetFps() > port::kMinFps && sPresents.load() >= kDecoupleAfter; }
+// The model viewer (F4) runs at the game's 30 fps without interpolation: its camera, spin and
+// picture fit change per guest frame, and blending its draws (and the game frame under it)
+// between tapes only distorts what it shows. Only real frames are presented while it is open;
+// the frame-rate setting applies again when it closes.
+// Test aid LM_VIEWER_INTERP=1: keep interpolating with the viewer open (the old behaviour).
+bool interpolationWanted() {
+    static const bool sViewerInterp = [] {
+        const char* v = std::getenv("LM_VIEWER_INTERP");
+        return v && *v == '1';
+    }();
+    return targetFps() > port::kMinFps && sPresents.load() >= kDecoupleAfter && (sViewerInterp || !viewer::isOpen());
+}
 
 }  // namespace
 

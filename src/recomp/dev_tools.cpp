@@ -376,6 +376,24 @@ HLE(LMChangeFrameBuffer__Fv) {
     sReportShown.swap(sReportBuild);
     sReportBuild.clear();
 
+    // Test aid: LM_DEV_VIEWER_TOGGLE=<frame>,<frame>,... opens/closes the model viewer (as F4
+    // does) at those frames of this counter (open during play, close, reopen after a warp...).
+    static const std::vector<u32> sViewerToggles = [] {
+        std::vector<u32> v;
+        for (const char* p = std::getenv("LM_DEV_VIEWER_TOGGLE"); p && *p;) {
+            v.push_back(u32(std::strtoul(p, nullptr, 10)));
+            const char* comma = std::strchr(p, ',');
+            if (!comma) break;
+            p = comma + 1;
+        }
+        return v;
+    }();
+    for (u32 f : sViewerToggles)
+        if (f == sFrames) {
+            viewer::setOpen(!viewer::isOpen());
+            log("[dev] f%u model viewer %s (LM_DEV_VIEWER_TOGGLE)", sFrames, viewer::isOpen() ? "opened" : "closed");
+        }
+
     unused2::onFrame(c);
     viewer::guestFrame(c);
     callOriginal(c, "LMChangeFrameBuffer__Fv");

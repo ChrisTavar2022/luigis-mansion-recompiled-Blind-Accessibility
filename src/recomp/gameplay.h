@@ -24,4 +24,9 @@ float ambientFactor();
 // right now (it is suspended where it would break the game; see docs/GAMEPLAY_OPTIONS.md).
 bool rideAllowed(u32 luigi);
 
+// Calls Luigi's message handler fn_800AEEA8 (from its HLE in luigi_states.cpp) with the
+// options' adjustments: "Luigi's health" (scripted health/maximum, boss portrait rank, health
+// stored in the player record in original units) and disabled recovery hearts.
+void callLuigiMessage(Ctx& c);
+
 }  // namespace recomp::gameplay
