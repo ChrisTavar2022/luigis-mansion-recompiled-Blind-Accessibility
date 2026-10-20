@@ -1,4 +1,4 @@
-Luigi's Mansion PC 1.0.1 - Windows x64
+Luigi's Mansion PC 1.1 - Windows x64
 ====================================
 
 A native PC port of Luigi's Mansion (GameCube). No game data is included: the game is

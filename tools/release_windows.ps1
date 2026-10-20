@@ -65,16 +65,16 @@ try {
         Step "Building the Linux packages in WSL (asks for your Linux password if packages are missing)"
         & wsl.exe --cd "$root" bash tools/release_linux.sh $version out
         $tgz = Join-Path $outDir "LuigisMansionPC-$version-linux-x86_64.tar.gz"
-        $lzip = Join-Path $outDir "LuigisMansionPC-$version-linux-x86_64.zip"
-        if ($LASTEXITCODE -or -not (Test-Path $tgz) -or -not (Test-Path $lzip)) {
+        if ($LASTEXITCODE -or -not (Test-Path $tgz)) {
             Write-Host ""
             Write-Host "The Linux build failed (messages above)." -ForegroundColor Red
             $answer = Read-Host "Publish the Windows package alone? (y/n)"
             if ($answer -notmatch '^[yY]') { throw "stopped: Linux build failed" }
             $linuxNote = "Linux: no $version package; the previous Linux package still works.`n"
         } else {
+            # Only the .tar.gz is published (it keeps file permissions); the .zip release_linux.sh
+            # also writes stays in out/.
             $assets += @{ File = $tgz; Platform = "Linux x86_64, glibc 2.34+, Vulkan" }
-            $assets += @{ File = $lzip; Platform = "same as the .tar.gz (prefer the .tar.gz, it keeps file permissions)" }
         }
     }
 
