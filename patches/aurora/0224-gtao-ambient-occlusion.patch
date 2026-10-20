@@ -6,7 +6,7 @@ diff --git a/lib/aurora.cpp b/lib/aurora.cpp
  using webgpu::g_queue;
  using webgpu::g_surface;
 +
-+// 0223 test aid (aurora_request_screenshot): the frame's game image (before post-process and UI)
++// 0224 test aid (aurora_request_screenshot): the frame's game image (before post-process and UI)
 +// at render resolution as a binary PPM. Read back synchronously on the render worker right after
 +// the frame's submission (test runs only: it stalls that frame).
 +std::mutex g_shotMutex;
@@ -90,7 +90,7 @@ diff --git a/lib/aurora.cpp b/lib/aurora.cpp
      // AURORA_LATE_SUBMIT=1: the previous single submission after the acquire (A/B).
      static const bool sLateSubmit = std::getenv("AURORA_LATE_SUBMIT") != nullptr;
      present_timing::encode_keep_warm(encoder);  // 0215: after the frame's own work
-+    shot_encode(encoder);                       // 0223 test aid
++    shot_encode(encoder);                       // 0224 test aid
      if (!sLateSubmit) {
        ZoneScopedN("Frame Submit");
        const wgpu::CommandBufferDescriptor frameBufDescriptor{.label = "Frame command buffer"};
@@ -118,7 +118,7 @@ diff --git a/include/aurora/aurora.h b/include/aurora/aurora.h
  void aurora_set_resampler(AuroraSampler sampler);
  /** Sets the clock timescale. Default 1.0f. 0.0f is paused. Range 0.0f-16.0f. */
  void aurora_set_timescale(float scale);
-+/** Test aid (0223): saves the next frame's game image (render resolution, before post-processing
++/** Test aid (0224): saves the next frame's game image (render resolution, before post-processing
 + * and UI) as a binary PPM at `path`. */
 +void aurora_request_screenshot(const char* path);
  
@@ -131,7 +131,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
    uint32_t vtxCount = 0; // debug
    uint32_t tevStages = 0;
    bool lit = false;
-+  bool nrm = false; // 0223: depth pre-pass pipeline built for depth_normal_layout (AO normals)
++  bool nrm = false; // 0224: depth pre-pass pipeline built for depth_normal_layout (AO normals)
  };
  std::vector<GlowDraw> g_glowDraws;
  
@@ -144,7 +144,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 -// 0186: 4x4 interleaved sample rotation (cancelled exactly by the 4x4 blur below) instead of a
 -// per-pixel noise rotation, which left a hatched pattern on flat walls.
 +// 0186: AO samples went through a depth-aware 4x4 blur; 0187: occluders only within the radius.
-+// 0223: horizon-based ambient occlusion (after GTAO, Jimenez et al. 2016, "Practical Real-Time
++// 0224: horizon-based ambient occlusion (after GTAO, Jimenez et al. 2016, "Practical Real-Time
 +// Strategies for Accurate Indirect Occlusion"), replacing 0032's hemisphere samples. Those were
 +// oriented by the face normal reconstructed from the depth buffer, so every triangle of a round
 +// low-poly character (Toad's cap, E. Gadd's head, Luigi) got its own flat grey: faceted, blocky
@@ -342,7 +342,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
 +  }
 +  return vec4f(vis, p.z, oct_enc(n));
 +}
-+// 0223: depth- and normal-aware 4x4 filter of the raw AO (t0, fx.ao.w mask texels per AO texel)
++// 0224: depth- and normal-aware 4x4 filter of the raw AO (t0, fx.ao.w mask texels per AO texel)
 +// at mask resolution: cancels the interleaved pattern and upsamples, without bleeding across
 +// silhouettes (plane distance against this texel's surface) or creases (normal similarity).
 +// Output: the darkening amount the receivers multiply by (0 = none). t2: the normal target.
@@ -405,10 +405,10 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
    Tex maskAo;
    wgpu::RenderPipeline aoMaskPipe;
 -  // 0186: raw occlusion before the 4x4 blur
-+  // 0186: raw occlusion before the 4x4 blur (0223: GTAO at AO resolution, RGBA16F)
++  // 0186: raw occlusion before the 4x4 blur (0224: GTAO at AO resolution, RGBA16F)
    Tex maskAoRaw;
    wgpu::RenderPipeline aoBlur4Pipe;
-+  // 0223: the pre-pass normal target (+ write-masked color placeholder); valid = the pre-pass
++  // 0224: the pre-pass normal target (+ write-masked color placeholder); valid = the pre-pass
 +  // depth so far was rendered with normals (an incremental mask keeps adding to both)
 +  Tex maskNormal, maskNormalColor;
 +  bool maskNormalValid = false;
@@ -421,7 +421,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
               "Enhanced light-shadow depth");
 -  const size_t fromDepth = g_gpu.maskDepth.texture.Get() == prevDepth ? job.firstNew : 0;
 +  size_t fromDepth = g_gpu.maskDepth.texture.Get() == prevDepth ? job.firstNew : 0;
-+  // 0223: ambient occlusion reads the pre-pass normals; every draw of the job must have been given
++  // 0224: ambient occlusion reads the pre-pass normals; every draw of the job must have been given
 +  // the normal-target pipeline (AO was on when it was recorded), else none is drawn with normals.
 +  bool normals = job.ao;
 +  for (size_t i = 0; i < job.draws.size() && normals; ++i) {
@@ -469,7 +469,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
      for (size_t i = fromDepth; i < job.draws.size(); ++i) {
        const auto& g = job.draws[i];
 +      if (g.nrm != normals) {
-+        continue; // 0223: built for the other pre-pass layout (AO switched within the frame)
++        continue; // 0224: built for the other pre-pass layout (AO switched within the frame)
 +      }
        const auto& vp = g.viewport;
        const float minDepth = gx::UseReversedZ ? 1.f - vp.zfar : vp.znear;
@@ -487,7 +487,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
    }
    if (job.ao) {
 -    // 0032: ambient occlusion into the third plane.
-+    // 0032: ambient occlusion into the third plane. 0223: horizon-based (fs_aomask) at AO
++    // 0032: ambient occlusion into the third plane. 0224: horizon-based (fs_aomask) at AO
 +    // resolution (half the mask's above 900 lines), then the depth/normal-aware filter and upsample
 +    // to the mask (fs_aoblur4).
 +    const uint32_t aoScale = h > 900 ? 2 : 1;
@@ -538,7 +538,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
    return layout;
  }
  
-+// 0223: the depth pre-pass while ambient occlusion is on: the depth plus the interpolated view
++// 0224: the depth pre-pass while ambient occlusion is on: the depth plus the interpolated view
 +// normal (gx shader normal attachment, written by depth-writing draws) for the AO pass; color 0 is
 +// a write-masked placeholder (the gx fragment output keeps location 0 for the color).
 +RenderTargetLayout depth_normal_layout() noexcept {
@@ -573,7 +573,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
        dc.dstAlpha = UINT32_MAX;
        dc.shaderConfig.depthOnly = 1;
 -      emit(dc, PrecacheDepthTarget);
-+      // 0223: with ambient occlusion the pre-pass is drawn with the normal target
++      // 0224: with ambient occlusion the pre-pass is drawn with the normal target
 +      emit(dc, PrecacheDepthTarget | ((bits & PrecacheAo) ? PrecacheDepthNormalTarget : 0));
        if ((bits & PrecacheCasters) && v.shaderConfig.lineMode == 0 && v.shaderConfig.zTexOp == 0) {
          gx::PipelineConfig lc = dc;
@@ -582,7 +582,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
      dc.dstAlpha = UINT32_MAX;
      dc.shaderConfig.depthOnly = 1; // the enhanced shading of the copy would be wasted (depth only)
      static const RenderTargetLayout layout = depth_layout();
-+    // 0223: with ambient occlusion the pre-pass also writes the interpolated normals.
++    // 0224: with ambient occlusion the pre-pass also writes the interpolated normals.
 +    static const RenderTargetLayout normalLayout = depth_normal_layout();
      GlowDraw g{.data = data, .viewport = current_viewport(), .scissor = current_scissor()};
 -    static std::unordered_map<PipelineRef, PipelineRef> sVariants;
@@ -604,7 +604,7 @@ diff --git a/lib/gfx/enhanced.cpp b/lib/gfx/enhanced.cpp
    job.ao = ao_forward();
    u.ao[0] = std::clamp(g_cfg.ssaoIntensity, 0.f, 2.f);
    u.ao[1] = std::max(g_cfg.ssaoRadius, 1.f);
-+  u.ao[3] = g_maskH > 900 ? 2.f : 1.f; // 0223: mask texels per AO texel (encode_mask: aoScale)
++  u.ao[3] = g_maskH > 900 ? 2.f : 1.f; // 0224: mask texels per AO texel (encode_mask: aoScale)
    if (job.point && shadow_maps()) {
      // Atlas: per light 3x2 faces of S texels. 0187: up to 16 lights in a roughly square grid
      // (cols x 3 ~ rows x 2), within the device's texture size limit (was two columns and 8192).
@@ -615,9 +615,9 @@ diff --git a/lib/gfx/enhanced.hpp b/lib/gfx/enhanced.hpp
    PrecacheOffscreen = 1u << 1, // offscreen EFB passes (single sample, one attachment)
    PrecacheGlowTarget = 1u << 2,
    PrecacheDepthTarget = 1u << 3,
-+  PrecacheDepthNormalTarget = 1u << 4, // 0223: the depth pre-pass with AO normals (depth_normal_layout)
++  PrecacheDepthNormalTarget = 1u << 4, // 0224: the depth pre-pass with AO normals (depth_normal_layout)
  };
-+// 0223: render target of the depth pre-pass while ambient occlusion is on.
++// 0224: render target of the depth pre-pass while ambient occlusion is on.
 +RenderTargetLayout depth_normal_layout() noexcept;
  uint32_t precache_bits() noexcept;
  void precache_variants(const gx::PipelineConfig& c, uint32_t bits,
@@ -638,7 +638,7 @@ diff --git a/lib/gfx/pipeline_cache.cpp b/lib/gfx/pipeline_cache.cpp
      g.blendFacSrc = GX_BL_SRCALPHA;
      g.blendFacDst = GX_BL_ONE;
      enhanced::precache_layouts(g, &l[1], sceneToo);
-+    l[2] = enhanced::depth_normal_layout(); // 0223
++    l[2] = enhanced::depth_normal_layout(); // 0224
      return l;
    }();
    const auto queue = [&](const gx::PipelineConfig& in, uint8_t targets) {

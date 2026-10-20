@@ -183,7 +183,7 @@ void onFrame(u32 frameNo) {
     }
     aurora_efb_ram_apply();
     // Test aid LM_SHOT=<dir>,<first>,<last>[,<step>]: the game image at render resolution (before
-    // post-processing and UI) of those guest frames as <dir>/s<frame>.ppm (Aurora 0223). Taken at
+    // post-processing and UI) of those guest frames as <dir>/s<frame>.ppm (Aurora 0224). Taken at
     // the next presented frame, so with frame interpolation set 30 fps for exact game frames.
     static struct Shot {
         std::string dir;
