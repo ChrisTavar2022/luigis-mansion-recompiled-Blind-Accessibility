@@ -12,10 +12,12 @@
 #include "recomp/interp.h"
 #include "recomp/version.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
 #include <unordered_map>
+#include <vector>
 
 namespace recomp {
 
@@ -109,16 +111,188 @@ HLE(fn_80059F6C) {
 // respawning drop switched all of them (~320 per frame in the Pipe Room) to 30 Hz (sweep A; the
 // water spray's shimmer). Loop 1 (call at 0x801201F4): items of 0x34 bytes at [r31 + 0x4C] + r27;
 // loop 2 (0x801202F8): items of 0x68 bytes at [r31 + 0x48] + r26.
+//
+// Loop 1's items are not slots that keep their drop: the list is rebuilt every game frame (its n-th
+// item is another drop from one game frame to the next: of the drops followed in the nursery, 12% were
+// in the same item, the rest anywhere in the list; LM_STREAM_LOG). Paired by item, drops blended
+// toward other drops 100-700 units away, or were switched: "jumps" and "turns" at the game frame in
+// the judder detector. Each loop-1 drop is followed by its place instead (DropTracker: the nearest
+// drop of the game frame before, carried by its own last step) and that track is its identity. Loop
+// 2's items keep their drop; a slot whose life counter (+3) went up holds a new one (new generation).
+// Every drop takes a random orientation every game frame: tumblers (interp::tagTumbler). A drop
+// without a predecessor moves into its place along the step of the nearest followed drop (or, with
+// none within 80 units, of the nearest stream point within 120: the first drops of a burst)
+// (interp::tagBackStep) instead of standing still for its first interval.
+namespace {
+struct DropTracker {
+    struct Drop {
+        u32 id;
+        float p[3], step[3];
+        bool stepKnown;
+    };
+    u32 frame = ~0u;
+    std::vector<Drop> prev, cur;
+    std::vector<u8> taken;
+    std::unordered_map<u32, size_t> byItem;  // this game frame: item -> index into cur (drawn in several views)
+    u32 nextId = 0;
+    void beginFrame(u32 f) {
+        if (f == frame) return;
+        if (f == frame + 1) prev.swap(cur);
+        else prev.clear();
+        cur.clear();
+        byItem.clear();
+        taken.assign(prev.size(), 0);
+        frame = f;
+    }
+    // The track of a drop at world place w (item `item`), and its step since the game frame before.
+    Drop follow(u32 item, const float w[3]) {
+        if (const auto it = byItem.find(item); it != byItem.end()) return cur[it->second];
+        s32 best = -1;
+        float bestD = 1e30f;
+        for (size_t k = 0; k < prev.size(); k++) {
+            if (taken[k]) continue;
+            const Drop& q = prev[k];
+            float d2 = 0, s2 = 0;
+            for (int c = 0; c < 3; c++) {
+                const float pr = q.p[c] + (q.stepKnown ? q.step[c] : 0.0f);
+                d2 += (w[c] - pr) * (w[c] - pr), s2 += q.stepKnown ? q.step[c] * q.step[c] : 0.0f;
+            }
+            const float tol = q.stepKnown ? 8.0f + 0.3f * std::sqrt(s2) : 40.0f;
+            if (d2 <= tol * tol && d2 < bestD) bestD = d2, best = s32(k);
+        }
+        Drop d{};
+        std::copy(w, w + 3, d.p);
+        if (best >= 0) {
+            taken[best] = 1;
+            const Drop& q = prev[best];
+            d.id = q.id;
+            for (int c = 0; c < 3; c++) d.step[c] = w[c] - q.p[c];
+            d.stepKnown = true;
+        } else {
+            // A new track: an id no track of this or the last game frame has (12 bits: the drops'
+            // scope addresses stay few).
+            for (;;) {
+                d.id = ++nextId & 0xFFF;
+                bool clash = d.id == 0;
+                for (const Drop& q : prev) clash |= q.id == d.id;
+                for (const Drop& q : cur) clash |= q.id == d.id;
+                if (!clash) break;
+            }
+        }
+        byItem[item] = cur.size();
+        cur.push_back(d);
+        return d;
+    }
+    // The step of the nearest followed drop of this game frame within 80 units (a newborn drop moves
+    // like its neighbours of the same burst), or false.
+    bool neighbourStep(const float w[3], float out[3]) const {
+        float bestD = 80.0f * 80.0f;
+        bool found = false;
+        for (const Drop& q : cur) {
+            if (!q.stepKnown) continue;
+            float d2 = 0;
+            for (int c = 0; c < 3; c++) d2 += (w[c] - q.p[c]) * (w[c] - q.p[c]);
+            if (d2 < bestD) bestD = d2, found = true, std::copy(q.step, q.step + 3, out);
+        }
+        return found;
+    }
+};
+DropTracker sDrops;
+// The stream points that moved by their own velocity in the last two game frames (fn_80120C30): where
+// they are and their step. A drop born with no followed drop near it moves like the nearest point.
+struct PointStep {
+    u32 frame;
+    float p[3], step[3];
+};
+std::vector<PointStep> sPointSteps;
+void notePointStep(u32 frame, const float p[3], const float step[3]) {
+    if (!sPointSteps.empty() && sPointSteps.front().frame + 1 < frame) {
+        std::erase_if(sPointSteps, [&](const PointStep& q) { return q.frame + 1 < frame; });
+    }
+    if (sPointSteps.size() < 4096) sPointSteps.push_back({frame, {p[0], p[1], p[2]}, {step[0], step[1], step[2]}});
+}
+bool pointStepNear(u32 frame, const float w[3], float out[3]) {
+    float bestD = 120.0f * 120.0f;
+    bool found = false;
+    for (const PointStep& q : sPointSteps) {
+        if (q.frame + 1 < frame || q.frame > frame) continue;
+        const float k = q.frame == frame ? 0.0f : 1.0f;  // last game frame's: carried by its step
+        float d2 = 0;
+        for (int c = 0; c < 3; c++) d2 += (w[c] - q.p[c] - k * q.step[c]) * (w[c] - q.p[c] - k * q.step[c]);
+        if (d2 < bestD) bestD = d2, found = true, std::copy(q.step, q.step + 3, out);
+    }
+    return found;
+}
+// Loop 2: per item, the game frame it was last drawn in and its life counter then.
+std::unordered_map<u32, std::pair<u32, u8>> sSlotLife;
+// LM_STREAM_OLD=1 (test aid): the items themselves as identities, no tumbler or back step (before).
+bool streamOld() {
+    static const bool v = std::getenv("LM_STREAM_OLD") != nullptr;
+    return v;
+}
+}  // namespace
 HLE(fn_800F3120) {
     u32 item = 0;
-    if (c.lr == VA(0x801201F4)) item = rd32(c.r[31] + 0x4C) + c.r[27];
+    const bool loop1 = c.lr == VA(0x801201F4);
+    if (loop1) item = rd32(c.r[31] + 0x4C) + c.r[27];
     else if (c.lr == VA(0x801202F8)) item = rd32(c.r[31] + 0x48) + c.r[26];
     if (!item) {
         callOriginal(c, "fn_800F3120");
         return;
     }
-    TagScope t(TagCat::Particle, item, 0x11FB40);
-    sStreamItem = item;
+    if (!interp::capturing() || streamOld()) {
+        TagScope t(TagCat::Particle, item, 0x11FB40);
+        interp::tagStreamItem();
+        sStreamItem = item;
+        callOriginal(c, "fn_800F3120");
+        sStreamItem = 0;
+        return;
+    }
+    // The world place of its matrix (by now item + 4 / + 0x34 holds view x model: the camera at
+    // 0x803A39AC, a rigid view).
+    float w[3];
+    {
+        const u32 m = item + (loop1 ? 4 : 0x34), v = VA(0x803A3820) + 0x18C;
+        float d[3];
+        for (int r = 0; r < 3; r++) d[r] = rdf32(m + 16 * r + 12) - rdf32(v + 16 * r + 12);
+        for (int r = 0; r < 3; r++) w[r] = rdf32(v + r * 4) * d[0] + rdf32(v + 16 + r * 4) * d[1] + rdf32(v + 32 + r * 4) * d[2];
+    }
+    const u32 frame = copyDispCount();
+    sDrops.beginFrame(frame);
+    u32 obj = item, id = 0;
+    bool fresh = false;
+    float step[3] = {};
+    if (loop1) {
+        const DropTracker::Drop d = sDrops.follow(item, w);
+        id = d.id;
+        obj = 0x7F000000u | (d.id << 4);  // the track is the identity (no guest object lives there)
+        fresh = !d.stepKnown;
+    } else {
+        auto [it, isNew] = sSlotLife.try_emplace(item, std::pair<u32, u8>{~0u, 0});
+        const u8 life = rd8(item + 3);
+        if (it->second.first != frame) {
+            const bool reborn = !isNew && it->second.first + 1 == frame && life > it->second.second;
+            fresh = isNew || it->second.first + 1 != frame || reborn;
+            if (reborn) interp::tagGeneration(item);
+            it->second = {frame, life};
+        }
+        if (sSlotLife.size() > 4096) sSlotLife.clear();
+    }
+    const bool haveStep = fresh && (sDrops.neighbourStep(w, step) || pointStepNear(frame, w, step));
+    // LM_STREAM_LOG=<file> (test aid): per drawn item, the game frame, loop, item address, its first
+    // word (active, life), the world place of its matrix, its track (loop 1), whether it is new and
+    // the step it is born moving along.
+    static FILE* sStreamLog = [] {
+        const char* v = std::getenv("LM_STREAM_LOG");
+        return v && *v ? std::fopen(v, "w") : nullptr;
+    }();
+    if (sStreamLog)
+        std::fprintf(sStreamLog, "f%u L%d %08X %08X %.1f %.1f %.1f id %u fresh %d step %d %.1f %.1f %.1f\n", frame, loop1 ? 1 : 2, item,
+                     rd32(item), w[0], w[1], w[2], id, int(fresh), int(haveStep), step[0], step[1], step[2]);
+    TagScope t(TagCat::Particle, obj, 0x11FB40);
+    interp::tagTumbler();
+    if (haveStep) interp::tagBackStep(step);
+    sStreamItem = obj;
     callOriginal(c, "fn_800F3120");
     sStreamItem = 0;
 }
@@ -270,37 +444,125 @@ HLE(fn_80120C30) {
             log("[point] f%u %08X lr %08X %08X %08X %08X %08X %08X %08X", frame, c.r[3], c.lr, rd32(c.r[3]), rd32(c.r[3] + 4),
                 rd32(c.r[3] + 8), rd32(c.r[3] + 12), rd32(c.r[3] + 16), rd32(c.r[3] + 20));
     }
-    // A point slot refilled from the nozzle is another particle: each point is position (+0) and
-    // velocity (+12), moved by its velocity every game frame. A point that is not where its last
-    // frame's position + velocity puts it (or was not drawn in the game frame before) was born anew:
-    // new generation, so it never pairs with the slot's previous occupant (the idle ice mist's points
-    // paired across rebirths and were shown at the game frame by the turn-back rule; sweep A/B).
+    // A point slot refilled from the nozzle is another particle: new generation, so it never pairs
+    // with the slot's previous occupant (the idle ice mist's points paired across rebirths and were
+    // shown at the game frame by the turn-back rule; sweep A/B). Two kinds of points are drawn here
+    // (LM_POINT_LOG, nursery spray):
+    //  - 24-byte points: position (+0) and velocity (+12); every game frame the velocity changes
+    //    (gravity) and the point moves by the NEW velocity, exactly (p = last p + v: 92,095 of 92,095
+    //    continuing points to the float);
+    //  - points inside 0xF0-byte objects whose +12 is not their velocity (zero, or a stale value)
+    //    while they move smoothly 20-35 units per game frame.
+    // A point continues when it was drawn in the game frame before and either moved by its own
+    // velocity (to 0.05 units) or kept its last step (to 3 units + a quarter of the step: gravity and
+    // drag change it by ~1.2 per game frame), or, in the game frame after its birth, moved by up to 30
+    // units; otherwise it was placed anew. (The old test, within half
+    // the last velocity of last place + last velocity, took the 0xF0 points for new points every game
+    // frame, so they never blended and stepped at 30 Hz, and let points re-placed near their slot's
+    // last place pass as the same point.) A new point moves into its place along its step
+    // (interp::tagBackStep): its velocity, when its slot is one that moves by its own velocity.
+    // LM_POINT_OLD=1 (test aid): the old test, no back step.
+    bool haveStep = false;
+    float step[3] = {};
     if (interp::capturing()) {
         struct Last {
             u32 frame;
-            float p[3], v[3];
+            float p[3], v[3], step[3];
+            bool stepKnown, exactV;  // exactV: the slot was seen moving by its own velocity
+            bool fresh;              // born in this game frame (frame == the record's)
+            bool haveStep;
+            float back[3];
         };
         static std::unordered_map<u32, Last> last;
+        static const bool sOld = std::getenv("LM_POINT_OLD") != nullptr;
         const u32 frame = copyDispCount();
         float p[3], v[3];
         for (int k = 0; k < 3; k++) p[k] = flt(rd32(c.r[3] + 4 * k)), v[k] = flt(rd32(c.r[3] + 12 + 4 * k));
         auto it = last.find(c.r[3]);
-        if (it == last.end() || it->second.frame != frame) {  // (once per game frame: a point drawn in several views)
-            bool reborn = it == last.end() || it->second.frame + 1 != frame;
-            if (!reborn) {
-                float d2 = 0, v2 = 0;
+        if (it != last.end() && it->second.frame == frame) {  // drawn again in another view this game frame
+            haveStep = it->second.haveStep;
+            std::copy(it->second.back, it->second.back + 3, step);
+        } else {
+            const bool seen = it != last.end();
+            const bool consecutive = seen && it->second.frame + 1 == frame;
+            float e1 = -1, e2 = -1, e3 = -1, s2 = 0, v2 = 0;  // e1 last p + last v, e2 last p + v, e3 last p + last step
+            if (seen) {
+                e1 = e2 = e3 = 0;
                 for (int k = 0; k < 3; k++) {
-                    const float e = p[k] - (it->second.p[k] + it->second.v[k]);
-                    d2 += e * e, v2 += it->second.v[k] * it->second.v[k];
+                    const float lp = it->second.p[k];
+                    e1 += (p[k] - lp - it->second.v[k]) * (p[k] - lp - it->second.v[k]);
+                    e2 += (p[k] - lp - v[k]) * (p[k] - lp - v[k]);
+                    e3 += (p[k] - lp - it->second.step[k]) * (p[k] - lp - it->second.step[k]);
+                    s2 += it->second.step[k] * it->second.step[k];
+                    v2 += it->second.v[k] * it->second.v[k];
                 }
-                reborn = !(d2 <= std::max(25.0f, 0.25f * v2));
+                e1 = std::sqrt(e1), e2 = std::sqrt(e2), e3 = std::sqrt(e3);
             }
-            if (reborn && it != last.end()) interp::tagGeneration(c.r[3]);
+            bool reborn = !consecutive;
+            bool exactV = seen && it->second.exactV;
+            if (consecutive) {
+                if (sOld) {
+                    reborn = !(e1 * e1 <= std::max(25.0f, 0.25f * v2));
+                } else {
+                    const bool byVel = e2 <= 0.05f + 1e-3f * std::sqrt(v2);
+                    const bool byStep = it->second.stepKnown && e3 <= 3.0f + 0.25f * std::sqrt(s2);
+                    // Its second game frame (no step known yet: born, or placed anew, last game frame):
+                    // a short step continues it (the courtyard fountain's points keep a stale +12 and
+                    // were taken for new points every game frame of their arc, as they never had a step).
+                    float d2 = 0;
+                    for (int k = 0; k < 3; k++) d2 += (p[k] - it->second.p[k]) * (p[k] - it->second.p[k]);
+                    const bool byNear = !it->second.stepKnown && d2 <= 30.0f * 30.0f;
+                    exactV |= byVel;
+                    reborn = !byVel && !byStep && !byNear;
+                }
+            }
+            Last rec{};
+            rec.frame = frame;
+            std::copy(p, p + 3, rec.p);
+            std::copy(v, v + 3, rec.v);
+            rec.stepKnown = consecutive && !reborn;
+            if (rec.stepKnown)
+                for (int k = 0; k < 3; k++) rec.step[k] = p[k] - it->second.p[k];
+            rec.exactV = exactV;
+            rec.fresh = reborn;
+            if (reborn && !sOld && !exactV) {
+                // A slot not seen moving yet: of the same kind as its neighbour in the 24-byte array.
+                for (const u32 n : {c.r[3] - 0x18u, c.r[3] + 0x18u})
+                    if (const auto nb = last.find(n); nb != last.end() && nb->second.exactV) exactV = true;
+                rec.exactV = exactV;
+            }
+            if (reborn && !sOld) {
+                // Born moving along its velocity (a slot that moves by its own velocity), else unknown.
+                if (exactV && std::isfinite(v[0] + v[1] + v[2]) && v[0] * v[0] + v[1] * v[1] + v[2] * v[2] < 200.0f * 200.0f) {
+                    haveStep = true;
+                    std::copy(v, v + 3, step);
+                }
+            }
+            rec.haveStep = haveStep;
+            if (!reborn && consecutive && exactV) notePointStep(frame, p, v);
+            std::copy(step, step + 3, rec.back);
+            // LM_POINT_LOG=<file> (test aid): every point once per game frame: its slot, caller, place,
+            // velocity, how far it is from last place + last velocity (e1), + its own velocity (e2) and
+            // + its last step (e3), how many game frames since it was last drawn, the rebirth decision
+            // and whether it is born moving along a step.
+            static FILE* sPointLog = [] {
+                const char* f = std::getenv("LM_POINT_LOG");
+                return f && *f ? std::fopen(f, "w") : nullptr;
+            }();
+            if (sPointLog)
+                std::fprintf(sPointLog, "f%u %08X lr %08X p %.2f %.2f %.2f v %.3f %.3f %.3f e1 %.3f e2 %.3f e3 %.3f last %d reborn %d back %d\n",
+                             frame, c.r[3], c.lr, p[0], p[1], p[2], v[0], v[1], v[2], e1, e2, e3,
+                             seen ? int(frame - it->second.frame) : -1, int(reborn), int(haveStep));
+            if (reborn && seen) interp::tagGeneration(c.r[3]);
             if (last.size() > 8192) last.clear();
-            last[c.r[3]] = {frame, {p[0], p[1], p[2]}, {v[0], v[1], v[2]}};
+            last[c.r[3]] = rec;
         }
     }
     TagScope t(TagCat::Particle, c.r[3], 0x120C30);
+    // (Its rebirth is detected above: a point turning back is bouncing. LM_POINT_OLD: as before.)
+    static const bool sOldPoints = std::getenv("LM_POINT_OLD") != nullptr;
+    if (!sOldPoints) interp::tagTracked();
+    if (haveStep) interp::tagBackStep(step);
     callOriginal(c, "fn_80120C30");
 }
 
