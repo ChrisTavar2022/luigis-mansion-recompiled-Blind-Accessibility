@@ -596,7 +596,7 @@ void worldLightsSection() {
         "of lights in view (up to 64 colored lights in total).");
     ImGui::BeginDisabled(!w.enabled);
     ImGui::Indent();
-    sDirty |= ImGui::SliderFloat("World light intensity", &w.masterIntensity, 0.0f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("World light intensity", &w.masterIntensity, 0.0f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Brightness of every world light (1 = default), on top of each kind's own slider.");
     struct Row {
         int cat;
@@ -619,7 +619,7 @@ void worldLightsSection() {
         ImGui::SameLine(ImGui::GetWindowWidth() * 0.42f);
         ImGui::SetNextItemWidth(ImGui::GetWindowWidth() * 0.3f);
         ImGui::BeginDisabled(!w.on[r.cat]);
-        sDirty |= ImGui::SliderFloat("##i", &w.intensity[r.cat], 0.0f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+        sDirty |= recomp::menu::SliderFloat("##i", &w.intensity[r.cat], 0.0f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
         ImGui::SetItemTooltip("Brightness of these lights (1 = default).");
         ImGui::EndDisabled();
         ImGui::PopID();
@@ -642,16 +642,16 @@ void ghostLightsSection() {
         "Invisible ghosts give no light. Off: the original lighting. Small GPU cost per light.");
     ImGui::BeginDisabled(!g.enabled);
     ImGui::Indent();
-    sDirty |= ImGui::SliderFloat("Ghost light intensity", &g.intensity, 0.0f, 4.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Ghost light intensity", &g.intensity, 0.0f, 4.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Brightness of every ghost light (1 = default).");
-    sDirty |= ImGui::SliderFloat("Ghost light radius", &g.radiusScale, 0.25f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Ghost light radius", &g.radiusScale, 0.25f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("How far each ghost's light reaches (scaled by the ghost's size; bosses reach farthest).");
     sDirty |= recomp::menu::Checkbox("Dramatic ghost light effects", &g.dramatic);
     ImGui::SetItemTooltip(
         "The light pulses gently, flares when a ghost appears, ramps up and flickers while the\n"
         "Poltergust drains the ghost, and bursts then fades when it is captured.\n"
         "Off: a steady light that only follows the ghost's visibility.");
-    sDirty |= ImGui::SliderInt("Max ghost lights", &g.maxLights, 1, 64, "%d lights", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderInt("Max ghost lights", &g.maxLights, 1, 64, "%d lights", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Most ghost lights at once (the strongest/nearest first; all colored lights share\n"
                           "a budget of 64). Lower is faster.");
     sDirty |= recomp::menu::Checkbox("Shadows from ghost lights", &g.shadows);
@@ -696,9 +696,9 @@ void enhancedLightingTab() {
         "Needed by the ghost lights, world lights and colored light shadows.");
     ImGui::BeginDisabled(!l.extraLights);
     ImGui::Indent();
-    sDirty |= ImGui::SliderFloat("Light intensity", &l.extraLightIntensity, 0.0f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Light intensity", &l.extraLightIntensity, 0.0f, 3.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Brightness of every colored light (ghost lights, world lights; 1 = default).");
-    sDirty |= ImGui::SliderFloat("Light color vibrance", &l.extraLightSaturation, 0.0f, 2.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Light color vibrance", &l.extraLightSaturation, 0.0f, 2.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Saturation of every colored light (ghosts and other sources) and its glow.\n"
                           "1: the colors as the game defines them; higher: deeper, more contrasty colors.");
     ghostLightsSection();
@@ -723,18 +723,18 @@ void enhancedLightingTab() {
     ImGui::SetItemTooltip("Filter of the soft edge: PCF (fixed softness) with 8 or 16 taps, or PCSS (contact\n"
                           "hardening) with 16 or 32 taps. More taps: smoother edges, more GPU time.%s",
                           presetNote(custom));
-    sDirty |= ImGui::SliderFloat("Shadow softness", &l.softShadowRadius, 0.25f, 6.0f, "%.2f texels", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Shadow softness", &l.softShadowRadius, 0.25f, 6.0f, "%.2f texels", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Width of the soft edge, in texels of the console's 640x480 shadow map.");
-    sDirty |= ImGui::SliderFloat("Contact hardening", &l.softShadowPenumbra, 0.0f, 20.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Contact hardening", &l.softShadowPenumbra, 0.0f, 20.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("High/Ultra only: how quickly shadows soften with distance from the object casting them.");
     ImGui::Unindent();
     ImGui::EndDisabled();
-    sDirty |= ImGui::SliderFloat("Shadow darkness", &l.shadowDarkness, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Shadow darkness", &l.shadowDarkness, 0.0f, 1.5f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip(
         "How dark the game's shadows get (1 = as the game draws them, near black).\n"
         "Colored lights (ghost lights, test lights) always keep lighting the shadowed area, so a\n"
         "shadow only removes the light it stands for.");
-    sDirty |= ImGui::SliderFloat("Colored shadow tint", &l.shadowAmbientKeep, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Colored shadow tint", &l.shadowAmbientKeep, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip(
         "How much of the room's ambient light stays in shadows: higher = shadows take on the\n"
         "surrounding color instead of going black (0 = the game's look).");
@@ -788,7 +788,7 @@ void enhancedLightingTab() {
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     ImGui::BeginDisabled(l.extraShadowMode != 1);
-    sDirty |= ImGui::SliderFloat("Light shadow softness", &l.extraShadowSoftness, 0.0f, 60.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Light shadow softness", &l.extraShadowSoftness, 0.0f, 60.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Shadow maps method only. Size of the light source (world units): contact-hardening\n"
                           "penumbrae, sharp where an object meets the surface and softer farther from it. 0: hard edges.");
     ImGui::EndDisabled();
@@ -804,9 +804,9 @@ void enhancedLightingTab() {
         "edge without a hard rim.");
     ImGui::BeginDisabled(!l.flashlightQuality);
     ImGui::Indent();
-    sDirty |= ImGui::SliderFloat("Penumbra softness", &l.flashlightSoftness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Penumbra softness", &l.flashlightSoftness, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Softness of the beam's edge: from the original falloff (0) to fully smoothed (1).");
-    sDirty |= ImGui::SliderFloat("Beam highlights", &l.flashlightSpecular, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Beam highlights", &l.flashlightSpecular, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Glossy highlights where the flashlight hits floors, furniture and characters\n"
                           "(per pixel, tinted by the surface). 0: the original matte response.");
     ImGui::Unindent();
@@ -825,10 +825,10 @@ void enhancedLightingTab() {
         "dust). Nothing when the flashlight is off. Weak GPUs: Medium. Off: the volumetric beam below.");
     ImGui::BeginDisabled(l.realisticFlashlight == 0);
     ImGui::Indent();
-    sDirty |= ImGui::SliderFloat("Beam density", &l.beamDensity, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Beam density", &l.beamDensity, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("How hazy the air is: brightness of the beam and its shadow shafts, and how quickly\n"
                           "it fades with distance (denser air also absorbs more). No cost difference.");
-    sDirty |= ImGui::SliderFloat("Dust motes", &l.beamDust, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Dust motes", &l.beamDust, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Dust drifting in the beam, lit only where the beam (and not a shadow) reaches it.\n"
                           "Small cost (a walk through the dust cells near the lens); 0 turns it off.");
     ImGui::Unindent();
@@ -841,7 +841,7 @@ void enhancedLightingTab() {
         l.realisticFlashlight != 0 ? "\n\nNot used while \"Realistic flashlight\" is on (it replaces this beam)." : "");
     ImGui::BeginDisabled(!l.volumetricBeam);
     ImGui::Indent();
-    sDirty |= ImGui::SliderFloat("Beam intensity", &l.volumetricIntensity, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Beam intensity", &l.volumetricIntensity, 0.0f, 3.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Brightness of the haze in the beam.");
     static const char* kVolQ[] = {"Low", "Medium", "High"};
     ImGui::BeginDisabled(!custom);
@@ -862,19 +862,19 @@ void enhancedLightingTab() {
         "cost hardly depends on the render resolution.");
     ImGui::BeginDisabled(!l.bloom);
     ImGui::Indent();
-    sDirty |= ImGui::SliderFloat("Glow intensity", &l.bloomIntensity, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Glow intensity", &l.bloomIntensity, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Overall strength of the glow.");
-    sDirty |= ImGui::SliderFloat("Light sources", &l.bloomEmissive, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Light sources", &l.bloomEmissive, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Glow of light-emitting effects (what the game draws as added light): lamp and candle\n"
                           "glows, fire, the flashlight lens, ghost auras, sparkles, lightning and nozzle effects.");
-    sDirty |= ImGui::SliderFloat("Bright surfaces", &l.bloomScene, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Bright surfaces", &l.bloomScene, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Glow of ordinary surfaces that are brighter than the threshold (lit walls, white\n"
                           "objects). Low keeps the glow on actual light sources.");
-    sDirty |= ImGui::SliderFloat("Glow threshold", &l.bloomThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Glow threshold", &l.bloomThreshold, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Brightness where bright surfaces start to glow. Lower: more of the scene glows.");
-    sDirty |= ImGui::SliderFloat("Glow radius", &l.bloomRadius, 0.25f, 2.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Glow radius", &l.bloomRadius, 0.25f, 2.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("How far the glow spreads around a light (1 = default).");
-    sDirty |= ImGui::SliderFloat("Flashlight-lit walls glow less", &l.bloomFlashlightSuppress, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Flashlight-lit walls glow less", &l.bloomFlashlightSuppress, 0.0f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Surfaces that are only bright because the flashlight shines on them glow less\n"
                           "than actual light sources.");
     ImGui::Unindent();
@@ -888,9 +888,9 @@ void enhancedLightingTab() {
         "Switching it rebuilds some shaders once.");
     ImGui::BeginDisabled(!l.ssao);
     ImGui::Indent();
-    sDirty |= ImGui::SliderFloat("Occlusion intensity", &l.ssaoIntensity, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Occlusion intensity", &l.ssaoIntensity, 0.0f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("How dark occluded corners and contact areas get.");
-    sDirty |= ImGui::SliderFloat("Occlusion radius", &l.ssaoRadius, 10.0f, 200.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Occlusion radius", &l.ssaoRadius, 10.0f, 200.0f, "%.0f units", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("How far (world units; Luigi is about 100 tall) nearby surfaces darken a point.\n"
                           "Larger: broader, softer darkening; smaller: tight contact shadows.");
     ImGui::Unindent();
@@ -908,7 +908,7 @@ void frameRateControls(port::VideoSettings& v) {
     else std::snprintf(label, sizeof(label), "%d fps", v.targetFps);
     if (v.unlimitedFps) std::snprintf(label, sizeof(label), "Unlimited");
     ImGui::BeginDisabled(v.matchDisplay || v.unlimitedFps);
-    sDirty |= ImGui::SliderInt("Frame rate", &v.targetFps, port::kMinFps, port::kMaxFps, label, ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderInt("Frame rate", &v.targetFps, port::kMinFps, port::kMaxFps, label, ImGuiSliderFlags_AlwaysClamp);
     ImGui::EndDisabled();
     const bool sliderHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
     ImGui::BeginDisabled(v.unlimitedFps);
@@ -972,7 +972,7 @@ void visualsTab() {
     ImGui::SetItemTooltip("On: the HUD stays where it is on a 4:3 screen, centred. Off: in widescreen the health\n"
                           "counter moves to the left edge and the Game Boy Horror to the right edge.");
     if (!v.hudKeep4x3) pending("in-game HUD moves to the screen edges");
-    sDirty |= ImGui::SliderFloat("Field of view", &v.fovScale, 0.75f, 1.5f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Field of view", &v.fovScale, 0.75f, 1.5f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Scales the camera's field of view (1 = original). Higher shows more of the room.");
 
     ImGui::SeparatorText("Resolution and display");
@@ -988,7 +988,7 @@ void visualsTab() {
             const int w = int(float(h) * std::max(aspect, 4.0f / 3.0f) + 0.5f);
             std::snprintf(label, sizeof(label), "%dx  (%d x %d)", rs, w, h);
         }
-        if (ImGui::SliderInt("Render resolution", &rs, 0, 8, label, ImGuiSliderFlags_AlwaysClamp)) {
+        if (recomp::menu::SliderInt("Render resolution", &rs, 0, 8, label, ImGuiSliderFlags_AlwaysClamp)) {
             sDirty = true;
             applyResolution();
         }
@@ -1034,7 +1034,7 @@ void visualsTab() {
 // Volume slider shown in percent (the setting is 0..1).
 bool volumeSlider(const char* label, float& v) {
     float pct = v * 100.0f;
-    if (!ImGui::SliderFloat(label, &pct, 0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) return false;
+    if (!recomp::menu::SliderFloat(label, &pct, 0.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) return false;
     v = pct / 100.0f;
     return true;
 }
@@ -1090,16 +1090,16 @@ void gameplaySection() {
     ImGui::SeparatorText("Lighting");
     sDirty |= recomp::menu::Checkbox("Hidden Mansion darkness everywhere", &g.palDarknessEverywhere);
     ImGui::SetItemTooltip("Room ambient light x0.2 in every mansion, as in the European Hidden Mansion.");
-    sDirty |= ImGui::SliderFloat("Ambient light", &g.ambientScale, 0.05f, 1.5f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Ambient light", &g.ambientScale, 0.05f, 1.5f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Multiplies room ambient light (1 = original; also on top of the darkness above).");
     ImGui::SeparatorText("Difficulty");
-    sDirty |= ImGui::SliderFloat("Damage taken", &g.damageScale, 0.0f, 5.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Damage taken", &g.damageScale, 0.0f, 5.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Multiplies the damage Luigi takes (1 = original, 0 = none).");
-    sDirty |= ImGui::SliderFloat("Luigi's health", &g.healthScale, 0.25f, 5.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Luigi's health", &g.healthScale, 0.25f, 5.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Starting and maximum health (1 = original; applies when Luigi is next created).");
-    sDirty |= ImGui::SliderFloat("Ghost health", &g.ghostHealthScale, 0.25f, 5.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Ghost health", &g.ghostHealthScale, 0.25f, 5.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("Multiplies every ghost's HP (1 = original): higher takes longer to vacuum up.");
-    sDirty |= ImGui::SliderFloat("Poltergust strength", &g.vacuumStrength, 0.25f, 4.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+    sDirty |= recomp::menu::SliderFloat("Poltergust strength", &g.vacuumStrength, 0.25f, 4.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
     ImGui::SetItemTooltip("How fast the vacuum drains a captured ghost's HP (1 = original).");
     sDirty |= recomp::menu::Checkbox("Disable recovery hearts", &g.noHeartDrops);
     ImGui::SetItemTooltip("Recovery hearts never appear (and any that do heal nothing).");
@@ -1463,6 +1463,59 @@ bool SmallButton(const char* label) {
     const bool pressed = ImGui::SmallButton(label);
     click::afterItem(label);
     return pressed;
+}
+
+namespace {
+// Step of a slider's +/- buttons: one unit of the last digit its format shows.
+float sliderStep(const char* format) {
+    const char* p = format ? std::strchr(format, '%') : nullptr;
+    while (p && p[1] == '%') p = std::strchr(p + 2, '%');  // skip literal "%%"
+    if (!p) return 1.0f;
+    const char* dot = std::strchr(p, '.');
+    if (!dot) return 1.0f;
+    const int digits = std::atoi(dot + 1);
+    return std::pow(10.0f, -float(digits));
+}
+
+// "-" and "+" in front of the slider; returns -1, 0 or +1. The slider then takes the rest of the
+// item width so the row keeps its usual size.
+int stepButtons() {
+    const float h = ImGui::GetFrameHeight(), gap = ImGui::GetStyle().ItemInnerSpacing.x;
+    const float width = ImGui::CalcItemWidth();
+    int dir = 0;
+    if (ImGui::Button("-##step", ImVec2(h, h))) dir = -1;
+    ImGui::SameLine(0.0f, gap);
+    if (ImGui::Button("+##step", ImVec2(h, h))) dir = 1;
+    ImGui::SameLine(0.0f, gap);
+    ImGui::SetNextItemWidth(std::max(width - 2.0f * (h + gap), h));
+    return dir;
+}
+}  // namespace
+
+bool SliderFloat(const char* label, float* v, float min, float max, const char* format, int flags) {
+    ImGui::PushID(label);
+    const int dir = stepButtons();
+    ImGui::PopID();
+    bool changed = ImGui::SliderFloat(label, v, min, max, format, flags);
+    if (dir != 0) {
+        const float step = sliderStep(format);
+        const float lo = std::min(min, max), hi = std::max(min, max);
+        *v = std::clamp(std::round(*v / step + float(dir)) * step, lo, hi);
+        changed = true;
+    }
+    return changed;
+}
+
+bool SliderInt(const char* label, int* v, int min, int max, const char* format, int flags) {
+    ImGui::PushID(label);
+    const int dir = stepButtons();
+    ImGui::PopID();
+    bool changed = ImGui::SliderInt(label, v, min, max, format, flags);
+    if (dir != 0) {
+        *v = std::clamp(*v + dir, std::min(min, max), std::max(min, max));
+        changed = true;
+    }
+    return changed;
 }
 
 void draw() {

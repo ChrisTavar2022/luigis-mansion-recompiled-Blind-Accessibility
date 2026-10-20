@@ -451,7 +451,7 @@ void textArchiveWindow() {
         return;
     }
     static float sScale = 0.6f;
-    ImGui::SliderFloat("Text size", &sScale, 0.3f, 1.0f, "%.2f");
+    recomp::menu::SliderFloat("Text size", &sScale, 0.3f, 1.0f, "%.2f");
     if (sScanNext <= kMaxEvent) ImGui::TextDisabled("Reading event archives... %d / %d", sScanNext, kMaxEvent);
     static const char* sEnvTab = std::getenv("LM_TEXT_ARCHIVE");
     auto tabFlags = [&](const char* name) {

@@ -221,9 +221,9 @@ void gameplaySection() {
     {
         ImGui::BeginDisabled(!u.poisonState);
         ImGui::Indent();
-        sDirty |= ImGui::SliderFloat("Poison damage", &u.poisonDamage, 1.0f, 100.0f, "%.0f HP", ImGuiSliderFlags_AlwaysClamp);
+        sDirty |= recomp::menu::SliderFloat("Poison damage", &u.poisonDamage, 1.0f, 100.0f, "%.0f HP", ImGuiSliderFlags_AlwaysClamp);
         tip("Total health the poison takes (it never takes Luigi's last point).");
-        sDirty |= ImGui::SliderFloat("Poison duration", &u.poisonSeconds, 1.0f, 20.0f, "%.1f s", ImGuiSliderFlags_AlwaysClamp);
+        sDirty |= recomp::menu::SliderFloat("Poison duration", &u.poisonSeconds, 1.0f, 20.0f, "%.1f s", ImGuiSliderFlags_AlwaysClamp);
         tip("How long the poison lasts; the damage is spread over this time.");
         ImGui::Unindent();
         ImGui::EndDisabled();
@@ -242,13 +242,13 @@ void gameplaySection() {
     {
         ImGui::BeginDisabled(!u.overheat);
         ImGui::Indent();
-        sDirty |= ImGui::SliderFloat("Time to overheat", &u.overheatFillSeconds, 5.0f, 120.0f, "%.0f s of vacuuming", ImGuiSliderFlags_AlwaysClamp);
+        sDirty |= recomp::menu::SliderFloat("Time to overheat", &u.overheatFillSeconds, 5.0f, 120.0f, "%.0f s of vacuuming", ImGuiSliderFlags_AlwaysClamp);
         tip("Continuous vacuuming until the Poltergust overheats.");
-        sDirty |= ImGui::SliderFloat("Cool-down time", &u.overheatCoolSeconds, 5.0f, 120.0f, "%.0f s (full to empty)", ImGuiSliderFlags_AlwaysClamp);
+        sDirty |= recomp::menu::SliderFloat("Cool-down time", &u.overheatCoolSeconds, 5.0f, 120.0f, "%.0f s (full to empty)", ImGuiSliderFlags_AlwaysClamp);
         tip("Time for a full meter to cool back to empty while not vacuuming.");
-        sDirty |= ImGui::SliderFloat("Cooling while blowing (L)", &u.overheatBlowCool, 1.0f, 10.0f, "%.1fx faster", ImGuiSliderFlags_AlwaysClamp);
+        sDirty |= recomp::menu::SliderFloat("Cooling while blowing (L)", &u.overheatBlowCool, 1.0f, 10.0f, "%.1fx faster", ImGuiSliderFlags_AlwaysClamp);
         tip("How much faster it cools while holding L (blowing air or spraying).");
-        sDirty |= ImGui::SliderInt("Burn damage", &u.overheatDamage, 0, 50, "%d HP", ImGuiSliderFlags_AlwaysClamp);
+        sDirty |= recomp::menu::SliderInt("Burn damage", &u.overheatDamage, 0, 50, "%d HP", ImGuiSliderFlags_AlwaysClamp);
         tip("Health Luigi loses when the Poltergust catches fire.");
         ImGui::Unindent();
         ImGui::EndDisabled();

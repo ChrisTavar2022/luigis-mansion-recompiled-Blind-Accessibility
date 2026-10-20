@@ -393,7 +393,7 @@ void setChain(int lines, bool filter) {
 }
 
 bool sliderF(const char* label, float& v, float lo, float hi, const char* fmt = "%.2f") {
-    return ImGui::SliderFloat(label, &v, lo, hi, fmt, ImGuiSliderFlags_AlwaysClamp);
+    return recomp::menu::SliderFloat(label, &v, lo, hi, fmt, ImGuiSliderFlags_AlwaysClamp);
 }
 
 template <typename E>

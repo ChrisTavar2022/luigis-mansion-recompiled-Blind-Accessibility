@@ -13,6 +13,7 @@
 // Stick dead zones and sensitivity are applied to the PADStatus afterwards (hle_pad.cpp).
 // Everything is saved in settings.ini ([controls], [controls.keyboard],
 // [controls.pad.<guid>]) through port::addSettingsExtension.
+#include "recomp/menu.h"
 #include "recomp/controls.h"
 
 #include "port/settings.h"
@@ -1136,7 +1137,7 @@ bool analogTab() {
         if (sPorts[i].pad.id && sPorts[i].pad.guid == sSelProfile) port = i;
     auto pct = [&](const char* label, float& v, float lo, float hi) {
         float p = v * 100.0f;
-        if (ImGui::SliderFloat(label, &p, lo * 100, hi * 100, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
+        if (recomp::menu::SliderFloat(label, &p, lo * 100, hi * 100, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
             v = p / 100.0f;
             changed = true;
         }
@@ -1146,7 +1147,7 @@ bool analogTab() {
         ImGui::SeparatorText(s == 0 ? "Control stick" : "C-stick");
         pct("Dead zone", prof->deadzone[s], 0.0f, 0.5f);
         ImGui::SetItemTooltip("Radial. The game adds the GameCube's own small dead zone (PADClamp) on top.");
-        changed |= ImGui::SliderFloat("Sensitivity", &prof->sensitivity[s], 0.5f, 2.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
+        changed |= recomp::menu::SliderFloat("Sensitivity", &prof->sensitivity[s], 0.5f, 2.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
         ImGui::SetItemTooltip("Scales the stick's travel (1 = as the controller reports it). Above 1 the game's\n"
                               "full deflection is reached before the stick's edge.");
         changed |= ImGui::Checkbox("Invert X", &prof->invertX[s]);

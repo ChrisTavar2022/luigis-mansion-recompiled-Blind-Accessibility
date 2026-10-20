@@ -304,7 +304,7 @@ void galleryWindow() {
         return;
     }
     static float sZoom = 1.0f;
-    ImGui::SliderFloat("Zoom", &sZoom, 0.25f, 3.0f, "%.2fx");
+    recomp::menu::SliderFloat("Zoom", &sZoom, 0.25f, 3.0f, "%.2fx");
     const char* group = nullptr;
     for (GalleryItem& it : sItems) {
         if (!group || std::strcmp(group, it.group)) {
