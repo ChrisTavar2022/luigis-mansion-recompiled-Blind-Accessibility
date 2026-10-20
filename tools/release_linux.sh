@@ -49,7 +49,7 @@ git -C "$WORK" log --oneline -1
 step "LLVM to bundle"
 LLVM_BIN=${LM_LINUX_LLVM:-}
 if [ -z "$LLVM_BIN" ]; then
-    LLVM_BIN=$(find "$HOME" /opt -maxdepth 6 -path '*LLVM-*-Linux-X64/bin/ld.lld' 2>/dev/null | sort -V | tail -1 | xargs -r dirname)
+    LLVM_BIN=$( (find "$HOME" /opt -maxdepth 6 -path '*LLVM-*-Linux-X64/bin/ld.lld' 2>/dev/null || true) | sort -V | tail -1 | xargs -r dirname)
 fi
 if [ -z "$LLVM_BIN" ]; then
     NAME=LLVM-$LLVM_FALLBACK-Linux-X64
