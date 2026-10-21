@@ -44,6 +44,9 @@ git -C "$WORK" clean -fdq
 # Aurora from this checkout's submodule (has the pinned commit; no network needed).
 git -C "$WORK" config submodule.extern/aurora.url "$SRC/extern/aurora"
 git -C "$WORK" -c protocol.file.allow=always submodule update --init --recursive --force
+# --force reset Aurora to pristine: drop the applied-patches stamp so configure applies them
+# again (with an unchanged patch set it would otherwise skip them and the build fails).
+rm -f "$(git -C "$WORK/extern/aurora" rev-parse --absolute-git-dir)/lm_patches_applied"
 git -C "$WORK" log --oneline -1
 
 step "LLVM to bundle"

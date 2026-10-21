@@ -143,9 +143,10 @@ clicks: nothing is downloaded or replaced on its own.
    restarts with the same arguments: Windows starts the exe at its original path and exits; Linux
    `execv`s the installed file in place of the running process (same PID, so the launcher script
    keeps logging). Files the new package no longer has are left alone, except the 1.0.x Linux
-   launcher `LuigisMansionPC.sh` (now `LuigisMansionRecompiled.sh`): if it is unmodified
-   (SHA-256 of the shipped file) it is replaced by a two-line forwarder to the new launcher, so
-   desktop entries keep working; an edited one is kept as it is.
+   launcher `LuigisMansionPC.sh` (now `LuigisMansionRecompiled.sh`): at every start of a release
+   folder (so right after the update's restart, and also when a new package was unpacked over an
+   old folder) an unmodified one (SHA-256 of the shipped file) is replaced by a three-line
+   forwarder to the new launcher, so desktop entries keep working; an edited one is kept as it is.
 7. **Data stays.** `%APPDATA%` / the XDG folders (settings, saves, install.ini, game modules,
    overlays, shader caches) are never touched by the updater (the new version's first start only
    renames a 1.0.x "Luigi's Mansion PC" folder, see "What lives where"). The module key includes the program version, so the

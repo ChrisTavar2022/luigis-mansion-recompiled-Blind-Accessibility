@@ -1315,6 +1315,15 @@ void forwardOldLauncher(const fs::path& dir) {
     std::error_code ec;
     const fs::path oldSh = dir / kOldLauncher, newSh = dir / kLauncher;
     if (!fs::is_regular_file(oldSh, ec) || !fs::is_regular_file(newSh, ec)) return;
+    const std::string forwarder = std::string("#!/bin/sh\n"
+                                              "# The launcher's name up to 1.0.1; kept so existing shortcuts keep working.\n"
+                                              "exec \"$(dirname \"$(readlink -f \"$0\")\")/") +
+                                  kLauncher + "\" \"$@\"\n";
+    {
+        std::ifstream in(oldSh, std::ios::binary);
+        const std::string have((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (have == forwarder) return;  // done before
+    }
     std::string sha;
     const std::atomic<bool> noCancel{false};
     if (!sha256File(oldSh, sha, noCancel)) return;
@@ -1327,11 +1336,9 @@ void forwardOldLauncher(const fs::path& dir) {
     const fs::path tmp = dir / (std::string(kOldLauncher) + ".new");
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        out << "#!/bin/sh\n"
-               "# The launcher's name up to 1.0.1; kept so existing shortcuts keep working.\n"
-               "exec \"$(dirname \"$(readlink -f \"$0\")\")/"
-            << kLauncher << "\" \"$@\"\n";
+        out << forwarder;
         if (!out) {
+            out.close();
             fs::remove(tmp, ec);
             return;
         }
@@ -1345,7 +1352,7 @@ void forwardOldLauncher(const fs::path& dir) {
         fs::remove(tmp, ec);
         return;
     }
-    ulog("%s now starts %s", kOldLauncher, kLauncher);
+    ulog("%s (1.0.x launcher) now starts %s", kOldLauncher, kLauncher);
 }
 #endif
 
@@ -1547,7 +1554,6 @@ void installAndRestart() {
                                    fs::perms::others_read | fs::perms::others_exec,
                             ec);
     }
-    forwardOldLauncher(dir);
 #endif
     // The old files: Linux can delete them now (a running program's file stays readable to it);
     // Windows deletes them at the next start (cleanupAfterUpdate).
@@ -1608,6 +1614,12 @@ bool dismissed() {
 void cleanupAfterUpdate() {
     const fs::path dir = installDir();
     std::error_code ec;
+#ifndef _WIN32
+    // At every start, not only after an update: a 1.1+ package unpacked over a 1.0.x folder
+    // leaves the old launcher next to the new one too. The updater's restart (execv) runs this
+    // right after an update.
+    if (isPackaged()) forwardOldLauncher(dir);
+#endif
     const fs::path listFile = dir / kCleanupList;
     const bool haveList = fs::exists(listFile, ec);
     const bool haveStaging = fs::exists(dir / kStagingName, ec);
