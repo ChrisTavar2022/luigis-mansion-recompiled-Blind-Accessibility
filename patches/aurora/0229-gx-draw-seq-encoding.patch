@@ -72,17 +72,16 @@ diff --git a/lib/gx/pipeline.hpp b/lib/gx/pipeline.hpp
 diff --git a/lib/gx/pipeline.cpp b/lib/gx/pipeline.cpp
 --- a/lib/gx/pipeline.cpp
 +++ b/lib/gx/pipeline.cpp
-@@ -7,6 +7,9 @@
- 
- #include "gx_fmt.hpp"
- #include "shader_info.hpp"
-+
-+#include <array>
-+#include <cstring>
- 
+@@ -11,6 +11,8 @@
+ #include <absl/container/flat_hash_map.h>
  #include <tracy/Tracy.hpp>
  
-@@ -95,4 +98,67 @@
++#include <array>
++#include <cstring>
+ #include <mutex>
+ 
+ namespace aurora::gx {
+@@ -127,4 +129,67 @@
    draw();
  }
  
