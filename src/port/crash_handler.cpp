@@ -3,6 +3,8 @@
 // library code can be located from a log.
 #include "port/crash_handler.h"
 
+#include <aurora/pipeline_cache.h>
+
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -84,6 +86,7 @@ void printStack(const char* reason) {
 }
 
 void onAbort(int) {
+    aurora_pipeline_cache_note_crash();  // a real crash for the pipeline crash journal (Aurora 0231)
     printStack("abort()");
     std::_Exit(3);
 }
@@ -114,6 +117,7 @@ LONG WINAPI onVectored(EXCEPTION_POINTERS* info) {
 }
 
 LONG WINAPI onException(EXCEPTION_POINTERS* info) {
+    aurora_pipeline_cache_note_crash();
     char reason[64];
     std::snprintf(reason, sizeof(reason), "exception 0x%08lX", info->ExceptionRecord->ExceptionCode);
     printStack(reason);
@@ -133,6 +137,7 @@ void onSignal(int sig, siginfo_t* info, void* uctx) {
         return;
     }
     sInSignal = 1;
+    aurora_pipeline_cache_note_crash();
     const void* pc = nullptr;
     const void* sp = nullptr;
 #if defined(__x86_64__)
@@ -277,6 +282,7 @@ void startHangWatchdog() {
 void installCrashHandler() {
     std::signal(SIGABRT, onAbort);
     std::set_terminate([] {
+        aurora_pipeline_cache_note_crash();
         printStack("std::terminate");
         std::_Exit(3);
     });

@@ -1678,6 +1678,54 @@ Note: `AURORA_NO_DEVICE_SYNC=1` changes the device's features and with them ever
 a run with it compiles everything (333 s here) and doubles the cache file until the prune ages the
 other set out.
 
+### A start after a crash or a kill (Aurora 0231)
+
+**Observed (timing agent):** after a run was killed, the next start with Enhanced lighting sometimes
+sat in shader preparation for over 140 s with no log line.
+
+**Cause.** The crash journal (0017) could not tell a kill from a crash. Every unclean end during the
+startup phase counted as a startup crash, and that phase lasted until 300 frames after the
+precache, so it reached into the first seconds of play. A "startup crash" with no pipeline in flight
+deleted both caches: killed 1 s after a warm Ultra start, the next start compiled all 10076 pipelines
+again, **297 s** (the log said "Startup crash: deleting ...", then nothing until the game started).
+Killed while compiling, the configs in flight became crash suspects. They were left out of the
+precache and compiled in play instead. One config in flight for two render target layouts was counted
+twice, i.e. refused for good after a single kill. Not the cause: entries written before the kill were
+all there (Dawn stores each shader and pipeline in its own committed WAL transaction as it is made;
+pipeline_cache.db rows go through the writer thread as they come). There was no long WAL replay and
+no lock held; the whole-file `quick_check` after an unclean exit (0226) costs seconds, not minutes,
+on this PC, but could on a hard disk.
+
+**Fix** (`patches/aurora/0231-crash-restart-keeps-caches.patch`, `src/port/crash_handler.cpp`,
+`src/recomp/precache.cpp`):
+- The crash handler (abort, std::terminate, unhandled exception, fatal signal) calls
+  `aurora_pipeline_cache_note_crash()`, a flag in the mapped journal. An unclean end without it was
+  a close or a kill: caches kept, no suspects ("ended ... without a crash report (closed or killed):
+  the shader caches are kept; only shaders it had not finished are compiled").
+- Real crashes: suspects are counted once per config and still precached (one that builds fine is
+  lifted); the caches are reset only on the third startup crash in a row (crash-loop breaker,
+  with the shipped list ignored as before).
+- The startup phase ends 30 frames after the precache is done.
+- `dawn_cache.db` gets no whole-file check any more, also after an unclean exit. Entries are
+  verified by their checksums as they are read, and an SQLite corruption error on access resets the
+  file. The background prefetch runs after an unclean exit too. `AURORA_CACHE_QUICK_CHECK=1` runs
+  the check (testing).
+- While held, a log line every 5 s: `[precache] preparing shaders: N pending, T s so far; this batch:
+  N loaded from the cache, N compiled`. The screen says why it compiles: "The last session ended
+  before all shaders were built (closed, killed or crashed): only the missing ones are compiled",
+  or "crashed at startup several times in a row, the shader cache was cleared" after a reset.
+- Test aid `LM_CRASH_AT=<s>`: abort() that long after startup (a real crash for the journal).
+
+**Measured** (`LuigisMansionRecomp`, Enhanced lighting Ultra = 10076 pipelines, fresh cache):
+
+| Sequence | Before | After |
+|----|----|----|
+| Warm start, killed 1 s after the game started, next start | caches deleted, **297 s** (all compiled) | 1.49 s, 0 compiled |
+| Killed during a warm hold, next start | (startup crash) | 1.30 s, 0 compiled |
+| Fresh: killed at 90 s while compiling, next start | 90 s to the game (11697 compiled, rest loaded); 8 in-flight configs left out of the precache, one refused for good | |
+| Fresh: killed at 90 s, killed again 40 s into the next start, then a full start | | 10519 -> 16640 -> 20278 cache entries kept across the kills; last start 21 s (4228 compiled, 22604 loaded); all 10076 built every time, no suspects; the start after that 1.35 s |
+| Crash (`LM_CRASH_AT=6`) while compiling a cache with 30% missing | | 7 suspects (once each), all precached and lifted; 36 s, only the missing 6115 compiled |
+
 Also fixed on the way: a Windows user folder with characters outside ASCII (e.g. "José")
 crashed at startup. `main.cpp` passed the ANSI code page string of `%APPDATA%` as Aurora's cache
 and user path, which Aurora reads as UTF-8 (`std::filesystem::path` threw in the crash journal

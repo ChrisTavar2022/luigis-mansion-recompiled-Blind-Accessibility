@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <thread>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -42,6 +43,15 @@ std::filesystem::path exeDir() {
 void configure() {
     // LM_PIPELINE_THREADS=<n>: pipeline compile threads (default: half the hardware threads, 1..8).
     if (const char* t = std::getenv("LM_PIPELINE_THREADS")) aurora_pipeline_cache_set_threads(uint32_t(std::atoi(t)));
+    // LM_CRASH_AT=<seconds> (test aid, crash journal): abort() that long after startup, a real crash
+    // as far as the crash handler and the pipeline crash journal can tell (Aurora 0231).
+    if (const char* c = std::getenv("LM_CRASH_AT")) {
+        const double seconds = std::atof(c);
+        std::thread([seconds] {
+            std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
+            std::abort();
+        }).detach();
+    }
 }
 
 void init() {
@@ -97,6 +107,7 @@ struct Batch {
     uint32_t doneAtStart = 0;
     uint32_t missesAtStart = 0;
     uint32_t storesAtStart = 0;
+    uint32_t hitsAtStart = 0;
     Clock::time_point start{};
     bool background = false;  // warm: the rest loads while the game runs
     bool reheld = false;      // it was continued in the background, then turned out to need compiling
@@ -114,6 +125,7 @@ void trackBatch(const AuroraPipelineStats& s) {
     sBatch.doneAtStart = s.precacheDone;
     sBatch.missesAtStart = s.blobMisses;
     sBatch.storesAtStart = s.blobStores;
+    sBatch.hitsAtStart = s.blobHits;
     sBatch.start = Clock::now();
     sBatch.startup = !sStartupDone;
 }
@@ -216,6 +228,16 @@ bool holdGame() {
         aurora_pipeline_cache_set_boost(boost);
         if (sLog) log("[precache] creation threads: %s", boost ? "all but one, max 16 (held, loading from the cache)" : "default");
     }
+    // 0231: what a hold is doing, every 5 s (a long one used to log nothing until the game started).
+    static Clock::time_point sProgressLog{};
+    if (hold && s.rebuildPending > 0 && Clock::now() - sProgressLog >= std::chrono::seconds(5)) {
+        if (sProgressLog != Clock::time_point{} && sHolding)
+            log("[precache] preparing shaders: %u pending, %.0f s so far; this batch: %u loaded from the cache, "
+                "%u compiled (%u threads)",
+                s.rebuildPending, std::chrono::duration<double>(Clock::now() - sHoldStart).count(),
+                s.blobHits - sBatch.hitsAtStart, s.blobStores - sBatch.storesAtStart, s.workerThreads);
+        sProgressLog = Clock::now();
+    }
     sHolding = hold;
     sHoldMax = std::max(sHoldMax, s.rebuildPending);
     return hold;
@@ -252,6 +274,12 @@ void drawHold() {
         ImGui::ProgressBar(float(done) / float(total), ImVec2(-1, 0), "");
         if (!sBatch.startup)
             ImGui::TextWrapped("New graphics settings: the game continues when this is done.");
+        else if (s.cachesReset)
+            ImGui::TextWrapped("The game crashed at startup several times in a row, so the shader cache was "
+                               "cleared to rule it out. It is rebuilt once.");
+        else if (s.prevExit != 0 && s.blobEntriesAtOpen > 0 && s.blobMisses <= 2 * s.blobHits)
+            ImGui::TextWrapped("The last session ended before all shaders were built (closed, killed or crashed): "
+                               "only the missing ones are compiled; the rest load from the cache.");
         else if (s.blobCacheBroken)
             ImGui::TextWrapped("The shader cache file cannot be used, so this happens at every start (details in the "
                                "log).");
