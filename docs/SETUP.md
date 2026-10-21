@@ -64,7 +64,8 @@ Game > *Add or change discs...*) opens the screen again.
 
 ### What lives where (`%APPDATA%\Luigi's Mansion Recompiled`)
 
-Linux: the XDG config/data/cache folders of the same name (docs/LINUX.md). Up to 1.0.1 the
+Linux: the XDG config/data/cache folders of the same name (docs/LINUX.md). Portable mode (below):
+`<program folder>/portable`, same layout on both platforms. Up to 1.0.1 the
 product was "Luigi's Mansion PC": at the first start of 1.1 or later, each folder of that old
 name whose new-name folder does not exist yet is renamed to the new name (`port::configDir`
 / `dataDir` / `cacheDir`, `migrateOldFolder` in `src/port/install.cpp`), so settings, install.ini,
@@ -203,7 +204,8 @@ clicks: nothing is downloaded or replaced on its own.
    old folder) an unmodified one (SHA-256 of the shipped file) is replaced by a three-line
    forwarder to the new launcher, so desktop entries keep working; an edited one is kept as it is.
 7. **Data stays.** `%APPDATA%` / the XDG folders (settings, saves, install.ini, game modules,
-   overlays, shader caches) are never touched by the updater (the new version's first start only
+   overlays, shader caches), and in portable mode the `portable` folder next to the program (package
+   entries under it are skipped, "Portable mode"), are never touched by the updater (the new version's first start only
    renames a 1.0.x "Luigi's Mansion PC" folder, see "What lives where"). The module key includes the program version, so the
    first start of a new version rebuilds the game module automatically (about 20 s, setup's
    progress screen, no clicks), even when the embedded sources it hashes did not change.
