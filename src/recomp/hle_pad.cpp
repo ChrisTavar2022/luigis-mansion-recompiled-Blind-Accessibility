@@ -155,7 +155,18 @@ HLE(PADReset) { c.r[3] = PADReset(c.r[3]); }
 HLE(PADRecalibrate) { c.r[3] = PADRecalibrate(c.r[3]); }
 HLE(PADSetSpec) { PADSetSpec(c.r[3]); }
 HLE(PADSetAnalogMode) { PADSetAnalogMode(c.r[3]); }
-HLE(PADControlMotor) { controls::controlMotor(c.r[3], c.r[4]); }  // F1 > Controls rumble setting
+// The game's motor (JUTGamePad::CRumble: on Luigi's hits, vacuuming, ...): F1 > Controls
+// rumble setting, sent to the port's controller (controls.cpp). LM_RUMBLE_LOG=1 logs the calls.
+HLE(PADControlMotor) {
+    static const bool sLog = [] {
+        const char* v = std::getenv("LM_RUMBLE_LOG");
+        return v && *v && *v != '0';
+    }();
+    if (sLog)
+        log("[rumble] game PADControlMotor(chan %u, cmd %u) from %08X, retrace %u", c.r[3], c.r[4], c.lr,
+            viRetraceCount());
+    controls::controlMotor(c.r[3], c.r[4]);
+}
 HLE(PADSetSamplingRate) {}  // PAL release; sampling is the host's business
 
 // PADStatus (12 bytes): button, stickX/Y, substickX/Y, triggerL/R, analogA/B, err.

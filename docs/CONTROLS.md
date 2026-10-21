@@ -154,15 +154,69 @@ lets a module own its own sections of `settings.ini`.
   `keyboard_bindings.dat` files are neither written nor needed.
 - **Shaping**: the radial dead zone and sensitivity are applied to the `PADStatus` after
   `PADRead` (`controls::afterRead`). Inversion is a negative binding scale.
-- **Rumble**: `HLE(PADControlMotor)` goes through `controls::controlMotor`, which turns
-  rumble requests into stops when the port's profile has rumble off. Strength is
-  `PADSetRumbleIntensity`.
+- **Rumble**: see the next section.
 - **Capture**: `aurora::binding::capture_next` (a layer above ImGui), with
   `controls::handleEvent` hiding captured keys from `menu::handleEvent`'s F1/Esc and the
   debug hotkeys. While the menu is open, the game still gets neutral input (`hle_pad.cpp`).
 
+## Rumble
+
+The whole path, game to controller (issue #12, "no vibration with an Xbox Series X
+controller on Windows 10"):
+
+1. **Game.** The game's Options "Vibration" setting is on by default (a fresh save turns
+   the motor on). It calls `JUTGamePad::CRumble::setEnable` with `0xF0000000` when it is on
+   (`fn_800557F0`, option byte `0x803CFAA0 + 1`), 0 when off. Rumble events (`fn_800869F4`:
+   event codes 42 start, 45 stop, 47 hard stop) call `CRumble::startMotor` /
+   `stopMotor` / `stopMotorHard`, and `CRumble::update` (from `JUTGamePad::update`) plays
+   bit patterns. Each is one `PADControlMotor(chan, 1|0|2)` per change, and only when the
+   port is enabled. The game never calls `PADControlAllMotors`. Luigi's hits: on for about
+   1 s, off, on again briefly, then a hard stop. Ghost fights: pulses of 10 retraces on and
+   2 off.
+2. **HLE.** `HLE(PADControlMotor)` (`hle_pad.cpp`) calls `controls::controlMotor`.
+3. **Controls layer.** `controlMotor` sends the motor state to the gamepad that
+   `controls::assign` put on that port (by SDL joystick ID, not via the player-index lookup).
+   Profile *Rumble* (default on) and *Strength* (default 50%) apply. A GameCube controller
+   (adapter) goes through Aurora's on/off path. Any other pad gets `SDL_RumbleGamepad(low =
+   high = strength * 65535, 500 ms)`, re-sent every 100 ms while the motor is on (every 25 ms
+   after a rejected request), and `SDL_RumbleGamepad(0, 0, 0)` when the motor stops.
+4. **SDL.** With a non-zero duration, SDL stops the rumble itself when it runs out and
+   re-sends it to the driver every 2 s (`SDL_RUMBLE_RESEND_MS`). A repeated request with the
+   same values only extends the expiry.
+
+Before this, rumble went through Aurora's `PADControlMotor`, which calls
+`SDL_RumbleGamepad(..., duration 0)`. In SDL 3.4, duration 0 means "until changed": SDL
+sets no expiry and clears `rumble_resend`. So the request was sent once. If the backend
+rejected it (for example Windows raw input before the pad is correlated with its XInput
+slot: "Controller isn't correlated yet"), or the controller stopped on its own (pads that
+need SDL's resend), nothing re-sent it until the game changed the motor state. It also
+depended on Aurora resolving the port's controller from the SDL player index at that
+moment. Without hardware it is not confirmed which of these broke the user's Xbox pad. In
+SDL 3.4 on Windows, Xbox pads use the XInput backend by default (raw input, WGI, GameInput
+and HIDAPI Xbox are off), and XInput rumble persists, so the logging below exists to
+confirm it from a user log.
+
+Diagnostics, always logged: `[controls] port 1: <name> (..., vid/pid, wired|wireless,
+rumble yes|not reported)` and `path <SDL device path>` (shows the backend: `XInput#0`,
+`\\?\HID#...`). A rejected rumble request is logged once per failure streak with SDL's
+reason. F1 > Controls > *Sticks, triggers & rumble* > *Test rumble* vibrates for 0.6 s and
+shows "Sent to the controller." or "The controller refused rumble: <SDL error>" beside it.
+
+`LM_RUMBLE_LOG=1` logs every game call (`[rumble] game PADControlMotor(chan 0, cmd 1) from
+801D7D08`) and every request sent (`[rumble] port 1 rumble -> '<pad>' low=high=32768 for
+500 ms (request n, ...): ok`).
+
+Verified with the virtual pad (no hardware): Luigi's hits (`LM_TEST_HIT=2600,200`), a gold
+ghost fight (`LM_GHOST_HUNT`, docs/RENDERING.md), and the menu's Test rumble
+(`LM_MENU_CLICK="300:open=Controls/Analog;330:Test rumble;420:close"`) all reach the
+virtual pad's rumble callback with 32768/32768 and stop with 0/0. With
+`LM_VIRTUAL_PAD_RUMBLE_FAIL=3` the first three requests are rejected and the refresh gets
+the rumble through 25 ms later.
+
 ## Test aids
 
+- `LM_RUMBLE_LOG=1`: the rumble log above. `LM_VIRTUAL_PAD_RUMBLE_FAIL=<n>`: the virtual
+  pad rejects its first n non-zero rumble requests.
 - `LM_PAD_LOG=1`: logs every change of each port's status as the game receives it
   (`[pad] port 1 retrace N: err 0 buttons 0100 stick 0,127 C 0,0 L 0 R 180`), the
   port/device assignments, every SDL joystick (and whether it has a gamepad mapping), and
@@ -181,7 +235,7 @@ lets a module own its own sections of `settings.ini`.
   X, Y and D-pad (player 2 has no Game Boy Horror) and all of port 2 while an event has set
   player 2 aside (hle_pad.cpp).
 - `LM_MENU=Controls` opens the menu on this tab. `LM_CONTROLS_TAB=Ports|Bindings|Analog`
-  selects a sub-tab.
+  selects a sub-tab (also `LM_MENU_CLICK` `open=Controls/Analog`).
 - `LM_CONTROLS_CAPTURE=<keyboard|pad>:<input key>:<1|2>` starts a binding capture when the
   tab opens. This capture has no timeout. For example, `keyboard:a:1` and then pressing K
   binds A to K.

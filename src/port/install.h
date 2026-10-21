@@ -55,6 +55,8 @@ InstallState& install();
 std::filesystem::path configDir();
 std::filesystem::path dataDir();
 std::filesystem::path cacheDir();
+// An environment variable holding a path (read as UTF-16 on Windows, so any characters survive).
+std::filesystem::path envPath(const char* name);
 
 // PAL Hidden Mansion overlay built by setup for the US base: <dataDir>/hidden_mansion
 std::filesystem::path hiddenMansionOverlayDir();
