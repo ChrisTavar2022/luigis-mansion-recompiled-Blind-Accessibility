@@ -129,17 +129,20 @@ clicks: nothing is downloaded or replaced on its own.
    deleted) and offers the release page.
 5. **Stage.** Before downloading, the install folder must be a release folder and writable (a probe
    file); otherwise (e.g. Program Files) the menu explains and offers *Open download page*. The
-   package goes to `<install>/update.tmp/`, is unpacked there with the system `tar` (Windows 10
-   1803+ `System32\tar.exe`, bsdtar, reads zip; Linux GNU tar), any link in it is refused, and the
-   folder holding the program (top level or its single subfolder) must contain the program,
-   `pipelines.bin`, `llvm/bin/clang` and `lld-link` / `ld.lld`.
+   package goes to `<install>/upd/` (up to 1.1.1: `update.tmp/new/<package folder>/`, see "Long
+   paths"), is listed and unpacked there with the system `tar` (Windows 10 1803+
+   `System32\tar.exe`, bsdtar, reads zip; Linux GNU tar) with `--strip-components 1` when every
+   member is in one top folder, so `upd` holds the install layout itself; any link in it is
+   refused, and the folder holding the program (`upd`, or its single subfolder for a package that
+   was not flattened) must contain the program, `pipelines.bin`, `llvm/bin/clang` and `lld-link` /
+   `ld.lld`.
 6. **Install** (*Install and restart*, confirmed in a popup that says to save first; the game state
    is not saved): every file of the package is moved over the install: an existing file is first
    renamed to `<name>.old` (Windows cannot overwrite a running exe or a loaded DLL, but can rename
    them), then the new one is moved in; any failure moves everything back. Linux deletes the `.old`
    files at once and sets the executable bits of the program, launcher, clang and ld.lld; Windows
    lists them in `<install>/update-cleanup.txt` and the next start deletes them (retrying for 10 s
-   while the old process exits). `update.tmp` is removed right after the move (a leftover one, e.g.
+   while the old process exits). `upd` is removed right after the move (a leftover one, or an old `update.tmp`, e.g.
    from a cancelled or failed run, at the next start). Then settings are saved and the program
    restarts with the same arguments: Windows starts the exe at its original path and exits; Linux
    `execv`s the installed file in place of the running process (same PID, so the launcher script
@@ -183,6 +186,71 @@ replaced (executable bits kept, no `.old` left), `execv` into v1.0 (same log), w
 module and ran to frame 1500 (no `update.tmp` or cleanup list left). A run that hit a DNS outage in
 WSL mid-way ended with "The download failed: could not resolve the server name (offline?)" and the
 game kept running.
+
+## Long paths (Windows)
+
+The bug (1.1 -> 1.1.1 from a deep folder): "The package does not contain the game program." The
+staged `<install>\update.tmp\new\LuigisMansionRecompiled-<ver>-windows-x64\LuigisMansionRecomp.exe`
+was 267 characters; std::filesystem in a process without long path support reports such an
+existing file as missing. The 1.1 exe had no long path manifest at all, so it failed even with the
+system policy on.
+
+What the program does now:
+- **Manifest.** `packaging/windows/longpath.manifest` (`longPathAware`) is merged into the default
+  manifest of the Windows executables (CMake `lm_runtime_target`). Windows honours it only when the
+  policy `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` is 1; the log says
+  `Windows long paths on/off` (`port::longPathsEnabled`, ntdll `RtlAreLongPathsEnabled`).
+- **Extended paths.** `port::longPath(p)` (`src/port/install.h`) gives `\\?\C:\...` /
+  `\\?\UNC\...` (absolute, normalized, backslashes), which every file call takes at any length
+  with the policy off too; `port::plainPath` / `displayPath` drop the prefix for messages, logs and
+  other programs' arguments (clang, lld-link and tar reject `\\?\`). Used by the updater (all of
+  it: staging, download, unpacking checks, `.old` renames, moves, rollback, cleanup; `installDir()`
+  is extended, package-relative names are joined with `make_preferred`, "inside the install" is a
+  lexical check because `weakly_canonical` drops the prefix), the module build (sources, objects,
+  logs, `module.key`, the module rename; the module is loaded by its extended path), the Hidden
+  Mansion overlay (setup's writer and the game's reader, now UTF-8), `install.ini`, `settings.ini`
+  and `pipelines.bin` past MAX_PATH. A restart by the updater uses the extended program name only
+  past MAX_PATH (a program started that way sees the longer name as its own path).
+- **Short staging.** The package is unpacked into `<install>\upd\` with its top folder flattened
+  (above): the deepest staged file is 4 characters longer than its installed path. tar.exe is not
+  long-path aware and runs in `upd` (its working directory must stay below MAX_PATH): a game folder
+  whose `upd` would be longer than 247 characters gets "The game folder's path is too long for the
+  updater (...). Move the game to a shorter folder ..." and the download page, before downloading.
+- **Compiler.** clang.exe and lld-link.exe (LLVM 22) take plain paths of any length as arguments
+  (LLVM widens them itself) but stop with "The data area passed to a system call is too small" when
+  their *own* path is too long (257 characters run, 259 fail; also when started by an extended
+  name, which adds 4). Setup starts them by their plain path, and from a game folder where they are
+  deeper than 250 characters it hard-links them (copies them, across drives) into
+  `<dataDir>\llvm\` and runs them from there (refreshed when size or time differ, e.g. after an
+  update). If that is still too long: "Move the game to a shorter folder".
+- **Game folder limit.** From a folder deeper than 234 characters the prebuilt Dawn / Direct3D 12
+  start-up stops without a word (measured on 1.1.1 and this build, policy on or off: 234 runs,
+  236 and deeper end at the adapter request), so the program checks first and says "The game's
+  folder ... is N characters long ... Move the game's folder to a shorter path" (message box, exit
+  1; `port::installPathProblem`). Every installed file is then below MAX_PATH (deepest
+  `llvm\bin\lld-link.exe`, folder + 22); staged and `.old` files may exceed it and use `\\?\`.
+- **Data folder.** Setup's own files work in any `%APPDATA%` depth. Aurora (memory cards, Dawn and
+  pipeline caches, imgui.ini) uses plain paths: with long paths off and a data folder longer than
+  259 - 52 characters (deepest: `USA\Card A\01-GLME-LUIGI_MANSION_SAVEDATA_v3.gci`, the module build's
+  obj files), the start shows a warning that saving and caches may fail and how to fix it
+  (`port::dataPathProblem`; not in automated runs, logged always).
+
+Checked (October 2026, Windows 11, policy on; "no manifest" = this build with the manifest
+replaced by one without `longPathAware`, which behaves as policy off), all with the real v1.1.1
+release and `LM_UPDATE_VERSION=1.1`:
+- game folder of 222 characters (the old staging path would be 300): setup built the module, the
+  update downloaded, verified, staged in `upd` (top folder flattened), installed 14 files and
+  restarted into v1.1.1, which removed the `.old` files;
+- no manifest, 234 characters (staged `upd\llvm\bin\lld-link.exe` 260): setup linked clang/lld-link
+  into the data folder (253/256 characters) and built the module; the update installed and
+  restarted. (The restarted 1.1.1, still without long path support, then failed its own next
+  download in `update.tmp`, and left `.old` files past MAX_PATH it could not see: the 1.1.1 bug.)
+- normal folder (145): unchanged behaviour, update installed and restarted;
+- `%APPDATA%` of 215 characters (data folder 242), both discs: with the manifest everything works
+  (two modules, Hidden Mansion overlay found, caches); without it setup still builds both modules
+  and the overlay, the game runs, the warning is shown and Aurora's SQLite caches fail as it says;
+- game folder of 240: the message, exit 1 (1.1.1 there: silent stop at the adapter request); 234
+  runs.
 
 ## Module boundary
 

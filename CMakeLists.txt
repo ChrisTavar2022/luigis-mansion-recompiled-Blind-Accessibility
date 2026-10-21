@@ -137,6 +137,8 @@ function(lm_runtime_target tgt)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_SOURCE_DIR}/data/pipelines.bin $<TARGET_FILE_DIR:${tgt}>)
     if (WIN32)
         target_link_libraries(${tgt} PRIVATE dbghelp winhttp bcrypt)  # winhttp/bcrypt: updater
+        # longPathAware (docs/SETUP.md "Long paths"): merged into the default manifest by the linker step.
+        target_sources(${tgt} PRIVATE ${CMAKE_SOURCE_DIR}/packaging/windows/longpath.manifest)
         add_custom_command(TARGET ${tgt} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:${tgt}> $<TARGET_FILE_DIR:${tgt}>
             COMMAND_EXPAND_LISTS)

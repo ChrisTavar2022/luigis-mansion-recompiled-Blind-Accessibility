@@ -164,7 +164,7 @@ std::filesystem::path appDir() {
     (void)sMigrated;
     std::filesystem::path dir = std::filesystem::path(base) / L"Luigi's Mansion Recompiled";
     std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
+    std::filesystem::create_directories(longPath(dir), ec);
     return dir;
 }
 #else
@@ -230,8 +230,89 @@ std::filesystem::path envPath(const char* name) {
 
 std::filesystem::path hiddenMansionOverlayDir() { return dataDir() / "hidden_mansion"; }
 
+std::filesystem::path longPath(const std::filesystem::path& p) {
+#ifdef _WIN32
+    if (p.empty() || p.native().rfind(L"\\\\?\\", 0) == 0) return p;
+    std::error_code ec;
+    fs::path a = fs::absolute(p, ec);  // GetFullPathNameW: any length, resolves . and .., / -> \.
+    if (ec) a = p;
+    a = a.lexically_normal();
+    a.make_preferred();
+    const std::wstring& s = a.native();
+    if (s.rfind(L"\\\\.\\", 0) == 0) return a;  // device path
+    if (s.rfind(L"\\\\", 0) == 0) return fs::path(L"\\\\?\\UNC\\" + s.substr(2));
+    if (s.size() >= 3 && s[1] == L':' && s[2] == L'\\') return fs::path(L"\\\\?\\" + s);
+    return a;
+#else
+    return p;
+#endif
+}
+
+std::filesystem::path plainPath(const std::filesystem::path& p) {
+#ifdef _WIN32
+    const std::wstring& s = p.native();
+    if (s.rfind(L"\\\\?\\UNC\\", 0) == 0) return fs::path(L"\\\\" + s.substr(8));
+    if (s.rfind(L"\\\\?\\", 0) == 0) return fs::path(s.substr(4));
+#endif
+    return p;
+}
+
+std::string displayPath(const std::filesystem::path& p) { return u8(plainPath(p)); }
+
+bool longPathsEnabled() {
+#ifdef _WIN32
+    // ntdll's answer for this process (Windows 10 1607+): the manifest's longPathAware and the
+    // LongPathsEnabled policy together.
+    static const bool sOn = [] {
+        using Fn = BOOLEAN(NTAPI*)();
+        const HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+        const auto fn = nt ? reinterpret_cast<Fn>(GetProcAddress(nt, "RtlAreLongPathsEnabled")) : nullptr;
+        return fn && fn() != 0;
+    }();
+    return sOn;
+#else
+    return true;  // no such limit
+#endif
+}
+
+std::string installPathProblem() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH * 4];
+    const DWORD n = GetModuleFileNameW(nullptr, buf, DWORD(std::size(buf)));
+    const std::string dir = displayPath(fs::path(std::wstring(buf, n)).parent_path());
+    if (dir.size() <= kMaxInstallPath) return {};
+    std::printf("[install] game folder %s is %zu characters long (at most %zu)\n", dir.c_str(), dir.size(),
+                kMaxInstallPath);
+    std::fflush(stdout);
+    return "The game's folder\n\n" + dir + "\n\nis " + std::to_string(dir.size()) +
+           " characters long. The graphics components the game loads from it stop working past " +
+           std::to_string(kMaxInstallPath) +
+           " characters.\n\nMove the game's folder to a shorter path (for example C:\\Games\\Luigi's Mansion "
+           "Recompiled) and start it from there. Settings and saves are not in that folder and stay as they are.";
+#else
+    return {};
+#endif
+}
+
+std::string dataPathProblem() {
+#ifdef _WIN32
+    const std::string dir = displayPath(dataDir());
+    std::printf("[install] data folder %s (%zu characters), Windows long paths %s\n", dir.c_str(), dir.size(),
+                longPathsEnabled() ? "on" : "off");
+    std::fflush(stdout);
+    if (longPathsEnabled() || dir.size() + kDeepestDataFile <= kMaxPlainPath) return {};
+    return "The game's data folder\n\n" + dir + "\n\nis " + std::to_string(dir.size()) +
+           " characters long. Windows' long path support is off on this PC, so files deeper than " +
+           std::to_string(kMaxPlainPath) + " characters (memory card saves, shader caches) cannot be written there: "
+           "saving may fail.\n\nUse a %APPDATA% folder of at most " + std::to_string(kMaxPlainPath - kDeepestDataFile) +
+           " characters, or turn on long paths in Windows (the LongPathsEnabled setting, needs an administrator).";
+#else
+    return {};
+#endif
+}
+
 void loadInstall() {
-    std::ifstream in(configDir() / "install.ini");
+    std::ifstream in(longPath(configDir() / "install.ini"));
     std::string line;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -245,7 +326,7 @@ void loadInstall() {
 }
 
 void saveInstall() {
-    std::ofstream out(configDir() / "install.ini");
+    std::ofstream out(longPath(configDir() / "install.ini"));
     out << "[install]\n";
     out << "us_disc=" << sInstall.usDisc << '\n';
     out << "pal_disc=" << sInstall.palDisc << '\n';
@@ -273,7 +354,13 @@ void relaunch(bool setup, const std::filesystem::path& exePath) {
     if (setup) cmd += L" --setup";
     STARTUPINFOW si{sizeof(si)};
     PROCESS_INFORMATION pi{};
-    if (CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+    // Past MAX_PATH the program is started by its extended path (CreateProcessW takes that at any
+    // length; the command line keeps the plain name). A shorter one stays plain, so the new
+    // process sees the same paths as a normal start.
+    const fs::path plain = plainPath(fs::path(exe));
+    const std::wstring app = plain.native().size() > kMaxPlainPath ? longPath(plain).wstring() : plain.wstring();
+    cmd = L"\"" + plain.wstring() + cmd.substr(cmd.find(L'"', 1));
+    if (CreateProcessW(app.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     } else if (!exePath.empty()) {

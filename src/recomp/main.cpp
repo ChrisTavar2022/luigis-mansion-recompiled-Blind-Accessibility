@@ -156,6 +156,14 @@ int main(int argc, char* argv[]) {
     port::setLaunchArgs(argc, argv);
     std::printf("Luigi's Mansion Recompiled %s\n", port::update::buildVersion());
     std::fflush(stdout);
+    // A game folder too deep for the graphics start-up (docs/SETUP.md "Long paths"): say so
+    // instead of stopping without a word.
+    if (const std::string p = port::installPathProblem(); !p.empty()) {
+        std::fprintf(stderr, "%s\n", p.c_str());
+        if (!std::getenv("LM_BACKGROUND"))
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Luigi's Mansion Recompiled", p.c_str(), nullptr);
+        return 1;
+    }
 
     AuroraConfig config{};
     config.appName = "Luigi's Mansion Recompiled";
@@ -165,6 +173,12 @@ int main(int argc, char* argv[]) {
     // release in the background (never blocks; the F1 menu shows the result).
     port::update::cleanupAfterUpdate();
     port::update::startupCheck();
+    // A data folder too deep for the files Aurora writes with plain paths (docs/SETUP.md "Long paths").
+    if (const std::string p = port::dataPathProblem(); !p.empty()) {
+        std::fprintf(stderr, "%s\n", p.c_str());
+        if (!std::getenv("LM_BACKGROUND"))  // automated runs must not block on a dialog
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Luigi's Mansion Recompiled", p.c_str(), nullptr);
+    }
     config.msaa = u32(port::settings().video.msaa);
     config.vsync = port::settings().video.vsync;
     // LM_BACKEND=d3d12|d3d11|vulkan (testing): graphics backend instead of Aurora's choice.

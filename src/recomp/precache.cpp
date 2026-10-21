@@ -1,6 +1,7 @@
 // Shader/pipeline precaching: see precache.h and docs/RENDERING.md ("Pipeline precache").
 #include "recomp/precache.h"
 
+#include "port/install.h"
 #include "recomp/enhanced_lighting.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
@@ -73,7 +74,10 @@ void init() {
     std::string list;
     if (const char* p = std::getenv("LM_PIPELINE_LIST")) list = p;
     else {
-        const std::u8string u8 = (exeDir() / "pipelines.bin").u8string();  // Aurora takes UTF-8 paths
+        // Aurora takes UTF-8 paths; past MAX_PATH the extended form (docs/SETUP.md "Long paths").
+        std::filesystem::path file = port::plainPath(exeDir() / "pipelines.bin");
+        if (file.native().size() > port::kMaxPlainPath) file = port::longPath(file);
+        const std::u8string u8 = file.u8string();
         list.assign(reinterpret_cast<const char*>(u8.data()), u8.size());
     }
     const uint32_t n = aurora_pipeline_cache_seed(list.c_str());
