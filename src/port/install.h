@@ -4,6 +4,7 @@
 // files live next to it. The F1 menu reads it to grey out features whose disc is missing.
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace port {
 
@@ -52,9 +53,40 @@ InstallState& install();
 //            dataDir    $XDG_DATA_HOME/Luigi's Mansion Recompiled (~/.local/share/...): game modules, Hidden
 //                       Mansion overlays, memory cards, screenshots
 //            cacheDir   $XDG_CACHE_HOME/Luigi's Mansion Recompiled (~/.cache/...): GPU pipeline/shader caches
+//   Portable mode (both): all three are <program folder>/portable (the Windows layout).
 std::filesystem::path configDir();
 std::filesystem::path dataDir();
 std::filesystem::path cacheDir();
+
+// Portable mode (docs/SETUP.md "Portable mode"): a file portable.txt or a folder portable next to
+// the program (or LM_PORTABLE=1) keeps every file of the port in <program folder>/portable.
+// Decided once, at the first call (which also carries out a data move the F1 menu asked for
+// before the restart); LM_PORTABLE=0 forces the system folders (testing).
+struct DataLocation {
+    bool portable = false;
+    std::filesystem::path root;    // portable: <exeDir>/portable
+    std::filesystem::path exeDir;  // folder of the running program
+    bool requested = false;        // portable.txt / portable folder / LM_PORTABLE=1
+    bool forcedByEnv = false;      // LM_PORTABLE=1: the menu cannot switch it off
+    std::string problem;           // why requested portable mode is off (folder not writable)
+    std::string moveResult;        // outcome of a data move carried out at this start ("" none)
+    bool moveFailed = false;
+};
+const DataLocation& dataLocation();
+std::filesystem::path exeDir();
+// The system folders (Windows: one, Linux: config, data, cache), whatever mode runs.
+std::vector<std::filesystem::path> systemDirs();
+// Whether the program folder can be written (probe file).
+bool exeDirWritable();
+// F1 > Game: whether a move to (toPortable) or from portable mode can start now; "" or the reason.
+std::string checkDataMove(bool toPortable);
+// Saves the request next to the program and restarts; the next start moves the data before it
+// opens any file (copy, verify, switch, then remove the old copy; nothing is lost on failure).
+// Returns only on failure (the reason).
+std::string requestDataMove(bool toPortable);
+// A path inside the program folder (relative to it) that holds the player's data in portable
+// mode: the updater never replaces or removes these (update.cpp).
+bool isPortableDataPath(const std::filesystem::path& relToExeDir);
 // An environment variable holding a path (read as UTF-16 on Windows, so any characters survive).
 std::filesystem::path envPath(const char* name);
 

@@ -560,6 +560,80 @@ void updateToast() {
     ImGui::PopStyleVar();
 }
 
+// ---- Data folder / portable mode (src/port/install.cpp, docs/SETUP.md "Portable mode") ---------
+void dataSection() {
+    ImGui::SeparatorText("Data folder");
+    const auto& loc = port::dataLocation();
+    const auto u8 = [](const std::filesystem::path& p) {
+        const auto s = p.u8string();
+        return std::string(s.begin(), s.end());
+    };
+    static std::string sMoveError;
+    if (loc.portable) {
+        ImGui::Text("Portable: settings, saves, the game module and caches are stored next to the program in");
+        ImGui::TextWrapped("%s", u8(loc.root).c_str());
+    } else {
+        const auto dirs = port::systemDirs();
+        ImGui::Text("System folder%s (settings, saves, the game module, caches):", dirs.size() > 1 ? "s" : "");
+        for (auto& d : dirs) ImGui::TextWrapped("%s", u8(d).c_str());
+    }
+    if (!loc.moveResult.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, loc.moveFailed ? ImVec4(1.0f, 0.55f, 0.45f, 1.0f) : ImVec4(0.4f, 0.9f, 0.4f, 1.0f));
+        ImGui::TextWrapped("%s", loc.moveResult.c_str());
+        ImGui::PopStyleColor();
+    }
+    if (!loc.problem.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.4f, 1.0f));
+        ImGui::TextWrapped("%s", loc.problem.c_str());
+        ImGui::PopStyleColor();
+    }
+    const bool toPortable = !loc.portable;
+    if (toPortable) {
+        if (recomp::menu::Button("Make this installation portable...")) {
+            sMoveError = port::checkDataMove(true);
+            std::printf("[data] make portable: %s\n", sMoveError.empty() ? "confirm" : sMoveError.c_str());
+            std::fflush(stdout);
+            if (sMoveError.empty()) ImGui::OpenPopup("Make portable?");
+        }
+        ImGui::SetItemTooltip("Moves everything into a folder 'portable' next to the program, so the whole game folder\n"
+                              "can be moved to another drive or PC, and deleting it removes everything.");
+    } else {
+        ImGui::BeginDisabled(loc.forcedByEnv);
+        if (recomp::menu::Button("Move data back to the system folder...")) {
+            sMoveError = port::checkDataMove(false);
+            std::printf("[data] move back: %s\n", sMoveError.empty() ? "confirm" : sMoveError.c_str());
+            std::fflush(stdout);
+            if (sMoveError.empty()) ImGui::OpenPopup("Move data back?");
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip(loc.forcedByEnv ? "Portable mode is forced by the environment variable LM_PORTABLE=1."
+                                              : "Moves everything from the portable folder to the system folder\n"
+                                                "(%%APPDATA%% on Windows, ~/.config, ~/.local/share and ~/.cache on Linux).");
+    }
+    for (const char* popup : {"Make portable?", "Move data back?"}) {
+        if (!ImGui::BeginPopupModal(popup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) continue;
+        const bool p = popup[0] == 'M' && popup[1] == 'a';
+        ImGui::Text("%s", p ? "Move the data into the portable folder and restart?"
+                            : "Move the data back to the system folder and restart?");
+        ImGui::TextDisabled("Save your game first: the game restarts and unsaved progress is lost.");
+        ImGui::TextDisabled("The data is copied and checked first; if anything fails, nothing is changed.");
+        if (recomp::menu::Button(p ? "Move and restart##portable" : "Move and restart##system")) {
+            port::saveSettings();  // the copy must hold the current settings
+            sDirty = false;
+            ImGui::CloseCurrentPopup();
+            sMoveError = port::requestDataMove(p);  // returns only on failure
+        }
+        ImGui::SameLine();
+        if (recomp::menu::Button(p ? "Cancel##portable" : "Cancel##system")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    if (!sMoveError.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.45f, 1.0f));
+        ImGui::TextWrapped("%s", sMoveError.c_str());
+        ImGui::PopStyleColor();
+    }
+}
+
 void gameTab() {
     if (idcheck::selfTest()) {  // LM_MENU_ID_CHECK=selftest: a deliberate ID conflict
         recomp::menu::Button("ID check self-test");
@@ -625,6 +699,7 @@ void gameTab() {
     }
     if (port::palBaseFeature() == port::Avail::Yes)
         ImGui::TextDisabled("Used for a new save; an existing save keeps its language (in-game Options).");
+    dataSection();
     updatesSection();
 }
 

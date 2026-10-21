@@ -4,7 +4,7 @@
 // stages it next to the running files and swaps them in when the player says so.
 // Nothing here runs without the player's click except the background check at startup
 // (setting updates.check_at_startup). Settings, saves, game modules and caches (APPDATA /
-// XDG folders) are never touched; the game module rebuilds itself when the new runtime
+// XDG folders, or the portable folder next to the program) are never touched; the game module rebuilds itself when the new runtime
 // needs it (module key, docs/SETUP.md).
 //
 // All work happens on a worker thread; the F1 menu polls state() every frame.

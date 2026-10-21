@@ -156,6 +156,9 @@ int main(int argc, char* argv[]) {
     port::setLaunchArgs(argc, argv);
     std::printf("Luigi's Mansion Recompiled %s\n", port::update::buildVersion());
     std::fflush(stdout);
+    // Portable or system folders (docs/SETUP.md "Portable mode"), before any file is opened: a
+    // data move the F1 menu asked for runs here.
+    port::dataLocation();
 
     AuroraConfig config{};
     config.appName = "Luigi's Mansion Recompiled";

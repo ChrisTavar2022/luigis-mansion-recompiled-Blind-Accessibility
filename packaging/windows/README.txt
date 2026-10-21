@@ -67,6 +67,24 @@ Versions up to 1.0.1 used %APPDATA%\Luigi's Mansion PC; the first start of this 
 renames it, so your settings and saves carry over.
 
 
+PORTABLE MODE
+-------------
+To keep everything (settings, saves, the game module, shader caches) inside the game
+folder instead of %APPDATA%, create an empty file named portable.txt (or a folder named
+portable) next to LuigisMansionRecomp.exe before you start the game. Everything then goes
+into the folder "portable" there: move the whole game folder to another drive or PC and
+it keeps working; delete it and nothing is left behind. Keep your disc images inside the
+game folder too, so they move along (a disc that is no longer at its old path is looked
+for there by name). Another PC only prepares the shaders again.
+An existing installation can be switched in F1 > Game > Data folder: "Make this
+installation portable..." moves your data into the portable folder and restarts, "Move
+data back to the system folder..." does the reverse. The data is copied and checked
+before anything is removed, so a failed move changes nothing.
+Portable mode needs a game folder you can write to: inside Program Files it stays off
+(the setup screen and F1 > Game say so) and the data stays in %APPDATA%.
+Updates keep a portable installation portable.
+
+
 KNOWN LIMITS
 ------------
 - 2-player mode (Unused content) is unfinished: Area 1, Chauncey and Boolossus work with

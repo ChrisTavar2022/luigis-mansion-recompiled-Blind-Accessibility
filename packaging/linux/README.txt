@@ -68,10 +68,31 @@ To start over completely, delete those three folders. Your disc image is only re
 never modified or copied.
 
 
+PORTABLE MODE
+-------------
+To keep everything (settings, saves, the game module, shader caches, the launcher's logs)
+inside the game folder instead of the three folders above, create an empty file named
+portable.txt (or a folder named portable) next to LuigisMansionRecompiled.sh before you
+start the game:
+       touch portable.txt
+Everything then goes into the folder "portable" there: move the whole game folder to
+another drive or PC and it keeps working; delete it and nothing is left behind. Keep your
+disc images inside the game folder too, so they move along (a disc that is no longer at
+its old path is looked for there by name). Another PC only prepares the shaders again.
+LM_PORTABLE=1 ./LuigisMansionRecompiled.sh does the same for one start.
+An existing installation can be switched in F1 > Game > Data folder: "Make this
+installation portable..." moves your data into the portable folder and restarts, "Move
+data back to the system folder..." does the reverse. The data is copied and checked
+before anything is removed, so a failed move changes nothing.
+Portable mode needs a game folder you can write to; otherwise it stays off (the setup
+screen and F1 > Game say so). Updates keep a portable installation portable.
+
+
 REPORTING PROBLEMS
 ------------------
 Every start through LuigisMansionRecompiled.sh writes a log:
     ~/.local/share/Luigi's Mansion Recompiled/last_run.log      (the previous one: previous_run.log)
+    (portable mode: portable/last_run.log in the game folder)
 Please send that file, a description of what happened, your distribution, your graphics
 card and driver (the log's "Graphics adapter information" lines show them).
 If the game crashes, the log ends with "=== signal ..." and a list of addresses; that part

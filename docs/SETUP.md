@@ -92,6 +92,60 @@ hooks.txt, ctx.h, module_abi.h, module_rt.cpp, recompiler.cpp). Any change to th
 new release rebuilds the module on first launch. The overlay key covers both DOL hashes
 and the overlay format version (3: lab menu choice in event08).
 
+### Portable mode
+
+Public issues #9 and #16: everything in one folder next to the program, so the game folder can be
+moved to another drive or PC and deleting it removes everything (`port::dataLocation`,
+`src/port/install.cpp`).
+
+- **Opt in.** A file `portable.txt` or a folder `portable` next to `LuigisMansionRecomp(.exe)`, or
+  the environment variable `LM_PORTABLE=1`, turns it on; `LM_PORTABLE=0` forces the system folders
+  (testing). The data root is `<program folder>/portable/` (created when only `portable.txt`
+  exists). Decided once, at the first path lookup (the start of `main`, before any file is opened).
+- **Layout.** `configDir()`, `dataDir()` and `cacheDir()` all return the data root, so it holds the
+  same flat tree as `%APPDATA%\Luigi's Mansion Recompiled` (table above) on both platforms: on
+  Linux the three XDG folders are merged into it. The 1.0.x folder migration only runs for the
+  system folders.
+- **Read-only program folder** (e.g. Program Files, a read-only mount): the probe file fails, portable
+  mode stays off, the data goes to the system folders, and the setup screen, F1 > Game and the log
+  (`[data] Portable mode is requested ... cannot be written ...`) say why.
+- **F1 > Game > Data folder** shows where the data lives (the portable root, or the system folder(s))
+  and offers *Make this installation portable...* or *Move data back to the system folder...*
+  (disabled when `LM_PORTABLE=1` forces it). The button first checks that the move can work (program
+  folder writable; the target empty: a system folder holding another installation's data is never
+  overwritten, one with only the Linux launcher's logs counts as empty; free space for a full copy
+  + 64 MB) and shows the reason otherwise; then a confirmation (save first), settings are saved, a
+  request file `.lm-data-move` (direction + PID) is written next to the program and the game
+  restarts. The new process waits for the old one to exit (its game module and SQLite caches are
+  only consistent then), deletes the request (a failed move is never retried by itself) and moves
+  the data before it opens any file:
+  - *to portable*: every system folder is copied into `portable.lm-tmp` (each file's size checked),
+    which is renamed to `portable` (the switch), then the system folders are deleted;
+  - *back*: each file goes to the system folder it belongs in (Linux: `settings.ini`/`install.ini`
+    config, `pipeline_cache.*`/`dawn_cache.*`/`imgui.log`/`texture_dumps` cache, the rest data),
+    built as `<folder>.lm-tmp` and renamed into place; then `portable.txt` is removed and
+    `portable` renamed to `portable.lm-old` (the switch) and deleted.
+  Any failure before the switch removes the copies and leaves the data where it was; the result
+  (green, or red with the reason) is shown in F1 > Game and logged as `[data] ...`. Leftover
+  `portable.lm-tmp` / `portable.lm-old` folders of an interrupted move are deleted at the next start
+  (the first is an unfinished copy, the second's data is already in the system folders).
+- **Moving the folder.** Nothing inside the data root depends on where it is: module and overlay
+  keys hash the program and the disc's DOL, not paths (a moved folder, or another PC, keeps its
+  game module: it is generic x86-64 code; only a different program version rebuilds it). Disc
+  paths: `install.ini` keeps each disc's absolute path and, in portable mode, its path relative to
+  the program folder (`us_disc_rel` / `pal_disc_rel`). A disc not found at its absolute path is
+  looked for at the relative path, then by file name next to the program and in `portable/`
+  (`[install] disc ... not found; using ...`); only when none exists does the setup screen ask for
+  it. Keep the disc images inside the game folder to move everything together. Another GPU or
+  driver only recompiles shaders: `pipeline_cache.db` holds GPU-independent configs (rebuilt into
+  pipelines at startup) and Dawn's `dawn_cache.db` keys include the adapter.
+- **Updates** keep a portable install portable: the updater installs into the program folder,
+  skips any package entry named `portable`, `portable.txt`, `.lm-data-move` or `portable.lm-*`
+  (`port::isPortableDataPath`), and stages in `update.tmp`, outside the data root.
+- **Linux launcher**: `LuigisMansionRecompiled.sh` makes the same decision (portable.txt, portable
+  folder, `LM_PORTABLE`; writable) and then writes `last_run.log` / `previous_run.log` into
+  `portable/`. Its exit status file is a `mktemp` file now (the data folder may move during the run).
+
 Command-line helpers (testing): `--us-disc <path>`, `--pal-disc <path>` prefill the slots,
 `--setup-auto` starts installing without a click, `--setup` forces the screen.
 `LM_CACHE_DIR` separates the GPU caches of test runs; pointing `APPDATA` at an empty folder

@@ -272,6 +272,15 @@ bool run(const Options& opts, LaunchInfo& launch) {
         if (screen == Screen::Pick) {
             ImGui::TextWrapped("This port runs your own copy of Luigi's Mansion. Choose your disc image (ISO or RVZ). "
                                "The game is translated and compiled for this PC once; that takes a minute or two.");
+            // Portable mode (docs/SETUP.md): where everything goes, or why it was not possible.
+            if (const auto& loc = port::dataLocation(); loc.portable) {
+                const auto s = loc.root.u8string();
+                ImGui::TextDisabled("Portable mode: everything is stored in %s", std::string(s.begin(), s.end()).c_str());
+            } else if (!loc.problem.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.4f, 1));
+                ImGui::TextWrapped("%s", loc.problem.c_str());
+                ImGui::PopStyleColor();
+            }
             ImGui::Dummy(ImVec2(0, 8 * scale));
             const char* labels[2] = {"USA disc (GLME01)", "Europe disc (GLMP01)"};
             const char* notes[2] = {"", "Playable on its own; with a USA disc it also adds the European Hidden Mansion."};

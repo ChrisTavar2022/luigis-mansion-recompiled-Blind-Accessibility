@@ -1499,6 +1499,10 @@ void installAndRestart() {
     std::string err;
     for (const fs::path& rel : files) {
         const fs::path target = dir / rel;
+        if (port::isPortableDataPath(rel)) {  // portable mode's data is the player's, never the package's
+            ulog("skipped %s (portable data)", utf8(rel).c_str());
+            continue;
+        }
         if (!sameOrInside(target, dir)) {
             err = "bad path in the package";
             break;
