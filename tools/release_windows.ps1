@@ -100,7 +100,9 @@ try {
         # (fatal under ErrorActionPreference=Stop): only the exit code matters here.
         $prev = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
-        & gh auth status *> $null
+        # `gh auth status` fails if any stored account fails (e.g. an old suspended one), even when
+        # the active account works: ask the API as the active account instead.
+        & gh api user --jq .login *> $null
         $ghOk = ($LASTEXITCODE -eq 0)
         $ErrorActionPreference = $prev
     }
