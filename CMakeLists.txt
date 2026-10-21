@@ -120,7 +120,7 @@ target_link_libraries(lmrecompile PRIVATE lm_recompiler)
 file(GLOB RECOMP_RUNTIME_SOURCES CONFIGURE_DEPENDS src/recomp/*.cpp)
 list(REMOVE_ITEM RECOMP_RUNTIME_SOURCES ${CMAKE_SOURCE_DIR}/src/recomp/module_rt.cpp)
 list(APPEND RECOMP_RUNTIME_SOURCES src/port/crash_handler.cpp src/port/options.cpp src/port/dol.cpp
-    src/port/settings.cpp src/port/install.cpp src/port/update.cpp)
+    src/port/settings.cpp src/port/install.cpp src/port/update.cpp src/port/recovery.cpp)
 # The program's version (F1 > Game, the updater's comparison with the latest GitHub release, the
 # game module's cache key; docs/SETUP.md "Updates"). Only this file sees it, so a version bump
 # rebuilds one file.

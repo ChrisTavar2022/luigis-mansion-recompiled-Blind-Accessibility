@@ -86,6 +86,9 @@ open by another program, another volume) the folder is copied and the old one ke
 | `USA/Card A`, ... | memory cards (unchanged) |
 | `pipeline_cache.db` | every pipeline config this PC has used (Aurora), rebuilt at startup |
 | `dawn_cache.db` | Dawn's compiled shader blobs; stale entries pruned after the startup rebuild |
+| `last_run.log`, `previous_run.log` | Windows: the log of this run and the one before (Linux: written by the launcher) |
+| `last_run_state.ini` | how the last run ended (start-up recovery, below) |
+| `settings.ini.bak-<time>`, `settings.ini.corrupt` | settings put aside by start-up recovery / a damaged settings.ini |
 
 A module's key is the SHA-1 of: the module ABI version, the game ID and DOL SHA-1, the
 compile and link flags, and the embedded inputs (symbol map, splits, PAL version map,
@@ -152,6 +155,34 @@ Command-line helpers (testing): `--us-disc <path>`, `--pal-disc <path>` prefill 
 `--setup-auto` starts installing without a click, `--setup` forces the screen.
 `LM_CACHE_DIR` separates the GPU caches of test runs; pointing `APPDATA` at an empty folder
 gives a fresh install.
+
+### When the game does not start (start-up recovery)
+
+Issue #17: after a fatal error in play the player could no longer start the game, and nothing
+in the program helped. Now (`src/port/recovery.cpp`):
+
+- **Run state.** Each run writes `last_run_state.ini`: `starting` at once, `running` after 600
+  game frames (`frame.cpp`), `exited` on a clean quit, `crashed` from the crash handler with the
+  error text (Aurora `FATAL` or the recompiler's `fatal()`, else the exception) and the phase
+  (`startup` or `play`).
+- **Prompt.** After a crash (start-up or play), or after two starts in a row that never reached
+  `running` (killed or hung), the next start shows a dialog before anything else loads, with the
+  last error: **Start normally** (default), **Reset settings** (settings.ini kept as
+  `settings.ini.bak-<time>`, then the defaults), **Rebuild game data** (LuigisMansionRecomp only:
+  deletes `game/`, `hidden_mansion/` and the pipeline/shader caches, so setup recompiles the
+  module and rebuilds the overlay) and **Put saves aside** (each `<region>/Card A|B` folder is moved
+  to `Card A (put aside <time>)`; nothing is deleted). It appears again after each crash.
+- **Run log (Windows).** The console closes with the game, so everything the game logs (recomp
+  `log`/`fatal`, Aurora's log callback, the crash handler's stack) also goes to `last_run.log`; the
+  run before it is kept as `previous_run.log`. The fatal-error dialog names the file.
+- **Damaged settings.ini.** One with binary data (NUL bytes) is moved to `settings.ini.corrupt`
+  and the defaults are used. Bad values in a text file were already clamped and unknown keys ignored.
+- The GX FIFO itself no longer stops on malformed data (docs/RENDERING.md "Malformed FIFO data").
+
+Test aids: `LM_RECOVERY=<0 normal | 1 reset settings | 2 rebuild | 3 saves aside>` shows no dialog
+and takes that choice (automated runs, `LM_BACKGROUND`, never show it either);
+`AURORA_FIFO_ERROR_LIMIT=3 LM_FIFO_CORRUPT=650:junk,651:junk,652:junk,653:junk` produces a fatal
+error in play.
 
 ## Updates
 

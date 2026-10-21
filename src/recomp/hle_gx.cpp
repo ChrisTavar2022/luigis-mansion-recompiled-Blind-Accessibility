@@ -14,6 +14,7 @@
 #include "recomp/hle.h"
 #include "recomp/interp.h"
 #include "recomp/runtime.h"
+#include "recomp/sched.h"
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
 #include "port/settings.h"
@@ -24,6 +25,7 @@
 #include <aurora/enhanced.h>
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -42,6 +44,7 @@ namespace recomp {
 namespace {
 
 bool sInBegin = false;
+u32 sBeginGuest = 0;  // the guest thread whose GXBegin opened the draw
 bool sInDisplayList = false;  // GXBeginDisplayList..GXEndDisplayList: everything is recorded
 
 // Fast-forward (skip.cpp): a frame that is not shown sends no draws or copies.
@@ -721,8 +724,50 @@ static FILE* dlTraceFile() {
 }
 
 u32 copyDispCount();
+
+// Test aid LM_FIFO_CORRUPT=<frame>[:<kind>][,<frame>[:<kind>]...]: at the end of that game frame
+// (GXCopyDisp count) malformed data goes into the FIFO (or the frame's tape), to exercise the
+// command processor's recovery (Aurora 0235). Kinds: byte (one 0x1D, the issue #17 opcode; default),
+// draw (a draw of 32767 vertices with no data), junk (96 pseudo-random bytes), xf (an XF load of
+// 4096 words with none following).
+static void injectFifoCorruption() {
+    static const std::vector<std::pair<u32, std::string>> sPlan = [] {
+        std::vector<std::pair<u32, std::string>> v;
+        const char* e = std::getenv("LM_FIFO_CORRUPT");
+        for (std::string s = e ? e : ""; !s.empty();) {
+            const size_t comma = s.find(',');
+            const std::string item = s.substr(0, comma);
+            const size_t colon = item.find(':');
+            v.emplace_back(u32(std::strtoul(item.c_str(), nullptr, 10)), colon == std::string::npos ? "byte" : item.substr(colon + 1));
+            s = comma == std::string::npos ? "" : s.substr(comma + 1);
+        }
+        return v;
+    }();
+    for (const auto& [frame, kind] : sPlan) {
+        if (frame != sDiagFrame) continue;
+        log("[fifo-test] frame %u: injecting malformed FIFO data (%s)%s", frame, kind.c_str(),
+            interp::capturing() ? " into the frame's tape" : "");
+        if (kind == "draw") {
+            GXCmd1u8(0x90);
+            GXCmd1u16(0x7FFF);
+        } else if (kind == "junk") {
+            u32 x = 0x12345678u ^ frame;
+            for (int i = 0; i < 96; i++) {
+                x = x * 1664525u + 1013904223u;
+                GXCmd1u8(u8(x >> 24));
+            }
+        } else if (kind == "xf") {
+            GXCmd1u8(0x10);
+            GXCmd1u32(0x0FFF0000u);
+        } else {
+            GXCmd1u8(0x1D);
+        }
+    }
+}
+
 void gx::endFrame() {
     endPendingDraw();
+    injectFifoCorruption();
     interp::snapEndFrame();
     efbcopy::onFrame(copyDispCount());
     indEndFrame();
@@ -774,6 +819,7 @@ void gx::endPendingDraw() {
 
 void hw::fifoWrite(u32 v, int size) {
     frame::gxWaitForGuestTurn();
+    interp::joinCapture();
     if (dropDraw()) [[unlikely]] return;
     if (sHeld.active) [[unlikely]] {
         if (interp::capturing()) interp::vtxBytes(v, size);  // (its tape offset: vtxDataAt when replayed)
@@ -790,12 +836,100 @@ void hw::fifoWrite(u32 v, int size) {
     if (interp::capturing()) interp::vtxBytes(v, size);
 }
 
+// --- Malformed FIFO data (Aurora 0235) ---------------------------------------------------------
+// Aurora reports a bad command with its absolute stream position, on its FIFO thread. Commands the
+// guest sends directly (lockstep frames) are found in a ring of recent GX call sites with the
+// stream position each started at; captured frames (interpolation) are found through the replay
+// that put them in the stream (interp::describeStreamPos).
+std::string guestSymbolize(u32 addr);  // runtime.cpp
+
+namespace {
+struct CallSite {
+    std::atomic<u64> pos{0};
+    std::atomic<u32> lr{0};
+    std::atomic<u32> frame{0};
+};
+constexpr u32 kCallSites = 1024;
+CallSite sCallSites[kCallSites];
+std::atomic<u32> sCallSiteNext{0};
+
+void fifoErrorReport(const AuroraFifoError* e) {
+    std::string where = interp::describeStreamPos(e->streamPos);
+    if (where.empty()) {
+        // The last call sites that started at or before the bad byte (newest first).
+        struct Hit { u64 pos; u32 lr, frame; };
+        std::vector<Hit> hits;
+        for (const CallSite& s : sCallSites) {
+            const u64 pos = s.pos.load(std::memory_order_relaxed);
+            if (pos != 0 && pos <= e->streamPos) hits.push_back({pos, s.lr.load(std::memory_order_relaxed), s.frame.load(std::memory_order_relaxed)});
+        }
+        std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) { return a.pos > b.pos; });
+        char buf[64];
+        for (size_t i = 0; i < hits.size() && i < 4; i++) {
+            std::snprintf(buf, sizeof(buf), "%s-%llu B: ", i ? "; " : "", static_cast<unsigned long long>(e->streamPos - hits[i].pos));
+            where += buf + guestSymbolize(hits[i].lr);
+            if (i == 0) where += " (game frame " + std::to_string(hits[i].frame) + ")";
+        }
+        where = where.empty() ? "no GX call recorded before it" : "GX calls before it (bytes before the bad one): " + where;
+    }
+    log("[fifo] malformed GX command (%s), error %u, %s; %s", e->what, e->count,
+        e->resynced ? "resynchronized" : "rest of the block dropped", where.c_str());
+}
+}  // namespace
+
+void gx::noteCallSite(u32 lr) {
+    if (interp::capturing()) {
+        interp::noteCallSite(lr);
+        return;
+    }
+    CallSite& s = sCallSites[sCallSiteNext.fetch_add(1, std::memory_order_relaxed) % kCallSites];
+    s.pos.store(AuroraFifoStreamPos(), std::memory_order_relaxed);
+    s.lr.store(lr, std::memory_order_relaxed);
+    s.frame.store(sDiagFrame, std::memory_order_relaxed);
+}
+
+void gx::installFifoErrorReport() { AuroraSetFifoErrorCallback(&fifoErrorReport); }
+
+namespace {
+// Before every GX call that can reach the FIFO (GXHLE). Guest threads are emulated on host threads
+// and share one CPU FIFO, as on the console: a guest thread other than the one capturing the frame
+// for interpolation joins its capture (interp::joinCapture; it used to write to Aurora's FIFO
+// directly, at the same time as the host's replays). The open draw is closed first (Aurora needs
+// GXEnd), but only by the thread that opened it: a loader thread that ran while the drawing thread
+// was preempted between GXBegin and its vertices used to close that draw early, and the rest of
+// its vertices then arrived as stray FIFO bytes (docs/RENDERING.md "Malformed FIFO data").
+void beforeGxCall(const Ctx& c) {
+    interp::joinCapture();
+    if (sInBegin && sched::currentGuest() != sBeginGuest) [[unlikely]] {
+        static int sLogged = 0;
+        if (sLogged++ < 8)
+            log("[gx] GX call (lr %08X) from guest thread %08X while thread %08X has a draw open; left open", c.lr,
+                sched::currentGuest(), sBeginGuest);
+    } else {
+        gx::endPendingDraw();
+    }
+    gx::noteCallSite(c.lr);
+    interp::gxCall(c);
+}
+}  // namespace
+
 #define GXHLE(name)                                       \
     static void gxImpl_##name(::recomp::Ctx& c);          \
     HLE(name) {                                           \
         frame::gxWaitForGuestTurn();                      \
-        gx::endPendingDraw();                             \
-        interp::gxCall(c);                                \
+        beforeGxCall(c);                                  \
+        gxImpl_##name(c);                                 \
+    }                                                     \
+    static void gxImpl_##name([[maybe_unused]] ::recomp::Ctx& c)
+
+// GX functions that only fill in a guest-memory object or compute a value (GXInitTexObj,
+// GXInitLight*, GXGetTexBufferSize...): no FIFO traffic on the console, so they neither close the
+// open draw nor count as a GX call site; any guest thread may call them at any time (LM's loader
+// thread does, for every map load, while the game thread draws).
+#define GXHLE_CPU(name)                                   \
+    static void gxImpl_##name(::recomp::Ctx& c);          \
+    HLE(name) {                                           \
+        frame::gxWaitForGuestTurn();                      \
         gxImpl_##name(c);                                 \
     }                                                     \
     static void gxImpl_##name([[maybe_unused]] ::recomp::Ctx& c)
@@ -901,6 +1035,7 @@ GXHLE(GXBegin) {
     if (dropDraw()) return;
     indNoteDraw(c, "begin");
     sInBegin = true;
+    sBeginGuest = sched::currentGuest();
     if (interp::drawLogActive()) interp::drawLogCaller(guestChain(c));
     if (interp::capturing()) interp::vtxBegin(c.r[3], c.r[4], c.r[5], sProj.type == GX_PERSPECTIVE);
     if (ws::active() && sProj.type == GX_ORTHOGRAPHIC && viewportFull()) {
@@ -949,8 +1084,11 @@ GXHLE(GXCallDisplayList) {
     if (interp::drawLogActive()) interp::drawLogCaller(guestChain(c));
     if (interp::capturing()) interp::vtxDisplayList(c.r[3], hostp(c.r[3]), c.r[4]);
 }
+static u32 sDlBufSize = 0, sDlBeginLr = 0;
 GXHLE(GXBeginDisplayList) {
     sInDisplayList = true;
+    sDlBufSize = c.r[4];
+    sDlBeginLr = c.lr;
     interp::suspendForDisplayList();
     GXBeginDisplayList(hostp(c.r[3]), c.r[4]);
 }
@@ -958,6 +1096,15 @@ GXHLE(GXEndDisplayList) {
     sInDisplayList = false;
     c.r[3] = GXEndDisplayList();
     interp::resumeAfterDisplayList();
+    // Aurora's commands are not all the console's size (texture and array loads are longer), so a
+    // list sized for the console could overflow; as on the console its size is then 0 (Aurora 0235;
+    // the old cut-off list desynchronized the FIFO when called).
+    if (c.r[3] == 0 && sDlBufSize) {
+        static int sLogged = 0;
+        if (sLogged++ < 16)
+            log("[gx] display list overflowed its %u-byte buffer (begun at %s); size 0", sDlBufSize,
+                guestSymbolize(sDlBeginLr).c_str());
+    }
 }
 
 GXHLE(GXDrawSphere1) {
@@ -1138,18 +1285,18 @@ GXHLE(GXSetChanAmbColor) {
     GXSetChanAmbColor(GXChannelID(c.r[3]), color(c.r[4]));
     interp::noteColors(at);
 }
-GXHLE(GXInitLightPos) { GXInitLightPos(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
-GXHLE(GXInitLightDir) { GXInitLightDir(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
-GXHLE(GXInitSpecularDir) {
+GXHLE_CPU(GXInitLightPos) { GXInitLightPos(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
+GXHLE_CPU(GXInitLightDir) { GXInitLightDir(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
+GXHLE_CPU(GXInitSpecularDir) {
     gxAudit("GXInitSpecularDir"); GXInitSpecularDir(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3)); }
-GXHLE(GXInitLightColor) { GXInitLightColor(light(c.r[3]), color(c.r[4])); }
-GXHLE(GXInitLightSpot) {
+GXHLE_CPU(GXInitLightColor) { GXInitLightColor(light(c.r[3]), color(c.r[4])); }
+GXHLE_CPU(GXInitLightSpot) {
     gxAudit("GXInitLightSpot cutoff=%.1f fn=%u", farg(c, 1), c.r[4]); GXInitLightSpot(light(c.r[3]), farg(c, 1), GXSpotFn(c.r[4])); }
-GXHLE(GXInitLightDistAttn) {
+GXHLE_CPU(GXInitLightDistAttn) {
     gxAudit("GXInitLightDistAttn ref=%.1f bright=%.2f fn=%u", farg(c, 1), farg(c, 2), c.r[4]);
     GXInitLightDistAttn(light(c.r[3]), farg(c, 1), farg(c, 2), GXDistAttnFn(c.r[4]));
 }
-GXHLE(GXInitLightAttn) {
+GXHLE_CPU(GXInitLightAttn) {
     gxAudit("GXInitLightAttn a=%.3f %.3f %.3f k=%.4f %.4f %.6f", farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6));
     GXInitLightAttn(light(c.r[3]), farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6));
 }
@@ -1179,7 +1326,7 @@ static void noteTexImage(u32 obj, u32 image) {
     if (idx >= sTexImage.size()) sTexImage.resize(idx + 1);
     sTexImage[idx] = phys(image);
 }
-GXHLE(GXInitTexObj) {
+GXHLE_CPU(GXInitTexObj) {
     GXInitTexObj(sTex.forInit(c.r[3], kTexTag), ptr(c.r[4]), u16(c.r[5]), u16(c.r[6]), GXTexFmt(c.r[7]),
                  GXTexWrapMode(c.r[8]), GXTexWrapMode(c.r[9]), GXBool(c.r[10]));
     noteTexImage(c.r[3], c.r[4]);
@@ -1187,13 +1334,13 @@ GXHLE(GXInitTexObj) {
     if (indLogOn() || sHudTraceSet) sImageDesc[phys(c.r[4])] = (c.r[5] & 0xFFF) << 20 | (c.r[6] & 0xFFF) << 8 | (c.r[7] & 0xFF);
     diagTexInit("INIT", c.r[3], c.r[4], c.r[5], c.r[6], c.r[7], c.lr);
 }
-GXHLE(GXInitTexObjCI) {
+GXHLE_CPU(GXInitTexObjCI) {
     GXInitTexObjCI(sTex.forInit(c.r[3], kTexTag), ptr(c.r[4]), u16(c.r[5]), u16(c.r[6]), GXCITexFmt(c.r[7]),
                    GXTexWrapMode(c.r[8]), GXTexWrapMode(c.r[9]), GXBool(c.r[10]), stackArg(c, 0));
     noteTexImage(c.r[3], c.r[4]);
     diagTexInit("INITCI", c.r[3], c.r[4], c.r[5], c.r[6], c.r[7], c.lr);
 }
-GXHLE(GXInitTexObjLOD) {
+GXHLE_CPU(GXInitTexObjLOD) {
     gxAudit("GXInitTexObjLOD min=%u mag=%u lod=%.2f..%.2f bias=%.2f clamp=%u edge=%u aniso=%u", c.r[4], c.r[5], farg(c, 1), farg(c, 2), farg(c, 3), c.r[6], c.r[7], c.r[8]);
     if (GXTexObj* o = sTex.get(c.r[3], kTexTag))
         GXInitTexObjLOD(o, GXTexFilter(c.r[4]), GXTexFilter(c.r[5]), farg(c, 1), farg(c, 2), farg(c, 3),
@@ -1231,11 +1378,11 @@ GXHLE(GXLoadTexObj) {
         if (sUnknown++ < 16) log("[gx] GXLoadTexObj: unknown texture object %08X", c.r[3]);
     }
 }
-GXHLE(GXGetTexBufferSize) {
+GXHLE_CPU(GXGetTexBufferSize) {
     c.r[3] = GXGetTexBufferSize(u16(c.r[3]), u16(c.r[4]), c.r[5], GXBool(c.r[6]), u8(c.r[7]));
 }
-GXHLE(GXInitTexCacheRegion) {}
-GXHLE(GXInitTlutObj) {
+GXHLE_CPU(GXInitTexCacheRegion) {}
+GXHLE_CPU(GXInitTlutObj) {
     GXInitTlutObj(sTlut.forInit(c.r[3], kTlutTag), ptr(c.r[4]), GXTlutFmt(c.r[5]), u16(c.r[6]));
 }
 GXHLE(GXLoadTlut) {
@@ -1411,7 +1558,7 @@ GXHLE(GXSetFogRangeAdj) {
         for (int i = 0; i < 10; i++) t.r[i] = u16(rd16(c.r[5] + 2 * i));
     GXSetFogRangeAdj(GXBool(c.r[3]), u16(c.r[4]), &t);
 }
-GXHLE(GXInitFogAdjTable) {
+GXHLE_CPU(GXInitFogAdjTable) {
     const u32 table = c.r[3];
     const u16 width = u16(c.r[4]);
     const Mtx<4, 4> p(c.r[5]);
