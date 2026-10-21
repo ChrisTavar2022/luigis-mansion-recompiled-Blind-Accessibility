@@ -387,6 +387,7 @@ void loadSettings() {
     std::string line, section;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("\xEF\xBB\xBF", 0) == 0) line.erase(0, 3);  // UTF-8 BOM (file saved by an editor)
         if (line.empty() || line[0] == ';' || line[0] == '#') continue;
         if (line[0] == '[') {
             section = line.substr(1, line.find(']') - 1);

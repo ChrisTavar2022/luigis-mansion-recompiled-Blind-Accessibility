@@ -84,6 +84,26 @@ interpolation, shadows, co-op, the Pikmin fix and the audio pacing merges:
 | Audio pacing | works | no voice stops in the menus or the movie |
 | 2-player mode | works | see above |
 
+## 1.1 user reports: "the European version as the base doesn't work" (October 2026)
+
+Reproduced with the published 1.1 Windows package, an empty APPDATA, the European disc alone
+(ISO) and both discs (RVZ, European base): setup, the GLMP01 module build, boot, title, new game
+and the foyer all worked. The failure was at the first E. Gadd event (the Parlor door, event01):
+a heap shortfall made the game decompress a model over low memory, which zeroed the bus clock;
+the European frame alarm (N * bus clock / 4 / 60 ticks) then fired at once and the game logic ran
+unpaced at 60-180 frames/s (the interpolation and pacing then showed ~10 fps). The USA game hit the
+same corruption without the pacing symptom. Cause and fix: docs/SETUP.md "Guest memory" (the arena
+now ends where the console's does).
+
+Checked after the fix (dev build of the branch, scratch APPDATA/LM_CARD_DIR): European base
+through event01 and the lab at Original 30, 60 (with PAL60: 59.9 retraces/s) and 120: game logic
+30.0 frames/s throughout, every pacing alarm 1350000 ticks (33.3 ms), no store to 0x80000000-0x80000100
+after `OSInit`, no heap allocation failure; the same on the USA base. Save (LM_TEST_SAVE) and load
+from the file select, German via F1 language (event01 and lab text), the European Hidden Mansion
+(LM_HM_FORCE, mirrored foyer), both discs from RVZ with the European base (both modules and both
+overlays built). Every `pal` hook resolves (`gen_version_map.py`), and the recompiler now refuses
+to build a module whose hooks.txt names a function the release does not have.
+
 ## Notes for later work
 
 - Patches in `tools/recomp/hooks.txt` are not mapped by `gen_version_map.py`: a patch for both

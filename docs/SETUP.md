@@ -264,10 +264,41 @@ Differences the runtime handles for the European game:
   Game > *Language* answers it (English, German, French, Spanish, Italian). A save keeps
   its own language (changeable in the game's Options). The `.sdata` language variable
   (0x804BD658) is also initialised from the setting.
-- **Boot values.** Disc ID, `.ctors` start, arena start (from `__init_registers`),
-  `VI_PAL` TV format.
+- **Boot values.** Disc ID, `.ctors` start, arena start (from `__init_registers`), arena end
+  (below *Guest memory*), `VI_PAL` TV format.
 - **Hidden Mansion.** The European game has its own; with both discs the USA rules can be
   chosen instead (below, *USA Hidden Mansion on the European game*).
+
+### Guest memory (both releases)
+
+| Range | Contents |
+|-------|----------|
+| 0x80000000-0x80003100 | OS globals (boot info, clocks, ...), written by `OSInit` (hle_os.cpp) |
+| 0x80003100-arena start | the DOL's sections, the boot stack |
+| arena (OSGetArenaLo..Hi) | the game's heaps (JKRHeap root and children) |
+| (0x81800000 - FST max length) & ~31 .. 0x81800000 | the FST's place on the console (US 0x817FAE80, PAL 0x817FAA80): arena high as the apploader sets it (0x80000034/38/3C) |
+| 0x81800000-0x81804000 | locked cache (0xE0000000) |
+| 0x81810000-0x81812000 | model viewer scratch |
+| 0x81820000-0x81F00000 | host-made guest objects (`hleAlloc`: boot thread, interrupt stack, card/DVD scratch, unused-content data) |
+| 0x81F00000-0x84000000 | early Luigi's model copies, the model viewer's heap |
+
+Up to 1.1 the arena ended at 0x81700000 (the top MiB of MEM1 held `hleAlloc`), so the game
+had 1 MiB less heap than on the console. Most of the game fits, but the first E. Gadd event
+(event01, after the Parlor door) was about 20 KiB short: the decompression buffer of
+`/model/demobak1.szp` (0x4E280 bytes) could not be allocated, and the game's loader, which does
+not check, decompressed it to address 0, over the OS globals. On the European game that zeroed
+the bus clock (0x800000F8) its frame alarm is computed from, so from then on every frame ended at
+once (60-180 frames/s of game logic, user reports of 100 -> 10 fps at that cutscene); on the USA
+game the same low memory was overwritten. With the console's arena the event's allocation has
+about 1 MiB to spare (largest free block 0xDBF30-0xEA290 at that point).
+
+Safety nets (logged as `ERROR`): a failed game heap allocation (`alloc__10JKRExpHeapFUli` hook,
+tags.cpp; `LM_HEAP_LOG=1` logs every allocation and free with the heap's free total and largest
+block), a DVD read or the loaders' Yay0 decompression (`fn_800071D0`) aimed at low memory or
+outside guest memory is refused (hle_dvd.cpp), and the OS globals the game reads at run time (bus
+and core clock, memory size, TV format) are checked every frame and restored (`verifyLowMemory`).
+`LM_ALARM_LOG=1` logs every OS alarm (ticks, delay); `LM_WATCH=80000000,100` shows any store to
+the OS globals after `OSInit`.
 
 ### Version-aware code
 
@@ -301,6 +332,11 @@ both releases:
 - `ver::pal()` tells which game runs. Code that still uses raw USA addresses must check
   `port::usCodeFeature()` and stay inert on the European game; F1 greys such options with
   "applies when playing the USA version" (or "needs the USA disc").
+
+The recompiler fails (setup shows the error) when a `hooks.txt` line for the release being
+built names no function of it (e.g. a hook tagged `pal` without a re-run of the script below),
+or when a `patch` address lies outside every function: a hook that silently never runs cannot
+ship.
 
 Workflow after adding a hook or a `VA()`: `python tools/recomp/gen_version_map.py`
 (needs both dumps; about 10 s), commit `GLMP01_map.txt` and `version_addrs.inc` (address
