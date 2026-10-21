@@ -6,6 +6,7 @@
 #include "recomp/hle.h"
 #include "recomp/interp.h"
 #include "recomp/model_viewer.h"
+#include "recomp/runtime.h"
 #include "recomp/sched.h"
 #include "recomp/skip.h"
 
@@ -195,6 +196,7 @@ void setHostPaused(bool paused) { sPauseGuest = paused && sHostDecoupled; }
 bool gamePaused() { return sPauseGuest.load(std::memory_order_relaxed); }
 
 void present(Ctx& c, u32, bool) {
+    verifyLowMemory();
     gx::endFrame();
     hm::onFrame();
     if (skip::onGuestFrame(c)) return;  // fast-forward: this frame is not shown

@@ -325,7 +325,12 @@ void hleMissing(const char* name, u32 addr, Ctx& c) {
 }
 
 namespace {
-u32 sHleHeap = 0x81700000;
+// Guest objects the host makes (boot thread, interrupt stack, card/DVD scratch, unused-content
+// data) live in the host window above MEM1 (ctx.h kHostMemSize), so the whole of MEM1 below the
+// FST is the game's arena as on the console (hle_os.cpp OSInit). The model viewer keeps
+// 0x81810000-0x81812000 and early Luigi's model copies start at 0x81F00000.
+constexpr u32 kHleHeapStart = 0x81820000, kHleHeapEnd = 0x81F00000;
+u32 sHleHeap = kHleHeapStart;
 std::mutex sHleHeapM;
 }  // namespace
 
@@ -334,7 +339,7 @@ u32 hleAlloc(u32 size, u32 align) {
     sHleHeap = (sHleHeap + align - 1) & ~(align - 1);
     const u32 p = sHleHeap;
     sHleHeap += size;
-    if (sHleHeap > 0x81800000) fatal("HLE guest heap exhausted");
+    if (sHleHeap > kHleHeapEnd) fatal("HLE guest heap exhausted");
     std::memset(hostp(p), 0, size);
     return p;
 }

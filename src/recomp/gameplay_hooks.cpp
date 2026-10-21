@@ -22,7 +22,9 @@ namespace recomp {
 namespace gameplay {
 namespace {
 
-bool inMem1(u32 a) { return a >= 0x80000000u && a < 0x81800000u; }
+// Guest memory: MEM1, or the host-made objects above it (hleAlloc, e.g. the AI messages the
+// test aids send through fn_800C0F08).
+bool inMem1(u32 a) { return (a >= 0x80000000u && a < 0x81800000u) || (a >= 0x81820000u && a < 0x81F00000u); }
 s16 rds16(u32 a) { return s16(rd16(a)); }
 
 #define GP_FIRST(...)                                       \

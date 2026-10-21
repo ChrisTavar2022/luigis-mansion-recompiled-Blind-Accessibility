@@ -1212,6 +1212,29 @@ bool recompile(const Input& in, Output& out, std::string& error) {
             }
             rc.hooks.insert(std::string(words[0]));
         }
+        // Every hook for this release must name one of its functions: a hook whose name the
+        // symbol map (or, for the European game, the version map) does not give any function would
+        // silently never run (a stale GLMP01_map.txt after tagging a hook `pal`).
+        {
+            std::unordered_set<std::string> names;
+            for (const auto& [a, f] : rc.funcs) names.insert(f.name);
+            std::string missing;
+            for (const std::string& h : rc.hooks)
+                if (!names.count(h)) missing += (missing.empty() ? "" : ", ") + h;
+            if (!missing.empty()) {
+                error = "hooks.txt names functions the " + in.version + " build does not have (" + missing +
+                        "): re-run tools/recomp/gen_version_map.py";
+                return false;
+            }
+        }
+        // Patch addresses must lie inside a function of this release.
+        for (const auto& [addr, list] : rc.patches) {
+            auto it = rc.funcs.upper_bound(addr);
+            if (it == rc.funcs.begin() || addr >= std::prev(it)->first + std::prev(it)->second.size) {
+                error = fmt("hooks.txt patch at %08X is outside every %s function", addr, in.version.c_str());
+                return false;
+            }
+        }
         rc.run(out, in.version);
         size_t nhle = rc.hle.size();
         out.summary = fmt("recomp %s: %u functions (%zu HLE) -> %d files; %zu jump tables, %zu address-taken interior entries",

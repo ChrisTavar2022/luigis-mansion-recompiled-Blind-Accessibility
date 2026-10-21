@@ -124,6 +124,10 @@ fn_8002FA34 us pal
 # Early ghost lighting (cheat-equivalent, src/recomp/unused_content.cpp)
 fn_8005A5D4 us pal
 
+# Loaded files' Yay0 decompressor: a null destination (failed buffer allocation) is refused instead
+# of decompressing over low memory (src/recomp/hle_dvd.cpp).
+fn_800071D0__18LMDvdFileInfoBlockFP18LMDvdFileInfoBlock us pal
+
 # Unused assets (src/recomp/unused_assets.cpp, docs/UNUSED_CONTENT.md): portrait table readers,
 # map setup (door table), sky load callback, archive resource lookup/size (sky + GBH-map Luigi).
 fn_80121E14 us pal
@@ -329,3 +333,5 @@ fn_800F3120 us pal
 fn_80015BDC us pal
 draw__7J2DPaneFiiPC14J2DGrafContextb us pal
 free__10JKRExpHeapFPv us pal
+# Game heap allocations: failures logged loudly, LM_HEAP_LOG=1 logs all (src/recomp/tags.cpp).
+alloc__10JKRExpHeapFUli us pal
