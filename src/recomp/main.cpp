@@ -184,7 +184,13 @@ int main(int argc, char* argv[]) {
     // Default: next to settings.ini, so a scratch APPDATA (test runs) also gets its own cache
     // (Aurora's default, SDL_GetPrefPath, ignores the APPDATA variable).
     // Linux: $XDG_CACHE_HOME/Luigi's Mansion Recompiled (port::cacheDir; docs/LINUX.md).
-    static const std::string sCacheDir = port::cacheDir().string();
+    // Aurora takes UTF-8 paths (path::string() is the ANSI code page on Windows: a user name such
+    // as "José" made Aurora's path conversion throw at startup).
+    const auto utf8 = [](const std::filesystem::path& p) {
+        const std::u8string s = p.u8string();
+        return std::string(reinterpret_cast<const char*>(s.data()), s.size());
+    };
+    static const std::string sCacheDir = utf8(port::cacheDir());
     config.cachePath = sCacheDir.c_str();
     // Memory cards and imgui.ini (Aurora's userPath) in dataDir, which honours XDG_DATA_HOME /
     // APPDATA like the rest. On Windows this is the same folder SDL_GetPrefPath gives for players,
@@ -193,9 +199,10 @@ int main(int argc, char* argv[]) {
     // LM_CARD_DIR (test runs) is the user path too: Aurora's CARDInit builds the card paths from
     // userPath whenever one is set, so CARDSetBasePath alone no longer moved the cards.
     static const std::string sUserDir =
-        std::getenv("LM_CARD_DIR") ? std::string(std::getenv("LM_CARD_DIR")) + "/" : port::dataDir().string() + "/";
+        std::getenv("LM_CARD_DIR") ? utf8(port::envPath("LM_CARD_DIR")) + "/" : utf8(port::dataDir()) + "/";
     config.userPath = sUserDir.c_str();
-    if (const char* dir = std::getenv("LM_CACHE_DIR")) config.cachePath = dir;
+    static const std::string sCacheOverride = std::getenv("LM_CACHE_DIR") ? utf8(port::envPath("LM_CACHE_DIR")) : "";
+    if (!sCacheOverride.empty()) config.cachePath = sCacheOverride.c_str();
     const port::Options& opts = port::options();
     config.startFullscreen = opts.fullscreen || port::settings().video.fullscreen;
     config.windowWidth = opts.windowWidth;

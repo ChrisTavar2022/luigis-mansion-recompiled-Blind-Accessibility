@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <string>
@@ -213,6 +214,17 @@ std::filesystem::path cacheDir() {
     return appDir();
 #else
     return xdgDir("XDG_CACHE_HOME", ".cache");
+#endif
+}
+
+std::filesystem::path envPath(const char* name) {
+#ifdef _WIN32
+    const std::wstring wname(name, name + std::strlen(name));
+    if (const wchar_t* v = _wgetenv(wname.c_str())) return std::filesystem::path(v);
+    return {};
+#else
+    const char* v = std::getenv(name);
+    return v ? std::filesystem::path(v) : std::filesystem::path();
 #endif
 }
 

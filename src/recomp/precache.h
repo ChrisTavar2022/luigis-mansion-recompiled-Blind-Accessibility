@@ -25,8 +25,10 @@ Progress progress();
 // pipelines a rebuild of the known set queued (startup: the whole list; later: the variants a
 // settings change needs, Aurora 0217) are still compiling. The game starts only after them, so
 // the boot logos and the title never stutter on a compile; a settings change pauses the game
-// with a progress overlay instead of stuttering in play. Test override: LM_PRECACHE_WAIT=0
-// (start at once, compile in the background as before).
+// with a progress overlay instead of stuttering in play. Test aid LM_PRECACHE_WARM=1: with a warm
+// shader cache (a sample of the batch loaded without a miss) the rest loads while the game runs (Aurora
+// 0226, docs/RENDERING.md "Warm starts"). Test overrides: LM_PRECACHE_WAIT=0 (start at once,
+// compile in the background as before), LM_PIPELINE_BOOST=0 (no extra threads while held).
 bool holdGame();
-void drawHold();  // inside the ImGui frame while holdGame(): "Preparing shaders... n / m"
+void drawHold();  // inside the ImGui frame while holdGame(): "Loading..." / "Compiling shaders... n / m"
 }  // namespace recomp::precache
