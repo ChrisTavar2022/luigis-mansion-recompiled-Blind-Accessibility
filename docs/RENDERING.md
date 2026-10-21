@@ -2921,3 +2921,58 @@ wall lighting next to the foyer candelabras stepping at the game frame. Not inve
   visible changes, so they were left to the quality presets.
 - The 6-bit resolve (0176) could avoid its full-target copy only with in-place read-modify-write
   (framebuffer fetch / read-write storage on RGBA8), which WebGPU does not offer on D3D12.
+
+## Original 30: render-worker cost of the per-draw early-Z split (Aurora 0229, issue #13)
+
+Report (GitHub #13): at the "Original" frame rate (30, the default) cutscenes ran slower than real
+time and the sound drifted ahead of the picture, most visibly in the opening when Luigi looks at
+the map. At 31 fps and above it did not happen.
+
+**Cause.** At 30 the game runs in lockstep: its frame is drawn straight into the Aurora frame and
+`aurora_begin_frame` waits for the render worker. The early-Z split (0170/0179, "Early depth for
+cut-out textures") is applied per draw at 30. When interpolating, the merged form (0192) is used,
+but that one is not byte-identical. So at 30 every GX draw with early Z, a failing alpha test and
+Z update becomes two commands, a depth-only half and a colour half. Each command set all of its
+state again: `SetImmediates`, the uniform and texture bind groups, `SetIndexBuffer` and the blend
+constant. The opening forest (alpha-tested foliage) had 18,000 split draws per frame, about
+40,000 commands in all. Encoding took ~520 ms of worker time per second (measured with temporary
+instrumentation), and Dawn's submit came on top of that. The worker needed 50-90 ms per game
+frame on the test PC (other agents' builds and games running), and the game fell to 18-23 fps
+(10-12 at worst). The opening took 72 s instead of 48.6 s, so the picture ended 23.6 s behind the
+sound. The Parlor (behind the first key door) had the same cost and ran at 19-24 fps. Neither
+keep-warm nor EFB-to-RAM copies were the cause (A/B: `LM_KEEP_WARM_CAP=0`, `LM_EFB_RAM=0`).
+
+**Fix (0229).** `render_pass` encodes each run of GX draws with `gx::render_seq`. A state call is
+issued only when it differs from what the previous GX draw set (immediates compared bytewise, the
+uniform offset, the texture bind group, the blend constant). The whole index buffer stays bound,
+and `firstIndex` selects each draw's range. Any other command type (custom draws, clears, other
+draw types) resets the tracked state. A split pair then costs two `SetPipeline` and two draws
+instead of twelve calls. `AURORA_GX_SEQ=0` restores the old path (A/B).
+
+**Results** (1920x1080 window, default settings unless noted, guest frames per wall-clock second
+from the `[frame]` lines, audio from `LM_AUDIO_LOG` + `LM_AUDIO_WAV`):
+
+| | before | after |
+|---|---|---|
+| render worker per game frame, opening forest, busy PC | 50-90 ms | 11-15 ms |
+| the same, quiet PC (6% CPU load) | 23-39 ms (29.48 fps, 0.8 s behind) | 8-12 ms (29.97) |
+| opening (frames 883-2340), game fps | 19.6 (20.2 over the whole scene) | 29.97 |
+| picture vs sound at the end of the opening | 23.6 s behind | +0.001 s (max 0.010 s within it) |
+| opening with Enhanced lighting | | 29.97, drift -0.04 s |
+| Parlor after the first key door | 19-24 fps | 29.94-29.99 |
+| 60 / 120 / match display, opening | 29.97 (unchanged) | 29.97 / 29.94 / 29.96 |
+
+Audio pushes stayed at the console rate the whole time (572 blocks of 560 samples per 10 s,
+queue ~35.5 ms, no give-ups). The picture is unchanged: frame dumps (`LM_FRAME_DUMP`) of the
+opening (frames 900-1500, every 20th) and of the key-door route (2950-4400, every 50th) are
+byte-identical between `AURORA_GX_SEQ=0` and 1, with default settings and with Enhanced lighting.
+(One Enhanced-lighting run of the old path differed from all the others, including a rerun of
+the old path: the opening is not fully deterministic from run to run. Compare two runs per side.)
+
+Test route for the key door (US): `LM_START_MAP=2 LM_START_APPEAR=6 LM_PATCHES=41,42` (Luigi
+counts as having every key), `LM_SKIP_TEST=2700:pos:-850,290,-600` (on the left stairs), input
+`2780:STICKRIGHT*60,2840:STICKUP+STICKRIGHT*40,2880:STICKUP*60,2960:STICKLEFT*30,3000:STICKUP*40,3050:A*3,3080:STICKUP*40`
+after the usual menu input, with `LM_INPUT_CLOCK=frames`. The unlock close-up runs from guest
+frame ~3061 to ~3901. During it the game logic ran at 60 fps on every build and frame rate
+(issue #10). That is the heap corruption that the PAL-base work tracks, not pacing: in lockstep
+the game waits for its own retrace message every frame.

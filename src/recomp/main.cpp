@@ -321,8 +321,17 @@ int main(int argc, char* argv[]) {
 
     bool exiting = false;
     bool paused = false;
+    // Test aid LM_QUIT_AFTER=<seconds>: a normal quit after that long (the shader and pipeline
+    // caches are written as on a user's exit; a killed test run loses what it compiled).
+    const double quitAfter = [] {
+        const char* v = std::getenv("LM_QUIT_AFTER");
+        return v ? std::atof(v) : 0.0;
+    }();
+    const auto runStart = std::chrono::steady_clock::now();
     while (!exiting) {
         port::heartbeat();
+        if (quitAfter > 0 && std::chrono::duration<double>(std::chrono::steady_clock::now() - runStart).count() > quitAfter)
+            break;
         for (const AuroraEvent* ev = aurora_update(); ev && ev->type != AURORA_NONE; ++ev) {
             if (ev->type == AURORA_SDL_EVENT) menu::handleEvent(ev->sdl);
             if (ev->type == AURORA_EXIT) exiting = true;
