@@ -1579,6 +1579,110 @@ the intro foyer's candles fade in. It never happened on later arrivals.
 The rest of the first-arrival slowdown was the frame-rate governor (docs/INTERPOLATION.md, Pass 5,
 "First foyer arrival").
 
+### Warm starts: a faster complete hold, an honest message (Aurora 0226/0227, issue #6)
+
+**User report (public issue #6, GTX 1660 Super, i7-9700KF, Windows 10 LTSC):** "Preparing shaders"
+on every start, about 16 s on the second launch, although the shaders had been built before.
+
+**What was measured** (this PC: i9-12900KS, RTX 3090 Ti, NVMe; `LM_PIPELINE_THREADS=4` as on an
+8-thread CPU; the new `[precache] shader cache` log lines; other games running on the PC, so
+times vary by about 2x):
+- **The caches are reused.** Every warm launch, from `lmrecomp` and from `LuigisMansionRecomp`
+  after its setup, the second, the third, and a fresh process on a copy of the folder that is not in
+  the OS file cache: **0 misses, 0 compiles**. Dawn's keys are content hashes (no version, time or
+  settings order in them); D3D12 pipelines come back from Dawn's cached PSO blobs; cache path, WAL
+  and exit were all fine.
+- **The hold still re-created the whole known set.** A cached pipeline still costs about 1 ms of CPU:
+  WGSL generation 0.05, shader module (Tint) 0.2, render pipeline 0.6-0.8 (D3D12 PSO from the
+  cached blob, Dawn's lookups; the cache reads alone 0.2 ms, mostly waiting on the cache lock). The
+  hold waited for all of them: default settings 3055 pipelines, 0.7-1.2 s; Enhanced lighting
+  Ultra 10076 pipelines, 2.5-5 s (game 4.0-6.9 s after launch).
+- **After a reboot** `PRAGMA quick_check` (0017) read the whole `dawn_cache.db` before the first
+  pipeline: 2.2 s for the 244 MB Ultra cache from an NVMe SSD (0.19 s when in the OS cache); a
+  hard disk or SATA SSD takes several times that. Launch on an uncached copy: 5.9 s to the game.
+- **A partly missing cache** costs about what the user saw: 30% of the entries deleted ->
+  1973 compiles, 13.2 s (4 threads). The old prune deleted every entry a launch had not read by the
+  time the startup batch was built: everything of other graphics settings (switching Enhanced
+  lighting or MSAA and back compiled them all again) and anything first read later in a session.
+- Cold for reference: default 29-39 s (8 threads), Ultra 160 s; no Dawn cache but the NVIDIA driver
+  cache warm: 38.7 s (4 threads).
+
+So on a 4-worker CPU with Enhanced lighting, after a reboot, or after a settings switch, the
+"about a second" warm start was 5-16 s.
+
+**Fix** (`patches/aurora/0226-warm-shader-cache-start.patch`, `0227-faster-full-shader-hold.patch`,
+`src/recomp/precache.cpp`):
+- **The game still starts only once every shader is compiled or loaded** (a requirement: no
+  background loading by default). The hold is faster instead (0227):
+  - while the game is held for a batch that has not missed the cache, all hardware threads but
+    one (at most 16) create pipelines (`aurora_pipeline_cache_set_boost`; a compiling batch keeps
+    the default half, the shader compiler needs much memory per thread; `LM_PIPELINE_BOOST=0` A/B).
+    Cached pipelines stop scaling at about 12-16 threads (Dawn's device lock, taken by every
+    creation call): Ultra took 2.1 s with 6 threads, 1.8 with 8, 1.7 with 12, 1.4-1.6 with 16,
+    1.7-1.9 with 23;
+  - Dawn cache lookups on a read connection per thread (WAL readers run in parallel) instead of
+    one connection behind a mutex; writes, deletions and resets stay on the main connection;
+  - GX shader modules are reused within a session (shader config, alpha mode, normal attachment):
+    about a quarter of the pipelines share their module with another (blend/depth/cull/target
+    variants), saving its WGSL generation and Tint parse.
+- **Test aid `LM_PRECACHE_WARM=1`: start after a warm sample.** `precache::holdGame` tracks each
+  rebuild batch (Aurora stat `rebuildCount`). Once 256 of its pipelines were built without a single
+  cache miss (and the enhanced prewarm is done), the game starts and the rest loads in the
+  background in first-use order (a draw that needs one first moves it to the front and waits
+  about 1 ms, 0013); 8 misses hold it again. Not the default.
+- **Age-based prune.** `dawn_cache.db` counts launches (`aurora_session`) and stamps each entry
+  with the last launch that read or wrote it (`last_used`, added to existing caches); an entry is
+  dropped after 5 launches unused. Entries first used after the prune are stamped at shutdown.
+- **No full-file check on a clean start.** `quick_check` (both databases) only runs when the
+  previous session did not exit cleanly (crash journal); entries keep their checksums and SQLite
+  corruption errors still reset the file. Instead a background thread reads `dawn_cache.db`
+  sequentially into the OS file cache (232 MB in 237 ms), so the random blob lookups do not wait
+  for the disk one at a time.
+- **An honest message.** The hold says "Loading..." / "Loading shaders" while it reads the cache and
+  "Compiling shaders for your graphics card" only when the cache misses, with the reason: first start
+  with this cache, cache from another graphics card or driver (most lookups miss), some shaders new,
+  new graphics settings, or a cache file that cannot be used (then it really happens at every
+  start). The corner note during play only appears while shaders are compiled.
+- **Log lines for reports**: `[precache] shader cache at game start / after loading: N loaded,
+  N missed, N compiled and stored (file: N entries at start, launch N); thread time: WGSL,
+  modules, pipelines (cache reads, writes)`, `Dawn shader cache <path> opened (session N, N entries)`,
+  `prefetched`, and a line when most cached shaders do not match (another GPU or driver).
+
+**After: the complete hold, warm** (`LuigisMansionRecomp`, same PC with other games running, two
+runs each; "hold" = shader preparation, "start" = process start to the first game frame; the
+"base" thread count is the worker default, 4 as on an 8-thread CPU or the default 8 here):
+
+| Settings, base threads | Before (0226 only) | 0227, no boost | 0227, boost (16 threads) |
+|----|----|----|----|
+| Default (3055 pipelines), 4 | hold 0.74-1.24 s | hold 0.64-0.97 s | hold 0.43-0.55 s, start 1.3-1.5 s |
+| Default, 8 | | hold 0.46-0.51 s | hold 0.43-0.47 s, start 1.3-1.4 s |
+| Ultra (10076), 4 | hold 2.5-5.05 s, start 3.6-6.9 s | hold 2.4-3.4 s | hold 1.66-1.90 s, start 2.6-2.9 s |
+| Ultra, 8 | | hold 1.48-1.93 s | hold 1.31-1.68 s, start 2.1-2.7 s |
+
+An 8-thread CPU like the reporter's boosts to 7 threads. Without the full-file integrity check an
+uncached ("after a reboot") start no longer reads the whole file first (Ultra: 5.9 s -> 1.3-1.5 s
+to the game with the warm-sample test aid; the complete hold adds the 1.3-1.9 s above). Thread time
+of a warm Ultra hold: WGSL 0.4-0.5 s, modules 1.6-1.9 s (2660 of 10076 reused), pipelines 5.6-7 s,
+of which cache reads 1.1-1.5 s (were 1.7-3.9 s on the shared connection). Cold starts (any miss)
+keep the default thread count: default 48 s with 8 threads.
+
+Other cases (0226):
+
+| Case | Before | After |
+|----|----|----|
+| 30% of the cache deleted | 13.2 s held | the same: held, "Compiling" (1973 misses) |
+| Ultra -> default settings -> Ultra | default compiled 3242; the prune then deleted the Ultra-only entries | the same compile once; Ultra again: 0 misses |
+| Warm-sample test aid (`LM_PRECACHE_WARM=1`), Ultra | | start 1.1-1.2 s, background 2.4-2.9 s; no stalled or dropped draws, the slow frames are the game's own boot frames 1 and 67/68 |
+
+Note: `AURORA_NO_DEVICE_SYNC=1` changes the device's features and with them every Dawn cache key:
+a run with it compiles everything (333 s here) and doubles the cache file until the prune ages the
+other set out.
+
+Also fixed on the way: a Windows user folder with characters outside ASCII (e.g. "José")
+crashed at startup. `main.cpp` passed the ANSI code page string of `%APPDATA%` as Aurora's cache
+and user path, which Aurora reads as UTF-8 (`std::filesystem::path` threw in the crash journal
+check); both are UTF-8 now (`port::envPath` for `LM_CARD_DIR`/`LM_CACHE_DIR`).
+
 ## Enhanced lighting
 
 Optional effects layered on top of the accurate GX rendering: F1 > Visuals > Enhanced lighting
