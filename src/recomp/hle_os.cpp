@@ -25,6 +25,9 @@ namespace {
 // .ctors (null-terminated function pointer list): `_ctors` in decomp/config/*/symbols.txt.
 constexpr u32 kCtorsStartUs = 0x8020BAC0;
 constexpr u32 kCtorsStartPal = 0x80210AA0;
+// FST max length from each disc's boot.bin (+0x42C), for the console's arena high (OSInit).
+constexpr u32 kFstMaxUs = 0x5179;
+constexpr u32 kFstMaxPal = 0x5563;
 
 bool palGame() { return port::install().running == port::GameVersion::PAL; }
 
@@ -67,8 +70,38 @@ HLE(OSInit) {
     wr32(0x800000F0, kMem1Size);
     wr32(0x800000F8, 162000000);  // bus clock
     wr32(0x800000FC, 486000000);  // core clock
+    // Arena high as on the console: the apploader puts the FST at the top of MEM1
+    // ((0x81800000 - FST max length) & ~31, boot.bin +0x42C) and reports that address as the
+    // arena's end (0x80000034). Up to 1.1 this was 0x81700000, which left the game's heaps 1 MiB
+    // short: the first E. Gadd event (event01, the Parlor door) then failed to allocate a model's
+    // decompression buffer and the decompressor wrote 320 KiB at address 0 (low memory, the bus
+    // clock: the European game's frame alarm then fired at once). Host-made guest objects
+    // (hleAlloc) live above MEM1 instead (runtime.cpp).
+    const u32 fstMax = palGame() ? kFstMaxPal : kFstMaxUs;
+    const u32 arenaHi = (0x81800000u - fstMax) & ~31u;
+    wr32(0x80000034, arenaHi);  // arena high
+    wr32(0x80000038, arenaHi);  // FST location (the FST itself is not in guest memory: DVD is HLE)
+    wr32(0x8000003C, fstMax);   // FST max length
     guestCall(c, guestSymbol("OSSetArenaLo"), (initialStack() + 8 + 31) & ~31u);
-    guestCall(c, guestSymbol("OSSetArenaHi"), 0x81700000);
+    guestCall(c, guestSymbol("OSSetArenaHi"), arenaHi);
+}
+
+// Boot values in low memory that game code reads at run time (the European frame pacer computes
+// its alarm from the bus clock): checked once per frame (frame.cpp) and restored, with an error
+// in the log, if anything wrote over them.
+void verifyLowMemory() {
+    struct Word {
+        u32 addr, value;
+    };
+    const Word words[] = {{0x80000028, kMem1Size}, {0x800000F0, kMem1Size}, {0x800000F8, 162000000},
+                          {0x800000FC, 486000000}, {0x800000CC, palGame() ? 1u : 0u}};
+    for (const Word& w : words) {
+        const u32 v = rd32(w.addr);
+        if (v == w.value) continue;
+        static int sReports = 0;
+        if (sReports++ < 20) log("[os] ERROR: low memory %08X overwritten (%08X, expected %08X); restored", w.addr, v, w.value);
+        wr32(w.addr, w.value);
+    }
 }
 
 // --- alarms (used by the PAL release's frame pacing, LMDisplayUtil) -----------
@@ -101,6 +134,10 @@ void armAlarm(u32 alarm, u64 ticks, u32 handler, u64 period) {
     }
     wr32(alarm, handler);
     const double seconds = std::chrono::duration<double>(when - now).count();
+    static const bool sAlarmLog = std::getenv("LM_ALARM_LOG") != nullptr;
+    if (sAlarmLog)
+        log("[alarm] %08X ticks %llu (%.2f ms) fires in %.2f ms speed %.2f", alarm, (unsigned long long)ticks,
+            double(ticks) / kTimerClock * 1000.0, seconds * 1000.0, speed);
     sched::postIrqAfter(std::max(0.0, seconds), [alarm, gen, handler, period, when](Ctx& c) {
         {
             std::lock_guard lk(sAlarmM);

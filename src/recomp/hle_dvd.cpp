@@ -20,6 +20,19 @@
 namespace recomp {
 namespace {
 
+// A destination the game may fill with file data: main memory above the OS globals (MEM1 from
+// 0x80003100, the DOL's first section) or the host window above MEM1 (ctx.h). A failed game heap
+// allocation (null buffer) would otherwise land in low memory: the bus clock at 0x800000F8, thread
+// and arena pointers (it did in event01 up to 1.1: hle_os.cpp OSInit). Refused writes are logged.
+bool destOk(u32 dest, u32 size, const char* what, u32 lr) {
+    const u64 end = u64(dest) + size;
+    if ((dest >= 0x80003100u && end <= 0x81800000u) || (dest >= 0x81810000u && end <= 0x80000000ull + kHostMemSize))
+        return true;
+    log("[dvd] ERROR: %s of %X bytes to %08X refused (lr %08X): the game's buffer allocation failed?", what, size,
+        dest, lr);
+    return false;
+}
+
 // Host-served files: leftover-room visits (room_swap.cpp), the rebuilt unused maps 7/8
 // (unused_maps.cpp), then the PAL Hidden Mansion overlay.
 s32 ovEntry(const char* path) {
@@ -97,6 +110,16 @@ bool openWith(u32 guest, BOOL ok, const DVDFileInfo& fi) {
 
 }  // namespace
 
+// The game's Yay0 decompressor for loaded files (LMDvdFileInfoBlock, run on the DVD threads):
+// (Yay0 source r3, destination r4). Its caller does not check the destination allocation; a null
+// one is refused here (logged) instead of decompressing over low memory.
+HLE(fn_800071D0__18LMDvdFileInfoBlockFP18LMDvdFileInfoBlock) {
+    const u32 src = c.r[3], dest = c.r[4];
+    const u32 size = src >= 0x80000000u && src < 0x81800000u ? rd32(src + 4) : 0;
+    if (!destOk(dest, size, "Yay0 decompression", c.lr)) return;
+    callOriginal(c, "fn_800071D0__18LMDvdFileInfoBlockFP18LMDvdFileInfoBlock");
+}
+
 HLE(DVDInit) {}
 HLE(DVDGetDriveStatus) { c.r[3] = 0; }
 HLE(DVDCheckDisk) { c.r[3] = 1; }
@@ -145,7 +168,8 @@ HLE(DVDReadPrio) {
     // The host read (disc image, RVZ decompression) can take several milliseconds for a big
     // read: give up the CPU meanwhile, as the console's thread sleeps while the drive works.
     s32 result = -1;
-    sched::withCpuReleased([&] {
+    const bool ok = destOk(c.r[4], c.r[5], "DVDReadPrio", c.lr);
+    if (ok) sched::withCpuReleased([&] {
         result = ov >= 0 ? ovRead(ov, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]))
                  : fi    ? DVDReadPrio(fi, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]), s32(c.r[7]))
                          : -1;
@@ -173,7 +197,9 @@ HLE(DVDReadAsyncPrio) {
     }
     watchRange(c.r[4], c.r[5], "DVDReadAsyncPrio");
     s32 result = -1;
+    const bool ok = destOk(c.r[4], c.r[5], "DVDReadAsyncPrio", c.lr);
     const auto read = [&] {
+        if (!ok) return;
         result = ov >= 0 ? ovRead(ov, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]))
                          : DVDReadPrio(fi, hostp(c.r[4]), s32(c.r[5]), s32(c.r[6]), s32(c.r[8]));
     };

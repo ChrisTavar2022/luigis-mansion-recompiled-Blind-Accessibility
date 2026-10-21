@@ -709,16 +709,52 @@ HLE(fn_8002FA34) {
 }
 
 // --- memory ------------------------------------------------------------------------------------
+namespace {
+bool heapLogAll() {
+    static const bool on = [] {
+        const char* v = std::getenv("LM_HEAP_LOG");
+        return v && v[0] == '1';
+    }();
+    return on;
+}
+}  // namespace
+
 // A freed heap block: objects that lived in it get new identities (a new actor allocated at the
 // same address is not the old one).
 HLE(free__10JKRExpHeapFPv) {
     const u32 p = c.r[4];
+    if (heapLogAll()) log("[heap] free heap %08X %08X (lr %08X)", c.r[3], p, c.lr);
     if (p >= 0x80000010u && p < 0x84000000u) {
         u32 size = rd32(p - 0x10 + 4);
         if (size == 0 || size > (16u << 20)) size = 64;
         interp::tagFreed(p, size);
     }
     callOriginal(c, "free__10JKRExpHeapFPv");
+}
+
+// Every game heap allocation: a failure is logged with the heap's free total and largest block
+// and the guest call chain (the retail game never fails one; up to 1.1 event01's did, from a
+// 1 MiB smaller arena: hle_os.cpp OSInit). LM_HEAP_LOG=1 also logs every allocation and free
+// (test aid: free space and fragmentation at a point of the game).
+HLE(alloc__10JKRExpHeapFUli) {
+    const u32 heap = c.r[3], size = c.r[4], align = c.r[5], lr = c.lr, sp = c.r[1];
+    callOriginal(c, "alloc__10JKRExpHeapFUli");
+    const u32 res = c.r[3];
+    if (res != 0 && !heapLogAll()) return;
+    u32 s = sp, chain[4] = {};
+    for (int i = 0; i < 4 && s >= 0x80000000u && s < 0x81800000u; i++) {
+        s = rd32(s);
+        if (s < 0x80000000u || s >= 0x81800000u) break;
+        chain[i] = rd32(s + 4);
+    }
+    const Ctx saved = c;
+    static const u32 sTotal = guestSymbol("getTotalFreeSize__10JKRExpHeapFv");
+    static const u32 sLargest = guestSymbol("getFreeSize__10JKRExpHeapFv");
+    const u32 freeTotal = guestCall(c, sTotal, heap), largest = guestCall(c, sLargest, heap);
+    c = saved;
+    log("[heap] %salloc heap %08X size %X align %d -> %08X free %X largest %X (lr %08X %08X %08X %08X %08X)",
+        res ? "" : "ERROR: failed ", heap, size, s32(align), res, freeTotal, largest, lr, chain[0], chain[1], chain[2],
+        chain[3]);
 }
 
 }  // namespace recomp
