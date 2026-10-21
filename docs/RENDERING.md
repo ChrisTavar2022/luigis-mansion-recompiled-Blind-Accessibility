@@ -1579,7 +1579,7 @@ the intro foyer's candles fade in. It never happened on later arrivals.
 The rest of the first-arrival slowdown was the frame-rate governor (docs/INTERPOLATION.md, Pass 5,
 "First foyer arrival").
 
-### Warm starts: the game starts after a sample of the cache (Aurora 0226, issue #6)
+### Warm starts: a faster complete hold, an honest message (Aurora 0226/0227, issue #6)
 
 **User report (public issue #6, GTX 1660 Super, i7-9700KF, Windows 10 LTSC):** "Preparing shaders"
 on every start, about 16 s on the second launch, although the shaders had been built before.
@@ -1610,15 +1610,26 @@ times vary by about 2x):
 So on a 4-worker CPU with Enhanced lighting, after a reboot, or after a settings switch, the
 "about a second" warm start was 5-16 s.
 
-**Fix** (`patches/aurora/0226-warm-shader-cache-start.patch`, `src/recomp/precache.cpp`):
-- **Warm: the game starts after a sample.** `precache::holdGame` tracks each rebuild batch
-  (Aurora stat `rebuildCount`). Once 256 of its pipelines were built without a single cache miss
-  (and the enhanced prewarm is done), the cache holds this setup's shaders: the game starts and
-  the rest loads in the background in first-use order (a draw that needs one first moves it to
-  the front and waits about 1 ms, 0013). If 8 lookups of such a batch miss (a cache only partly
-  there), the game is held again until the batch is built ("shader cache incomplete" in the log).
-  A cold batch (any miss in the sample) is held to the end, as before. Settings changes use the
-  same rule. `LM_PRECACHE_WARM=0` restores the full hold (A/B).
+**Fix** (`patches/aurora/0226-warm-shader-cache-start.patch`, `0227-faster-full-shader-hold.patch`,
+`src/recomp/precache.cpp`):
+- **The game still starts only once every shader is compiled or loaded** (a requirement: no
+  background loading by default). The hold is faster instead (0227):
+  - while the game is held for a batch that has not missed the cache, all hardware threads but
+    one (at most 16) create pipelines (`aurora_pipeline_cache_set_boost`; a compiling batch keeps
+    the default half, the shader compiler needs much memory per thread; `LM_PIPELINE_BOOST=0` A/B).
+    Cached pipelines stop scaling at about 12-16 threads (Dawn's device lock, taken by every
+    creation call): Ultra took 2.1 s with 6 threads, 1.8 with 8, 1.7 with 12, 1.4-1.6 with 16,
+    1.7-1.9 with 23;
+  - Dawn cache lookups on a read connection per thread (WAL readers run in parallel) instead of
+    one connection behind a mutex; writes, deletions and resets stay on the main connection;
+  - GX shader modules are reused within a session (shader config, alpha mode, normal attachment):
+    about a quarter of the pipelines share their module with another (blend/depth/cull/target
+    variants), saving its WGSL generation and Tint parse.
+- **Test aid `LM_PRECACHE_WARM=1`: start after a warm sample.** `precache::holdGame` tracks each
+  rebuild batch (Aurora stat `rebuildCount`). Once 256 of its pipelines were built without a single
+  cache miss (and the enhanced prewarm is done), the game starts and the rest loads in the
+  background in first-use order (a draw that needs one first moves it to the front and waits
+  about 1 ms, 0013); 8 misses hold it again. Not the default.
 - **Age-based prune.** `dawn_cache.db` counts launches (`aurora_session`) and stamps each entry
   with the last launch that read or wrote it (`last_used`, added to existing caches); an entry is
   dropped after 5 launches unused. Entries first used after the prune are stamped at shutdown.
@@ -1637,21 +1648,35 @@ So on a 4-worker CPU with Enhanced lighting, after a reboot, or after a settings
   modules, pipelines (cache reads, writes)`, `Dawn shader cache <path> opened (session N, N entries)`,
   `prefetched`, and a line when most cached shaders do not match (another GPU or driver).
 
-**After** (same PC, `LM_PIPELINE_THREADS=4`; "start" = process start to the first game frame):
+**After: the complete hold, warm** (`LuigisMansionRecomp`, same PC with other games running, two
+runs each; "hold" = shader preparation, "start" = process start to the first game frame; the
+"base" thread count is the worker default, 4 as on an 8-thread CPU or the default 8 here):
+
+| Settings, base threads | Before (0226 only) | 0227, no boost | 0227, boost (16 threads) |
+|----|----|----|----|
+| Default (3055 pipelines), 4 | hold 0.74-1.24 s | hold 0.64-0.97 s | hold 0.43-0.55 s, start 1.3-1.5 s |
+| Default, 8 | | hold 0.46-0.51 s | hold 0.43-0.47 s, start 1.3-1.4 s |
+| Ultra (10076), 4 | hold 2.5-5.05 s, start 3.6-6.9 s | hold 2.4-3.4 s | hold 1.66-1.90 s, start 2.6-2.9 s |
+| Ultra, 8 | | hold 1.48-1.93 s | hold 1.31-1.68 s, start 2.1-2.7 s |
+
+An 8-thread CPU like the reporter's boosts to 7 threads. Without the full-file integrity check an
+uncached ("after a reboot") start no longer reads the whole file first (Ultra: 5.9 s -> 1.3-1.5 s
+to the game with the warm-sample test aid; the complete hold adds the 1.3-1.9 s above). Thread time
+of a warm Ultra hold: WGSL 0.4-0.5 s, modules 1.6-1.9 s (2660 of 10076 reused), pipelines 5.6-7 s,
+of which cache reads 1.1-1.5 s (were 1.7-3.9 s on the shared connection). Cold starts (any miss)
+keep the default thread count: default 48 s with 8 threads.
+
+Other cases (0226):
 
 | Case | Before | After |
 |----|----|----|
-| Default settings, 2nd launch (3055 pipelines) | hold 0.74-1.24 s | hold 0.06-0.10 s, start 0.9-1.05 s, rest in the background 0.5-0.8 s |
-| User's Ultra settings, 2nd launch (10076) | hold 2.5-5.05 s, start 3.6-6.9 s | hold 0.08-0.15 s, start 1.1-1.2 s, background 2.4-2.9 s |
-| Ultra, 3rd launch, uncached copy of the folder ("after a reboot") | start 5.9 s | start 1.26-1.46 s, background 4.3-9 s (busy PC) |
-| Default settings, 2nd launch, uncached copy | | start 1.5 s, background 0.6 s |
-| 30% of the cache deleted | 13.2 s held | the same (held: misses in the sample) |
-| Last 40% of the cache deleted | | game started, 11 misses, held again for 1674 |
-| Ultra -> default settings -> Ultra | default compiled 3242; the prune then deleted the Ultra-only entries | the same compile once; Ultra again: 0 misses, start 1.18 s |
+| 30% of the cache deleted | 13.2 s held | the same: held, "Compiling" (1973 misses) |
+| Ultra -> default settings -> Ultra | default compiled 3242; the prune then deleted the Ultra-only entries | the same compile once; Ultra again: 0 misses |
+| Warm-sample test aid (`LM_PRECACHE_WARM=1`), Ultra | | start 1.1-1.2 s, background 2.4-2.9 s; no stalled or dropped draws, the slow frames are the game's own boot frames 1 and 67/68 |
 
-Frames while the background load runs: no stalled or dropped draws; the slow frames are the game's
-own boot frames 1 and 67/68 (50-73 ms, 50-52 ms with the full hold), 26-58 ms worst over the default
-background second.
+Note: `AURORA_NO_DEVICE_SYNC=1` changes the device's features and with them every Dawn cache key:
+a run with it compiles everything (333 s here) and doubles the cache file until the prune ages the
+other set out.
 
 Also fixed on the way: a Windows user folder with characters outside ASCII (e.g. "José")
 crashed at startup. `main.cpp` passed the ANSI code page string of `%APPDATA%` as Aurora's cache

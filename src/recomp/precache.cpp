@@ -75,11 +75,10 @@ namespace {
 // settings are applied (menu::draw on the first hold frame sets the enhanced-lighting parts, which
 // can queue a second batch on the next frame), so the hold lasts at least kMinHoldFrames frames.
 constexpr int kMinHoldFrames = 3;
-// Warm shader cache (docs/RENDERING.md "Warm starts"): once this many pipelines of a batch were
-// built without a single shader cache miss, the cache holds this setup's shaders and the rest of
-// the batch is loaded in the background while the game runs (about 1 ms per pipeline; a draw that
-// needs one first waits for it, Aurora 0013). Loading all of them first took 1-3 s here and
-// several times that on 4-6 core CPUs with Enhanced lighting (10k pipelines).
+// Test aid LM_PRECACHE_WARM=1 (docs/RENDERING.md "Warm starts"; off by default: the game starts
+// only once every shader is compiled or loaded): once this many pipelines of a batch were built
+// without a single shader cache miss, the rest of the batch loads in the background while the
+// game runs (a draw that needs one first waits for it, Aurora 0013).
 constexpr uint32_t kWarmSample = 256;
 // A batch continued in the background is held again once this many of its lookups missed the
 // cache (it was only partly cached: compiling in play would stutter).
@@ -123,11 +122,11 @@ bool batchCompiling(const AuroraPipelineStats& s) { return batchMisses(s) > 0 ||
 
 void logCacheStats(const char* when, const AuroraPipelineStats& s) {
     log("[precache] shader cache %s: %u loaded, %u missed, %u compiled and stored%s (file: %u entries at start, "
-        "launch %u); thread time: WGSL %.0f ms, modules %.0f ms, pipelines %.0f ms (cache reads %.0f ms, writes "
-        "%.0f ms)",
+        "launch %u); thread time: WGSL %.0f ms, modules %.0f ms (%u reused), pipelines %.0f ms (cache reads %.0f "
+        "ms, writes %.0f ms)",
         when, s.blobHits, s.blobMisses, s.blobStores, s.blobCacheBroken ? " (cache file unusable: see above)" : "",
-        s.blobEntriesAtOpen, s.blobSession, s.wgslNs / 1e6, s.moduleNs / 1e6, s.pipelineNs / 1e6, s.blobLoadNs / 1e6,
-        s.blobStoreNs / 1e6);
+        s.blobEntriesAtOpen, s.blobSession, s.wgslNs / 1e6, s.moduleNs / 1e6, s.modulesReused, s.pipelineNs / 1e6,
+        s.blobLoadNs / 1e6, s.blobStoreNs / 1e6);
     if (s.blobEntriesAtOpen > 0 && s.blobMisses > 2 * s.blobHits)
         log("[precache] most of the %u cached shaders did not match: another graphics card or driver version wrote the "
             "cache",
@@ -140,9 +139,14 @@ bool holdGame() {
         const char* v = std::getenv("LM_PRECACHE_WAIT");
         return v && std::atoi(v) == 0;
     }();
-    // LM_PRECACHE_WARM=0 (A/B): wait for the whole batch even with a warm cache (before 0226).
+    // LM_PRECACHE_WARM=1 (test aid): start the game after a warm sample, the rest in the background.
     static const bool sNoWarm = [] {
         const char* v = std::getenv("LM_PRECACHE_WARM");
+        return !(v && std::atoi(v) == 1);
+    }();
+    // LM_PIPELINE_BOOST=0 (A/B): no extra creation threads while held for a batch from the cache.
+    static const bool sNoBoost = [] {
+        const char* v = std::getenv("LM_PIPELINE_BOOST");
         return v && std::atoi(v) == 0;
     }();
     AuroraPipelineStats s{};
@@ -202,6 +206,16 @@ bool holdGame() {
         log("[precache] resumed after %.2f s", std::chrono::duration<double>(Clock::now() - sHoldStart).count());
         logCacheStats("now", s);
     }
+    // 0227: while the game is held for a batch that so far loads from the cache (CPU bound, nothing
+    // else runs), all hardware threads but one (at most 16) create pipelines. A batch that compiles keeps the
+    // default count (the shader compiler needs much memory per thread).
+    const bool boost = hold && !sNoBoost && s.rebuildPending > 0 && batchMisses(s) == 0 && !s.blobCacheBroken;
+    static bool sBoost = false;
+    if (boost != sBoost) {
+        sBoost = boost;
+        aurora_pipeline_cache_set_boost(boost);
+        if (sLog) log("[precache] creation threads: %s", boost ? "all but one, max 16 (held, loading from the cache)" : "default");
+    }
     sHolding = hold;
     sHoldMax = std::max(sHoldMax, s.rebuildPending);
     return hold;
@@ -243,7 +257,7 @@ void drawHold() {
                                "log).");
         else if (s.blobEntriesAtOpen == 0)
             ImGui::TextWrapped("First start with this shader cache: this happens once. Later starts load the shaders "
-                               "from the cache in about a second.");
+                               "from the cache in a few seconds at most.");
         else if (s.blobMisses > 2 * s.blobHits)
             ImGui::TextWrapped("The shader cache is from another graphics card or driver version, so the shaders "
                                "are compiled again, once.");

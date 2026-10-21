@@ -50,9 +50,9 @@ The LLVM binaries are copied at install time, never committed. Toolchain lookup 
    shown (first run, `--setup`, a rebuild) and the compile is not finished yet, a
    "Compiling shaders n / N" step with a progress bar follows. The game itself only starts
    once every precache pipeline for the current settings is built (Aurora 0217, held before
-   its first frame with a "Compiling shaders... n / m" screen). With a warm cache it starts once
-   a sample of them loaded without a compile and loads the rest in the background (Aurora 0226,
-   docs/RENDERING.md "Warm starts"), and a settings change that needs other shader variants pauses it the same way, so
+   its first frame with a "Compiling shaders... n / m" screen; with a warm cache "Loading..."
+   for 0.5-2 s, all threads but one loading, Aurora 0226/0227, docs/RENDERING.md "Warm starts"),
+   and a settings change that needs other shader variants pauses it the same way, so
    the boot logos, the title and play never stutter on a compile. A draw never waits on
    anything but its own pipeline, and is never skipped (docs/RENDERING.md, "Pipeline precache").
 4. **Launch** the chosen version: open its disc in Aurora's DVD layer, check the DOL
