@@ -49,6 +49,7 @@ namespace {
 using aurora::binding::Binding;
 using aurora::binding::ControlId;
 using aurora::binding::PhysicalInput;
+using Clock = std::chrono::steady_clock;
 
 // ---- GameCube inputs -----------------------------------------------------------------
 
@@ -465,6 +466,15 @@ const bool sPadLog = [] {
     return v && *v && *v != '0';
 }();
 
+const char* connectionName(SDL_JoystickConnectionState s) {
+    switch (s) {
+    case SDL_JOYSTICK_CONNECTION_WIRED: return "wired";
+    case SDL_JOYSTICK_CONNECTION_WIRELESS: return "wireless";
+    case SDL_JOYSTICK_CONNECTION_INVALID: return "connection ?";
+    default: return "connection unknown";
+    }
+}
+
 // Gives every port its device: chosen pads first, then "Auto" ports take the remaining
 // pads in connection order. Sets SDL player indices, which is how Aurora's PAD maps ports.
 void assign() {
@@ -534,9 +544,17 @@ void assign() {
         st.pad = chosen[port] >= 0 ? sPads[chosen[port]] : Pad{};
         st.keyboard = pc.device == "keyboard" || (pc.keyboard && pc.device != "none");
         if (st.pad.id != before.id || st.pushedGen == 0) {
-            if (st.pad.id)
-                log("[controls] port %d: %s (%s, guid %s)%s", port + 1, st.pad.name.c_str(), typeName(st.pad.type),
-                    st.pad.guid.c_str(), st.keyboard ? " + keyboard" : "");
+            if (st.pad.id) {
+                SDL_Gamepad* g = SDL_GetGamepadFromID(st.pad.id);
+                const SDL_PropertiesID props = g ? SDL_GetGamepadProperties(g) : 0;
+                log("[controls] port %d: %s (%s, guid %s, vid %04x pid %04x, %s, rumble %s)%s", port + 1,
+                    st.pad.name.c_str(), typeName(st.pad.type), st.pad.guid.c_str(), g ? SDL_GetGamepadVendor(g) : 0,
+                    g ? SDL_GetGamepadProduct(g) : 0, g ? connectionName(SDL_GetGamepadConnectionState(g)) : "?",
+                    props && SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false) ? "yes" : "not reported",
+                    st.keyboard ? " + keyboard" : "");
+                if (const char* path = g ? SDL_GetGamepadPath(g) : nullptr)  // shows SDL's backend (XInput, raw input, HID)
+                    log("[controls]   path %s", path);
+            }
             else if (before.id || st.keyboard)
                 log("[controls] port %d: %s", port + 1, st.keyboard ? "keyboard" : "no device");
             if (sPadLog && st.pad.id)
@@ -636,6 +654,97 @@ void push(u32 port) {
     st.pushedGen = sGeneration;
     st.pushedPad = st.pad.id;
     st.pushedKeyboard = st.keyboard;
+}
+
+// ---- Rumble ---------------------------------------------------------------------------
+// The game switches the GameCube motor on and off (PADControlMotor: JUTGamePad::CRumble
+// start/stop and its bit patterns while vacuuming). A GameCube controller (adapter) keeps
+// Aurora's on/off path. Every other gamepad is rumbled here with SDL_RumbleGamepad and a
+// finite duration that is refreshed while the motor is on, instead of Aurora's single
+// call with duration 0. Duration 0 means "until changed" with no resend: SDL then never
+// repeats the request, so a first request the backend rejected (Windows raw input before
+// the pad is matched to its XInput/WGI slot: "Controller isn't correlated yet") or one
+// the controller's firmware times out (Xbox pads over Bluetooth/HIDAPI) was lost until
+// the game changed the motor state. With a duration SDL resends on its own, and the
+// refresh retries a rejected request. It also stops by itself if the game stops reading
+// the pads (paused on focus loss) with the motor on. LM_RUMBLE_LOG=1 logs every request.
+constexpr u32 kRumbleMs = 500;       // duration of each request
+constexpr int kRumbleRefreshMs = 100;  // re-sent this often while the motor is on
+
+struct Motor {
+    bool on = false;      // the game's (or Test rumble's) motor state
+    bool sdl = false;     // last request went through SDL_RumbleGamepad
+    bool failed = false;  // last request was rejected
+    Clock::time_point sent;
+    u32 requests = 0, failures = 0;
+    std::string error;    // SDL's reason for the last rejected request
+};
+std::array<Motor, PAD_MAX_CONTROLLERS> sMotor;
+
+const bool sRumbleLog = [] {
+    const char* v = std::getenv("LM_RUMBLE_LOG");
+    return v && *v && *v != '0';
+}();
+
+bool isGameCubePad(SDL_Gamepad* g) {
+    return SDL_GetGamepadVendor(g) == 0x057E && SDL_GetGamepadProduct(g) == 0x0337;
+}
+
+const char* motorName(u32 cmd) {
+    return cmd == PAD_MOTOR_RUMBLE ? "rumble" : cmd == PAD_MOTOR_STOP_HARD ? "stop hard" : cmd == PAD_MOTOR_STOP ? "stop" : "?";
+}
+
+// Sends port's motor state to its gamepad. refresh: periodic re-send while on.
+void sendMotor(u32 port, u32 cmd, bool refresh) {
+    auto& m = sMotor[port];
+    const auto& st = sPorts[port];
+    const bool on = cmd == PAD_MOTOR_RUMBLE;
+    m.on = on;
+    SDL_Gamepad* g = st.pad.id ? SDL_GetGamepadFromID(st.pad.id) : nullptr;
+    if (!g) {
+        if (sRumbleLog && !refresh)
+            log("[rumble] port %u %s: no gamepad on this port (%s)", port + 1, motorName(cmd),
+                st.keyboard ? "keyboard" : "none");
+        return;
+    }
+    const Profile& prof = padProfile(st.pad);
+    if (isGameCubePad(g)) {  // adapter motor: on/off only, Aurora sends it with the adapter's output
+        if (refresh) return;
+        PADControlMotor(port, on && prof.rumble ? PAD_MOTOR_RUMBLE : cmd == PAD_MOTOR_RUMBLE ? PAD_MOTOR_STOP : cmd);
+        if (sRumbleLog) log("[rumble] port %u %s: GameCube controller via Aurora", port + 1, motorName(cmd));
+        return;
+    }
+    const u16 level = on && prof.rumble ? u16(std::clamp(prof.rumbleStrength, 0.0f, 1.0f) * 65535.0f + 0.5f) : 0;
+    if (!refresh && !level && !m.sdl) return;  // nothing to stop
+    const bool ok = SDL_RumbleGamepad(g, level, level, level ? kRumbleMs : 0);
+    m.sdl = level != 0;
+    m.sent = Clock::now();
+    m.requests++;
+    if (!ok) m.failures++;
+    if (sRumbleLog && (!refresh || ok == m.failed))  // refreshes: only when the result changes
+        log("[rumble] port %u %s%s -> '%s' low=high=%u for %u ms (request %u, profile rumble %s, strength %.2f, SDL cap %d): %s%s",
+            port + 1, motorName(cmd), refresh ? " (refresh)" : "", st.pad.name.c_str(), unsigned(level),
+            level ? kRumbleMs : 0u, m.requests, prof.rumble ? "on" : "off", prof.rumbleStrength,
+            int(SDL_GetBooleanProperty(SDL_GetGamepadProperties(g), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false)),
+            ok ? "ok" : "FAILED: ", ok ? "" : SDL_GetError());
+    else if (!ok && !m.failed)  // always logged once per failure streak, so a user's log shows why
+        log("[rumble] port %u: SDL_RumbleGamepad failed on '%s': %s (request %u, %u failed)", port + 1,
+            st.pad.name.c_str(), SDL_GetError(), m.requests, m.failures);
+    else if (ok && m.failed)
+        log("[rumble] port %u: SDL_RumbleGamepad works again on '%s'", port + 1, st.pad.name.c_str());
+    m.failed = !ok;
+    if (!ok) m.error = SDL_GetError();
+}
+
+// Called on every PADRead and menu frame: keeps an "on" motor going (and retries a
+// rejected request sooner).
+void refreshMotors() {
+    const auto now = Clock::now();
+    for (u32 port = 0; port < PAD_MAX_CONTROLLERS; port++) {
+        const auto& m = sMotor[port];
+        if (m.on && now - m.sent >= std::chrono::milliseconds(m.failed ? kRumbleRefreshMs / 4 : kRumbleRefreshMs))
+            sendMotor(port, PAD_MOTOR_RUMBLE, true);
+    }
 }
 
 // Radial dead zone (rescaled so the edge stays reachable) and sensitivity, on PAD values.
@@ -774,7 +883,6 @@ const bool sRegistered = [] {
 
 // ---- Binding capture -----------------------------------------------------------------
 
-using Clock = std::chrono::steady_clock;
 constexpr float kCaptureSeconds = 6.0f;
 
 struct Capture {
@@ -1165,7 +1273,7 @@ bool analogTab() {
     ImGui::TextDisabled("How far an analog trigger bound to L/R (click) must be pulled to press it.\n"
                         "Luigi's Mansion also reads the analog L/R values (Analog triggers bindings).");
     ImGui::SeparatorText("Rumble");
-    changed |= ImGui::Checkbox("Rumble", &prof->rumble);
+    changed |= recomp::menu::Checkbox("Rumble", &prof->rumble);
     ImGui::SetItemTooltip("The controller vibrates when the game turns the GameCube rumble motor on.");
     const bool intensity = port >= 0 ? PADSupportsRumbleIntensity(u32(port)) != FALSE : prof->type != SDL_GAMEPAD_TYPE_GAMECUBE;
     ImGui::BeginDisabled(!prof->rumble || !intensity);
@@ -1177,17 +1285,25 @@ bool analogTab() {
         ImGui::TextDisabled("(on/off only)");
     }
     ImGui::BeginDisabled(port < 0 || !prof->rumble);
-    if (ImGui::Button("Test rumble")) {
+    if (recomp::menu::Button("Test rumble")) {
         sRumbleTestPort = port;
         sRumbleTestEnd = Clock::now() + std::chrono::milliseconds(600);
         // Apply a changed strength first.
         sGeneration++;
         push(u32(port));
-        PADControlMotor(u32(port), PAD_MOTOR_RUMBLE);
+        sendMotor(u32(port), PAD_MOTOR_RUMBLE, false);
     }
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("%s", port < 0 ? "Connect this controller and assign it to a port (Ports tab) to test."
                                          : "Vibrates the controller for 0.6 s.");
+    if (port >= 0 && sMotor[port].requests) {
+        ImGui::SameLine();
+        if (sMotor[port].failed)
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "The controller refused rumble: %s",
+                               sMotor[port].error.c_str());
+        else
+            ImGui::TextDisabled("Sent to the controller.");
+    }
     ImGui::Separator();
     if (ImGui::Button("Reset sticks, triggers and rumble")) {
         const Profile d = defaultsFor(*prof);
@@ -1229,7 +1345,18 @@ u32 sReads = 0;
 SDL_JoystickID sVirtualId = 0;
 SDL_Joystick* sVirtualJoy = nullptr;
 
+// LM_VIRTUAL_PAD_RUMBLE_FAIL=<n>: the first n non-zero rumble requests are rejected, the way
+// a backend rejects them before it is ready (Windows raw input before XInput correlation).
 bool SDLCALL virtualRumble(void*, Uint16 low, Uint16 high) {
+    static int sFail = [] {
+        const char* v = std::getenv("LM_VIRTUAL_PAD_RUMBLE_FAIL");
+        return v ? std::atoi(v) : 0;
+    }();
+    if ((low || high) && sFail > 0) {
+        sFail--;
+        log("[controls] virtual pad rumble low %u high %u: rejected (test)", low, high);
+        return SDL_SetError("simulated rejection (LM_VIRTUAL_PAD_RUMBLE_FAIL)");
+    }
     log("[controls] virtual pad rumble low %u high %u", low, high);
     return true;
 }
@@ -1296,9 +1423,10 @@ bool drawTab() {
         std::chrono::duration<float>(Clock::now() - sCap.start).count() > kCaptureSeconds)
         endCapture();
     if (sRumbleTestPort >= 0 && Clock::now() >= sRumbleTestEnd) {
-        PADControlMotor(u32(sRumbleTestPort), PAD_MOTOR_STOP);
+        sendMotor(u32(sRumbleTestPort), PAD_MOTOR_STOP, false);
         sRumbleTestPort = -1;
     }
+    refreshMotors();  // the game may not be reading the pads while the menu is open
     // Test aid: LM_CONTROLS_CAPTURE=<keyboard|pad>:<input key, e.g. a>:<slot 1|2> starts a
     // binding capture when the tab first shows ("pad" = port 1's controller profile).
     static const char* sEnvCapture = std::getenv("LM_CONTROLS_CAPTURE");
@@ -1359,6 +1487,7 @@ void beforeRead() {
         const auto& st = sPorts[port];
         if (st.pushedGen != sGeneration || st.pushedPad != st.pad.id || st.pushedKeyboard != st.keyboard) push(port);
     }
+    refreshMotors();
 }
 
 void afterRead(PADStatus* status) {
@@ -1377,13 +1506,10 @@ void afterRead(PADStatus* status) {
 }
 
 void controlMotor(u32 chan, u32 cmd) {
-    {
-        std::lock_guard lk(sMutex);
-        if (chan < PAD_MAX_CONTROLLERS && sPorts[chan].pad.id && !padProfile(sPorts[chan].pad).rumble &&
-            cmd == PAD_MOTOR_RUMBLE)
-            cmd = PAD_MOTOR_STOP;
-    }
-    PADControlMotor(chan, cmd);
+    if (chan >= PAD_MAX_CONTROLLERS) return;
+    std::lock_guard lk(sMutex);
+    if (sRumbleTestPort == int(chan)) sRumbleTestPort = -1;  // the game takes the motor back
+    sendMotor(chan, cmd, false);
 }
 
 }  // namespace recomp::controls

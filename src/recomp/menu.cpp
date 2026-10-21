@@ -292,6 +292,11 @@ void frame() {
         sOpen = true;
         sOpenTab = t.substr(0, slash);
         if (slash != std::string::npos) sOpenSub = t.substr(slash + 1);
+        if (sOpenTab == "Controls" && !sOpenSub.empty()) {  // its sub-tabs: Ports, Bindings, Analog
+            static std::string sControlsSub;
+            sControlsSub = sOpenSub;
+            recomp::controls::selectSubTab(sControlsSub.c_str());
+        }
         done(w.c_str());
     } else if (w == "close") {
         sOpen = false;  // as Esc (handleEvent): changes are saved when the menu closes
