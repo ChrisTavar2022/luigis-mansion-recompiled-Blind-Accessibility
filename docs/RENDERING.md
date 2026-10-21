@@ -103,8 +103,8 @@ nothing in LM does that.
 
 **Symptom.** In the cutscene when Luigi first enters the foyer, on the close-up of Luigi with
 the staircase behind him, the upper wall and glass ceiling above the stairs disappear (black)
-for about 8 frames, then pop back (user frames `docs/issues/foyer_flicker_1.webp` OK,
-`_2.webp` missing). Same at Original 30 and at 4:3, so not interpolation or widescreen.
+for about 8 frames, then pop back (the user's screenshots showed one frame with them and one
+without). Same at Original 30 and at 4:3, so not interpolation or widescreen.
 
 **Not a renderer bug.** A per-frame display-list log (`LM_DL_TRACE=<file>`, below) shows the
 game itself stops calling `GXCallDisplayList` for every part of two models (the room behind

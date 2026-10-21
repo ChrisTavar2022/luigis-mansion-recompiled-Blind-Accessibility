@@ -20,3 +20,6 @@ CMakeUserPresets.json
 
 # Super Mario Sunshine game data (separate port, never commit)
 /Mario Sunshine/
+
+__pycache__/
+*.pyc
