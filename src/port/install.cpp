@@ -173,7 +173,7 @@ fs::path sysDir(Kind, bool create) {
     (void)sMigrated;
     fs::path dir = fs::path(base) / L"Luigi's Mansion Recompiled";
     std::error_code ec;
-    if (create) fs::create_directories(dir, ec);
+    if (create) fs::create_directories(longPath(dir), ec);
     return dir;
 }
 #else
@@ -233,7 +233,7 @@ fs::path computeExeDir() {
 }
 
 bool writableDir(const fs::path& dir) {
-    const fs::path probe = dir / ".lm-write-test";
+    const fs::path probe = longPath(dir / ".lm-write-test");
     {
         std::ofstream o(probe, std::ios::binary);
         if (!o) return false;
@@ -246,7 +246,8 @@ bool writableDir(const fs::path& dir) {
 }
 
 // Sum of the file sizes under p (a file or a folder).
-std::uintmax_t treeSize(const fs::path& p) {
+std::uintmax_t treeSize(const fs::path& path) {
+    const fs::path p = longPath(path);
     std::error_code ec;
     if (fs::is_regular_file(p, ec)) return fs::file_size(p, ec);
     std::uintmax_t n = 0;
@@ -283,18 +284,18 @@ bool copyChecked(const fs::path& src, const fs::path& dst, std::string& err) {
         fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
         std::error_code e2;
         if (!ec && fs::file_size(dst, e2) != fs::file_size(src, ec)) ec = std::make_error_code(std::errc::io_error);
-        if (ec) err = "could not copy " + u8(src) + ": " + ec.message();
+        if (ec) err = "could not copy " + displayPath(src) + ": " + ec.message();
         return !ec;
     }
     if (!fs::is_directory(src, ec)) return true;  // links and other special files: none of ours
     fs::create_directories(dst, ec);
     if (ec) {
-        err = "could not create " + u8(dst) + ": " + ec.message();
+        err = "could not create " + displayPath(dst) + ": " + ec.message();
         return false;
     }
     for (auto it = fs::directory_iterator(src, ec); !ec && it != fs::directory_iterator(); it.increment(ec))
         if (!copyChecked(it->path(), dst / it->path().filename(), err)) return false;
-    if (ec) err = "could not read " + u8(src) + ": " + ec.message();
+    if (ec) err = "could not read " + displayPath(src) + ": " + ec.message();
     return !ec;
 }
 
@@ -339,20 +340,21 @@ bool emptyOrLauncherLogs(const fs::path& dir) {
 // switch), then delete the system folders. Before the switch the system folders are untouched.
 bool moveToPortable(const fs::path& exe, std::string& err, std::string& warn) {
     std::error_code ec;
-    const fs::path root = exe / kPortableDir, tmp = exe / kPortableTmp;
+    const fs::path root = longPath(exe / kPortableDir), tmp = longPath(exe / kPortableTmp);
     if (fs::exists(root, ec)) {
         if (!fs::is_directory(root, ec) || !fs::is_empty(root, ec)) {
-            err = u8(root) + " already exists and is not empty";
+            err = displayPath(root) + " already exists and is not empty";
             return false;
         }
         fs::remove(root, ec);
     }
-    const auto sources = distinctSysDirs(false);
+    std::vector<fs::path> sources;
+    for (auto& d : distinctSysDirs(false)) sources.push_back(longPath(d));
     std::vector<std::string> names;
     std::uintmax_t total = 0;
     for (auto& s : sources) {
         for (auto it = fs::directory_iterator(s, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
-            const std::string n = u8(it->path().filename());
+            const std::string n = displayPath(it->path().filename());
             if (std::find(names.begin(), names.end(), n) != names.end()) {
                 err = "two system folders both hold " + n;
                 return false;
@@ -363,13 +365,13 @@ bool moveToPortable(const fs::path& exe, std::string& err, std::string& warn) {
         total += treeSize(s);
     }
     if (const auto free = freeSpace(exe); free < total + (64u << 20)) {
-        err = "not enough free space in " + u8(exe) + " (" + sizeText(total) + " needed, " + sizeText(free) + " free)";
+        err = "not enough free space in " + displayPath(exe) + " (" + sizeText(total) + " needed, " + sizeText(free) + " free)";
         return false;
     }
     fs::remove_all(tmp, ec);
     fs::create_directories(tmp, ec);
     if (ec) {
-        err = "could not create " + u8(tmp) + ": " + ec.message();
+        err = "could not create " + displayPath(tmp) + ": " + ec.message();
         return false;
     }
     for (auto& s : sources) {
@@ -383,15 +385,15 @@ bool moveToPortable(const fs::path& exe, std::string& err, std::string& warn) {
     }
     fs::rename(tmp, root, ec);
     if (ec) {
-        err = "could not rename " + u8(tmp) + " to " + u8(root) + ": " + ec.message();
+        err = "could not rename " + displayPath(tmp) + " to " + displayPath(root) + ": " + ec.message();
         fs::remove_all(tmp, ec);
         return false;
     }
-    std::printf("[data] copied %s into %s\n", sizeText(total).c_str(), u8(root).c_str());
+    std::printf("[data] copied %s into %s\n", sizeText(total).c_str(), displayPath(root).c_str());
     for (auto& s : sources) {
         std::error_code e;
         fs::remove_all(s, e);
-        if (e && fs::exists(s, e)) warn += "The old folder " + u8(s) + " could not be removed completely; delete it by hand. ";
+        if (e && fs::exists(s, e)) warn += "The old folder " + displayPath(s) + " could not be removed completely; delete it by hand. ";
     }
     return true;
 }
@@ -401,9 +403,9 @@ bool moveToPortable(const fs::path& exe, std::string& err, std::string& warn) {
 // portable.txt is removed and the portable folder renamed away (the switch) and deleted.
 bool moveToSystem(const fs::path& exe, std::string& err, std::string& warn) {
     std::error_code ec;
-    const fs::path root = exe / kPortableDir;
+    const fs::path root = longPath(exe / kPortableDir);
     if (!fs::is_directory(root, ec)) {
-        err = "there is no portable folder " + u8(root);
+        err = "there is no portable folder " + displayPath(root);
         return false;
     }
     struct Target {
@@ -421,24 +423,24 @@ bool moveToSystem(const fs::path& exe, std::string& err, std::string& warn) {
     };
     targets.reserve(3);  // entries point into it
     std::vector<std::pair<fs::path, Target*>> entries;
-    for (Kind k : {Kind::Config, Kind::Data, Kind::Cache}) targetFor(sysDir(k, false));
+    for (Kind k : {Kind::Config, Kind::Data, Kind::Cache}) targetFor(longPath(sysDir(k, false)));
     for (auto it = fs::directory_iterator(root, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
-        const std::string n = u8(it->path().filename());
+        const std::string n = displayPath(it->path().filename());
         if (n == ".lm-write-test") continue;
-        entries.push_back({it->path(), &targetFor(sysDir(kindOf(n), false))});
+        entries.push_back({it->path(), &targetFor(longPath(sysDir(kindOf(n), false)))});
     }
     if (ec) {
-        err = "could not read " + u8(root) + ": " + ec.message();
+        err = "could not read " + displayPath(root) + ": " + ec.message();
         return false;
     }
     for (auto& t : targets)
         if (!emptyOrLauncherLogs(t.dir)) {
-            err = u8(t.dir) + " already holds data (another installation?); move or delete it first";
+            err = displayPath(t.dir) + " already holds data (another installation?); move or delete it first";
             return false;
         }
     const std::uintmax_t total = treeSize(root);
     if (const auto free = freeSpace(targets.front().dir); free < total + (64u << 20)) {
-        err = "not enough free space for " + u8(targets.front().dir) + " (" + sizeText(total) + " needed, " +
+        err = "not enough free space for " + displayPath(targets.front().dir) + " (" + sizeText(total) + " needed, " +
               sizeText(free) + " free)";
         return false;
     }
@@ -452,7 +454,7 @@ bool moveToSystem(const fs::path& exe, std::string& err, std::string& warn) {
         fs::remove_all(t.tmp, ec);
         fs::create_directories(t.tmp, ec);
         if (ec) {
-            err = "could not create " + u8(t.tmp) + ": " + ec.message();
+            err = "could not create " + displayPath(t.tmp) + ": " + ec.message();
             undo();
             return false;
         }
@@ -473,19 +475,19 @@ bool moveToSystem(const fs::path& exe, std::string& err, std::string& warn) {
         }
         fs::rename(t.tmp, t.dir, e);
         if (e) {
-            err = "could not rename " + u8(t.tmp) + " to " + u8(t.dir) + ": " + e.message();
+            err = "could not rename " + displayPath(t.tmp) + " to " + displayPath(t.dir) + ": " + e.message();
             undo();
             return false;
         }
         t.committed = true;
     }
     // The switch: without portable.txt and the portable folder the next start uses the system folders.
-    const fs::path marker = exe / kPortableFile, old = exe / kPortableOld;
+    const fs::path marker = longPath(exe / kPortableFile), old = longPath(exe / kPortableOld);
     const bool hadMarker = fs::exists(marker, ec);
     if (hadMarker) {
         fs::remove(marker, ec);
         if (ec) {
-            err = "could not remove " + u8(marker) + ": " + ec.message();
+            err = "could not remove " + displayPath(marker) + ": " + ec.message();
             undo();
             return false;
         }
@@ -493,20 +495,20 @@ bool moveToSystem(const fs::path& exe, std::string& err, std::string& warn) {
     fs::remove_all(old, ec);
     fs::rename(root, old, ec);
     if (ec) {
-        err = "could not rename " + u8(root) + ": " + ec.message() + " (is a file in it open in another program?)";
+        err = "could not rename " + displayPath(root) + ": " + ec.message() + " (is a file in it open in another program?)";
         if (hadMarker) std::ofstream(marker, std::ios::binary) << "portable\n";
         undo();
         return false;
     }
-    std::printf("[data] copied %s from %s into the system folders\n", sizeText(total).c_str(), u8(root).c_str());
+    std::printf("[data] copied %s from %s into the system folders\n", sizeText(total).c_str(), displayPath(root).c_str());
     fs::remove_all(old, ec);
-    if (ec && fs::exists(old, ec)) warn += "The old folder " + u8(old) + " could not be removed completely; delete it by hand. ";
+    if (ec && fs::exists(old, ec)) warn += "The old folder " + displayPath(old) + " could not be removed completely; delete it by hand. ";
     return true;
 }
 
 // A move the F1 menu asked for before it restarted the program (requestDataMove).
 void processMoveRequest(DataLocation& l) {
-    const fs::path req = l.exeDir / kMoveRequest;
+    const fs::path req = longPath(l.exeDir / kMoveRequest);
     std::error_code ec;
     if (!fs::exists(req, ec)) return;
     std::string what;
@@ -554,8 +556,8 @@ DataLocation computeLocation() {
     std::error_code ec;
     // Leftovers of a move that stopped half-way: the copy before its switch (the source is
     // untouched) or the old portable folder after a move back (its data is in the system folders).
-    fs::remove_all(l.exeDir / kPortableTmp, ec);
-    fs::remove_all(l.exeDir / kPortableOld, ec);
+    fs::remove_all(longPath(l.exeDir / kPortableTmp), ec);
+    fs::remove_all(longPath(l.exeDir / kPortableOld), ec);
     processMoveRequest(l);
     bool env = false;
     const bool haveEnv = envFlag("LM_PORTABLE", env);
@@ -563,22 +565,22 @@ DataLocation computeLocation() {
     l.requested = haveEnv ? env : marker;
     l.forcedByEnv = haveEnv && env;
     if (l.requested) {
-        const fs::path root = l.exeDir / kPortableDir;
+        const fs::path root = longPath(l.exeDir / kPortableDir);
         const bool existed = fs::is_directory(root, ec);
         fs::create_directories(root, ec);
         if (fs::is_directory(root, ec) && writableDir(root)) {
             l.portable = true;
-            l.root = root;
+            l.root = l.exeDir / kPortableDir;
         } else {
             if (!existed) fs::remove(root, ec);  // only if it is empty
             l.problem = "Portable mode is requested (" +
                         std::string(l.forcedByEnv ? "LM_PORTABLE=1" : "portable.txt or a portable folder next to the program") +
-                        "), but the program folder " + u8(l.exeDir) +
+                        "), but the program folder " + displayPath(l.exeDir) +
                         " cannot be written (e.g. Program Files), so the data stays in the system folder. Move the "
                         "game to a folder you own to use portable mode.";
         }
     }
-    if (l.portable) std::printf("[data] portable mode: %s\n", u8(l.root).c_str());
+    if (l.portable) std::printf("[data] portable mode: %s\n", displayPath(l.root).c_str());
     else if (!l.problem.empty()) std::printf("[data] %s\n", l.problem.c_str());
     std::fflush(stdout);
     return l;
@@ -599,7 +601,7 @@ bool exeDirWritable() { return writableDir(exeDir()); }
 
 bool isPortableDataPath(const fs::path& rel) {
     if (rel.empty()) return false;
-    const std::string first = u8(*rel.begin());
+    const std::string first = displayPath(*rel.begin());
     return first == kPortableDir || first == kPortableFile || first == kMoveRequest || first == kPortableTmp ||
            first == kPortableOld;
 }
@@ -610,11 +612,11 @@ std::string checkDataMove(bool toPortable) {
     if (toPortable) {
         if (l.portable) return "This installation is already portable.";
         if (!exeDirWritable())
-            return "The program folder " + u8(l.exeDir) +
+            return "The program folder " + displayPath(l.exeDir) +
                    " cannot be written (e.g. Program Files). Move the game to a folder you own first.";
         const fs::path root = l.exeDir / kPortableDir;
         if (fs::exists(root, ec) && !(fs::is_directory(root, ec) && fs::is_empty(root, ec)))
-            return u8(root) + " already exists and is not empty.";
+            return displayPath(root) + " already exists and is not empty.";
         std::uintmax_t total = 0;
         for (auto& d : distinctSysDirs(false)) total += treeSize(d);
         if (const auto free = freeSpace(l.exeDir); free < total + (64u << 20))
@@ -625,7 +627,7 @@ std::string checkDataMove(bool toPortable) {
     if (l.forcedByEnv) return "Portable mode is forced by the environment variable LM_PORTABLE=1; remove it first.";
     for (auto& d : distinctSysDirs(false))
         if (!emptyOrLauncherLogs(d))
-            return u8(d) + " already holds data (another installation of the game?). Move or delete it first; nothing is "
+            return displayPath(d) + " already holds data (another installation of the game?). Move or delete it first; nothing is "
                            "overwritten.";
     const auto free = freeSpace(sysDir(Kind::Data, false));
     if (const auto total = treeSize(l.root); free < total + (64u << 20))
@@ -635,7 +637,7 @@ std::string checkDataMove(bool toPortable) {
 
 std::string requestDataMove(bool toPortable) {
     if (std::string err = checkDataMove(toPortable); !err.empty()) return err;
-    const fs::path req = exeDir() / kMoveRequest;
+    const fs::path req = longPath(exeDir() / kMoveRequest);
     {
         std::ofstream out(req, std::ios::binary | std::ios::trunc);
 #ifdef _WIN32
@@ -644,7 +646,7 @@ std::string requestDataMove(bool toPortable) {
         const unsigned long pid = (unsigned long)getpid();
 #endif
         out << (toPortable ? "to-portable" : "to-system") << "\npid=" << pid << '\n';
-        if (!out) return "Could not write " + u8(req) + ".";
+        if (!out) return "Could not write " + displayPath(req) + ".";
     }
     std::printf("[data] restarting to move the data %s\n", toPortable ? "into the portable folder" : "to the system folder");
     std::fflush(stdout);
@@ -681,6 +683,88 @@ std::filesystem::path envPath(const char* name) {
 }
 
 std::filesystem::path hiddenMansionOverlayDir() { return dataDir() / "hidden_mansion"; }
+
+std::filesystem::path longPath(const std::filesystem::path& p) {
+#ifdef _WIN32
+    if (p.empty() || p.native().rfind(L"\\\\?\\", 0) == 0) return p;
+    std::error_code ec;
+    fs::path a = fs::absolute(p, ec);  // GetFullPathNameW: any length, resolves . and .., / -> \.
+    if (ec) a = p;
+    a = a.lexically_normal();
+    a.make_preferred();
+    const std::wstring& s = a.native();
+    if (s.rfind(L"\\\\.\\", 0) == 0) return a;  // device path
+    if (s.rfind(L"\\\\", 0) == 0) return fs::path(L"\\\\?\\UNC\\" + s.substr(2));
+    if (s.size() >= 3 && s[1] == L':' && s[2] == L'\\') return fs::path(L"\\\\?\\" + s);
+    return a;
+#else
+    return p;
+#endif
+}
+
+std::filesystem::path plainPath(const std::filesystem::path& p) {
+#ifdef _WIN32
+    const std::wstring& s = p.native();
+    if (s.rfind(L"\\\\?\\UNC\\", 0) == 0) return fs::path(L"\\\\" + s.substr(8));
+    if (s.rfind(L"\\\\?\\", 0) == 0) return fs::path(s.substr(4));
+#endif
+    return p;
+}
+
+std::string displayPath(const std::filesystem::path& p) { return u8(plainPath(p)); }
+
+bool longPathsEnabled() {
+#ifdef _WIN32
+    // ntdll's answer for this process (Windows 10 1607+): the manifest's longPathAware and the
+    // LongPathsEnabled policy together.
+    static const bool sOn = [] {
+        using Fn = BOOLEAN(NTAPI*)();
+        const HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+        const auto fn = nt ? reinterpret_cast<Fn>(GetProcAddress(nt, "RtlAreLongPathsEnabled")) : nullptr;
+        return fn && fn() != 0;
+    }();
+    return sOn;
+#else
+    return true;  // no such limit
+#endif
+}
+
+std::string installPathProblem() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH * 4];
+    const DWORD n = GetModuleFileNameW(nullptr, buf, DWORD(std::size(buf)));
+    const std::string dir = displayPath(fs::path(std::wstring(buf, n)).parent_path());
+    if (dir.size() <= kMaxInstallPath) return {};
+    std::printf("[install] game folder %s is %zu characters long (at most %zu)\n", dir.c_str(), dir.size(),
+                kMaxInstallPath);
+    std::fflush(stdout);
+    return "The game's folder\n\n" + dir + "\n\nis " + std::to_string(dir.size()) +
+           " characters long. The graphics components the game loads from it stop working past " +
+           std::to_string(kMaxInstallPath) +
+           " characters.\n\nMove the game's folder to a shorter path (for example C:\\Games\\Luigi's Mansion "
+           "Recompiled) and start it from there. Settings and saves are not in that folder and stay as they are.";
+#else
+    return {};
+#endif
+}
+
+std::string dataPathProblem() {
+#ifdef _WIN32
+    const std::string dir = displayPath(dataDir());
+    std::printf("[install] data folder %s (%zu characters), Windows long paths %s\n", dir.c_str(), dir.size(),
+                longPathsEnabled() ? "on" : "off");
+    std::fflush(stdout);
+    if (longPathsEnabled() || dir.size() + kDeepestDataFile <= kMaxPlainPath) return {};
+    return "The game's data folder\n\n" + dir + "\n\nis " + std::to_string(dir.size()) +
+           " characters long. Windows' long path support is off on this PC, so files deeper than " +
+           std::to_string(kMaxPlainPath) + " characters (memory card saves, shader caches) cannot be written there: "
+           "saving may fail.\n\nUse " +
+           std::string(dataLocation().portable ? "a shorter game folder (portable mode)" : "a %APPDATA% folder") +
+           " of at most " + std::to_string(kMaxPlainPath - kDeepestDataFile) + " characters, or turn on long paths in Windows (the LongPathsEnabled setting, needs an administrator).";
+#else
+    return {};
+#endif
+}
 
 namespace {
 
@@ -722,7 +806,7 @@ void findMovedDisc(std::string& disc, const std::string& rel) {
 }  // namespace
 
 void loadInstall() {
-    std::ifstream in(configDir() / "install.ini");
+    std::ifstream in(longPath(configDir() / "install.ini"));
     std::string line, usRel, palRel;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -740,7 +824,7 @@ void loadInstall() {
 }
 
 void saveInstall() {
-    std::ofstream out(configDir() / "install.ini");
+    std::ofstream out(longPath(configDir() / "install.ini"));
     const bool portable = dataLocation().portable;
     out << "[install]\n";
     out << "us_disc=" << sInstall.usDisc << '\n';
@@ -771,7 +855,13 @@ void relaunch(bool setup, const std::filesystem::path& exePath) {
     if (setup) cmd += L" --setup";
     STARTUPINFOW si{sizeof(si)};
     PROCESS_INFORMATION pi{};
-    if (CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+    // Past MAX_PATH the program is started by its extended path (CreateProcessW takes that at any
+    // length; the command line keeps the plain name). A shorter one stays plain, so the new
+    // process sees the same paths as a normal start.
+    const fs::path plain = plainPath(fs::path(exe));
+    const std::wstring app = plain.native().size() > kMaxPlainPath ? longPath(plain).wstring() : plain.wstring();
+    cmd = L"\"" + plain.wstring() + cmd.substr(cmd.find(L'"', 1));
+    if (CreateProcessW(app.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     } else if (!exePath.empty()) {

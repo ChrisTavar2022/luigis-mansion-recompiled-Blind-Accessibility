@@ -57,7 +57,7 @@ std::optional<std::string> sPicked[2];
 std::string sDialogError;  // the file dialog could not open (Linux: no xdg-desktop-portal/zenity)
 
 std::string readText(const std::filesystem::path& p) {
-    std::ifstream in(p, std::ios::binary);
+    std::ifstream in(port::longPath(p), std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(in), {});
 }
 
@@ -148,7 +148,7 @@ void startJob(Job& job, const Slot slots[2], const Plan& plan) {
             if (!us.open(paths[0], err) || !pal.open(paths[1], err)) return fail(err);
             const auto dir = port::hiddenMansionOverlayDir();
             if (!buildHiddenMansionOverlay(us, pal, dir, err)) return fail(err);
-            std::ofstream(dir / "overlay.key", std::ios::binary) << overlayKey(us, pal);
+            std::ofstream(port::longPath(dir / "overlay.key"), std::ios::binary) << overlayKey(us, pal);
         }
         std::lock_guard lk(job.m);
         job.stage = "Done";
@@ -400,8 +400,8 @@ bool run(const Options& opts, LaunchInfo& launch) {
     inst.usReady = slots[0].valid;
     inst.palReady = slots[1].valid;
     inst.hmOverlayReady = slots[0].valid && slots[1].valid &&
-                          std::filesystem::exists(port::hiddenMansionOverlayDir() / "manifest.txt") &&
-                          std::filesystem::exists(port::hiddenMansionOverlayDir() / "usa" / "manifest.txt");
+                          std::filesystem::exists(port::longPath(port::hiddenMansionOverlayDir() / "manifest.txt")) &&
+                          std::filesystem::exists(port::longPath(port::hiddenMansionOverlayDir() / "usa" / "manifest.txt"));
     inst.running = base;
     launch.version = base;
     launch.disc = slots[base == GameVersion::PAL ? 1 : 0].path;

@@ -366,7 +366,12 @@ Settings& settings() { return sSettings; }
 
 void addSettingsExtension(const SettingsExtension& ext) { extensions().push_back(ext); }
 
-std::string settingsPath() { return (configDir() / "settings.ini").string(); }
+std::string settingsPath() { return displayPath(configDir() / "settings.ini"); }
+
+namespace {
+// The file itself: an extended path, so a deep %APPDATA% works without the long path policy.
+std::filesystem::path settingsFile() { return longPath(configDir() / "settings.ini"); }
+}  // namespace
 
 bool setSetting(const std::string& section, const std::string& key, const std::string& value) {
     bool known = false;
@@ -381,7 +386,7 @@ bool setSetting(const std::string& section, const std::string& key, const std::s
 
 void loadSettings() {
     for (auto& ext : extensions()) ext.reset();
-    std::ifstream in(settingsPath());
+    std::ifstream in(settingsFile());
     if (!in) return;
     auto table = fields();
     std::string line, section;
@@ -424,7 +429,7 @@ void resetSettingsToDefaults() {
 void saveSettings() {
     // Written to a temporary file and renamed over settings.ini, so a crash or power loss while
     // saving never leaves a truncated file (which would reset every setting on the next launch).
-    const std::string path = settingsPath(), tmp = path + ".tmp";
+    const std::filesystem::path path = settingsFile(), tmp = std::filesystem::path(path) += ".tmp";
     {
         std::ofstream out(tmp, std::ios::trunc);
         if (!out) return;

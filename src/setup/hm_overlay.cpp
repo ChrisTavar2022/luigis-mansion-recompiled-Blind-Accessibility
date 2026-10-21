@@ -18,6 +18,8 @@
 //   usa/manifest.txt
 #include "setup/hm_overlay.h"
 
+#include "port/install.h"
+
 #include <algorithm>
 #include <cstring>
 #include <fstream>
@@ -315,7 +317,9 @@ bool writeFile(const std::filesystem::path& p, const Bytes& b) {
 
 }  // namespace
 
-bool buildHiddenMansionOverlay(const Disc& us, const Disc& pal, const std::filesystem::path& out, std::string& error) {
+bool buildHiddenMansionOverlay(const Disc& us, const Disc& pal, const std::filesystem::path& outDir, std::string& error) {
+    // Extended path: a deep %APPDATA% works without the long path policy (docs/SETUP.md "Long paths").
+    const std::filesystem::path out = port::longPath(outDir);
     try {
         std::error_code ec;
         std::filesystem::remove_all(out, ec);

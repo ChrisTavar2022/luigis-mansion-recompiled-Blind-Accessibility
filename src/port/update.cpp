@@ -46,6 +46,7 @@
 #include <winhttp.h>
 #else
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <spawn.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -85,7 +86,16 @@ constexpr const char* kLauncher = "LuigisMansionRecompiled.sh";
 constexpr const char* kOldLauncher = "LuigisMansionPC.sh";  // 1.0 / 1.0.1 (same file in both)
 constexpr const char* kOldLauncherSha = "efbcb131f2018dcbeb49fc937a5fafa1ec425e55bc159cf4ced3445a7b12dc36";
 #endif
-constexpr const char* kStagingName = "update.tmp";         // inside the install folder
+// Inside the install folder. Short, and the package's top folder is flattened into it, so the
+// deepest staged file is only 4 characters longer than its installed path (docs/SETUP.md "Long
+// paths"; up to 1.1.1 "update.tmp\new\<package>\" added 74 and failed past MAX_PATH).
+constexpr const char* kStagingName = "upd";
+constexpr const char* kOldStagingName = "update.tmp";  // up to 1.1.1: removed when found
+#ifdef _WIN32
+// tar.exe is not long-path aware: its working directory (the staging folder) must stay below
+// MAX_PATH. 247 = CreateDirectory's MAX_PATH - 12, with room to spare.
+constexpr size_t kMaxStagingPath = 247;
+#endif
 constexpr const char* kCleanupList = "update-cleanup.txt";  // *.old files to delete at the next start
 
 void ulog(const char* fmt, ...) {
@@ -98,10 +108,8 @@ void ulog(const char* fmt, ...) {
     std::fflush(stdout);
 }
 
-std::string utf8(const fs::path& p) {
-    const auto s = p.u8string();
-    return std::string(s.begin(), s.end());
-}
+// UTF-8 for logs and messages, without the \\?\ prefix (port::longPath).
+std::string utf8(const fs::path& p) { return port::displayPath(p); }
 fs::path fromUtf8(const std::string& s) { return fs::path(std::u8string(s.begin(), s.end())); }
 
 std::string lower(std::string s) {
@@ -942,13 +950,20 @@ fs::path sExePath = [] {
 #ifdef _WIN32
     wchar_t buf[MAX_PATH * 4];
     const DWORD n = GetModuleFileNameW(nullptr, buf, DWORD(std::size(buf)));
-    return fs::path(std::wstring(buf, n));
+    return port::plainPath(fs::path(std::wstring(buf, n)));  // \\?\... when started by that name
 #else
     std::error_code ec;
     return fs::read_symlink("/proc/self/exe", ec);
 #endif
 }();
-fs::path installDir() { return sExePath.parent_path(); }
+// Extended-length (port::longPath): every file operation of the updater works past MAX_PATH, also
+// when Windows' long path policy is off. Package-relative names are joined with under().
+fs::path installDir() { return port::longPath(sExePath.parent_path()); }
+fs::path under(const fs::path& dir, const std::string& rel) {
+    fs::path p = dir / fromUtf8(rel);
+    p.make_preferred();  // "llvm/bin/clang.exe": an extended path takes no forward slashes
+    return p;
+}
 
 bool isPackaged() {
     std::error_code ec;
@@ -1118,14 +1133,28 @@ bool startWorker(std::function<void()> fn) {
     return true;
 }
 
+// Runs tar in `cwd` (a plain path below MAX_PATH: tar is not long-path aware); its standard
+// output goes to `out` when given. Returns the exit code, -1 when it could not start.
 #ifdef _WIN32
-int runTool(const std::wstring& exe, const std::wstring& args, const fs::path& cwd) {
+int runTool(const std::wstring& exe, const std::wstring& args, const fs::path& cwd, const fs::path& out = {}) {
     std::wstring cmd = L"\"" + exe + L"\" " + args;
     STARTUPINFOW si{sizeof(si)};
+    HANDLE h = INVALID_HANDLE_VALUE;
+    if (!out.empty()) {
+        SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+        h = CreateFileW(out.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return -1;
+        si.dwFlags = STARTF_USESTDHANDLES;
+        si.hStdOutput = h;
+        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+        si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    }
     PROCESS_INFORMATION pi{};
-    if (!CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS,
-                        nullptr, cwd.wstring().c_str(), &si, &pi))
-        return -1;
+    const std::wstring dir = port::plainPath(cwd).wstring();
+    const BOOL ok = CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, h != INVALID_HANDLE_VALUE,
+                                   CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, nullptr, dir.c_str(), &si, &pi);
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    if (!ok) return -1;
     WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
@@ -1134,13 +1163,20 @@ int runTool(const std::wstring& exe, const std::wstring& args, const fs::path& c
     return int(code);
 }
 #else
-int runTool(const std::vector<std::string>& args) {
+int runTool(const std::vector<std::string>& args, const fs::path& cwd, const fs::path& out = {}) {
     std::vector<char*> argv;
     std::vector<std::string> store = args;
     for (auto& a : store) argv.push_back(a.data());
     argv.push_back(nullptr);
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    if (!out.empty()) posix_spawn_file_actions_addopen(&fa, 1, out.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    // posix_spawn has no working directory before glibc 2.29's _np call: tar's -C does it.
     pid_t pid = -1;
-    if (posix_spawnp(&pid, argv[0], nullptr, nullptr, argv.data(), environ) != 0) return -1;
+    const int err = posix_spawnp(&pid, argv[0], &fa, nullptr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&fa);
+    (void)cwd;
+    if (err != 0) return -1;
     int status = 0;
     while (waitpid(pid, &status, 0) < 0)
         if (errno != EINTR) return -1;
@@ -1148,21 +1184,60 @@ int runTool(const std::vector<std::string>& args) {
 }
 #endif
 
+// The single top folder every member of the package is in ("" when the files are at the top
+// or there are several), from tar's list of member names.
+std::string commonTopFolder(const std::string& list) {
+    std::string top;
+    bool any = false;
+    size_t pos = 0;
+    while (pos < list.size()) {
+        size_t e = list.find('\n', pos);
+        if (e == std::string::npos) e = list.size();
+        std::string name = list.substr(pos, e - pos);
+        pos = e + 1;
+        if (!name.empty() && name.back() == '\r') name.pop_back();
+        while (name.rfind("./", 0) == 0) name.erase(0, 2);
+        if (name.empty()) continue;
+        const size_t sep = name.find_first_of("/\\");
+        if (sep == std::string::npos || sep == 0) return {};  // a file at the top
+        const std::string first = name.substr(0, sep);
+        if (any && first != top) return {};
+        top = first;
+        any = true;
+    }
+    return top;
+}
+
+// Unpacks `archive` (inside `dir`) into `dir`, flattening a single top folder into it.
 std::string extract(const fs::path& archive, const fs::path& dir) {
     std::error_code ec;
-    fs::create_directories(dir, ec);
+    const fs::path list = dir / "list.txt";
 #ifdef _WIN32
-    // bsdtar (Windows 10 1803+) reads zip; relative names from the staging folder, so a user
-    // name with characters outside the code page cannot confuse it. It refuses ".." and
-    // absolute member names.
+    // bsdtar (Windows 10 1803+) reads zip; run in the staging folder with relative names, so a
+    // user name with characters outside the code page cannot confuse it. It refuses ".." and
+    // absolute member names, and writes members deeper than MAX_PATH itself (\\?\ names) as long
+    // as its working directory is below it (checked before the download).
     wchar_t sys[MAX_PATH];
     const UINT n = GetSystemDirectoryW(sys, MAX_PATH);
     const std::wstring tar = std::wstring(sys, n) + L"\\tar.exe";
     if (!fs::exists(tar, ec)) return "this Windows has no tar.exe (Windows 10 1803 or newer is needed)";
-    const int rc = runTool(tar, L"-xf \"" + archive.filename().wstring() + L"\" -C \"" + dir.filename().wstring() + L"\"",
-                           archive.parent_path());
+    const std::wstring name = L"\"" + archive.filename().wstring() + L"\"";
+    int rc = runTool(tar, L"-tf " + name, dir, list);
 #else
-    const int rc = runTool({"tar", "-xzf", archive.string(), "-C", dir.string(), "--no-same-owner"});
+    int rc = runTool({"tar", "-tzf", archive.string()}, dir, list);
+#endif
+    if (rc != 0) return "listing the package failed (tar exit " + std::to_string(rc) + ")";
+    std::string names;
+    readFile(list, names);
+    fs::remove(list, ec);
+    const std::string top = commonTopFolder(names);
+    ulog("package top folder: %s", top.empty() ? "(none)" : top.c_str());
+#ifdef _WIN32
+    rc = runTool(tar, L"-xf " + name + (top.empty() ? L"" : L" --strip-components 1"), dir);
+#else
+    std::vector<std::string> args = {"tar", "-xzf", archive.string(), "-C", dir.string(), "--no-same-owner"};
+    if (!top.empty()) args.push_back("--strip-components=1");
+    rc = runTool(args, dir);
 #endif
     if (rc != 0) return "unpacking failed (tar exit " + std::to_string(rc) + ")";
     // No links in a release package: refuse any (they could point outside the install).
@@ -1222,7 +1297,9 @@ void downloadWorker() {
                     ", so it cannot be verified; not installed. Use the download page.");
     std::error_code ec;
     fs::remove_all(staging, ec);
+    fs::remove_all(installDir() / kOldStagingName, ec);
     fs::create_directories(staging, ec);
+    if (!fs::is_directory(staging, ec)) return fail("Could not create " + utf8(staging) + ".");
     const fs::path part = staging / (c.info.assetName + ".part");
     const fs::path archive = staging / c.info.assetName;
     ulog("downloading %s (%llu bytes) to %s", c.assetUrl.c_str(), (unsigned long long)c.info.assetSize,
@@ -1290,13 +1367,17 @@ void downloadWorker() {
     if (ec) return fail("Could not rename the download: " + ec.message());
 
     setPhase(Phase::Extracting, "Unpacking...");
-    const fs::path out = staging / "new";
-    if (std::string e = extract(archive, out); !e.empty()) return fail("The package could not be unpacked: " + e + ".");
+    if (std::string e = extract(archive, staging); !e.empty()) return fail("The package could not be unpacked: " + e + ".");
     fs::remove(archive, ec);
-    const fs::path root = packageRoot(out);
-    if (root.empty()) return fail("The package does not contain the game program.");
+    if (fs::exists(archive, ec)) return fail("Could not remove the unpacked download " + utf8(archive) + ".");
+    const fs::path root = packageRoot(staging);
+    if (root.empty()) {
+        ulog("no %s found in %s", kExeName, utf8(staging).c_str());
+        return fail("The package does not contain the game program.");
+    }
     for (const char* f : kExpected) {
-        if (!fs::is_regular_file(root / fromUtf8(f), ec) || fs::file_size(root / fromUtf8(f), ec) == 0)
+        const fs::path p = under(root, f);
+        if (!fs::is_regular_file(p, ec) || fs::file_size(p, ec) == 0)
             return fail(std::string("The package is missing ") + f + ".");
     }
     ulog("staged %s in %s", c.info.tag.c_str(), utf8(root).c_str());
@@ -1356,13 +1437,24 @@ void forwardOldLauncher(const fs::path& dir) {
 }
 #endif
 
+// Lexically: p (built as dir / a relative name) stays inside dir. Links are refused when the
+// package is unpacked, so no component can lead elsewhere. (weakly_canonical drops the \\?\
+// prefix of an extended path, and fails past MAX_PATH without the long path policy.)
 bool sameOrInside(const fs::path& p, const fs::path& dir) {
-    const auto a = fs::weakly_canonical(p), b = fs::weakly_canonical(dir);
+    const fs::path a = p.lexically_normal(), b = dir.lexically_normal();
     auto it = a.begin();
     for (auto& part : b) {
-        if (it == a.end() || *it != part) return false;
+        if (part.empty()) continue;  // trailing separator of dir
+        if (it == a.end()) return false;
+#ifdef _WIN32
+        if (_wcsicmp(it->c_str(), part.c_str()) != 0) return false;
+#else
+        if (*it != part) return false;
+#endif
         ++it;
     }
+    for (; it != a.end(); ++it)
+        if (*it == "..") return false;
     return true;
 }
 
@@ -1458,6 +1550,21 @@ void download() {
                          "and unpack it yourself, or move the game to a folder you own.";
         return;
     }
+#ifdef _WIN32
+    // The package is unpacked by tar.exe in <install>\upd, which must stay below MAX_PATH.
+    if (const std::string st = utf8(installDir() / kStagingName); st.size() > kMaxStagingPath) {
+        const size_t maxInstall = kMaxStagingPath - 1 - std::strlen(kStagingName);
+        ulog("install folder path too long for the updater (%zu characters, at most %zu)", st.size() - 4, maxInstall);
+        std::lock_guard lk(sM);
+        sState.installWritable = false;
+        sState.phase = Phase::Failed;
+        sState.message = "The game folder's path is too long for the updater (" + std::to_string(st.size() - 4) +
+                         " characters, at most " + std::to_string(maxInstall) +
+                         "). Move the game to a shorter folder (e.g. C:\\Games\\Luigi's Mansion Recompiled) and update "
+                         "from there, or download the new version from the release page and unpack it yourself.";
+        return;
+    }
+#endif
     {
         std::lock_guard lk(sM);
         sState.installWritable = true;
@@ -1487,7 +1594,7 @@ void installAndRestart() {
     std::vector<fs::path> files;
     for (auto it = fs::recursive_directory_iterator(root, ec); !ec && it != fs::recursive_directory_iterator();
          it.increment(ec))
-        if (it->is_regular_file(ec)) files.push_back(fs::relative(it->path(), root, ec));
+        if (it->is_regular_file(ec)) files.push_back(it->path().lexically_relative(root));
     if (files.empty()) {
         setPhase(Phase::Failed, "The staged update is empty.");
         return;
@@ -1572,7 +1679,7 @@ void installAndRestart() {
     }
     if (!leftOver.empty()) {
         std::ofstream list(dir / kCleanupList, std::ios::binary | std::ios::app);
-        for (auto& p : leftOver) list << utf8(fs::relative(p, dir, ec)) << '\n';
+        for (auto& p : leftOver) list << utf8(p.lexically_relative(dir)) << '\n';
     }
     fs::remove_all(dir / kStagingName, ec);  // only empty folders are left in it
     ulog("installed %zu files; restarting", moved.size());
@@ -1626,7 +1733,7 @@ void cleanupAfterUpdate() {
 #endif
     const fs::path listFile = dir / kCleanupList;
     const bool haveList = fs::exists(listFile, ec);
-    const bool haveStaging = fs::exists(dir / kStagingName, ec);
+    const bool haveStaging = fs::exists(dir / kStagingName, ec) || fs::exists(dir / kOldStagingName, ec);
     if (!haveList && !haveStaging) return;
     std::thread([dir, listFile] {
         std::vector<fs::path> left;
@@ -1636,7 +1743,7 @@ void cleanupAfterUpdate() {
             while (std::getline(in, line)) {
                 if (!line.empty() && line.back() == '\r') line.pop_back();
                 if (line.empty()) continue;
-                const fs::path p = dir / fromUtf8(line);
+                const fs::path p = under(dir, line);
                 const std::string name = utf8(p.filename());
                 // Only files this updater renamed (<name>.old / .oldN) inside the install folder.
                 if (name.find(".old") == std::string::npos || !sameOrInside(p, dir)) continue;
@@ -1656,12 +1763,13 @@ void cleanupAfterUpdate() {
         }
         std::error_code ec;
         fs::remove_all(dir / kStagingName, ec);
+        fs::remove_all(dir / kOldStagingName, ec);
         if (left.empty()) {
             fs::remove(listFile, ec);
             ulog("removed the previous version's files");
         } else {
             std::ofstream out(listFile, std::ios::binary);
-            for (auto& p : left) out << utf8(fs::relative(p, dir, ec)) << '\n';
+            for (auto& p : left) out << utf8(p.lexically_relative(dir)) << '\n';
             ulog("%zu old files still in use; deleted at a later start", left.size());
         }
     }).detach();
