@@ -2976,3 +2976,12 @@ after the usual menu input, with `LM_INPUT_CLOCK=frames`. The unlock close-up ru
 frame ~3061 to ~3901. During it the game logic ran at 60 fps on every build and frame rate
 (issue #10). That is the heap corruption that the PAL-base work tracks, not pacing: in lockstep
 the game waits for its own retrace message every frame.
+
+**Found on the way (Aurora 0230).** While trying to reproduce #11 (Steam Deck), I ran the Linux build
+in WSL. There Dawn falls back to OpenGL ES (llvmpipe) at the compatibility feature level, without
+core limits. The GPU keep-warm compute shader (0215) used `@workgroup_size(256)`, above the
+compatibility limit of 128. The first time keep-warm engaged, creating its pipeline was a fatal
+uncaptured validation error (`[FATAL: aurora::gpu] ... workgroup_size(256, 1, 1) exceeds the maximum
+allowed (128, 128, 64)`). It now uses 128 invocations per workgroup and 32,768 workgroups (the
+same work), inside an error scope, so a failure turns keep-warm off. Devices with core limits
+(D3D12, Vulkan on a real GPU) were not affected. On Windows keep-warm engages as before.
