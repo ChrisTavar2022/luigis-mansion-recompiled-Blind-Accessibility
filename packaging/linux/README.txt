@@ -1,5 +1,5 @@
-Luigi's Mansion PC 1.1 - Linux x86_64
-=====================================
+Luigi's Mansion Recompiled 1.1 - Linux x86_64
+=============================================
 
 A native PC port of Luigi's Mansion (GameCube). No game data is included: the game is
 built on your computer from your own disc image the first time you start it.
@@ -27,11 +27,11 @@ REQUIREMENTS
 HOW TO RUN
 ----------
 1. Unpack the archive anywhere you like (for example your home folder):
-       tar xzf LuigisMansionPC-linux-x86_64.tar.gz
-   (or unzip LuigisMansionPC-linux-x86_64.zip)
+       tar xzf LuigisMansionRecompiled-linux-x86_64.tar.gz
+   (or unzip LuigisMansionRecompiled-linux-x86_64.zip)
 2. Start the game from that folder:
-       ./LuigisMansionPC.sh
-   or double-click LuigisMansionPC.sh in your file manager ("Run" / "Execute").
+       ./LuigisMansionRecompiled.sh
+   or double-click LuigisMansionRecompiled.sh in your file manager ("Run" / "Execute").
 3. The first start shows the setup screen: pick your disc image(s) with "Browse...",
    then "Install". The game code is translated and compiled for your PC (about 20 to 60
    seconds, depending on your CPU) and the shaders are prepared. Later starts go straight
@@ -39,10 +39,10 @@ HOW TO RUN
 
 If you unpacked the .zip and the game does not start ("Permission denied"), the
 executable bit was lost while unzipping. Run this once inside the folder:
-       chmod +x LuigisMansionPC.sh LuigisMansionRecomp llvm/bin/clang llvm/bin/ld.lld
+       chmod +x LuigisMansionRecompiled.sh LuigisMansionRecomp llvm/bin/clang llvm/bin/ld.lld
 (the .tar.gz keeps the permissions, so prefer it).
 
-Useful options (add them after ./LuigisMansionPC.sh):
+Useful options (add them after ./LuigisMansionRecompiled.sh):
     --setup          open the setup screen again (add or change disc images)
     --fullscreen     start in full screen
 
@@ -55,12 +55,14 @@ saves stay).
 
 WHERE FILES GO
 --------------
-    ~/.config/Luigi's Mansion PC/        settings.ini (F1 menu), install.ini (disc paths)
-    ~/.local/share/Luigi's Mansion PC/   game/ (the game module built from your disc),
-                                         USA/Card A, EUR/Card A (memory card saves),
-                                         hidden_mansion/, screenshots/, last_run.log
-    ~/.cache/Luigi's Mansion PC/         shader and pipeline caches (safe to delete)
+    ~/.config/Luigi's Mansion Recompiled/       settings.ini (F1 menu), install.ini (disc paths)
+    ~/.local/share/Luigi's Mansion Recompiled/  game/ (the game module built from your disc),
+                                                USA/Card A, EUR/Card A (memory card saves),
+                                                hidden_mansion/, screenshots/, last_run.log
+    ~/.cache/Luigi's Mansion Recompiled/        shader and pipeline caches (safe to delete)
 ($XDG_CONFIG_HOME, $XDG_DATA_HOME and $XDG_CACHE_HOME are used instead when they are set.)
+Versions up to 1.0.1 used folders named "Luigi's Mansion PC"; the first start of this
+version renames them, so your settings and saves carry over.
 
 To start over completely, delete those three folders. Your disc image is only read,
 never modified or copied.
@@ -68,8 +70,8 @@ never modified or copied.
 
 REPORTING PROBLEMS
 ------------------
-Every start through LuigisMansionPC.sh writes a log:
-    ~/.local/share/Luigi's Mansion PC/last_run.log      (the previous one: previous_run.log)
+Every start through LuigisMansionRecompiled.sh writes a log:
+    ~/.local/share/Luigi's Mansion Recompiled/last_run.log      (the previous one: previous_run.log)
 Please send that file, a description of what happened, your distribution, your graphics
 card and driver (the log's "Graphics adapter information" lines show them).
 If the game crashes, the log ends with "=== signal ..." and a list of addresses; that part
@@ -77,20 +79,20 @@ is the most useful.
 
 Troubleshooting:
 - "No Vulkan adapter" / black window: install the Vulkan driver (see REQUIREMENTS). As a
-  fallback you can try OpenGL ES:  LM_BACKEND=gles ./LuigisMansionPC.sh
+  fallback you can try OpenGL ES:  LM_BACKEND=gles ./LuigisMansionRecompiled.sh
 - No sound: check that PulseAudio or PipeWire (pipewire-pulse) is running.
 - "Browse..." does nothing / says the file dialog could not be opened: your desktop has no
   file-chooser service (xdg-desktop-portal, or the zenity program). Type or paste the full
   path of the disc image into the box next to "Browse..." and press "Use", or start once with
-       ./LuigisMansionPC.sh --us-disc /path/to/your/game.iso     (European disc: --pal-disc)
-- Force X11 instead of Wayland:  SDL_VIDEO_DRIVER=x11 ./LuigisMansionPC.sh
+       ./LuigisMansionRecompiled.sh --us-disc /path/to/your/game.iso     (European disc: --pal-disc)
+- Force X11 instead of Wayland:  SDL_VIDEO_DRIVER=x11 ./LuigisMansionRecompiled.sh
 - "The bundled compiler ... is missing": the llvm/ folder next to the game is incomplete;
   unpack the archive again.
 
 
 WHAT IS IN THIS FOLDER
 ----------------------
-    LuigisMansionPC.sh       launcher (writes the log, passes options on)
+    LuigisMansionRecompiled.sh  launcher (writes the log, passes options on)
     LuigisMansionRecomp      the game program (runtime, recompiler, setup)
     pipelines.bin            shader precache list
     llvm/bin/clang, ld.lld   the compiler used once to build the game module from your disc

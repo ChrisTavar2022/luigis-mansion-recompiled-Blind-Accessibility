@@ -240,7 +240,7 @@ else ()
         -Wl,--version-script=${CMAKE_SOURCE_DIR}/packaging/linux/libxml2_stub.map)
     add_dependencies(LuigisMansionRecomp lm_libxml2_stub)
     install(FILES $<TARGET_FILE:lm_libxml2_stub> DESTINATION llvm/lib)
-    install(PROGRAMS packaging/linux/LuigisMansionPC.sh DESTINATION .)
+    install(PROGRAMS packaging/linux/LuigisMansionRecompiled.sh DESTINATION .)
     install(FILES packaging/linux/README.txt DESTINATION .)
 endif ()
 

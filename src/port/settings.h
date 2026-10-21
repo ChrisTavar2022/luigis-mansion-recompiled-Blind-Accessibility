@@ -1,6 +1,6 @@
 #pragma once
 // User settings, edited in the in-game overlay menu (F1) and saved to
-// %APPDATA%\Luigi's Mansion PC\settings.ini. Read them wherever they apply;
+// %APPDATA%\Luigi's Mansion Recompiled\settings.ini. Read them wherever they apply;
 // changes take effect immediately unless noted.
 #include <iosfwd>
 #include <string>

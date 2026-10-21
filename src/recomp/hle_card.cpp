@@ -1,7 +1,7 @@
 // HLE: memory card, on top of Aurora's host CARD layer.
 //
 // Each slot is a folder of Dolphin-compatible .gci files under Aurora's user
-// directory (e.g. %APPDATA%/Luigi's Mansion PC/USA/Card A); slot A is created
+// directory (e.g. %APPDATA%/Luigi's Mansion Recompiled/USA/Card A); slot A is created
 // on first run. LM_CARD_DIR=<dir> places the card folders under <dir> instead.
 // Guest structs (CARDFileInfo, CARDStat) are marshalled to and from their host
 // counterparts; file data is transferred straight into guest memory. Every

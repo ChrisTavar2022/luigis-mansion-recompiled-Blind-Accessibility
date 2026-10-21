@@ -1,6 +1,6 @@
 #pragma once
 // What the user installed: their disc images and what setup derived from them
-// (docs/SETUP.md). Persisted to %APPDATA%\Luigi's Mansion PC\install.ini; the derived
+// (docs/SETUP.md). Persisted to %APPDATA%\Luigi's Mansion Recompiled\install.ini; the derived
 // files live next to it. The F1 menu reads it to grey out features whose disc is missing.
 #include <filesystem>
 #include <string>
@@ -47,11 +47,11 @@ const char* availNote(Avail a);  // short explanation, nullptr for Yes
 InstallState& install();
 
 // Where the port writes (created on demand; docs/SETUP.md, docs/LINUX.md):
-//   Windows: all three are %APPDATA%\Luigi's Mansion PC.
-//   Linux:   configDir  $XDG_CONFIG_HOME/Luigi's Mansion PC (~/.config/...): settings.ini, install.ini
-//            dataDir    $XDG_DATA_HOME/Luigi's Mansion PC (~/.local/share/...): game modules, Hidden
+//   Windows: all three are %APPDATA%\Luigi's Mansion Recompiled.
+//   Linux:   configDir  $XDG_CONFIG_HOME/Luigi's Mansion Recompiled (~/.config/...): settings.ini, install.ini
+//            dataDir    $XDG_DATA_HOME/Luigi's Mansion Recompiled (~/.local/share/...): game modules, Hidden
 //                       Mansion overlays, memory cards, screenshots
-//            cacheDir   $XDG_CACHE_HOME/Luigi's Mansion PC (~/.cache/...): GPU pipeline/shader caches
+//            cacheDir   $XDG_CACHE_HOME/Luigi's Mansion Recompiled (~/.cache/...): GPU pipeline/shader caches
 std::filesystem::path configDir();
 std::filesystem::path dataDir();
 std::filesystem::path cacheDir();

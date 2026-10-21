@@ -1,5 +1,5 @@
-Luigi's Mansion PC 1.1 - Windows x64
-====================================
+Luigi's Mansion Recompiled 1.1 - Windows x64
+============================================
 
 A native PC port of Luigi's Mansion (GameCube). No game data is included: the game is
 built on your computer from your own disc image the first time you start it.
@@ -59,10 +59,12 @@ HIGHLIGHTS
 
 WHERE FILES GO
 --------------
-    %APPDATA%\Luigi's Mansion PC\            settings.ini (F1 menu), install.ini (discs)
-    %APPDATA%\Luigi's Mansion PC\game\       the game module built from your disc
-    %APPDATA%\Luigi's Mansion PC\USA\Card A  memory card saves (Dolphin-compatible .gci;
-                                             European: EUR\Card A)
+    %APPDATA%\Luigi's Mansion Recompiled\            settings.ini (F1 menu), install.ini (discs)
+    %APPDATA%\Luigi's Mansion Recompiled\game\       the game module built from your disc
+    %APPDATA%\Luigi's Mansion Recompiled\USA\Card A  memory card saves (Dolphin-compatible .gci;
+                                                     European: EUR\Card A)
+Versions up to 1.0.1 used %APPDATA%\Luigi's Mansion PC; the first start of this version
+renames it, so your settings and saves carry over.
 
 
 KNOWN LIMITS

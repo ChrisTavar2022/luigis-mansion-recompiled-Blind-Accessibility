@@ -115,7 +115,7 @@ def run(a, preset, route, ini, spec):
     d = Path(a.work) / preset / route
     if d.exists():
         shutil.rmtree(d)
-    cfg = d / "app" / "Luigi's Mansion PC"
+    cfg = d / "app" / "Luigi's Mansion Recompiled"
     cfg.mkdir(parents=True)
     (d / "card").mkdir()
     full = sweep.merge(ini, GAMEPLAY) if route in ("hunt", "boss10", "boss13") else ini

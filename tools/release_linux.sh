@@ -5,7 +5,7 @@
 # made from this checkout's committed HEAD, installs missing build packages (apt, asks for the
 # sudo password once), finds or downloads the official LLVM release whose clang/ld.lld are
 # bundled, runs tools/package_linux.sh and copies
-#   LuigisMansionPC-<version>-linux-x86_64.tar.gz / .zip
+#   LuigisMansionRecompiled-<version>-linux-x86_64.tar.gz / .zip
 # into <out dir> (default: out/ of this checkout). No game data is involved.
 set -euo pipefail
 VERSION=${1:?usage: release_linux.sh <version> [out dir]}
@@ -68,6 +68,6 @@ step "Build and package (this can take a while)"
 
 step "Copy to $DEST"
 for ext in tar.gz zip; do
-    cp -f "$WORK/out/LuigisMansionPC-linux-x86_64.$ext" "$DEST/LuigisMansionPC-$VERSION-linux-x86_64.$ext"
-    ls -la "$DEST/LuigisMansionPC-$VERSION-linux-x86_64.$ext"
+    cp -f "$WORK/out/LuigisMansionRecompiled-linux-x86_64.$ext" "$DEST/LuigisMansionRecompiled-$VERSION-linux-x86_64.$ext"
+    ls -la "$DEST/LuigisMansionRecompiled-$VERSION-linux-x86_64.$ext"
 done

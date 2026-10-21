@@ -30,10 +30,10 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 py=${LM_PYTHON:-python}
 disc=${LM_DISC:-$root/orig/GLME01.iso}
 run="$out/$scen"
-rm -rf "$run"; mkdir -p "$run/appdata/Luigi's Mansion PC" "$run/card" "$run/dump"
-printf '[video]\ntarget_fps=%s\nmatch_display_refresh=false\n' "$fps" > "$run/appdata/Luigi's Mansion PC/settings.ini"
+rm -rf "$run"; mkdir -p "$run/appdata/Luigi's Mansion Recompiled" "$run/card" "$run/dump"
+printf '[video]\ntarget_fps=%s\nmatch_display_refresh=false\n' "$fps" > "$run/appdata/Luigi's Mansion Recompiled/settings.ini"
 # LM_EXTRA_INI='[section]\nkey=value...': more settings (e.g. enhanced lighting, world lights)
-if [ -n "${LM_EXTRA_INI:-}" ]; then printf '%b\n' "$LM_EXTRA_INI" >> "$run/appdata/Luigi's Mansion PC/settings.ini"; fi
+if [ -n "${LM_EXTRA_INI:-}" ]; then printf '%b\n' "$LM_EXTRA_INI" >> "$run/appdata/Luigi's Mansion Recompiled/settings.ini"; fi
 user_appdata=${APPDATA:-}  # Python finds user-installed packages through it
 win() { if command -v cygpath >/dev/null; then cygpath -w "$1"; else echo "$1"; fi; }
 export APPDATA="$(win "$run/appdata")" LM_CARD_DIR="$(win "$run/card")" LM_BACKGROUND=1 LM_AUDIO=${LM_AUDIO:-0}

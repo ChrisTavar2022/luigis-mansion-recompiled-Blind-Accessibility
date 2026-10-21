@@ -271,7 +271,7 @@ def write_ini(path: Path, ini):
 
 def run(args, scenario):
     d = Path(args.work) / scenario[0]
-    db = d / "app" / "Luigi's Mansion PC" / "pipeline_cache.db"
+    db = d / "app" / "Luigi's Mansion Recompiled" / "pipeline_cache.db"
     if args.resume and (d / "done").exists() and db.exists():
         print(f"{scenario[0]}: kept from an earlier sweep", flush=True)
         return db
@@ -292,7 +292,7 @@ def run_once(args, scenario):
     d = Path(args.work) / name
     if d.exists():
         shutil.rmtree(d)
-    cfg = d / "app" / "Luigi's Mansion PC"
+    cfg = d / "app" / "Luigi's Mansion Recompiled"
     cfg.mkdir(parents=True)
     (d / "card").mkdir()
     if ini:

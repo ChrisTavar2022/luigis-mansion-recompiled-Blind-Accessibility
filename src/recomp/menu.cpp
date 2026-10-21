@@ -413,9 +413,9 @@ void updatesSection() {
     ImGui::SeparatorText("Updates");
     const up::State st = up::state();
     if (std::strcmp(up::currentVersion(), up::buildVersion()) != 0)
-        ImGui::Text("Luigi's Mansion PC %s (LM_UPDATE_VERSION: checking as %s)", up::buildVersion(), up::currentVersion());
+        ImGui::Text("Luigi's Mansion Recompiled %s (LM_UPDATE_VERSION: checking as %s)", up::buildVersion(), up::currentVersion());
     else
-        ImGui::Text("Luigi's Mansion PC %s", up::buildVersion());
+        ImGui::Text("Luigi's Mansion Recompiled %s", up::buildVersion());
     auto& u = port::settings().updates;
     sDirty |= recomp::menu::Checkbox("Check for updates at startup", &u.checkAtStartup);
     ImGui::SetItemTooltip("When the game starts, asks GitHub in the background whether a newer release is out\n"
@@ -1743,7 +1743,8 @@ void draw() {
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
     idcheck::beforeWindow();
     bool open = true;
-    if (ImGui::Begin("Luigi's Mansion PC  (F1)", &open, ImGuiWindowFlags_NoCollapse)) {
+    // The ID after ### is the old title, so imgui.ini keeps the window's saved size and place.
+    if (ImGui::Begin("Luigi's Mansion Recompiled  (F1)###Luigi's Mansion PC  (F1)", &open, ImGuiWindowFlags_NoCollapse)) {
         ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.45f);
         if (ImGui::BeginTabBar("tabs")) {
             if (tab("Visuals")) {

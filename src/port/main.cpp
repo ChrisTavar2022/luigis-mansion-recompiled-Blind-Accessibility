@@ -53,7 +53,7 @@ int main(int argc, char* argv[]) {
     port::installCrashHandler();
     port::parseOptions(argc, argv);
     AuroraConfig config{};
-    config.appName = "Luigi's Mansion PC";
+    config.appName = "Luigi's Mansion Recompiled";
     config.logCallback = &log_callback;
     // Emulated MEM1 backing the game's JKR heaps. Retail has 24 MiB; 64-bit pointers
     // and host-side structures need more headroom (Dusklight uses the same size).

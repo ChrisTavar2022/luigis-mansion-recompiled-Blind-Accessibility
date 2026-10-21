@@ -61,7 +61,17 @@ Later launches skip the screen when the configured discs are readable and every 
 and overlay is current; they are rebuilt automatically when stale. `--setup` (or F1 >
 Game > *Add or change discs...*) opens the screen again.
 
-### What lives where (`%APPDATA%\Luigi's Mansion PC`)
+### What lives where (`%APPDATA%\Luigi's Mansion Recompiled`)
+
+Linux: the XDG config/data/cache folders of the same name (docs/LINUX.md). Up to 1.0.1 the
+product was "Luigi's Mansion PC": at the first start of 1.1 or later, each folder of that old
+name whose new-name folder does not exist yet is renamed to the new name (`port::configDir`
+/ `dataDir` / `cacheDir`, `migrateOldFolder` in `src/port/install.cpp`), so settings, install.ini,
+memory cards, game modules (their key does not depend on the folder), overlays and caches carry
+over. A new folder that holds only the Linux launcher's logs counts as missing (the launcher
+also moves the data folder itself before it writes its log). If the rename fails (a file held
+open by another program, another volume) the folder is copied and the old one kept; the
+`[install]` log line says which.
 
 | Path | Contents |
 |------|----------|
@@ -97,7 +107,7 @@ clicks: nothing is downloaded or replaced on its own.
 2. **Check.** In the background at startup (setting *Check for updates at startup*,
    `[updates] check_at_startup`, default on) and with the *Check for updates* button: one
    unauthenticated `GET https://api.github.com/repos/rob646464/luigis-mansion-recompiled/releases/latest`
-   (User-Agent `LuigisMansionPC/<ver> (updater)`, 8 s connect/receive timeouts, 15 s total).
+   (User-Agent `LuigisMansionRecompiled/<ver> (updater)`, 8 s connect/receive timeouts, 15 s total).
    Drafts and prereleases are ignored. Offline, an unknown host, HTTP errors and the rate limit
    (403 with `x-ratelimit-remaining: 0` or 429; the message names the reset time) end as a line
    in the menu and the log, nothing else. The startup check is skipped in build trees (no
@@ -131,10 +141,14 @@ clicks: nothing is downloaded or replaced on its own.
    while the old process exits). `update.tmp` is removed right after the move (a leftover one, e.g.
    from a cancelled or failed run, at the next start). Then settings are saved and the program
    restarts with the same arguments: Windows starts the exe at its original path and exits; Linux
-   `execv`s the installed file in place of the running process (same PID, so `LuigisMansionPC.sh`
-   keeps logging). Files the new package no longer has are left alone.
+   `execv`s the installed file in place of the running process (same PID, so the launcher script
+   keeps logging). Files the new package no longer has are left alone, except the 1.0.x Linux
+   launcher `LuigisMansionPC.sh` (now `LuigisMansionRecompiled.sh`): if it is unmodified
+   (SHA-256 of the shipped file) it is replaced by a two-line forwarder to the new launcher, so
+   desktop entries keep working; an edited one is kept as it is.
 7. **Data stays.** `%APPDATA%` / the XDG folders (settings, saves, install.ini, game modules,
-   overlays, shader caches) are never touched. The module key includes the program version, so the
+   overlays, shader caches) are never touched by the updater (the new version's first start only
+   renames a 1.0.x "Luigi's Mansion PC" folder, see "What lives where"). The module key includes the program version, so the
    first start of a new version rebuilds the game module automatically (about 20 s, setup's
    progress screen, no clicks), even when the embedded sources it hashes did not change.
 

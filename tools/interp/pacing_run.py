@@ -84,7 +84,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("--scenario", default="foyer")
-    ap.add_argument("--settings", default=os.path.join(os.environ.get("APPDATA", ""), "Luigi's Mansion PC", "settings.ini"))
+    ap.add_argument("--settings", default=os.path.join(os.environ.get("APPDATA", ""), "Luigi's Mansion Recompiled", "settings.ini"))
     ap.add_argument("--set", action="append", default=[])
     ap.add_argument("--fullscreen", action="store_true")
     ap.add_argument("--window", default="")
@@ -102,11 +102,11 @@ def main():
     if os.path.exists(out):
         shutil.rmtree(out, ignore_errors=True)
     appdata = os.path.join(out, "appdata")
-    lmdir = os.path.join(appdata, "Luigi's Mansion PC")
+    lmdir = os.path.join(appdata, "Luigi's Mansion Recompiled")
     os.makedirs(lmdir, exist_ok=True)
     os.makedirs(os.path.join(out, "card"), exist_ok=True)
     screen_run.write_settings(a.settings, os.path.join(lmdir, "settings.ini"), a.set)
-    user_lm = os.path.join(os.environ.get("APPDATA", ""), "Luigi's Mansion PC")
+    user_lm = os.path.join(os.environ.get("APPDATA", ""), "Luigi's Mansion Recompiled")
     for f in ("dawn_cache.db", "pipeline_cache.db"):
         p = os.path.join(user_lm, f)
         if os.path.exists(p):

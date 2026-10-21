@@ -1,5 +1,5 @@
 # One-step release: build LuigisMansionRecomp, package it as
-# out/LuigisMansionPC-<version>-windows-x64.zip, build the Linux packages in WSL
+# out/LuigisMansionRecompiled-<version>-windows-x64.zip, build the Linux packages in WSL
 # (tools/release_linux.sh; skipped with -SkipLinux or when WSL is not installed), then publish
 # GitHub release v<version> with every package and packaging/release_notes/v<version>.md
 # (download table filled in).
@@ -13,7 +13,7 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$repo = "rob646464/luigis-mansion-pc-port"
+$repo = "rob646464/luigis-mansion-recompiled"
 
 function Step($msg) { Write-Host ""; Write-Host "==> $msg" -ForegroundColor Cyan }
 
@@ -26,7 +26,7 @@ try {
     $tag = "v$version"
     $notesSrc = "packaging/release_notes/$tag.md"
     if (-not (Test-Path $notesSrc)) { throw "release notes $notesSrc missing" }
-    Step "Releasing Luigi's Mansion PC $version ($tag)"
+    Step "Releasing Luigi's Mansion Recompiled $version ($tag)"
 
     $branch = (git rev-parse --abbrev-ref HEAD).Trim()
     if ($branch -ne "main") { Write-Host "Warning: building branch '$branch', not main." -ForegroundColor Yellow }
@@ -40,7 +40,7 @@ try {
     }
 
     Step "Packaging"
-    $name = "LuigisMansionPC-$version-windows-x64"
+    $name = "LuigisMansionRecompiled-$version-windows-x64"
     $outDir = Join-Path $root "out"
     $stage = Join-Path $outDir $name
     $zip = Join-Path $outDir "$name.zip"
@@ -64,7 +64,7 @@ try {
     } else {
         Step "Building the Linux packages in WSL (asks for your Linux password if packages are missing)"
         & wsl.exe --cd "$root" bash tools/release_linux.sh $version out
-        $tgz = Join-Path $outDir "LuigisMansionPC-$version-linux-x86_64.tar.gz"
+        $tgz = Join-Path $outDir "LuigisMansionRecompiled-$version-linux-x86_64.tar.gz"
         if ($LASTEXITCODE -or -not (Test-Path $tgz)) {
             Write-Host ""
             Write-Host "The Linux build failed (messages above)." -ForegroundColor Red
@@ -90,7 +90,7 @@ try {
     $notes = (Get-Content -Raw -Encoding UTF8 $notesSrc).Replace("{{DOWNLOAD_ROWS}}", ($rows -join "`n")).Replace("{{LINUX_NOTE}}", $linuxNote)
     $notesFile = Join-Path $outDir "$tag-notes.md"
     [IO.File]::WriteAllText($notesFile, $notes, (New-Object Text.UTF8Encoding $false))
-    $title = "Luigi's Mansion PC $version"
+    $title = "Luigi's Mansion Recompiled $version"
 
     Step "Publishing GitHub release $tag"
     $gh = Get-Command gh -ErrorAction SilentlyContinue

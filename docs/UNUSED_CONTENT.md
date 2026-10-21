@@ -1361,7 +1361,7 @@ the fit measures the model rather than its whole path. Follow can be toggled.
 
 Camera: Orbit / Fly toggle for models and maps (the fly camera starts at the orbit eye looking
 the same way and back), Fit, and **Screenshot**: the next guest frame (640x480, without the
-ImGui window) as a PNG in `%APPDATA%\Luigi's Mansion PC\screenshots\viewer_<model>_<time>.png`
+ImGui window) as a PNG in `%APPDATA%\Luigi's Mansion Recompiled\screenshots\viewer_<model>_<time>.png`
 (SDL_SavePNG).
 
 ### No culling

@@ -267,7 +267,7 @@ bool run(const Options& opts, LaunchInfo& launch) {
         const float scale = std::max(1.0f, vp->WorkSize.y / 600.0f);
         ImGui::SetWindowFontScale(scale);
         ImGui::Dummy(ImVec2(0, 12 * scale));
-        ImGui::Text("Luigi's Mansion PC");
+        ImGui::Text("Luigi's Mansion Recompiled");
         ImGui::Separator();
         if (screen == Screen::Pick) {
             ImGui::TextWrapped("This port runs your own copy of Luigi's Mansion. Choose your disc image (ISO or RVZ). "

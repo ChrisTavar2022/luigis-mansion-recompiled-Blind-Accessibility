@@ -2,13 +2,13 @@
 # Builds and packages the Linux release (docs/LINUX.md):
 #   tools/package_linux.sh <LLVM bin dir> [out dir]
 # <LLVM bin dir>: bin/ of the official LLVM release for Linux x86_64 (LLVM-<ver>-Linux-X64),
-# whose clang and ld.lld are bundled. Produces <out>/LuigisMansionPC-linux-x86_64/ plus
+# whose clang and ld.lld are bundled. Produces <out>/LuigisMansionRecompiled-linux-x86_64/ plus
 # .tar.gz and .zip of it. No game data is involved.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 LLVM_BIN=${1:?usage: package_linux.sh <LLVM bin dir> [out dir]}
 OUT=${2:-$ROOT/out}
-NAME=LuigisMansionPC-linux-x86_64
+NAME=LuigisMansionRecompiled-linux-x86_64
 BUILD=$ROOT/build/linux-clang
 
 [ -x "$LLVM_BIN/clang" ] && [ -e "$LLVM_BIN/ld.lld" ] || { echo "no clang/ld.lld in $LLVM_BIN" >&2; exit 1; }

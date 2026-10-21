@@ -117,7 +117,7 @@ void logCallback(AuroraLogLevel level, const char* module, const char* message, 
 #endif
         }
         if (!std::getenv("LM_BACKGROUND"))  // automated runs must not block on a dialog
-            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Luigi's Mansion PC", text.c_str(), nullptr);
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Luigi's Mansion Recompiled", text.c_str(), nullptr);
         std::abort();
     }
 }
@@ -154,9 +154,11 @@ int main(int argc, char* argv[]) {
     port::startHangWatchdog();
     port::parseOptions(argc, argv);
     port::setLaunchArgs(argc, argv);
+    std::printf("Luigi's Mansion Recompiled %s\n", port::update::buildVersion());
+    std::fflush(stdout);
 
     AuroraConfig config{};
-    config.appName = "Luigi's Mansion PC";
+    config.appName = "Luigi's Mansion Recompiled";
     config.logCallback = &logCallback;
     port::loadSettings();
     // Updates (docs/SETUP.md "Updates"): remove what a finished update left, then look for a newer
@@ -181,7 +183,7 @@ int main(int argc, char* argv[]) {
     // LM_CACHE_DIR: separate shader/pipeline cache, e.g. for test runs of different builds side by side.
     // Default: next to settings.ini, so a scratch APPDATA (test runs) also gets its own cache
     // (Aurora's default, SDL_GetPrefPath, ignores the APPDATA variable).
-    // Linux: $XDG_CACHE_HOME/Luigi's Mansion PC (port::cacheDir; docs/LINUX.md).
+    // Linux: $XDG_CACHE_HOME/Luigi's Mansion Recompiled (port::cacheDir; docs/LINUX.md).
     static const std::string sCacheDir = port::cacheDir().string();
     config.cachePath = sCacheDir.c_str();
     // Memory cards and imgui.ini (Aurora's userPath) in dataDir, which honours XDG_DATA_HOME /

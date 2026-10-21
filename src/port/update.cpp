@@ -81,6 +81,9 @@ const char* const kExpected[] = {"LuigisMansionRecomp.exe", "pipelines.bin", "ll
 constexpr const char* kAssetSuffix = "-linux-x86_64.tar.gz";
 constexpr const char* kExeName = "LuigisMansionRecomp";
 const char* const kExpected[] = {"LuigisMansionRecomp", "pipelines.bin", "llvm/bin/clang", "llvm/bin/ld.lld"};
+constexpr const char* kLauncher = "LuigisMansionRecompiled.sh";
+constexpr const char* kOldLauncher = "LuigisMansionPC.sh";  // 1.0 / 1.0.1 (same file in both)
+constexpr const char* kOldLauncherSha = "efbcb131f2018dcbeb49fc937a5fafa1ec425e55bc159cf4ced3445a7b12dc36";
 #endif
 constexpr const char* kStagingName = "update.tmp";         // inside the install folder
 constexpr const char* kCleanupList = "update-cleanup.txt";  // *.old files to delete at the next start
@@ -467,7 +470,7 @@ struct Response {
 // request also stops after totalMs (0 = no limit).
 using Sink = std::function<bool(const char*, size_t)>;
 
-std::string userAgent() { return std::string("LuigisMansionPC/") + buildVersion() + " (updater)"; }
+std::string userAgent() { return std::string("LuigisMansionRecompiled/") + buildVersion() + " (updater)"; }
 
 #ifdef _WIN32
 std::wstring widen(const std::string& s) {
@@ -1304,6 +1307,48 @@ void downloadWorker() {
     sState.message.clear();
 }
 
+#ifndef _WIN32
+// The launcher was LuigisMansionPC.sh up to 1.0.1 (LuigisMansionRecompiled.sh since 1.1). Desktop
+// entries and shortcuts may still start the old one, so an unmodified old launcher becomes a
+// forwarder to the new one; one the player edited is left alone (it still starts the game).
+void forwardOldLauncher(const fs::path& dir) {
+    std::error_code ec;
+    const fs::path oldSh = dir / kOldLauncher, newSh = dir / kLauncher;
+    if (!fs::is_regular_file(oldSh, ec) || !fs::is_regular_file(newSh, ec)) return;
+    std::string sha;
+    const std::atomic<bool> noCancel{false};
+    if (!sha256File(oldSh, sha, noCancel)) return;
+    if (sha != kOldLauncherSha) {
+        ulog("%s was changed by hand: left as it is (%s starts the game too)", kOldLauncher, kLauncher);
+        return;
+    }
+    // Written next to it and renamed over it: a shell that is still running the old script
+    // keeps reading its own (now unlinked) file.
+    const fs::path tmp = dir / (std::string(kOldLauncher) + ".new");
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out << "#!/bin/sh\n"
+               "# The launcher's name up to 1.0.1; kept so existing shortcuts keep working.\n"
+               "exec \"$(dirname \"$(readlink -f \"$0\")\")/"
+            << kLauncher << "\" \"$@\"\n";
+        if (!out) {
+            fs::remove(tmp, ec);
+            return;
+        }
+    }
+    fs::permissions(tmp, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
+                             fs::perms::others_read | fs::perms::others_exec,
+                    ec);
+    fs::rename(tmp, oldSh, ec);
+    if (ec) {
+        ulog("could not replace %s with a forwarder: %s", kOldLauncher, ec.message().c_str());
+        fs::remove(tmp, ec);
+        return;
+    }
+    ulog("%s now starts %s", kOldLauncher, kLauncher);
+}
+#endif
+
 bool sameOrInside(const fs::path& p, const fs::path& dir) {
     const auto a = fs::weakly_canonical(p), b = fs::weakly_canonical(dir);
     auto it = a.begin();
@@ -1495,13 +1540,14 @@ void installAndRestart() {
     }
 #ifndef _WIN32
     // Keep the executable bits (tar keeps them; a repacked archive might not).
-    for (const char* f : {"LuigisMansionRecomp", "LuigisMansionPC.sh", "llvm/bin/clang", "llvm/bin/ld.lld"}) {
+    for (const char* f : {"LuigisMansionRecomp", kLauncher, "llvm/bin/clang", "llvm/bin/ld.lld"}) {
         const fs::path p = dir / f;
         if (fs::exists(p, ec))
             fs::permissions(p, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
                                    fs::perms::others_read | fs::perms::others_exec,
                             ec);
     }
+    forwardOldLauncher(dir);
 #endif
     // The old files: Linux can delete them now (a running program's file stays readable to it);
     // Windows deletes them at the next start (cleanupAfterUpdate).

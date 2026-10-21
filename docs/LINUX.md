@@ -39,17 +39,18 @@ found from `--disc <iso>` or `orig/GLME01.iso` above the working directory.
 | Game module | `module.dll`, `lld-link /dll /noentry` | `module.so`, `ld.lld -shared -nostdlib` (below) |
 | Module loader | `LoadLibraryW` | `dlopen(RTLD_NOW \| RTLD_LOCAL)` |
 | Tool processes | `CreateProcessW`, below-normal priority | `posix_spawn`, nice 10, output to the per-file log |
-| Settings / install.ini | `%APPDATA%\Luigi's Mansion PC` | `$XDG_CONFIG_HOME/Luigi's Mansion PC` (`~/.config/...`) |
-| Modules, overlays, memory cards, screenshots | `%APPDATA%\Luigi's Mansion PC` | `$XDG_DATA_HOME/Luigi's Mansion PC` (`~/.local/share/...`) |
-| GPU caches (`pipeline_cache.db`, `dawn_cache.db`) | `%APPDATA%\Luigi's Mansion PC` | `$XDG_CACHE_HOME/Luigi's Mansion PC` (`~/.cache/...`) |
+| Settings / install.ini | `%APPDATA%\Luigi's Mansion Recompiled` | `$XDG_CONFIG_HOME/Luigi's Mansion Recompiled` (`~/.config/...`) |
+| Modules, overlays, memory cards, screenshots | `%APPDATA%\Luigi's Mansion Recompiled` | `$XDG_DATA_HOME/Luigi's Mansion Recompiled` (`~/.local/share/...`) |
+| GPU caches (`pipeline_cache.db`, `dawn_cache.db`) | `%APPDATA%\Luigi's Mansion Recompiled` | `$XDG_CACHE_HOME/Luigi's Mansion Recompiled` (`~/.cache/...`) |
 | Crash reports | SEH filter + vectored handler, dbghelp symbols | `SIGSEGV/SIGBUS/SIGILL/SIGFPE` handler on an alternate stack: signal, pc as `binary+offset` (`dladdr`), fault address, `backtrace_symbols_fd` |
 | Graphics backend | D3D12 (auto) | Vulkan (auto); OpenGL ES fallback |
 | File dialogs | SDL3 | SDL3 (xdg-desktop-portal, or zenity/kdialog) |
 | Updater (docs/SETUP.md "Updates") | WinHTTP, BCrypt SHA-256, `System32\tar.exe`; running files renamed to `.old`, deleted at the next start; new process started | libcurl `dlopen`ed (`libcurl.so.4`, else `libcurl-gnutls.so.4`; none: the menu offers the download page), own SHA-256, `tar -xzf`; files replaced by rename, old ones deleted at once, executable bits set, `execv` of the installed program (same PID) |
 
 `port::configDir()`, `port::dataDir()` and `port::cacheDir()` (`src/port/install.h`) are the
-only places that decide where files go; on Windows all three are the old `%APPDATA%`
-folder. Test runs: point `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and
+only places that decide where files go; on Windows all three are the one `%APPDATA%`
+folder. Each moves a 1.0.x "Luigi's Mansion PC" folder to the new name on first use
+(docs/SETUP.md "What lives where"). Test runs: point `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and
 `LM_CARD_DIR` at empty folders (the Linux equivalent of a scratch `APPDATA`).
 
 ### The game module (.so)
@@ -120,11 +121,11 @@ tools/package_linux.sh <LLVM bin dir> [out dir]
 ```
 
 configures with `LM_LLVM_DIR=<LLVM bin dir>`, builds, runs `cmake --install --strip` into
-`<out>/LuigisMansionPC-linux-x86_64/`, prints the glibc/libstdc++ requirements, and makes a
+`<out>/LuigisMansionRecompiled-linux-x86_64/`, prints the glibc/libstdc++ requirements, and makes a
 `.tar.gz` (keeps the executable bits) and a `.zip` of it. Layout:
 
 ```
-LuigisMansionPC.sh       launcher: log to ~/.local/share/Luigi's Mansion PC/last_run.log
+LuigisMansionRecompiled.sh  launcher: log to ~/.local/share/Luigi's Mansion Recompiled/last_run.log
                          (previous_run.log), chmod +x in case unzip dropped the bits,
                          LD_LIBRARY_PATH=lib/ if a lib/ folder is ever added
 LuigisMansionRecomp      the program (stripped; symbolize crash offsets with the

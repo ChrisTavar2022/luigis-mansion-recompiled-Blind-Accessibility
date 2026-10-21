@@ -1,8 +1,10 @@
 #include "port/install.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -69,10 +71,89 @@ InstallState& install() { return sInstall; }
 
 namespace {
 
+namespace fs = std::filesystem;
+
+// The product was called "Luigi's Mansion PC" up to 1.0.1; its folders are moved to the new
+// name on the first start (docs/SETUP.md "What lives where").
+constexpr const char* kFolderName = "Luigi's Mansion Recompiled";
+constexpr const char* kOldFolderName = "Luigi's Mansion PC";
+
+std::string u8(const fs::path& p) {
+    const auto s = p.u8string();
+    return std::string(s.begin(), s.end());
+}
+
+// True when the folder holds nothing but what the Linux launcher writes before the game
+// starts (LuigisMansionRecompiled.sh logs into the data folder first).
+bool onlyLauncherLogs(const fs::path& dir) {
+    std::error_code ec;
+    for (auto it = fs::directory_iterator(dir, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        const std::string n = u8(it->path().filename());
+        if (n != "last_run.log" && n != "previous_run.log" && n != ".last_exit_status") return false;
+    }
+    return !ec;
+}
+
+// Moves <base>/<old name> to <base>/<new name> when only the old one exists: settings,
+// install.ini, memory cards, game modules, overlays and caches carry over (paths inside them
+// are not tied to the folder: module.key hashes the sources, install.ini holds disc paths).
+// A rename that fails (a file held open by another program, another volume) falls back to a
+// copy; the old folder is kept then.
+void migrateOldFolder(const fs::path& base) {
+    std::error_code ec;
+    const fs::path oldDir = base / fs::path(std::u8string(reinterpret_cast<const char8_t*>(kOldFolderName)));
+    const fs::path newDir = base / fs::path(std::u8string(reinterpret_cast<const char8_t*>(kFolderName)));
+    if (!fs::is_directory(oldDir, ec)) return;
+    fs::path heldLogs;  // the launcher's logs of this run, put back after the move
+    if (fs::exists(newDir, ec)) {
+        if (!fs::is_directory(newDir, ec) || !onlyLauncherLogs(newDir)) return;
+        heldLogs = base / fs::path(std::u8string(reinterpret_cast<const char8_t*>(kFolderName)) + u8".logs-tmp");
+        fs::remove_all(heldLogs, ec);
+        fs::rename(newDir, heldLogs, ec);
+        if (ec) {
+            std::printf("[install] %s holds only launcher logs, but could not be moved aside (%s); "
+                        "the old folder %s is not used\n",
+                        u8(newDir).c_str(), ec.message().c_str(), u8(oldDir).c_str());
+            return;
+        }
+    }
+    fs::rename(oldDir, newDir, ec);
+    if (!ec) {
+        std::printf("[install] moved %s to %s\n", u8(oldDir).c_str(), u8(newDir).c_str());
+    } else {
+        const std::string why = ec.message();
+        if (!heldLogs.empty()) {
+            std::error_code e2;
+            fs::rename(heldLogs, newDir, e2);
+            if (!e2) heldLogs.clear();
+        }
+        fs::create_directories(newDir, ec);
+        fs::copy(oldDir, newDir, fs::copy_options::recursive | fs::copy_options::skip_existing, ec);
+        if (!ec)
+            std::printf("[install] could not rename %s (%s); copied it to %s and kept the old folder\n",
+                        u8(oldDir).c_str(), why.c_str(), u8(newDir).c_str());
+        else
+            std::printf("[install] could not rename %s (%s) and copying it to %s failed (%s); the old folder is "
+                        "kept, copy what is missing by hand\n",
+                        u8(oldDir).c_str(), why.c_str(), u8(newDir).c_str(), ec.message().c_str());
+    }
+    if (!heldLogs.empty()) {
+        for (auto it = fs::directory_iterator(heldLogs, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+            std::error_code e2;
+            fs::rename(it->path(), newDir / it->path().filename(), e2);  // replaces the old run's log
+        }
+        fs::remove_all(heldLogs, ec);
+    }
+    std::fflush(stdout);
+}
+
 #ifdef _WIN32
 std::filesystem::path appDir() {
     const wchar_t* base = _wgetenv(L"APPDATA");
-    std::filesystem::path dir = base ? std::filesystem::path(base) / L"Luigi's Mansion PC" : std::filesystem::path(L".");
+    if (!base) return std::filesystem::path(L".");
+    static const bool sMigrated = (migrateOldFolder(base), true);
+    (void)sMigrated;
+    std::filesystem::path dir = std::filesystem::path(base) / L"Luigi's Mansion Recompiled";
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir;
@@ -84,7 +165,17 @@ std::filesystem::path xdgDir(const char* var, const char* fallback) {
     if (const char* v = std::getenv(var); v && v[0] == '/') base = v;
     else if (const char* home = std::getenv("HOME"); home && home[0]) base = std::filesystem::path(home) / fallback;
     else base = ".";
-    std::filesystem::path dir = base / "Luigi's Mansion PC";
+    // Once per base folder (config, data and cache are separate on Linux).
+    static std::mutex sM;
+    static std::vector<std::filesystem::path> sDone;
+    {
+        std::lock_guard lk(sM);
+        if (std::find(sDone.begin(), sDone.end(), base) == sDone.end()) {
+            sDone.push_back(base);
+            migrateOldFolder(base);
+        }
+    }
+    std::filesystem::path dir = base / kFolderName;
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     return dir;

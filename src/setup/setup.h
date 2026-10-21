@@ -1,7 +1,7 @@
 #pragma once
 // First-run setup of LuigisMansionRecomp.exe (docs/SETUP.md): asks for the user's disc
 // images, builds the game module(s) and the PAL Hidden Mansion overlay into
-// %APPDATA%\Luigi's Mansion PC, and says what to launch.
+// %APPDATA%\Luigi's Mansion Recompiled, and says what to launch.
 #include "port/install.h"
 
 #include <filesystem>

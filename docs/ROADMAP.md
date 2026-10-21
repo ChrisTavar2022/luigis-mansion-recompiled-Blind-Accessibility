@@ -1,4 +1,4 @@
-# Luigi's Mansion PC — Roadmap
+# Luigi's Mansion Recompiled — Roadmap
 
 A source port in the style of [Dusklight](https://github.com/TwilitRealm/dusklight), built on
 [Aurora](https://github.com/encounter/aurora). Base executable: **GLME01 (USA rev 0)**, with
