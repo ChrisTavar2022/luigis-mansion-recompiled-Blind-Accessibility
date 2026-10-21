@@ -106,6 +106,14 @@ void migrateOldFolder(const fs::path& base) {
     if (!fs::is_directory(oldDir, ec)) return;
     fs::path heldLogs;  // the launcher's logs of this run, put back after the move
     if (fs::exists(newDir, ec)) {
+        // A 1.0.x launcher that is still used writes its log into the old data folder again:
+        // nothing else in it, so remove it (the forwarder replaces that launcher, update.cpp).
+        if (onlyLauncherLogs(oldDir) && !onlyLauncherLogs(newDir)) {
+            fs::remove_all(oldDir, ec);
+            if (!ec) std::printf("[install] removed %s (held only launcher logs)\n", u8(oldDir).c_str());
+            std::fflush(stdout);
+            return;
+        }
         if (!fs::is_directory(newDir, ec) || !onlyLauncherLogs(newDir)) return;
         heldLogs = base / fs::path(std::u8string(reinterpret_cast<const char8_t*>(kFolderName)) + u8".logs-tmp");
         fs::remove_all(heldLogs, ec);
