@@ -179,9 +179,11 @@ void installSignalHandlers() {
 }
 #endif
 
-#ifdef _WIN32
-// ---- Hang watchdog (LM_HANG_DUMP=<seconds>) ----
+// ---- Hang watchdog ----
 std::atomic<unsigned long long> sHeartbeat{0};
+std::atomic<const char*> sPhase{"startup"};
+
+#ifdef _WIN32
 
 void printThreadStack(HANDLE process, DWORD tid) {
     HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
@@ -247,36 +249,57 @@ void dumpAllThreads(const char* reason) {
 }  // namespace
 
 void heartbeat() {
-#ifdef _WIN32
     sHeartbeat.fetch_add(1, std::memory_order_relaxed);
-#endif
 }
 
+void setPhase(const char* phase) { sPhase.store(phase, std::memory_order_relaxed); }
+
 void startHangWatchdog() {
-#ifdef _WIN32
+    // Always on (issue #14: a start that stopped after the shader cache opened left no reason in the
+    // log): when the main thread has not come back to its loop for 15 s, say what it was doing
+    // (setPhase), again every 30 s while it lasts and once when it continues. A program that is
+    // only slow (a long load) gets a few lines; one that hangs has its last phase in the log.
+    // LM_HANG_DUMP=<seconds> (Windows, debugging) also prints every thread's stack.
     const char* env = std::getenv("LM_HANG_DUMP");
-    const int seconds = env ? std::atoi(env) : 0;
-    if (seconds <= 0) return;
-    std::thread([seconds] {
+    const int dumpSeconds = env ? std::atoi(env) : 0;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::thread([dumpSeconds, t0] {
+        const auto up = [t0] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
         unsigned long long last = sHeartbeat.load();
         int still = 0;
+        const char* stalledIn = nullptr;
         for (;;) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             const unsigned long long now = sHeartbeat.load();
-            if (now != last) {
+            const char* phase = sPhase.load(std::memory_order_relaxed);
+            if (now != last || phase == nullptr) {  // progress, or waiting on purpose (window paused)
+                if (still >= 15 && stalledIn)
+                    std::fprintf(stderr, "[hang] %.0f s after start: main thread continued after %d s (%s)\n", up(),
+                                 still, stalledIn);
                 last = now;
                 still = 0;
+                stalledIn = nullptr;
                 continue;
             }
+            ++still;
+            if (still == 15 || (still > 15 && (still - 15) % 30 == 0)) {
+                stalledIn = phase;
+                std::fprintf(stderr, "[hang] %.0f s after start: main thread has not returned to its loop for %d s (%s)\n",
+                             up(), still, phase);
+                std::fflush(stderr);
+            }
+#ifdef _WIN32
             // Only once the main loop has run at all (startup can block longer).
-            if (now && ++still >= seconds && still < seconds + 3) {  // three samples, a second apart
+            if (dumpSeconds > 0 && now && still >= dumpSeconds && still < dumpSeconds + 3) {  // three samples
                 char reason[96];
-                std::snprintf(reason, sizeof(reason), "main loop stalled for %d s (LM_HANG_DUMP)", seconds);
+                std::snprintf(reason, sizeof(reason), "main loop stalled for %d s (LM_HANG_DUMP)", dumpSeconds);
                 dumpAllThreads(reason);
             }
+#else
+            (void)dumpSeconds;
+#endif
         }
     }).detach();
-#endif
 }
 
 void installCrashHandler() {

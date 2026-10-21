@@ -1187,15 +1187,38 @@ void visualsTab() {
     ImGui::SetItemTooltip("Frames wait for the display's refresh: no tearing, but the frame rate is limited to\n"
                           "the refresh rate. Applies on the next launch.");
     pending("next launch");
-    static const char* kMsaa[] = {"Off", "2x", "4x", "8x"};
-    int msaaIdx = v.msaa >= 8 ? 3 : v.msaa >= 4 ? 2 : v.msaa >= 2 ? 1 : 0;
-    if (ImGui::Combo("Anti-aliasing", &msaaIdx, kMsaa, 4)) {
-        v.msaa = 1 << msaaIdx;
-        sDirty = true;
+    {
+        // Only the sample counts the graphics device supports (Aurora 0233: Vulkan/Metal 1 and 4,
+        // D3D12 also 2 and 8, compatibility-mode devices none; issue #14). A saved count the device
+        // lacks shows the one in use, with a note.
+        static const char* kNames[] = {"Off", "2x", "4x", "8x"};
+        const uint32_t mask = aurora_get_msaa_support() | 1u;
+        const char* items[4];
+        int counts[4];
+        int n = 0, sel = 0;
+        for (int i = 0; i < 4; i++) {
+            if (!(mask & (1u << i))) continue;
+            if ((1 << i) <= v.msaa) sel = n;
+            items[n] = kNames[i];
+            counts[n++] = 1 << i;
+        }
+        if (ImGui::Combo("Anti-aliasing", &sel, items, n)) {
+            v.msaa = counts[sel];
+            sDirty = true;
+        }
+        ImGui::SetItemTooltip("Multisample anti-aliasing: smoother polygon edges. Higher settings cost more GPU time\n"
+                              "and memory. Applies on the next launch. Only the levels your graphics card supports\n"
+                              "with the current graphics API are offered (Vulkan: 4x; Direct3D 12: 2x, 4x, 8x).");
+        const int inUse = int(aurora_get_msaa());
+        char note[128];
+        if (counts[sel] != v.msaa) {
+            std::snprintf(note, sizeof(note), "%dx not supported by this graphics device; %s in use", v.msaa,
+                          inUse > 1 ? kNames[inUse >= 8 ? 3 : inUse >= 4 ? 2 : 1] : "off");
+            pending(note);
+        } else {
+            pending("next launch");
+        }
     }
-    ImGui::SetItemTooltip("Multisample anti-aliasing: smoother polygon edges. Higher settings cost more GPU time\n"
-                          "and memory. Applies on the next launch.");
-    pending("next launch");
     {
         // The European game paces its frames with a timer, so 50 Hz does not change its speed;
         // it is the console's PAL video timing (VI retrace and its callbacks).

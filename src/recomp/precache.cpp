@@ -209,6 +209,49 @@ bool holdGame() {
     } else {
         hold = !sNoWait && shadersPending;
     }
+    // Aurora 0233 (issue #14): a hold never waits silently forever. Without a single pipeline done for
+    // 20 s, say so (and which creations are stuck in the driver), every 20 s; after kStallGiveUp s the
+    // hold ends and the game starts (a draw that needs a pipeline still pending waits for it alone).
+    // A pipeline whose creation fails does not stall anything: Aurora logs it, records the config as
+    // bad and counts it done (draws using it are skipped).
+    {
+        static uint64_t sProgressKey = ~0ull;
+        static Clock::time_point sProgressAt = Clock::now();
+        static Clock::time_point sStallLog{};
+        static bool sGaveUp = false;  // until this batch is done: the game runs, no more reports
+        constexpr double kStallGiveUp = 90.0;
+        const uint64_t key = (uint64_t(s.precacheDone) << 32) ^ s.rebuildPending ^ (uint64_t(s.blobHits) << 16);
+        const auto now = Clock::now();
+        const double stalled = std::chrono::duration<double>(now - sProgressAt).count();
+        if (!hold) {
+            sGaveUp = false;
+            sProgressKey = key;
+            sProgressAt = now;
+            sStallLog = {};
+        } else if (sGaveUp) {
+            hold = false;
+        } else if (key != sProgressKey) {
+            if (sStallLog != Clock::time_point{})
+                log("[precache] pipelines are being built again after %.0f s (%u pending)", stalled, s.rebuildPending);
+            sProgressKey = key;
+            sProgressAt = now;
+            sStallLog = {};
+        } else if (stalled >= kStallGiveUp) {
+            sGaveUp = true;
+            log("[precache] gave up waiting after %.0f s without progress: the game continues, %u pipelines are "
+                "still pending (a draw that needs one waits for it)",
+                stalled, s.rebuildPending);
+            hold = false;
+            if (!sStartupDone) sStartupDone = true;
+        } else if (stalled >= 20.0 && (sStallLog == Clock::time_point{} || now - sStallLog >= std::chrono::seconds(20))) {
+            sStallLog = now;
+            char stuck[512];
+            const uint32_t nStuck = aurora_pipeline_cache_describe_stuck(10'000'000'000ull, stuck, sizeof(stuck));
+            log("[precache] no pipeline finished for %.0f s: %u pending, %u threads; %s%s", stalled, s.rebuildPending,
+                s.workerThreads, nStuck ? "creations running for over 10 s (graphics driver): " : "no creation running",
+                nStuck ? stuck : " (the pipeline workers are not taking work)");
+        }
+    }
     if (hold && !sHolding) {
         sHoldStart = Clock::now();
         sHoldMax = 0;

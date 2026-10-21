@@ -212,6 +212,7 @@ int main(int argc, char* argv[]) {
         config.windowWidth = u32(960.0f * opts.aspectRatio + 0.5f);
     }
     precache::configure();
+    port::setPhase("graphics initialization (device, render targets, anti-aliasing)");
     // LM_TOPMOST=1 (testing: screen-capture judder runs, tools/interp/screen_run.py): the window
     // stays on top and a fullscreen window is not minimized when another window takes the focus.
     const bool topmost = std::getenv("LM_TOPMOST") != nullptr;
@@ -229,6 +230,7 @@ int main(int argc, char* argv[]) {
         if (SDL_Window* w = aurora_get_window()) SDL_MaximizeWindow(w);
     precache::init();
     ws::init();
+    port::setPhase("loading the game");
 
 #ifdef LM_STATIC_MODULE
     // lmrecomp (developer build): the game was recompiled at build time and linked in.
@@ -258,6 +260,7 @@ int main(int argc, char* argv[]) {
     const std::string disc = launch.disc;
     const char* wantId = port::gameId(launch.version);
 #endif
+    port::setPhase("loading the game");
     if (disc.empty() || !aurora_dvd_open(disc.c_str())) {
         std::fprintf(stderr, "Could not open a Luigi's Mansion disc image. Pass --disc <path to .iso/.rvz>.\n");
         aurora_shutdown();
@@ -328,6 +331,7 @@ int main(int argc, char* argv[]) {
         return v ? std::atof(v) : 0.0;
     }();
     const auto runStart = std::chrono::steady_clock::now();
+    port::setPhase("game loop");
     while (!exiting) {
         port::heartbeat();
         if (quitAfter > 0 && std::chrono::duration<double>(std::chrono::steady_clock::now() - runStart).count() > quitAfter)
@@ -337,9 +341,11 @@ int main(int argc, char* argv[]) {
             if (ev->type == AURORA_EXIT) exiting = true;
             else if (ev->type == AURORA_PAUSED) {
                 paused = true;
+                port::setPhase(nullptr);  // waits for the window to come back: not a hang
                 audio::outSetPaused(true);
             } else if (ev->type == AURORA_UNPAUSED) {
                 paused = false;
+                port::setPhase("game loop");
                 audio::outSetPaused(false);
             }
         }
@@ -392,6 +398,7 @@ int main(int argc, char* argv[]) {
         if (!running || menu::quitRequested()) break;
     }
 
+    port::setPhase("shutdown (releasing graphics objects, writing caches)");
     menu::shutdown();
     vi::stopTimer();
     frame::stop();

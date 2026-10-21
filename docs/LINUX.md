@@ -175,6 +175,11 @@ Size: about 450 MB unpacked, 150 MB compressed (clang and lld are 250 MB and 190
 
 - Real GPUs: only tested on Mesa's CPU Vulkan driver (WSLg). NVIDIA/AMD/Intel drivers on a
   real Linux install are untested; performance on llvmpipe is not representative.
+- Anti-aliasing on Vulkan is Off or 4x only (Aurora 0233, issue #14; docs/RENDERING.md
+  "Anti-aliasing sample counts"): Dawn's Vulkan backend cannot create 2x/8x targets, and up to
+  1.1.1 choosing them stopped every later start right after the shader cache opened. A saved
+  2x/8x now runs at the highest supported count below it (log line, note in F1 > Visuals).
+  OpenGL ES (compatibility mode) has no MSAA.
 - Wayland vs X11: SDL3 prefers Wayland when available; `SDL_VIDEO_DRIVER=x11` forces X11.
 - Window activation / focus-loss pause, gamepad hot-plug, rumble and the PAL disc path are
   untested on Linux. File-picker dialogs need xdg-desktop-portal or zenity (SDL3); when

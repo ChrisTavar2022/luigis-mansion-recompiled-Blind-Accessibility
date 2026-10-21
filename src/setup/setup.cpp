@@ -1,6 +1,7 @@
 // First-run setup screen and pipeline (docs/SETUP.md).
 #include "setup/setup.h"
 
+#include "port/crash_handler.h"
 #include "port/dol.h"
 #include "recomp/precache.h"
 #include "setup/disc.h"
@@ -225,11 +226,15 @@ bool run(const Options& opts, LaunchInfo& launch) {
     if (!showUi) begin();
     else if (opts.autoStart && (slots[0].valid || slots[1].valid)) begin();
 
+    port::setPhase("setup");
     bool finished = false;
     int framesDrawn = 0;  // the background precache is queued by the first frame (Aurora patch 0013)
     while (!finished) {
+        port::heartbeat();
         for (const AuroraEvent* ev = aurora_update(); ev && ev->type != AURORA_NONE; ++ev) {
             if (ev->type == AURORA_EXIT) return false;
+            if (ev->type == AURORA_PAUSED) port::setPhase(nullptr);  // waits for the window: not a hang
+            if (ev->type == AURORA_UNPAUSED) port::setPhase("setup");
         }
         {
             std::lock_guard lk(sPickM);

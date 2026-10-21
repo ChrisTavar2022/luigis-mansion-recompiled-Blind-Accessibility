@@ -3033,3 +3033,79 @@ uncaptured validation error (`[FATAL: aurora::gpu] ... workgroup_size(256, 1, 1)
 allowed (128, 128, 64)`). It now uses 128 invocations per workgroup and 32,768 workgroups (the
 same work), inside an error scope, so a failure turns keep-warm off. Devices with core limits
 (D3D12, Vulkan on a real GPU) were not affected. On Windows keep-warm engages as before.
+
+## Anti-aliasing sample counts (Aurora 0233, issue #14)
+
+**Report** (v1.1, CachyOS, RX 7600 XT, RADV / Mesa 26.2.1, Vulkan): "after launching it when setting
+AA to any number it does not launch anymore". Dawn: feature level Compatibility with
+CoreFeaturesAndLimits enabled (so a core device; Aurora always requests the compatibility level
+and enables core when the adapter has it). The log ended right after
+`[DEBUG: aurora::gpu::cache] SQLite version`.
+
+**Cause.** WebGPU defines MSAA sample counts 1 and 4. The F1 menu offered 2x/4x/8x, which worked on
+Windows because Dawn's D3D12 backend hands any count to the driver (release builds run with
+Dawn's `skip_validation`, so nothing rejected 2 or 8). Dawn's Vulkan (and Metal/GL) backend only
+translates 1 and 4: creating the 2x/8x scene color target (`create_render_texture`, the first
+thing after the Dawn cache opens and the surface is configured) hit Dawn's unreachable path.
+Reproduced on Windows with `LM_BACKEND=vulkan` (RTX 3090 Ti, the same feature list as the report):
+`abort()` inside webgpu_dawn.dll from `aurora::webgpu::create_render_texture` <- `initialize`, on
+every start, so the menu could never be reached again to turn it off. On Linux the same abort, or
+undefined behaviour where Dawn's release build compiles the unreachable out. 4x on Vulkan worked
+(also with `AURORA_DAWN_VALIDATION=1`: no validation error through boot, title and foyer).
+
+**Fix** (`patches/aurora/0233-msaa-supported-sample-counts.patch`, `src/recomp/menu.cpp`):
+- Aurora decides the supported counts once the device exists: 1 always; 4 on any core device;
+  2 and 8 also on D3D12. A compatibility-mode device without core features (OpenGL ES fallback)
+  gets no MSAA, since the depth copies read the multisampled depth buffer, which compatibility
+  mode does not allow. A saved count the device lacks becomes the highest supported one below
+  it, with `[WARNING: aurora::gpu] MSAA 8x is not supported on this device (Vulkan); using 4x`.
+  `settings.ini` keeps what the player chose (a D3D12 machine still gets 8x from the same file).
+- `aurora_get_msaa_support()` (bit mask) / `aurora_get_msaa()` (count in use): F1 > Visuals >
+  Anti-aliasing lists only the supported levels; a saved unsupported level shows
+  "(8x not supported by this graphics device; 4x in use)". The level still applies at the next
+  launch.
+- The scene targets are created inside error scopes at initialization: if the multisampled ones
+  fail (out of memory, a driver refusing them), the error is logged and the game continues
+  without MSAA instead of running into a fatal error on the first frame.
+
+**No silent hangs at startup** (`src/port/crash_handler.cpp`, `src/recomp/precache.cpp`, `main.cpp`,
+`setup.cpp`):
+- The hang watchdog is always on (LM_HANG_DUMP only adds the thread stacks): when the main thread
+  has not come back to its loop for 15 s it logs `[hang] <t> s after start: main thread has not
+  returned to its loop for 15 s (<phase>)` to stderr, then every 30 s, and once when it continues.
+  Phases: graphics initialization (device, render targets, anti-aliasing), setup, loading the
+  game, game loop, shutdown; a window paused in the background is not reported.
+- The startup / settings hold reports a stall: with no pipeline finished for 20 s, `[precache] no
+  pipeline finished for N s: P pending, T threads; creations running for over 10 s (graphics
+  driver): config <hash> (type n) for N s` every 20 s (Aurora's in-flight table,
+  `aurora_pipeline_cache_describe_stuck`); after 90 s without progress the hold ends ("gave up
+  waiting ...: the game continues") and only a draw that needs a still pending pipeline waits
+  for it. A pipeline whose creation fails never stalled the hold: `guarded_create` (0017) logs
+  it, records the config as bad and counts it done. Test aid
+  `AURORA_TEST_STUCK_PIPELINE=<n>[,<s>]` (the n-th creation takes s seconds longer): verified
+  with n=50, 130 s: four stall lines naming the config, gave up at 90 s, the game ran on to the
+  foyer.
+- The crash journal (0231) is unaffected: an abort like the MSAA one is a crash before any
+  pipeline is in flight (logged as a startup crash; caches reset only on the third in a row); a
+  kill of a hung start is a kill (caches kept).
+
+**Found on the way, not fixed:** with Enhanced lighting and a cache built in the same session (cold
+start, about 10000 pipelines compiled), quitting (LM_QUIT_AFTER, also during the hold) took more than
+90 s: the main thread is in `aurora_shutdown` freeing Dawn objects (the watchdog now names the
+phase "shutdown"); even `Stop-Process -Force` took a while to end the process. Warm starts exit
+at once.
+
+**Verified** (US dev build, `--input "600:START*10,1000:A*6"` into the foyer, 170-240 s per run,
+settings.ini with the level preset, scratch APPDATA, one shader cache per backend):
+
+| Backend | AA saved | Enhanced lighting | Result |
+|----|----|----|----|
+| D3D12 (RTX 3090 Ti) | Off / 2x / 4x / 8x | off and on | each level as saved ("MSAA 2x/4x/8x"), game started, into the foyer (3180-5520 presents), no errors |
+| Vulkan (same GPU, `LM_BACKEND=vulkan`) | Off / 4x | off and on | as saved, into the foyer |
+| Vulkan | 2x / 8x | off and on | before: abort at start; now "not supported ... using no MSAA" / "using 4x", into the foyer |
+| Vulkan + `AURORA_DAWN_VALIDATION=1` | 4x | off | no validation error, 7260 presents |
+| WSL lavapipe Vulkan (`LM_ALLOW_CPU_GPU=1`) | 8x | off | "using 4x", game started; the unfixed 1.1.1 `LuigisMansionRecomp` with 2x there: abort right after "Using surface format", the report's symptom |
+| WSL OpenGL ES (llvmpipe, compatibility) | 4x | off | "not supported (OpenGLES, compatibility mode); using no MSAA", game started (Dawn refuses `textureLoad` on depth textures and copies of multisampled textures in compatibility mode, both used by the MSAA depth copies) |
+
+F1 > Visuals on Vulkan with 8x saved: the list is Off / 4x, 4x selected, note "(8x not supported by
+this graphics device; 4x in use)". Not tested: a real AMD GPU / RADV (the report's device), Metal.
