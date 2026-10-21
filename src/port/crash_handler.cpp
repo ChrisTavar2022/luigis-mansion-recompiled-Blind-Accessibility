@@ -2,6 +2,7 @@
 // (Windows) or fatal signals (Linux: SIGSEGV, SIGBUS, SIGILL, SIGFPE), so crashes in game or
 // library code can be located from a log.
 #include "port/crash_handler.h"
+#include "port/recovery.h"
 
 #include <aurora/pipeline_cache.h>
 
@@ -31,15 +32,15 @@
 namespace port {
 namespace {
 
-void printStack(const char* reason) {
-    std::fprintf(stderr, "\n=== crash: %s ===\n", reason);
+void printStackTo(std::FILE* out, const char* reason) {
+    std::fprintf(out, "\n=== crash: %s ===\n", reason);
 #ifdef _WIN32
     void* frames[64];
     const USHORT count = CaptureStackBackTrace(0, 64, frames, nullptr);
     // Module + offset first, before loading symbols: symbol loading for a large game module
     // can take long enough that a killed or hung process never prints the symbolized trace
     // (llvm-symbolizer --obj=<module> 0x<offset> resolves these offline).
-    std::fprintf(stderr, "  thread %lu, raw frames:\n", static_cast<unsigned long>(GetCurrentThreadId()));
+    std::fprintf(out, "  thread %lu, raw frames:\n", static_cast<unsigned long>(GetCurrentThreadId()));
     for (USHORT i = 0; i < count; i++) {
         HMODULE mod = nullptr;
         char name[MAX_PATH] = "?";
@@ -47,10 +48,10 @@ void printStack(const char* reason) {
                                static_cast<LPCSTR>(frames[i]), &mod))
             GetModuleFileNameA(mod, name, sizeof(name));
         const char* base = std::strrchr(name, '\\');
-        std::fprintf(stderr, "  #%02u %s+0x%llx\n", i, base ? base + 1 : name,
+        std::fprintf(out, "  #%02u %s+0x%llx\n", i, base ? base + 1 : name,
                      static_cast<unsigned long long>(static_cast<const char*>(frames[i]) - reinterpret_cast<const char*>(mod)));
     }
-    std::fflush(stderr);
+    std::fflush(out);
     HANDLE process = GetCurrentProcess();
     static bool sSymInit = SymInitialize(process, nullptr, TRUE);
     (void)sSymInit;
@@ -66,27 +67,34 @@ void printStack(const char* reason) {
         const DWORD64 addr = reinterpret_cast<DWORD64>(frames[i]);
         const bool haveSym = SymFromAddr(process, addr, &displacement, symbol);
         const bool haveLine = SymGetLineFromAddr64(process, addr, &lineDisp, &line);
-        std::fprintf(stderr, "  #%02u %s+0x%llx", i, haveSym ? symbol->Name : "?",
+        std::fprintf(out, "  #%02u %s+0x%llx", i, haveSym ? symbol->Name : "?",
                      static_cast<unsigned long long>(displacement));
         if (haveLine) {
-            std::fprintf(stderr, " (%s:%lu)", line.FileName, line.LineNumber);
+            std::fprintf(out, " (%s:%lu)", line.FileName, line.LineNumber);
         }
-        std::fputc('\n', stderr);
+        std::fputc('\n', out);
     }
 #else
     // backtrace_symbols_fd writes "binary(symbol+off) [addr]" lines without allocating; the
     // executable's own functions are named only for exported symbols, so the offsets are
     // what to feed to addr2line (docs/LINUX.md).
-    std::fflush(stderr);
+    std::fflush(out);
     void* frames[64];
     const int count = backtrace(frames, 64);
-    backtrace_symbols_fd(frames, count, STDERR_FILENO);
+    backtrace_symbols_fd(frames, count, fileno(out));
 #endif
-    std::fflush(stderr);
+    std::fflush(out);
+}
+
+// The stack to stderr and (Windows) into last_run.log (port/recovery.h).
+void printStack(const char* reason) {
+    printStackTo(stderr, reason);
+    if (std::FILE* log = recovery::runLog()) printStackTo(log, reason);
 }
 
 void onAbort(int) {
     aurora_pipeline_cache_note_crash();  // a real crash for the pipeline crash journal (Aurora 0231)
+    recovery::onCrash("abort()");
     printStack("abort()");
     std::_Exit(3);
 }
@@ -120,6 +128,7 @@ LONG WINAPI onException(EXCEPTION_POINTERS* info) {
     aurora_pipeline_cache_note_crash();
     char reason[64];
     std::snprintf(reason, sizeof(reason), "exception 0x%08lX", info->ExceptionRecord->ExceptionCode);
+    recovery::onCrash(reason);
     printStack(reason);
     return EXCEPTION_EXECUTE_HANDLER;
 }
@@ -138,6 +147,7 @@ void onSignal(int sig, siginfo_t* info, void* uctx) {
     }
     sInSignal = 1;
     aurora_pipeline_cache_note_crash();
+    recovery::onCrash(strsignal(sig));
     const void* pc = nullptr;
     const void* sp = nullptr;
 #if defined(__x86_64__)
@@ -283,6 +293,7 @@ void installCrashHandler() {
     std::signal(SIGABRT, onAbort);
     std::set_terminate([] {
         aurora_pipeline_cache_note_crash();
+        recovery::onCrash("std::terminate");
         printStack("std::terminate");
         std::_Exit(3);
     });
