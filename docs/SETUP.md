@@ -128,7 +128,8 @@ clicks: nothing is downloaded or replaced on its own.
    them), then the new one is moved in; any failure moves everything back. Linux deletes the `.old`
    files at once and sets the executable bits of the program, launcher, clang and ld.lld; Windows
    lists them in `<install>/update-cleanup.txt` and the next start deletes them (retrying for 10 s
-   while the old process exits) along with `update.tmp`. Then settings are saved and the program
+   while the old process exits). `update.tmp` is removed right after the move (a leftover one, e.g.
+   from a cancelled or failed run, at the next start). Then settings are saved and the program
    restarts with the same arguments: Windows starts the exe at its original path and exits; Linux
    `execv`s the installed file in place of the running process (same PID, so `LuigisMansionPC.sh`
    keeps logging). Files the new package no longer has are left alone.
@@ -159,7 +160,13 @@ no digest but the notes' table (verified from the notes), no hash at all and a n
 (unresolvable host, refused connection), rate limit 403/429 from a mock server; *Skip this version*
 (no notice at the next start, shown again by the button); cancel mid-download (staging removed);
 read-only install folder (message + download page); the current version against v1.0.1 ("latest").
-Linux (WSL Ubuntu 24.04, libcurl): see docs/LINUX.md.
+Linux (WSL Ubuntu 24.04, Xvfb, CPU Vulkan): a scratch install of this build pretending 0.9 against a
+saved feed of the real v1.0 release (the one with a Linux package): libcurl.so.4 loaded, 151.5 MB
+downloaded via release-assets.githubusercontent.com, digest verified, `tar -xzf` staged, 9 files
+replaced (executable bits kept, no `.old` left), `execv` into v1.0 (same log), which rebuilt its
+module and ran to frame 1500 (no `update.tmp` or cleanup list left). A run that hit a DNS outage in
+WSL mid-way ended with "The download failed: could not resolve the server name (offline?)" and the
+game kept running.
 
 ## Module boundary
 
