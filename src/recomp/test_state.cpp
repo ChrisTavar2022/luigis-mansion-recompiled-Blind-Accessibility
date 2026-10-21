@@ -60,6 +60,22 @@ State parse() {
 u32 copyDispCount();  // hle_gx.cpp
 
 void testStateFrame(Ctx& c) {
+    // LM_PATCHES=<id>[,<id>...] (testing): switch these hooks.txt instruction patches on for the
+    // whole run, e.g. 42 (every locked door counts as unlockable: the key-door unlock events
+    // without the story's keys).
+    static const bool sPatchesDone = [] {
+        if (const char* e = std::getenv("LM_PATCHES"))
+            for (const char* p = e; *p;) {
+                const u32 id = u32(std::strtoul(p, nullptr, 10));
+                setPatch(id, true);
+                log("[test] LM_PATCHES: patch %u on", id);
+                const char* comma = std::strchr(p, ',');
+                if (!comma) break;
+                p = comma + 1;
+            }
+        return true;
+    }();
+    (void)sPatchesDone;
     // LM_TEST_HIT=<frame>[,<period>[,<damage>]] (testing): from that frame on (LM_FRAME_DUMP
     // numbering), every <period> frames (0: once), Luigi takes <damage> (default 5) through the
     // game's own health setter fn_800B9488, the call every damage source makes, so the hurt
