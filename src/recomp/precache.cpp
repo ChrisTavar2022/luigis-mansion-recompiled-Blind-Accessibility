@@ -62,7 +62,10 @@ void init() {
     if (const char* p = std::getenv("LM_PRECACHE"); p && std::atoi(p) == 0) return;
     std::string list;
     if (const char* p = std::getenv("LM_PIPELINE_LIST")) list = p;
-    else list = (exeDir() / "pipelines.bin").string();
+    else {
+        const std::u8string u8 = (exeDir() / "pipelines.bin").u8string();  // Aurora takes UTF-8 paths
+        list.assign(reinterpret_cast<const char*>(u8.data()), u8.size());
+    }
     const uint32_t n = aurora_pipeline_cache_seed(list.c_str());
     if (sLog) log("[precache] %u configs from %s", n, list.c_str());
 }
@@ -72,12 +75,64 @@ namespace {
 // settings are applied (menu::draw on the first hold frame sets the enhanced-lighting parts, which
 // can queue a second batch on the next frame), so the hold lasts at least kMinHoldFrames frames.
 constexpr int kMinHoldFrames = 3;
+// Warm shader cache (docs/RENDERING.md "Warm starts"): once this many pipelines of a batch were
+// built without a single shader cache miss, the cache holds this setup's shaders and the rest of
+// the batch is loaded in the background while the game runs (about 1 ms per pipeline; a draw that
+// needs one first waits for it, Aurora 0013). Loading all of them first took 1-3 s here and
+// several times that on 4-6 core CPUs with Enhanced lighting (10k pipelines).
+constexpr uint32_t kWarmSample = 256;
+// A batch continued in the background is held again once this many of its lookups missed the
+// cache (it was only partly cached: compiling in play would stutter).
+constexpr uint32_t kRecompileHold = 8;
 bool sStartupDone = false;
 int sHoldFrames = 0;
 Clock::time_point sHoldStart{};
+Clock::time_point sStartupBegin = Clock::now();
 bool sHolding = false;
 uint32_t sHoldMax = 0;  // most pending pipelines seen in this hold (the bar's total)
 bool sSettingsHold = false;  // the current hold is for a settings change (not the startup one)
+
+// The batch of pipelines the last rebuild of the known set queued (Aurora stat rebuildCount).
+struct Batch {
+    uint32_t rebuild = UINT32_MAX;
+    uint32_t doneAtStart = 0;
+    uint32_t missesAtStart = 0;
+    uint32_t storesAtStart = 0;
+    Clock::time_point start{};
+    bool background = false;  // warm: the rest loads while the game runs
+    bool reheld = false;      // it was continued in the background, then turned out to need compiling
+    bool startup = false;     // queued before the game started (the startup rebuild)
+    bool reported = false;
+    float worstMs = 0.0f;  // worst frame while loading in the background (game running)
+    uint32_t frames = 0;
+};
+Batch sBatch;
+
+void trackBatch(const AuroraPipelineStats& s) {
+    if (s.rebuildCount == sBatch.rebuild) return;
+    sBatch = Batch{};
+    sBatch.rebuild = s.rebuildCount;
+    sBatch.doneAtStart = s.precacheDone;
+    sBatch.missesAtStart = s.blobMisses;
+    sBatch.storesAtStart = s.blobStores;
+    sBatch.start = Clock::now();
+    sBatch.startup = !sStartupDone;
+}
+uint32_t batchMisses(const AuroraPipelineStats& s) { return s.blobMisses - sBatch.missesAtStart; }
+bool batchCompiling(const AuroraPipelineStats& s) { return batchMisses(s) > 0 || s.blobCacheBroken; }
+
+void logCacheStats(const char* when, const AuroraPipelineStats& s) {
+    log("[precache] shader cache %s: %u loaded, %u missed, %u compiled and stored%s (file: %u entries at start, "
+        "launch %u); thread time: WGSL %.0f ms, modules %.0f ms, pipelines %.0f ms (cache reads %.0f ms, writes "
+        "%.0f ms)",
+        when, s.blobHits, s.blobMisses, s.blobStores, s.blobCacheBroken ? " (cache file unusable: see above)" : "",
+        s.blobEntriesAtOpen, s.blobSession, s.wgslNs / 1e6, s.moduleNs / 1e6, s.pipelineNs / 1e6, s.blobLoadNs / 1e6,
+        s.blobStoreNs / 1e6);
+    if (s.blobEntriesAtOpen > 0 && s.blobMisses > 2 * s.blobHits)
+        log("[precache] most of the %u cached shaders did not match: another graphics card or driver version wrote the "
+            "cache",
+            s.blobEntriesAtOpen);
+}
 }  // namespace
 
 bool holdGame() {
@@ -85,11 +140,37 @@ bool holdGame() {
         const char* v = std::getenv("LM_PRECACHE_WAIT");
         return v && std::atoi(v) == 0;
     }();
+    // LM_PRECACHE_WARM=0 (A/B): wait for the whole batch even with a warm cache (before 0226).
+    static const bool sNoWarm = [] {
+        const char* v = std::getenv("LM_PRECACHE_WARM");
+        return v && std::atoi(v) == 0;
+    }();
     AuroraPipelineStats s{};
     aurora_pipeline_cache_get_stats(&s);
+    trackBatch(s);
+    if (s.rebuildPending > 0 && !sNoWarm && !sBatch.background && !sBatch.reheld && batchMisses(s) == 0 &&
+        !s.blobCacheBroken && !s.prewarmPending && s.precacheDone - sBatch.doneAtStart >= kWarmSample) {
+        sBatch.background = true;
+        log("[precache] shader cache warm (%u pipelines loaded, none compiled): the other %u load in the background",
+            s.precacheDone - sBatch.doneAtStart, s.rebuildPending);
+    }
+    if (sBatch.background && s.rebuildPending > 0 && batchMisses(s) >= kRecompileHold) {
+        sBatch.background = false;
+        sBatch.reheld = true;
+        log("[precache] shader cache incomplete (%u lookups missed): game held while the remaining %u pipelines "
+            "are built",
+            batchMisses(s), s.rebuildPending);
+    }
+    if (sBatch.background && s.rebuildPending == 0 && !sBatch.reported) {
+        sBatch.reported = true;
+        log("[precache] background loading done after %.2f s (game frames meanwhile: %u, worst %.1f ms)",
+            std::chrono::duration<double>(Clock::now() - sBatch.start).count(), sBatch.frames, sBatch.worstMs);
+        logCacheStats("after loading", s);
+    }
+    const bool shadersPending = s.rebuildPending > 0 && !sBatch.background;
     bool hold;
     if (!sStartupDone) {
-        hold = sHoldFrames < kMinHoldFrames || s.rebuildPending > 0;
+        hold = sHoldFrames < kMinHoldFrames || shadersPending;
         if (sNoWait && sHoldFrames >= 1) hold = false;
         if (!hold) {
             sStartupDone = true;
@@ -101,20 +182,25 @@ bool holdGame() {
                 aurora_pipeline_cache_export(path);
                 if (std::getenv("LM_PIPELINE_EXPORT_EXIT")) std::_Exit(0);
             }
-            log("[precache] game starts after %.2f s of shader preparation (%u pipelines, %u threads)%s",
-                std::chrono::duration<double>(Clock::now() - sHoldStart).count(), s.precacheDone, s.workerThreads,
+            log("[precache] game starts after %.2f s of shader preparation (%.2f s after startup; %u pipelines "
+                "built, %u loading in the background, %u threads)%s",
+                std::chrono::duration<double>(Clock::now() - sHoldStart).count(),
+                std::chrono::duration<double>(Clock::now() - sStartupBegin).count(), s.precacheDone,
+                sBatch.background ? s.rebuildPending : 0u, s.workerThreads,
                 sNoWait ? " (LM_PRECACHE_WAIT=0: not waited for)" : "");
+            logCacheStats("at game start", s);
         }
     } else {
-        hold = !sNoWait && s.rebuildPending > 0;
+        hold = !sNoWait && shadersPending;
     }
     if (hold && !sHolding) {
         sHoldStart = Clock::now();
         sHoldMax = 0;
         sSettingsHold = sStartupDone;
-        if (sStartupDone) log("[precache] settings change: game held for %u pipelines", s.rebuildPending);
+        if (sStartupDone) log("[precache] game held for %u pipelines", s.rebuildPending);
     } else if (!hold && sHolding && sSettingsHold) {
         log("[precache] resumed after %.2f s", std::chrono::duration<double>(Clock::now() - sHoldStart).count());
+        logCacheStats("now", s);
     }
     sHolding = hold;
     sHoldMax = std::max(sHoldMax, s.rebuildPending);
@@ -125,28 +211,45 @@ void drawHold() {
     sHoldFrames++;
     AuroraPipelineStats s{};
     aurora_pipeline_cache_get_stats(&s);
-    // With a warm cache the whole set loads in about a second: show nothing for the first moment.
+    // A warm cache needs a fraction of a second here (the rest loads in the background): show
+    // nothing for the first moment, then say what is really happening.
     const double t = std::chrono::duration<double>(Clock::now() - sHoldStart).count();
     if (t < 0.3) return;
+    const bool compiling = batchCompiling(s);
     const uint32_t total = std::max(sHoldMax, 1u);
     const uint32_t done = total - std::min(s.rebuildPending, total);
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const float scale = std::max(1.0f, vp->WorkSize.y / 720.0f);
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(420 * scale, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(460 * scale, 0), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.85f);
     ImGui::Begin("##preparing", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove);
     ImGui::SetWindowFontScale(scale);
-    if (sHoldMax < 64 && t < 2.0) {
+    if (!compiling && (sHoldMax < 64 || t < 2.0)) {
         ImGui::TextUnformatted("Loading...");
-    } else {
-        ImGui::Text("Preparing shaders... %u / %u", done, total);
+    } else if (!compiling) {
+        ImGui::Text("Loading shaders... %u / %u", done, total);
         ImGui::ProgressBar(float(done) / float(total), ImVec2(-1, 0), "");
-        ImGui::TextDisabled(sStartupDone ? "New graphics settings: the game continues when this is done."
-                                             : "Once per graphics setup; later starts take about a second.");
+    } else {
+        ImGui::Text("Compiling shaders for your graphics card... %u / %u", done, total);
+        ImGui::ProgressBar(float(done) / float(total), ImVec2(-1, 0), "");
+        if (!sBatch.startup)
+            ImGui::TextWrapped("New graphics settings: the game continues when this is done.");
+        else if (s.blobCacheBroken)
+            ImGui::TextWrapped("The shader cache file cannot be used, so this happens at every start (details in the "
+                               "log).");
+        else if (s.blobEntriesAtOpen == 0)
+            ImGui::TextWrapped("First start with this shader cache: this happens once. Later starts load the shaders "
+                               "from the cache in about a second.");
+        else if (s.blobMisses > 2 * s.blobHits)
+            ImGui::TextWrapped("The shader cache is from another graphics card or driver version, so the shaders "
+                               "are compiled again, once.");
+        else
+            ImGui::TextWrapped("Some shaders are new (new graphics settings or a game update) and are compiled "
+                               "once; the rest load from the cache.");
     }
     ImGui::End();
 }
@@ -162,7 +265,17 @@ void frame() {
     static float worstMs = 0.0f;
     static uint32_t frames = 0;
     const auto now = Clock::now();
-    worstMs = std::max(worstMs, std::chrono::duration<float, std::milli>(now - last).count());
+    const float frameMs = std::chrono::duration<float, std::milli>(now - last).count();
+    worstMs = std::max(worstMs, frameMs);
+    if (sBatch.background && !sBatch.reported && !sHolding) {
+        sBatch.worstMs = std::max(sBatch.worstMs, frameMs);
+        sBatch.frames++;
+    }
+    // (LM_PIPELINE_LOG: slow frames in the first seconds of the game, e.g. while loading in the background)
+    static int sGameFrames = 0;
+    if (sStartupDone && !sHolding && ++sGameFrames < 600 && sLog && frameMs > 34.0f)
+        log("[precache] slow frame %d: %.1f ms%s", sGameFrames, frameMs,
+            sBatch.background && !sBatch.reported ? " (loading in the background)" : "");
     last = now;
     frames++;
 
@@ -186,12 +299,9 @@ void frame() {
         frames = 0;
     }
 
-    // Small corner note while the background compile is still running (first launch without
-    // setup, after a driver update or a settings change that needs other shaders). Loading the
-    // whole list from the shader cache takes about 1 s on every launch, so the note only appears
-    // once that is clearly exceeded, i.e. when shaders are really being compiled.
-    // (Only without the hold, LM_PRECACHE_WAIT=0; single new configs met in play compile unnoticed.)
-    if (!sHolding && s.rebuildPending > 0 && now - start > std::chrono::seconds(4)) {
+    // Small corner note while shaders are compiled in the background (LM_PRECACHE_WAIT=0, or the
+    // few misses a batch continued in the background may have; loading from the cache shows nothing).
+    if (!sHolding && s.rebuildPending > 0 && batchCompiling(s) && now - start > std::chrono::seconds(4)) {
         const ImGuiViewport* vp = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 8, vp->WorkPos.y + vp->WorkSize.y - 8),
                                 ImGuiCond_Always, ImVec2(1, 1));
