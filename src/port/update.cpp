@@ -1505,17 +1505,20 @@ void installAndRestart() {
 #endif
     // The old files: Linux can delete them now (a running program's file stays readable to it);
     // Windows deletes them at the next start (cleanupAfterUpdate).
-    {
-        std::ofstream list(dir / kCleanupList, std::ios::binary | std::ios::app);
-        for (auto& m : moved) {
-            if (m.old.empty()) continue;
+    std::vector<fs::path> leftOver;
+    for (auto& m : moved) {
+        if (m.old.empty()) continue;
 #ifndef _WIN32
-            fs::remove(m.old, ec);
-            if (!ec) continue;
+        fs::remove(m.old, ec);
+        if (!ec) continue;
 #endif
-            list << utf8(fs::relative(m.old, dir, ec)) << '\n';
-        }
+        leftOver.push_back(m.old);
     }
+    if (!leftOver.empty()) {
+        std::ofstream list(dir / kCleanupList, std::ios::binary | std::ios::app);
+        for (auto& p : leftOver) list << utf8(fs::relative(p, dir, ec)) << '\n';
+    }
+    fs::remove_all(dir / kStagingName, ec);  // only empty folders are left in it
     ulog("installed %zu files; restarting", moved.size());
     port::saveSettings();
     std::fflush(stdout);
