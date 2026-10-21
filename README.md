@@ -13,7 +13,4 @@
 - **Options for EVERYTHING:** an F1 options menu for everything, difficulty settings, fun tweaks and toggles, rendering options, etc
 
 ## Known issues
-- Enabling Ambient Occlusion under the enhanced lighting options causes the shading on some characters to appear polygonal and blocky, disable the AO for now. The rest of the enhanced lighting effects work as intended.
-- A few things appear erratic while interpolating higher framerates: mostly water spray effects, sometimes the tube on the Poltergust 3000 jumps for a frame or two, working on resolving this.
-- Some of the optional content is a little buggy, most of it works, but for example the Mario model when selecting "Play as Mario" is completely borked and sometimes the model viewer doesn't load properly. Some of the difficulty sliders have adverse side effects(Lowering Ghost HP will also lower Luigis HP next time you load into the Mansion). These will be fixed shortly.
 - The 2-player mode (Unused content) is unfinished. The plan is to finish it soon, but for now it's mostly in the state it was left in in the original code.
