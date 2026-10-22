@@ -89,6 +89,7 @@ set__7JUTRectFiiii
 # camera reset and Luigi's map effect (the European code's equivalent).
 fn_80029DD4 us pal
 fn_8002A01C us pal
+fn_8001D894
 fn_8002A5A0
 fn_8002A74C
 fn_8002AE74

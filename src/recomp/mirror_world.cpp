@@ -8,6 +8,7 @@
 #include "recomp/guest_util.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
+#include "recomp/skip.h"
 #include "recomp/version.h"
 
 #include <cstdlib>
@@ -29,8 +30,10 @@ bool usGame() { return !ver::pal(); }
 //   fn_80029DD4, fn_8002A01C   map draw: fn_80015BDC(view x Scale(-1, 1, 1), colour) instead of
 //                              fn_80015BDC(view, colour) (view = lbl_803A3820 + 0x18C), then a new
 //                              byte (0x804C5901) = 1 until the end of the draw, which makes the
-//                              cull-mode setter fn_8001D894 take its mirrored row (as the USA
-//                              lbl_804D8230 already does)
+//                              cull-mode setter fn_8001D894 take its mirrored row too. (The USA
+//                              lbl_804D8230 selects the same row but is also read by the model
+//                              node draws fn_80015844 etc., so it is not set here: a port-side
+//                              flag drives the fn_8001D894 hook instead.)
 //   fn_8002A5A0                map focus = (sign * x, y, z) of the icon at [lbl_804D833C], also
 //                              passed (scaled) to the floor lookup fn_80017ADC
 //   fn_8002A74C                map camera reset: x = 0.1 * [lbl_803CCD38 + 0x400] * sign
@@ -44,9 +47,8 @@ constexpr u32 kMapCameraX = 0x803CCD38 + 0x400;  // f32 read by the camera reset
 constexpr u32 kEffectMapLuigi = 0x62;
 
 bool sMapDraw = false;       // inside fn_80029DD4 / fn_8002A01C, mirrored
-bool sMatrixPending = false; // fn_80015BDC got the mirrored matrix: set the cull byte after it
-bool sCullSet = false;
-u8 sCullSaved = 0;
+bool sMatrixPending = false; // fn_80015BDC got the mirrored matrix: mirrored culling after it
+bool sMapCull = false;       // European 0x804C5901: fn_8001D894 takes its mirrored row
 bool sMapMarkers = false;    // inside fn_8002AE74, mirrored
 u32 sScratch = 0;            // guest memory for the mirrored matrix / effect position
 
@@ -69,10 +71,7 @@ void mapDraw(Ctx& c, const char* name) {
     callOriginal(c, name);
     sMapDraw = false;
     sMatrixPending = false;
-    if (sCullSet) {
-        wr8(kCullMirror, sCullSaved);
-        sCullSet = false;
-    }
+    sMapCull = false;
 }
 
 // Runs a function with the f32 at `a` negated (restored afterwards unless it was rewritten).
@@ -109,17 +108,7 @@ void mapViewMatrix(Ctx& c) {
 void afterMapViewMatrix() {
     if (!sMatrixPending) return;
     sMatrixPending = false;
-    static const int sDbg = [] { const char* e = std::getenv("LM_MIRROR_MAPTEST"); return e ? std::atoi(e) : 0; }();
-    {
-        static int n = 0;
-        if (n++ < 3) log("[mirror] map view matrix replaced (cull byte %u)", rd8(kCullMirror));
-    }
-    if (sDbg == 1) return;
-    if (!sCullSet) {
-        sCullSaved = rd8(kCullMirror);
-        sCullSet = true;
-    }
-    wr8(kCullMirror, 1);
+    sMapCull = true;
 }
 
 bool deferSceneCopy() {
@@ -149,11 +138,13 @@ void beforeViewHud(Ctx& c, u32 view) {
 bool swapSplitHalves() { return coop::fixes() && hm::mirrorOn(); }
 
 void onFrame() {
-    if (!ver::pal()) return;
     static bool sLast = false;
     const bool on = hm::mirrorOn();
     if (on == sLast) return;
     sLast = on;
+    log("[mirror] %s at guest frame %u (%s)", on ? "on" : "off", skip::guestFrames(),
+        hm::mirrorWorld() ? "mirror world" : on ? "European Hidden Mansion" : "-");
+    if (!ver::pal()) return;
     // The European game sets these when a scene starts (fn_8018865C / fn_80189054) and when the
     // map is set up (fn_80029A74), through hm::callMirror. Switched in between: set them now.
     wr8(kPalJacSwap, on ? 1 : 0);
@@ -172,6 +163,17 @@ HLE(fn_80189054) { hm::callMirror(c, "fn_80189054"); }
 // Both games (`us pal`): the map draws.
 HLE(fn_80029DD4) { mirror::mapDraw(c, "fn_80029DD4"); }
 HLE(fn_8002A01C) { mirror::mapDraw(c, "fn_8002A01C"); }
+
+// fn_8001D894(model, packet): GXSetCullMode from the packet's cull index, the mirrored row when
+// lbl_804D8230 is set. Inside the mirrored map draw (USA game) it reads as set for this call only,
+// like the European game's extra byte.
+HLE(fn_8001D894) {
+    if (!mirror::sMapCull) return callOriginal(c, "fn_8001D894");
+    const u8 saved = rd8(mirror::kCullMirror);
+    wr8(mirror::kCullMirror, 1);
+    callOriginal(c, "fn_8001D894");
+    wr8(mirror::kCullMirror, saved);
+}
 
 // USA only (`us`): the map focus, camera reset and Luigi's map effect.
 HLE(fn_8002A5A0) {
