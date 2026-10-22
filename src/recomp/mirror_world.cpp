@@ -11,7 +11,6 @@
 #include "recomp/skip.h"
 #include "recomp/version.h"
 
-#include <cstdlib>
 
 namespace recomp {
 namespace mirror {

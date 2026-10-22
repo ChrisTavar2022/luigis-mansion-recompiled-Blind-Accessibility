@@ -13,6 +13,7 @@ retail body instead of replacing it).
 | Widescreen / ultrawide | Works: Hor+ 3D, 4:3 or edge-anchored HUD, culling widened. Limitations below. |
 | Field of view | Works (F1 > Visuals > Field of view); culling follows. |
 | High frame rate (interpolation) | Works: 60 fps or display rate, game logic stays 30 Hz (section 3). |
+| Mirror world | Works: the European Hidden Mansion's left/right mirror in every mode (section 5). |
 
 ## 1. Arbitrary resolution
 
@@ -539,3 +540,94 @@ The earlier "broken / can get stuck" state was not reproduced.
   number of frames a loading pause lasts can therefore differ from a watched run.
 - Music keeps playing at normal speed (muted) during a skip, so after a skip a track
   may be at a different position than after watching.
+
+## 5. Mirror world
+
+F1 > Enhancements > Gameplay > World > *Mirror world* (setting `[gameplay] mirror_world`, off by
+default; test aid `LM_MIRROR=1/0`, or `LM_GAMEPLAY=mirror=1`). The whole game plays left/right
+mirrored, exactly the way the European release (GLMP01) mirrors its Hidden Mansion, in every
+mode: the normal mansion, the USA Hidden Mansion and the European one, on the USA or the European
+game, with one disc or both. It applies live (the next game frame); the Game Boy Horror map
+picks it up when it is next opened.
+
+**The European Hidden Mansion** is always mirrored (its own rule), with the option on or off;
+the tooltip says so. The option only adds the mirror where the European game would not have it.
+
+### How it works: the European game's own mirror, reused
+
+The European game mirrors with code that reads the hidden-mansion flag (docs/HIDDEN_MANSION.md,
+"Mirror"). Nothing else is mirrored, so the option does exactly what that code does and nothing
+more. `hm::mirrorOn()` (`src/recomp/hidden_mansion.cpp`) is the single switch: the European
+Hidden Mansion (PAL rules and the flag; `LM_HM_MIRROR=0` turns that part off on the USA game) or
+Mirror world (while the game scene is current).
+
+- **European game**: its mirror functions run with the flag reading `mirrorOn()` for the call
+  (`hm::callMirror`, the same bookkeeping as the "USA rules on the European game" flag hiding;
+  functions that read the real flag still see it from inside). The stereo-swap flag
+  (`0x804C6A21`) and the map sign (`0x804C5A10`) are also set when the option is switched while a
+  map is loaded (`mirror::onFrame`).
+- **USA game**: the hooks that already gave the USA game the European Hidden Mansion's mirror
+  (`hidden_mansion_hooks.cpp`) now follow `mirrorOn()`, and the Game Boy Horror map mirror, which
+  the USA game lacked so far, is added as hooks (`src/recomp/mirror_world.cpp`).
+
+| What is mirrored | European code (USA names) | USA game |
+|---|---|---|
+| The 3D picture: after the main view (view 0) the frame loop `fn_8000BCE8` copies the EFB and redraws it as a full-screen quad (`fn_8005F8B8`); the quad's S texture coordinates are flipped | `80062388`, flag == 1 | FIFO filter on the quad (`fn_8005F8B8` hook) |
+| Luigi's main and C stick X negated (push right = right on screen) | `fn_8007F9B8`, `fn_800807EC`, `fn_800809CC` | pad +0x44/+0x54 negated for the call (player 2's pad too) |
+| HUD markers placed at positions the game projects itself: x = 640 - x | `fn_80041214` | `fn_80009148` result inside `fn_80041214` |
+| Iris wipe centred at x = 328 instead of 312 | `fn_80055C54` | `JUTRect::set` inside the wipe |
+| Game Boy Horror map: view x Scale(-1, 1, 1) for the map model, mirrored cull row, map focus/camera reset/Luigi's map effect with x negated | `fn_80029A74` (sign), `fn_80029DD4`, `fn_8002A01C`, `fn_8002A5A0`, `fn_8002A74C`, `fn_8002AE74` | hooks on the same functions + `fn_80015BDC` (matrix argument), `fn_8001D894` (cull row; a port-side flag, since the USA `lbl_804D8230` is also read by the model node draws), `fn_80164F5C` (effect position) |
+| Speakers swapped | `fn_8018865C`/`fn_80189054` set the JAudio flag, `Jac_VframeWork` swaps | `audio_out.cpp` swaps |
+
+### Where it turns itself off (as in the European Hidden Mansion)
+
+The mirror is a redraw of view 0's picture, so everything drawn after that copy is never mirrored:
+
+- the HUD (`fn_8003E7B0`: health, Game Boy Horror, ghost counters, element meter), text boxes
+  and choices (`fn_80044138`), room names, E. Gadd's call portrait, the pause screen and every 2D
+  screen; the GBH screens' frame and text (only the 3D map model in it is mirrored);
+- the second view: the Game Boy Horror's first-person search view (X) and the restored live GBH
+  camera (Unused content) show the world unmirrored, as the European search view does;
+- scenes that never reach the frame loop's copy: boot, title, file select, Options, and the
+  opening cutscene before the foyer (forest, map card, gate, front door) stay unmirrored; the
+  mirror starts with the foyer.
+
+Things fixed up in screen space follow the European rules only (stick, projected HUD markers,
+wipe). Everything the port adds stays in the unmirrored 3D frame, so it is unaffected: Hor+
+widescreen/ultrawide and FOV (the copy covers the whole widened picture), HUD anchoring (health
+stays left, the GBH right: the European game does not swap them), portal culling and the portal
+fix (screen rectangles of the unmirrored projection), back-face culling (the geometry is not
+mirrored), shadows and Enhanced lighting (bloom and the volumetric beam are composited at the
+scene end marker, before the copy), interpolation (the quad is the same every frame).
+
+**Two players** (Unused content, US and European game): view 0's copy would mirror player 1's
+half onto player 2's. With two player views the copy is made after the last view instead
+(`mirror::deferSceneCopy`/`beforeViewHud`, then the frame loop's display-state resets again), and
+the co-op side-by-side halves are swapped (player 1 drawn right, player 2 left) so the mirrored
+whole screen puts each back on its own side, both mirrored. The GBH search view in 2-player mode
+keeps the one-player rule (not deferred).
+
+### Verification (2026-10-22)
+
+Scratch APPDATA/card, `LM_SHOT` render-resolution shots (`out/mirror_world/` in the main checkout):
+
+- Default off: `LM_FRAME_DUMP` nursery route (walking, Game Boy Horror map) 47 frames
+  byte-identical to main (US).
+- US, 16:9, 30 fps: nursery mirrored, HUD not, stick right moves Luigi right on screen; GBH map
+  mirrored and identical in framing to the European game's own mirrored map; title, file select
+  and opening cutscene unmirrored, foyer mirrored; E. Gadd's call (text boxes, portrait) at 21:9;
+  Chauncey's arena.
+- 120 fps, live toggle (`LM_SETTINGS_AT`, `LM_INTERP_TEST=3` dumps): the picture flips between two
+  game frames; the interpolated steps on either side are whole frames, no squeezed blend.
+- Enhanced lighting at 120 fps with lightning shadows, the flashlight beam and the GBH camera:
+  lights, shadows and beam mirrored with the scene; the GBH camera picture unmirrored (above).
+- 2-player split (co-op improvements, 120 fps): both halves mirrored in place, HUD halves right;
+  found and fixed: player 2's stick was not flipped (its pad is an HLE allocation above MEM1).
+- European game: Mirror world in the normal mansion (stick, GBH map, split screen); the European
+  Hidden Mansion still mirrored with the option off; the USA Hidden Mansion on the European game
+  unmirrored with the option off and mirrored with it on. USA game: European Hidden Mansion still
+  mirrored with the option off.
+
+Not verified: the ending, the pause screen and the GBH search view (X) with the option on; the
+European game's default-off pixel identity (only the USA game was compared); the European map
+sign switched mid-map; audio swap by ear (runs are muted).
