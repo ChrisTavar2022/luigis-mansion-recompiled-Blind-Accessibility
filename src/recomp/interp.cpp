@@ -4224,6 +4224,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 s32 j;
                 M34 wa, wb;
                 float dist;
+                f32 cb[3];  // where its geometry is in b (world; the slot's vertex centre, else the origin)
             };
             static std::vector<Member> members;
             members.clear();
@@ -4244,6 +4245,11 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 compose(vp->ia.data(), va, m.wa.data());
                 compose(vp->ib.data(), vb, m.wb.data());
                 m.dist = viewDist(vb, drawCentre(b, p));
+                {
+                    const f32* c = sScrewBlend ? drawCentre(b, p) : nullptr;
+                    for (int r = 0; r < 3; r++)
+                        m.cb[r] = c ? m.wb[4 * r] * c[0] + m.wb[4 * r + 1] * c[1] + m.wb[4 * r + 2] * c[2] + m.wb[4 * r + 3] : m.wb[4 * r + 3];
+                }
                 byGroup[p.group].push_back(u32(members.size()));
                 members.push_back(m);
             }
@@ -4269,13 +4275,13 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 f32 med[3];
                 for (int c = 0; c < 3; c++) {
                     xs[c].clear();
-                    for (const u32 m : idx) xs[c].push_back(members[m].wb[4 * c + 3]);
+                    for (const u32 m : idx) xs[c].push_back(members[m].cb[c]);
                     std::nth_element(xs[c].begin(), xs[c].begin() + xs[c].size() / 2, xs[c].end());
                     med[c] = xs[c][xs[c].size() / 2];
                 }
                 ds.clear();
                 for (const u32 m : idx)
-                    ds.push_back(std::hypot(members[m].wb[3] - med[0], members[m].wb[7] - med[1], members[m].wb[11] - med[2]));
+                    ds.push_back(std::hypot(members[m].cb[0] - med[0], members[m].cb[1] - med[1], members[m].cb[2] - med[2]));
                 std::vector<float> sorted = ds;
                 std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2, sorted.end());
                 const float spread = sorted[sorted.size() / 2];
@@ -4367,6 +4373,10 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                                          now ? "erratic" : "held", step, groupStep[mi], dist);
                     }
                     if (groupLog && (held > 0 || now)) sExcluded[i] = now ? 2 : 3;
+                    // (A half turn of an erratic member tears its model all the same: below.)
+                    if ((held > 0 || now) && sScrewBlend && i < b.multiMember.size() && b.multiMember[i] &&
+                        turnDegrees(wa.data(), wb.data(), 4) > 170.0f)
+                        tearGroups.insert(p.group);
                     if (held > 0 || now) continue;
                 }
                 const bool near = blendableWorld(wa.data(), wb.data(), dist, prev, prevTurn, p.tumble, drawCentre(b, p));
@@ -4398,6 +4408,14 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     // model blended the short way swept its geometry through either side of the model
                     // (the suction swirl, 400 units a game frame); the whole instance goes entrywise.
                     if (d < 0.087f && sScrewBlend && i < b.multiMember.size() && b.multiMember[i]) tearGroups.insert(p.group);
+                    // An envelope matrix whose axes change length by over 30% in one game frame (the weights of
+                    // its joints moved: a hose envelope went from 0.94 to 0.43 along two axes) is no rigid
+                    // motion: blended as a turn and a scale its vertices left their path by half their step.
+                    if (sScrewBlend && i < b.multiMember.size() && b.multiMember[i])
+                        for (int k = 0; k < 3; k++) {
+                            const float la = std::hypot(wa[k], wa[4 + k], wa[8 + k]), lb = std::hypot(wb[k], wb[4 + k], wb[8 + k]);
+                            if (std::max(la, lb) > 1.3f * std::min(la, lb)) tearGroups.insert(p.group);
+                        }
                     // A weighted (envelope) matrix of joints that point different ways is sheared.
                     for (const Rigid* r : {&ra, &rb}) {
                         const float diag = std::max({std::fabs(r->u[0][0]), std::fabs(r->u[1][1]), std::fabs(r->u[2][2]), 1e-6f});
