@@ -452,11 +452,14 @@ HLE(fn_8005F8B8) {
 namespace {
 // Luigi's input readers see the main and C stick X negated (PAL negates the values it reads
 // from the pad at +0x44 / +0x54). Done by negating them in the pad for the call's duration.
+// Player 2's pad (2-player mode, coop.cpp) is an HLE allocation above MEM1, so the test is the
+// whole guest RAM window, not MEM1.
 std::unordered_set<u32> sNegatedPads;
+bool guestRam(u32 a) { return a >= 0x80000000u && a < 0x84000000u; }
 struct ScopedStickFlip {
     u32 pad = 0;
     explicit ScopedStickFlip(u32 p) {
-        if (!hm::mirrorActive() || !inMem1(p) || !sNegatedPads.insert(p).second) return;
+        if (!hm::mirrorActive() || !guestRam(p) || !sNegatedPads.insert(p).second) return;
         pad = p;
         wrf(pad + 0x44, -rdf(pad + 0x44));
         wrf(pad + 0x54, -rdf(pad + 0x54));

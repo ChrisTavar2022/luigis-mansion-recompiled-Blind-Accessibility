@@ -130,8 +130,8 @@ void beforeViewHud(Ctx& c, u32 view) {
     gu::call(c, GU_SYM("fn_8005F8B8"));
     sRunning = false;
     // The display state resets the frame loop makes after the copy (fn_8000BCE8), again.
-    gu::call(c, GU_SYM("fn_80009B80"));
-    gu::call(c, GU_SYM("fn_80007A24"));
+    gu::call(c, GU_SYM("fn_80009B80__Fv"));
+    gu::call(c, GU_SYM("LMDefaultOrthoView__Fv"));
     gu::call(c, GU_SYM("fn_8005DF84"));
 }
 
