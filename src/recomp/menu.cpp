@@ -1325,7 +1325,11 @@ void visualsTab() {
     ImGui::SetItemTooltip("The game window fills the whole screen.");
     sDirty |= recomp::menu::Checkbox("VSync", &v.vsync);
     ImGui::SetItemTooltip("Frames wait for the display's refresh: no tearing, but the frame rate is limited to\n"
-                          "the refresh rate. Applies on the next launch.");
+                          "the refresh rate. Applies on the next launch.%s",
+                          recomp::pacing::gamescope()
+                              ? "\n\nUnder Gamescope (Steam Deck game mode) VSync is always on: Gamescope composites\n"
+                                "every frame, so there is no tearing to avoid."
+                              : "");
     pending("next launch");
     {
         // Only the sample counts the graphics device supports (Aurora 0233: Vulkan/Metal 1 and 4,

@@ -175,6 +175,64 @@ Size: about 450 MB unpacked, 150 MB compressed (clang and lld are 250 MB and 190
 - Frame dumps (`LM_FRAME_DUMP`) work as on Windows; window screenshots in WSLg:
   `SDL_VIDEO_DRIVER=x11` and ImageMagick `import -window <id>`.
 
+## Steam Deck: the picture stopped above 30 fps (issue #11)
+
+**Report** (1.1.1, SteamOS game mode: Gamescope, Vulkan on RADV VANGOGH, Dawn compatibility
+feature level, 89.89 Hz panel, VSync off = present mode Mailbox): any frame rate above 30 "locks as
+soon as you press START" at the title; switching from 30 in game "locks within a minute". Windows
+works for the same player.
+
+**What the log shows.** After the switch the `[frame] N presents, M retraces` lines keep coming at
+the title's 60 fps (presents and retraces advance together; the music changes from the title to the
+file select at START), so the game thread ran on. The `[interp] presented ...` statistics, which
+only a replay prints (every 5 s), appear once and never again for the remaining ~15 s: the host
+loop replayed one interpolated frame and then presented nothing. (That one line's "presented 0.1
+fps" is an artefact: its first window starts at program start.) `accuracy 0x7f -> 0xff` is
+`GX_AURORA_ACCURACY_EARLY_Z_MERGE` (0x80), set whenever the target is above 30, with 0 pipelines
+queued (no shader hold). So the display loop (main thread, render worker or swap chain) stopped
+while the decoupled game kept running; 1.1.1 had no hang watchdog, and 1.1.2's would only have said
+"main thread has not returned to its loop (game loop)".
+
+**Not reproduced** on Windows with Dawn's Vulkan backend (also the compatibility feature level;
+NVIDIA) at 60/90/120 and match-refresh, Mailbox and FIFO, 30 -> 90 switched at the title before
+START, 4 logical CPUs, nor on Mesa's CPU Vulkan driver in WSL under Xvfb (Mailbox, 90). Gamescope's
+WSI layer and RADV are not available here. On the Deck, the working 30 fps and the stuck interpolated
+mode differ in what reaches the swap chain: interpolated frames are presented at about the panel's
+own 90 Hz (at or above the refresh rate, timer-paced, Mailbox through Gamescope's layer) instead
+of 30/60 fps below it, and the host waits for each frame's GPU completion (frame-ahead limit).
+
+**Changes:**
+
+- Under Gamescope (`GAMESCOPE_WAYLAND_DISPLAY` or `XDG_CURRENT_DESKTOP=gamescope`) VSync is always
+  on (FIFO; F1 tooltip says so). Gamescope composites every frame, so Mailbox never avoided tearing
+  there, only latency. Interpolated frames are then paced by the swap chain (`F` mode at the refresh
+  rate, or an even fraction of it). Test aids: `LM_GAMESCOPE=0/1` (detection), `LM_GAMESCOPE_VSYNC=0`
+  (keep the setting).
+- The frame-ahead wait no longer depends on present timing being reported: after 8 frames in a row
+  whose GPU completion did not arrive within 50 ms, frames are paced by the timer alone (`[pacing]
+  ... frames are paced by the timer alone`), back on after 30 completions in time. Aurora counts
+  frames whose completion never arrived (`aurora_present_timing_timeouts`, logged).
+- Hang reports name the place: the main loop sets a phase per step (pacing wait,
+  `aurora_begin_frame`, replay, menu, present hold, `aurora_end_frame`); every `[hang]` line adds
+  the game frames finished since the main thread stopped and what Aurora's threads are doing
+  (Aurora 0236 `aurora_describe_activity`, e.g. `render worker: acquiring the swap chain texture
+  (GetCurrentTexture) for 15.4 s; host: waiting for a frame slot (the render worker still has two
+  frames) for 15.3 s`); Linux prints every thread's stack once per run at the first report (a
+  signal handler per thread writes its own backtrace, `binary(symbol+off)` lines, into
+  last_run.log through the launcher). The main loop itself reports what the watchdog cannot see
+  because the loop keeps running: no frame begun for 10 s, and with interpolation the game thread
+  not finishing a frame for 15 s while the display replays its last one (with the guest thread
+  list).
+
+Test aids: `AURORA_TEST_ACQUIRE_STALL=<frame>[,<seconds>]` (the swap chain acquire of that frame
+takes that long), `LM_TEST_GUEST_STALL=<frame>[,<seconds>]` (the game thread stops at that frame).
+Verified on Windows (both reported with the right phase and activity) and in WSL (Vulkan on
+llvmpipe under Xvfb: the acquire stall reported as `host: waiting for a frame slot ...; render
+worker: acquiring the swap chain texture (GetCurrentTexture) for 15.5 s`, then every thread's
+stack; llvmpipe's worker threads block the signal and are listed as such; frame addresses are
+`binary(+offset)`, resolved offline with `llvm-symbolizer --obj=<binary>`). `LM_GAMESCOPE=1` with
+VSync off gave FifoRelaxed on Windows (Vulkan, 90 fps presented) and in WSL.
+
 ## Known issues / not done
 
 - Real GPUs: only tested on Mesa's CPU Vulkan driver (WSLg). NVIDIA/AMD/Intel drivers on a
