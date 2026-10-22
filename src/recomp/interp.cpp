@@ -1154,6 +1154,7 @@ u32 sReversals = 0;   // CPU-built blocks shown as captured because they turned 
 u32 sSprayPresent = 0;  // LM_SPRAY_LOG: the present being replayed
 u32 sBornMoving = 0;  // values without partner shown moving along their step into place (tagBackStep; stats)
 u32 sGroupForced = 0; // model instances blended linearly as a whole (stats)
+u64 sOwnSkinned = 0, sOwnPivoted = 0;  // own-camera scenes: skinned instances blended entrywise / rigid matrices blended about their draw (stats)
 // LM_GROUP_LOG: members of a model instance without a say this replay (1 outlier, 2 erratic now, 3 held
 // erratic), per patch of b, and how the per-matrix path then treated them (X lines).
 std::vector<u8> sExcluded;
@@ -3760,6 +3761,33 @@ bool placeUnderCamera(const Tape& a, const Tape& b, const Patch& p, float alpha)
     return true;
 }
 
+// Model matrices drawn in a scene with its own camera (TagCat::SubView: event scenes such as the
+// walk up to the mansion door after E. Gadd's lab, door close-ups, the call portrait). Their
+// values are not camera-factored (that camera is not the game camera), so each one is blended as
+// drawn, in that camera's space. A rigid blend there turns the matrix about its own origin, and
+// the event scenes' models have their origin far from their geometry (the walk-up's Luigi: 4000-
+// 5600 units, the demo scene's origin): a turn of a few degrees per game frame (the following
+// camera, a swinging limb) moved the geometry off its path by several units mid-interval, by a
+// different amount for every matrix of a skinned mesh, and the hair at the back of Luigi's head
+// poked through his cap (docs/INTERPOLATION.md "Event scenes: models far from their origin").
+// - A skinned instance (a member sheared or flat: an envelope's weighted sum of joints) is
+//   blended entrywise as a whole: every vertex moves in a straight line, the skin stays together
+//   (as the game camera's skinned instances are on a fast turn).
+// - Any other matrix is blended rigidly about the centre of its draw (its geometry), not about
+//   its origin: that centre moves in a straight line (as spinners do under the game camera).
+// LM_OWNCAM_INSTANCES=0 (test aid): the old blend (each matrix rigidly about its origin).
+const bool sOwnInstances = [] {
+    const char* v = std::getenv("LM_OWNCAM_INSTANCES");
+    return !v || std::atoi(v) != 0;
+}();
+// A skin envelope's matrix: sheared (a weighted sum of joints that point different ways) or flat.
+bool skinMatrix(const f32* m) {
+    Rigid r;
+    if (!decompose(m, 4, r) || flatMatrix(m)) return true;
+    const float diag = std::max({std::fabs(r.u[0][0]), std::fabs(r.u[1][1]), std::fabs(r.u[2][2]), 1e-6f});
+    return std::max({std::fabs(r.u[0][1]), std::fabs(r.u[0][2]), std::fabs(r.u[1][2])}) > 0.08f * diag;
+}
+
 // Builds tape b with its values blended from a toward b (alpha 1 = b as captured) into
 // sReplay and submits it. `dump` redirects the LM_FRAME_DUMP copy (LM_INTERP_TEST).
 // Policies (docs/INTERPOLATION.md "Tagged interpolation"):
@@ -4093,6 +4121,21 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     snapGroups.insert(g);
                     if (sTrace) log("[interp] tape %llu: instance %016llX switched (%u of %u members jumped)", (unsigned long long)b.seq,
                                     (unsigned long long)g, v.first, v.second);
+                }
+            // Own-camera model instances (see sOwnInstances): skinned ones blend entrywise as a whole.
+            if (sOwnInstances)
+                for (u32 i = 0; i < b.patches.size(); i++) {
+                    const Patch& p = b.patches[i];
+                    const s32 j = b.partner[i];
+                    if (!p.ownCamera || !p.group || j < 0 || p.kind != Kind::PosMtx || p.count != 12 || p.role != 0 ||
+                        forceGroups.count(p.group))
+                        continue;
+                    f32 va[12], vb[12];
+                    for (int e = 0; e < 12; e++) va[e] = val(*a, a->patches[j], e), vb[e] = val(b, p, e);
+                    if (skinMatrix(va) || skinMatrix(vb)) {
+                        forceGroups.insert(p.group);
+                        sOwnSkinned++;
+                    }
                 }
             // Linear only for a skinned instance (some matrix sheared or flat) with a fast turn: rigid
             // parts (the water's bubbles, which spin) keep their own rigid blend (entrywise, a part
@@ -4441,6 +4484,17 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                          (p.kind == Kind::TexMtx && p.count == 8 && blendSpin(va, vb, alpha, out))))
                 for (int k = 0; k < p.count; k++)
                     out[k] = std::isfinite(va[k]) && std::isfinite(vb[k]) ? va[k] + (vb[k] - va[k]) * alpha : vb[k];
+            // An own-camera model matrix blended rigidly: about its draw's centre (see sOwnInstances).
+            if (sOwnInstances && p.ownCamera && p.kind == Kind::PosMtx && p.count == 12 && p.role == 0 && !forced &&
+                p.bundle < b.bundleCentre.size() && std::isfinite(b.bundleCentre[p.bundle][0])) {
+                const f32* c = b.bundleCentre[p.bundle].data();
+                f32 pa[3], pb[3], have[3];
+                xform34(va, c, pa);
+                xform34(vb, c, pb);
+                xform34(out, c, have);
+                for (int r = 0; r < 3; r++) out[4 * r + 3] += pa[r] + (pb[r] - pa[r]) * alpha - have[r];
+                sOwnPivoted++;
+            }
             // A spinner or tumbler turned about its matrix origin: geometry off that origin swings
             // along an arc (the water spray's chunks, rotated 150-180 degrees about an origin outside
             // the mesh, sat above both of their game-frame places mid-interval: sweep C, blips.py).
@@ -5344,6 +5398,10 @@ bool replay(bool final) {
                 double(sGroupForced) / presentedWindow, double(sGroupSnaps) / presentedWindow, double(sReversals) / presentedWindow,
                 double(sBornMoving) / presentedWindow);
         sColorsBlended = sColorsSwitched = sGroupForced = sGroupSnaps = sReversals = sBornMoving = 0;
+        if (sOwnSkinned + sOwnPivoted)
+            log("[interp] own-camera scenes per present: %.1f skinned model instances blended entrywise, %.1f rigid model matrices blended about their draw",
+                double(sOwnSkinned) / presentedWindow, double(sOwnPivoted) / presentedWindow);
+        sOwnSkinned = sOwnPivoted = 0;
         if (s2DBlended + s2DKept)
             log("[interp] 2D pictures that moved, per present: %.2f blended, %.2f as captured (not the same picture, glyph-sized or jumped)",
                 double(s2DBlended) / presentedWindow, double(s2DKept) / presentedWindow);

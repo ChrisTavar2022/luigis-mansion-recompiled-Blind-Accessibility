@@ -91,7 +91,7 @@ void printStackTo(std::FILE* out, const char* reason) {
 // The stack to stderr and (Windows) into last_run.log (port/recovery.h).
 void printStack(const char* reason) {
     printStackTo(stderr, reason);
-    if (std::FILE* log = recovery::runLog()) printStackTo(log, reason);
+    if (std::FILE* log = recovery::runLog(); log && !recovery::stdioInLog()) printStackTo(log, reason);
 }
 
 void onAbort(int) {

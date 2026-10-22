@@ -7,6 +7,18 @@
 
 #include <SDL3/SDL_messagebox.h>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -284,23 +296,97 @@ void onCrash(const char* what) {
     if (sLog) std::fflush(sLog);
 }
 
+#ifdef _WIN32
+namespace {
+bool sNoStdio = false;     // no console and nothing redirected (setupConsole)
+bool sStdioInLog = false;  // stdout/stderr reopened onto last_run.log (openRunLog)
+
+bool validHandle(DWORD which) {
+    const HANDLE h = GetStdHandle(which);
+    return h && h != INVALID_HANDLE_VALUE && GetFileType(h) != FILE_TYPE_UNKNOWN;
+}
+
+void reopenOnConsole() {
+    std::FILE* f = nullptr;
+    freopen_s(&f, "CONOUT$", "w", stdout);
+    freopen_s(&f, "CONOUT$", "w", stderr);
+}
+}  // namespace
+#endif
+
+void setupConsole(int argc, char** argv) {
+#ifdef _WIN32
+    bool want = false, none = false;  // LM_CONSOLE=0 (test aid): as if started by a double-click
+    if (const char* e = std::getenv("LM_CONSOLE")) want = *e == '1', none = *e == '0';
+    for (int i = 1; i < argc; i++)
+        if (std::strcmp(argv[i], "--console") == 0) want = true;
+    // A console program (lmrecomp) already has its console; a redirected stream stays as it is.
+    if (GetConsoleWindow() || validHandle(STD_OUTPUT_HANDLE) || validHandle(STD_ERROR_HANDLE)) return;
+    if (none) {
+        sNoStdio = true;
+        return;
+    }
+    if (want && AllocConsole()) {
+        reopenOnConsole();
+        return;
+    }
+    // Started from cmd/PowerShell: print into that terminal (its prompt does not wait for us).
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        reopenOnConsole();
+        return;
+    }
+    sNoStdio = true;
+#else
+    (void)argc;
+    (void)argv;
+#endif
+}
+
+bool stdioInLog() {
+#ifdef _WIN32
+    return sStdioInLog;
+#else
+    return false;
+#endif
+}
+
 void openRunLog() {
 #ifdef _WIN32
     if (sLog) return;
     std::error_code ec;
     const fs::path dir = configDir();
-    if (fs::exists(dir / "last_run.log", ec)) fs::rename(dir / "last_run.log", dir / "previous_run.log", ec);
-    sLog = _wfopen((dir / "last_run.log").wstring().c_str(), L"wb");
+    const fs::path path = dir / "last_run.log";
+    if (fs::exists(path, ec)) fs::rename(path, dir / "previous_run.log", ec);
+    sLog = _wfopen(path.wstring().c_str(), L"wb");
     if (!sLog) return;
     const std::string head = "Luigi's Mansion Recompiled " + std::string(update::buildVersion()) + ", started " + stamp();
     logLine(head.c_str(), head.size());
+    if (sNoStdio) {
+        // Everything appends (the three streams then never overwrite each other's lines);
+        // unbuffered, so a crash loses nothing.
+        // In a windowed program stdout/stderr have no descriptor (fileno -2), so _dup2 under them
+        // does nothing: stdout is reopened onto the log, which then denies other writers, so the
+        // run log is stdout itself and stderr is bound (via NUL) and moved onto its descriptor.
+        std::fclose(sLog);
+        sLog = nullptr;
+        std::FILE* f = nullptr;
+        if (_wfreopen_s(&f, path.wstring().c_str(), L"ab", stdout) != 0) {
+            sLog = _wfopen(path.wstring().c_str(), L"ab");
+            return;
+        }
+        if (freopen_s(&f, "NUL", "wb", stderr) == 0) _dup2(_fileno(stdout), _fileno(stderr));
+        std::setvbuf(stdout, nullptr, _IONBF, 0);
+        std::setvbuf(stderr, nullptr, _IONBF, 0);
+        sLog = stdout;
+        sStdioInLog = true;
+    }
 #endif
 }
 
 std::FILE* runLog() { return sLog; }
 
 void logLine(const char* text, std::size_t len) {
-    if (!sLog) return;
+    if (!sLog || stdioInLog()) return;
     std::fwrite(text, 1, len, sLog);
     if (len == 0 || text[len - 1] != '\n') std::fputc('\n', sLog);
     std::fflush(sLog);
