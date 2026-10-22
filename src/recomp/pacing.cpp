@@ -533,6 +533,26 @@ bool gamescope() {
     return sOn;
 }
 
+bool vsyncOn() {
+    static const bool sKeep = [] { const char* e = std::getenv("LM_GAMESCOPE_VSYNC"); return e && *e == '0'; }();
+    return port::settings().video.vsync || (gamescope() && !sKeep);
+}
+
+namespace {
+// Fixed refresh: refreshes per frame for a target frame period (at most 4). LM_PACING_DIVISOR=n
+// (test aid): at least every n-th refresh.
+u32 minDivisor(double minPeriod, double refresh) {
+    static const u32 sMinDiv = [] { const char* e = std::getenv("LM_PACING_DIVISOR"); return e ? u32(std::max(1, std::atoi(e))) : 1u; }();
+    return std::min<u32>(std::max(u32(std::max(1.0, std::ceil(minPeriod / refresh - 0.02))), sMinDiv), 4);
+}
+}  // namespace
+
+float fixedRefreshFps(int fps) {
+    const float hz = frame::displayRefreshHz();
+    if (!vsyncOn() || hz <= 0 || vrrActive() || fps <= 0) return 0.0f;
+    return hz / float(minDivisor(1.0 / double(fps), 1.0 / double(hz)));
+}
+
 namespace {
 // The frame-ahead limit (aurora_wait_frame_done) needs the GPU completion of each frame (present
 // timing, Aurora 0197/0216). A backend or driver that does not report it would make every frame
@@ -608,7 +628,7 @@ void beforeFrame() {
         sNext = now;
         sStarts.push_back(now);
         while (sStarts.size() > 1 && sStarts.back() - sStarts.front() > std::chrono::seconds(1)) sStarts.pop_front();
-        std::snprintf(sStatus, sizeof(sStatus), "%.0f fps (unlimited%s)", presentedFps(), v.vsync ? ", VSync on" : "");
+        std::snprintf(sStatus, sizeof(sStatus), "%.0f fps (unlimited%s)", presentedFps(), vsyncOn() ? ", VSync on" : "");
         sCur.mode = 'U';
         sCur.target = 0;
         return;
@@ -618,7 +638,8 @@ void beforeFrame() {
     const double minPeriod = 1.0 / double(fps);
     Mode mode;
     double period, base;
-    if (!v.vsync || hz <= 0) {
+    const bool vsync = vsyncOn();
+    if (!vsync || hz <= 0) {
         mode = Mode::Grid;
         base = minPeriod;
         period = std::max(minPeriod, need);
@@ -632,9 +653,7 @@ void beforeFrame() {
     } else {
         // Fixed refresh: every n-th refresh, never an uneven rate.
         const double refresh = 1.0 / double(hz);
-        // LM_PACING_DIVISOR=n (test aid): at least every n-th refresh.
-        static const u32 sMinDiv = [] { const char* e = std::getenv("LM_PACING_DIVISOR"); return e ? u32(std::max(1, std::atoi(e))) : 1u; }();
-        const u32 n0 = std::min<u32>(std::max(u32(std::max(1.0, std::ceil(minPeriod / refresh - 0.02))), sMinDiv), 4);
+        const u32 n0 = minDivisor(minPeriod, refresh);
         u32 n = u32(std::max(1.0, std::ceil(std::max(minPeriod, need) / refresh - 0.02)));
         n = std::min<u32>(std::max(n, n0), 4);
         sDivisor = n;
@@ -711,7 +730,7 @@ void beforeFrame() {
         std::snprintf(sStatus, sizeof(sStatus), "%.0f fps (%.0f Hz)", shown, hz);
     else if (mode == Mode::Vblank)
         std::snprintf(sStatus, sizeof(sStatus), "%.0f fps = %.0f Hz / %u%s", shown, hz, sDivisor, why);
-    else if (vrr && v.vsync)
+    else if (vrr && vsync)
         std::snprintf(sStatus, sizeof(sStatus), "%.0f fps (variable refresh)%s", shown, why);
     else
         std::snprintf(sStatus, sizeof(sStatus), "%.0f fps%s", shown, why);

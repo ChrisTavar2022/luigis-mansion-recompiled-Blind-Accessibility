@@ -560,6 +560,56 @@ void updateToast() {
     ImGui::PopStyleVar();
 }
 
+// Under Gamescope (Steam Deck game mode) VSync is always on, so a frame rate that does not divide
+// the screen's refresh rate is shown at the even fraction below it (60 fps on a 90 Hz Steam Deck
+// OLED: 45). Players then see a lower rate than they picked: a notice once per session, bottom-left,
+// after the condition has held for 2 s (the refresh rate is settled). The F1 slider says it too.
+void refreshRateToast() {
+    if (!recomp::pacing::gamescope()) return;
+    static double sSince = -1.0, sShownAt = -1.0;
+    static float sFit = 0, sHz = 0;
+    static int sTarget = 0;
+    const double now = ImGui::GetTime();
+    if (sShownAt < 0.0) {
+        const auto& v = port::settings().video;
+        const int target = recomp::frame::targetFps();
+        const float hz = recomp::frame::displayRefreshHz();
+        const float fit = v.unlimitedFps || !recomp::frame::interpolating() ? 0.0f : recomp::pacing::fixedRefreshFps(target);
+        if (sOpen || fit <= 0 || float(target) > hz + 0.5f || fit >= float(target) - 0.5f) {
+            sSince = -1.0;
+            return;
+        }
+        if (sSince < 0.0) sSince = now;
+        if (now - sSince < 2.0) return;
+        sShownAt = now;
+        sFit = fit;
+        sHz = hz;
+        sTarget = target;
+        std::printf("[pacing] notice shown: %d fps shown at %.0f fps on a %.0f Hz screen (Gamescope)\n", target, fit, hz);
+        std::fflush(stdout);
+    }
+    const double age = now - sShownAt;
+    constexpr double kShow = 15.0;
+    if (sOpen || age > kShow) return;
+    const float alpha = age > kShow - 1.0 ? float(kShow - age) : 1.0f;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + 16.0f, vp->WorkPos.y + vp->WorkSize.y - 16.0f), ImGuiCond_Always,
+                            ImVec2(0.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.8f);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                        ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                                        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings |
+                                        ImGuiWindowFlags_NoMove;
+    if (ImGui::Begin("##refresh_toast", nullptr, kFlags)) {
+        ImGui::Text("Running at %.0f fps: %d fps doesn't divide the screen's %.0f Hz evenly.", sFit, sTarget, sHz);
+        ImGui::TextDisabled("For %d fps, set Refresh rate to %d Hz in the Quick Access menu (Performance),", sTarget, sTarget);
+        ImGui::TextDisabled("or pick %.0f fps / \"Match display refresh rate\" in F1 > Visuals.", sHz);
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
+
 // ---- Data folder / portable mode (src/port/install.cpp, docs/SETUP.md "Portable mode") ---------
 void dataSection() {
     ImGui::SeparatorText("Data folder");
@@ -1179,20 +1229,42 @@ void frameRateControls(port::VideoSettings& v) {
                           "With VSync on, the display's refresh rate still limits it (with G-SYNC the frame\n"
                           "rate can then sit right at the refresh rate); turn VSync off for a truly unlimited\n"
                           "rate. Uneven frame times can look less smooth than a paced target.");
+    const bool vsync = recomp::pacing::vsyncOn();
+    // VSync at a fixed refresh rate shows a target that does not divide the refresh rate at the even
+    // fraction below it (60 fps at 90 Hz: 45), never an uneven rate (pacing.cpp).
+    const float fit = v.unlimitedFps ? 0.0f : recomp::pacing::fixedRefreshFps(target);
+    const bool reduced = fit > 0 && float(target) <= hz + 0.5f && fit < float(target) - 0.5f;
     if (v.matchDisplay && hz > 0) {
         ImGui::SameLine();
         ImGui::TextDisabled("(%.0f Hz)", hz);
-    } else if (v.vsync && hz > 0 && float(target) > hz + 0.5f) {
+    } else if (vsync && hz > 0 && float(target) > hz + 0.5f) {
         ImGui::SameLine();
         ImGui::TextDisabled("(VSync limits this to %.0f fps)", hz);
+    } else if (reduced) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.4f, 1.0f), "(shown at %.0f fps on this %.0f Hz screen)", fit, hz);
     }
     if (sliderHovered || checkHovered) {
-        char vs[160] = "";
-        if (v.vsync && hz > 0 && float(target) > hz + 0.5f)
+        char vs[512] = "";
+        if (vsync && hz > 0 && float(target) > hz + 0.5f)
             std::snprintf(vs, sizeof(vs),
                           "\n\nVSync is on: frames are limited to the display's %.0f Hz, so %d fps\n"
                           "is not reached. Turn VSync off (next launch) to go above it (with tearing).",
                           hz, target);
+        else if (reduced && recomp::pacing::gamescope())
+            std::snprintf(vs, sizeof(vs),
+                          "\n\nThe screen refreshes at %.0f Hz and %d fps does not divide it evenly, so frames are\n"
+                          "shown at %.0f fps (an uneven rate would stutter). For %d fps, set the screen's refresh\n"
+                          "rate to %d Hz in the Steam Quick Access menu (Performance > Refresh rate), or use\n"
+                          "\"Match display refresh rate\".",
+                          hz, target, fit, target, target);
+        else if (reduced)
+            std::snprintf(vs, sizeof(vs),
+                          "\n\nVSync is on and the display refreshes at %.0f Hz: %d fps does not divide it evenly,\n"
+                          "so frames are shown at %.0f fps (an uneven rate would stutter). Pick a rate that\n"
+                          "divides the refresh rate, set the display to a matching refresh rate, or turn\n"
+                          "VSync off (next launch).",
+                          hz, target, fit);
         ImGui::SetTooltip("30 fps is the game's own rate, drawn exactly as the console does.\n"
                           "Above 30, frames in between are interpolated (the game still runs at 30):\n"
                           "movement, the camera, lights and effects are blended between game frames,\n"
@@ -1845,6 +1917,7 @@ void draw() {
                 dl->AddRectFilled(ImVec2(o.x + s * (2 + i), o.y), ImVec2(o.x + s * (3 + i), o.y + s), IM_COL32(255, 255, 255, 255));
     }
     updateToast();
+    refreshRateToast();
     if (!sOpen) return;
     ImGui::SetNextWindowSize(ImVec2(680, 400), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
