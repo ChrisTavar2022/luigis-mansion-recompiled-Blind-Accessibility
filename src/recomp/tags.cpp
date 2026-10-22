@@ -17,12 +17,26 @@
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
+#include <bit>
 #include <unordered_map>
 #include <vector>
 
 namespace recomp {
 
 u32 copyDispCount();  // hle_gx.cpp
+
+// LM_TRACK_LOG (interp.cpp, docs/INTERPOLATION.md "The hose nozzle"): Luigi (actor slot 0), his
+// Poltergust (+0x7A4) and nozzle (+0x7A8) actors' world places (+0x44).
+bool interp::detail::trackPoints(float out[9]) {
+    const auto inMem1 = [](u32 p) { return p >= 0x80000000u && p < 0x81800000u; };
+    const u32 l = rd32(VA(0x803D48A0));
+    if (!inMem1(l)) return false;
+    const u32 actors[3] = {l, rd32(l + 0x7A4), rd32(l + 0x7A8)};
+    for (int k = 0; k < 3; k++)
+        for (int c = 0; c < 3; c++)
+            out[3 * k + c] = inMem1(actors[k]) ? std::bit_cast<float>(rd32(actors[k] + 0x44 + 4 * c)) : std::nanf("");
+    return std::isfinite(out[0] + out[1] + out[2]);
+}
 
 namespace {
 

@@ -51,6 +51,19 @@ void parseOptions(int argc, char* argv[]) {
             o.hiddenMansion = argv[++i];
         } else if (std::strcmp(argv[i], "--input") == 0) {
             o.inputScript = argv[++i];
+            // --input @<file>: the script read from a file (long test scripts exceed the command line).
+            if (!o.inputScript.empty() && o.inputScript[0] == '@') {
+                if (FILE* f = std::fopen(o.inputScript.c_str() + 1, "rb")) {
+                    std::string s;
+                    char buf[4096];
+                    for (size_t n; (n = std::fread(buf, 1, sizeof buf, f)) > 0;) s.append(buf, n);
+                    std::fclose(f);
+                    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ')) s.pop_back();
+                    o.inputScript = s;
+                } else {
+                    std::fprintf(stderr, "--input: cannot read %s\n", o.inputScript.c_str() + 1);
+                }
+            }
         } else if (std::strcmp(argv[i], "--room-viewer") == 0) {
             o.roomViewer = argv[++i];
             o.modelViewer = "(room)";  // the viewer scene handles both

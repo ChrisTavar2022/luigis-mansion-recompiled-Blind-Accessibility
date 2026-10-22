@@ -26,7 +26,7 @@
 namespace recomp::unused2 {
 
 namespace {
-constexpr u32 kExtraBase = 0x81820000, kExtraEnd = 0x81F00000;
+constexpr u32 kExtraBase = 0x819A0000, kExtraEnd = 0x81F00000;  // below: hleAlloc (runtime.cpp)
 u32 sExtraNext = kExtraBase;
 std::mutex sExtraM;
 bool sDirty = false;
