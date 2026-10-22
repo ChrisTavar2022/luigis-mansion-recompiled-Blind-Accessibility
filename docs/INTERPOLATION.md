@@ -121,7 +121,9 @@ A value of game frame b pairs with the value of frame a that has the same key an
   axes (that axis turning by less than 35 degrees, the part scaled alike across it) takes the twist
   from b at once and blends only the rest (`untwist`). The Poltergust hose's envelope matrices are
   rebuilt from the hose direction every frame and their roll changes by up to ~150 degrees between
-  game frames: blending spun the ribs around the tube.
+  game frames: blending spun the ribs around the tube. (Off since the screw blend, "The hose nozzle"
+  below: the twist was taken about the matrix origin, far from the hose, and threw its rings off
+  their place; `LM_SCREW_BLEND=0` restores it.)
 - Model instances are handled as one (	agGroup: an S3D model, fn_80059C54 / fn_80059F6C /
   fn_8005A280's instance; a J3D model, its shape packets' matrix buffer at packet +0x14). Skinned
   parts are drawn with weighted sums of the model's joints (sheared, nearly flat where two joints
@@ -808,6 +810,95 @@ The new code runs only while tapes are captured.
 Remaining: the 98-matrix J3D instance at about (0, 600, 50) in the foyer (src 8136BEC0-8136C1F0) has erratic
 members that switch (590 "jump" lines in 10 minutes, the same with the old rule). It is not part of
 the hose or the water; it was left alone.
+
+### The hose nozzle (October 2026, branch hose-jump)
+
+Owner's report after 1.1.3: "The Poltergust hose nozzle STILL jumps from time to time ... it's the
+only interpolation issue left", to be tested under heavy movement. The judder detector could not
+see it: its ideal used the same blending rules as the replay (a rule that moves a part the wrong
+way is also its ideal), and switches by policy are counted as correct.
+
+**Detector: the path check** (`LM_TRACK_LOG=<file>[,<radius>[,<px>]]`, with `LM_JUDDER_LOG` for
+the draw probe and `LM_JUDDER_EVERY=1`; `trackJudge` in interp.cpp). Independent of every policy:
+each drawn vertex (the first vertex of every primitive the FIFO draws in an in-between, Aurora 0218's
+probe) within `radius` (300) of Luigi is taken back to world space through the ideal in-between
+camera and compared with the straight line between its two game-frame places (the matrices its
+PNMTX slot held at capture in a and b). A rigid turn moves a vertex along an arc, so the allowance
+is 1 unit + (0.45 x min(1, 4 alpha (1 - alpha)) + 0.03) x its game-frame step: small near the game
+frames, up to the arc of a ~150 degree turn mid-interval. Off by more than that and `px` (3, of a
+2160-line picture) is a jump: shown at b early, held at a, or swinging off the path. H lines per
+vertex (error, step, how far along the step it is shown, the member's turn and origin step, its
+model instance, matrix source, whether it is within 60 units of the nozzle), HR per replay, HC for
+presents shown without blending (camera cuts, gaps), HT per game frame (Luigi's, the Poltergust
+nozzle actor's (+0x7A4) and +0x7A8's places), HG/HV (every 60 / 600 tapes) a census of the model
+instances near Luigi and all their vertices (what each instance is, by its shape). A `[track]`
+summary goes to the game log every 5 s. `tools/interp/hose_check.py <log>` summarizes a run: jump
+events (game frames with a jump) near the nozzle and near Luigi, classes, policies, instances, the
+worst events, whole-picture presents and game-side jumps of the nozzle actor.
+
+**Heavy-movement suite** (`tools/interp/hose_suite.py <out> [--scenario ...] [--fps ...] [--secs S]
+[--user-settings] [--radius R] [--env K=V]`): one game at a time, off screen, muted, below-normal
+priority, scratch APPDATA / card, LM_INPUT_CLOCK=frames, the input script from a file
+(`--input @file`, new: long scripts exceed the command line). The mix repeats from game frame 2600:
+running in circles both ways (4 frames per eighth of a turn), sharp left/right and up/down
+reversals, strafing with the vacuum on, vacuum taps while circling, C-stick sweeps with and without
+R, running with R and the C stick against the run, the flashlight off and on, an idle spell (idle
+and scared animations) and a fast start. Scenarios: `run` (nursery), `foyer` (plus long runs up
+the stairs and through the doors), `fire` / `water` / `ice` (L bursts and taps), `hit`
+(LM_TEST_HIT every 150 game frames), `ghosts` (gold ghosts room, LM_GHOST_HUNT stuns and vacuums
+them: Luigi dragged around), `boss` (Boolossus, one check).
+
+**What it found.** Model instances near Luigi (census): his S3D model with the Poltergust (93
+matrices), the hose (a J3D model of ~32 joint matrices, 10 at a time, loaded with
+`J3DSys::loadPosMtxIndx`), the nozzle's small S3D models (4 and 9 matrices) and the suction swirl (a
+J3D model of 49 matrices drawn while R is held). In the `run` scenario at 120 (2 minutes): 525 game
+frames with jumps near Luigi, 308 of them at the nozzle (old rules). Classes:
+1. *Blending about the matrix origin.* A joint matrix of a skinned or articulated model carries
+   the model's origin (its vertices are stored in model space), often 50-1200 units from the
+   vertices it moves. The rigid blend (rotation slerped, translation linear) turned the part about
+   that origin: a hose segment or the nozzle turning 30-90 degrees in a game frame swung its
+   origin by 50-200 units, and the straight origin path pulled the vertices off their own path by
+   0.5-1.5 times their step for the interval (the hose and nozzle "jumping" mid-interval, in a
+   different direction for each joint). All three of Luigi's instances, 90% of the events.
+2. *Untwist about the origin.* The fast-twist rule (above: "Fast twists") turned a's matrix about
+   its local axis through the ORIGIN by the twist, at once. For the hose's joint matrices that axis
+   is 20-160 units from the hose: the nozzle ring and hose rings were thrown 15-145 units off
+   their place for a whole interval at every fast roll (77-87 degrees), while the game frames moved
+   them 4-20 units.
+3. *Place jumps measured at the origin.* "A jump over half its distance from the camera" and the
+   erratic-member test measured the origin's step: the suction swirl's joints (spinning 60-150
+   degrees per game frame about the nozzle) moved their origins 300-1200 units while the swirl
+   moved 50-350, and members were switched one by one (the swirl torn for an interval, at the
+   nozzle).
+4. *Members switched on their own.* A member of an instance that is not switched as a whole but
+   cannot be blended rigidly (a mirror flip of a rigid joint, a half turn) was shown as b while
+   its neighbours blended.
+
+**What it does now** (all switchable back with `LM_SCREW_BLEND=0`, for A/B):
+- *Screw blend* (`screwTranslation`, used by `blendRigid` for 3x4 matrices): the motion from a to
+  b is a rotation by theta about an axis through some point plus a slide along it; the in-between
+  turns by t x theta about that same axis and slides t of the way. Every point moves along an arc
+  about the part's real pivot, whatever origin the matrix has; the 3x3 part is the same slerp as
+  before, and alpha 0 / 1 give a / b exactly. Nearly no turn (< 0.6 degrees) or a half turn (> 177
+  degrees) keep the linear origin.
+- No untwist (the twist is a turn about the part's own axis, which the screw blend follows).
+- Place steps, the camera distance and the erratic test use where the geometry is: the centre of
+  the vertices of the draw that use the matrix's slot (`SlotCentres`: per draw, the bounding box
+  of the indexed positions per direct PNMTXIDX slot, interp_vtx.cpp), else the draw's centre, else
+  the origin (`placeStep`, `drawCentre`, `viewDist`).
+- The outlier test (a member far from its instance's median place) uses the same geometry
+  centres: by origins, the swirl's members were outliers (no say) whenever it spun.
+- A steady member (not erratic, its instance not switched) is not switched for its place alone.
+  A member that cannot be blended rigidly (a mirror flip, a turn over ~150 degrees without spin
+  evidence, a half turn over ~170 degrees also when erratic, a place jump its instance did not
+  vote for, or an envelope matrix whose axes change length by more than 30% in a game frame: its
+  joints' weights moved, e.g. a hose envelope from 0.94 to 0.43 along two axes, no rigid motion at
+  all) makes its whole instance blend entrywise (each vertex in a straight line) for that interval
+  instead of tearing.
+- The judder detector's ideal follows the same rules. (A polar decomposition instead of
+  Gram-Schmidt for sheared envelope matrices was tried: no measurable change, not kept.)
+
+RESULTS_PLACEHOLDER
 
 ### Results (first build, October 2026)
 
