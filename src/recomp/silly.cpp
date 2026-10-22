@@ -677,17 +677,25 @@ std::vector<JointScaler>& scalers() {
     return sList;
 }
 
-// Per model instance: joints 0 and last as we left them. Equal at the next fn_80058850 = the
-// joints were not recomputed since (a second skinning pass without new animation, e.g. the model
-// viewer's bind pose): changing them again would apply every change twice.
+// Per model instance: a hash of all its joint matrices as we left them. Equal at the next
+// fn_80058850 = the joints were not recomputed since (a second skinning pass without new
+// animation, e.g. the model viewer's bind pose): changing them again would apply every change
+// twice. (All joints: a head-only change leaves joints 0 and the last one as they were.)
 struct Stamp {
     u32 mdl = 0;
-    float m[24]{};
+    u64 hash = 0;
 };
 std::unordered_map<u32, Stamp> sStamps;
-void readStamp(u32 joints, u32 nj, float* out) {
-    for (int i = 0; i < 12; i++) out[i] = gu::rdf(joints + 4 * u32(i));
-    for (int i = 0; i < 12; i++) out[12 + i] = gu::rdf(joints + 0x30 * (nj - 1) + 4 * u32(i));
+u64 jointHash(u32 joints, u32 nj) {
+    const u8* p = static_cast<const u8*>(hostp(joints));
+    u64 h = 0xCBF29CE484222325ull;
+    for (u32 i = 0; i < 0x30 * nj; i += 8) {
+        u64 w;
+        std::memcpy(&w, p + i, 8);
+        h = (h ^ w) * 0x100000001B3ull;
+        h ^= h >> 29;
+    }
+    return h;
 }
 }  // namespace
 
@@ -702,15 +710,13 @@ HLE(fn_80058850) {
         const u32 mdl = inGuest(obj) ? rd32(obj + 4) : 0, joints = inGuest(obj) ? rd32(obj + 0x14) : 0;
         const u32 nj = inGuest(mdl) ? rd16(mdl + 8) : 0;
         if (inGuest(mdl) && inGuest(joints) && nj > 0 && nj <= 512) {
-            float now[24];
-            readStamp(joints, nj, now);
             if (sStamps.size() > 1024) sStamps.clear();
             Stamp& st = sStamps[obj];
-            if (st.mdl != mdl || std::memcmp(now, st.m, sizeof now)) {
+            if (st.mdl != mdl || jointHash(joints, nj) != st.hash) {
                 if (luigiMods) modifyJoints(obj);
                 for (JointScaler fn : scalers()) fn(c, obj, mdl, joints, nj);
                 st.mdl = mdl;
-                readStamp(joints, nj, st.m);
+                st.hash = jointHash(joints, nj);
             }
         }
     }
