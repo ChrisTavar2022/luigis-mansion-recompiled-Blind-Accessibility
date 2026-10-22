@@ -549,7 +549,7 @@ void updateToast() {
     const float alpha = age > kShow - 1.0 ? float(kShow - age) : 1.0f;
     const auto st = port::update::state();
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 16.0f, vp->WorkPos.y + vp->WorkSize.y - 16.0f),
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 16.0f * recomp::ui::scale(), vp->WorkPos.y + vp->WorkSize.y - 16.0f * recomp::ui::scale()),
                             ImGuiCond_Always, ImVec2(1.0f, 1.0f));
     ImGui::SetNextWindowBgAlpha(0.8f);
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
@@ -598,7 +598,7 @@ void refreshRateToast() {
     if (sOpen || age > kShow) return;
     const float alpha = age > kShow - 1.0 ? float(kShow - age) : 1.0f;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + 16.0f, vp->WorkPos.y + vp->WorkSize.y - 16.0f), ImGuiCond_Always,
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + 16.0f * recomp::ui::scale(), vp->WorkPos.y + vp->WorkSize.y - 16.0f * recomp::ui::scale()), ImGuiCond_Always,
                             ImVec2(0.0f, 1.0f));
     ImGui::SetNextWindowBgAlpha(0.8f);
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
@@ -1854,7 +1854,7 @@ void fpsOverlay() {
         frames = 0;
         last = now;
     }
-    ImGui::SetNextWindowPos(ImVec2(8, 8));
+    ImGui::SetNextWindowPos(ImVec2(8 * recomp::ui::scale(), 8 * recomp::ui::scale()));
     ImGui::SetNextWindowBgAlpha(0.4f);
     ImGui::Begin("##fps", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |

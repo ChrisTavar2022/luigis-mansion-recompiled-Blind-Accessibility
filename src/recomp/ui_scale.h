@@ -22,6 +22,9 @@ void install(Context context);
 // Scale in effect for this frame (1 = the original 13 px font and ImGui's default style), in
 // ImGui units (logical pixels).
 float scale();
+// The default font 1.5 times larger (rasterized at that size), for full-screen notices such as
+// "Preparing shaders": ImGui::PushFont(largeFont()). Null before the first frame.
+ImFont* largeFont();
 // What Auto picks now (window height, display scaling, Steam Deck), and the largest size that
 // still fits the window (a larger setting is limited to it).
 int autoPercent();

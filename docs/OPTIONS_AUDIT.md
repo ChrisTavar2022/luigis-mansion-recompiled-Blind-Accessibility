@@ -83,6 +83,43 @@ Status: **OK** works as described, nothing found; **fixed** a problem was found 
 | CRT signal (S-Video / composite / RF) | OK | all four on a frozen title and foyer frame (`LM_CRT_CYCLE`, `LM_FREEZE_AT`; `out/crt_signals/`), 240 lines + comb and 480i; off unchanged |
 | Jukebox | OK | Play / Stop through the menu buttons (`LM_JUKEBOX_UI`), music id follows |
 
+## Visuals > General > Menu size (added after 1.1.2, issue #20)
+
+"Menu size" (`[interface] menu_scale` in settings.ini: 0 = Auto, else 75-300 %) sizes the F1 menu and
+every other ImGui window the port draws. Steps 75, 100, 125, 150, 175, 200, 250, 300 %. It sits at
+the top of Visuals > General, the page the menu opens on, so a player who finds the menu too small
+on a TV sees it first.
+
+How it works (`src/recomp/ui_scale.cpp`): Dear ImGui here is 1.91.9 (fixed-size font atlas), so
+each size rebuilds the atlas with the same ProggyClean font at round(13 x size) pixels and replaces
+the style with ImGui's default style scaled once (`ScaleAllSizes` on a clean copy, never
+cumulative). Text is rasterized at the size it is shown at, not a stretched 13 px atlas. Both
+happen before `ImGui::NewFrame` through Aurora patch 0238 (`aurora_imgui_set_frame_callback`; the
+atlas is locked during a frame; the backend's device objects are recreated only after the previous
+frame's ImGui draw finished on the render worker). Auto: the largest of window height / 1080
+(4K = 200 %), the display's scaling setting (Windows 150 % = 150 %) and 150 % on a Steam Deck
+(`SteamDeck=1`), rounded down to a step; 1080p stays at 100 % (the old look). Any size is limited
+to what still fits the window (560 x 330 units at 100 %; 1280x720 allows 200 %), with a note under
+the slider. The setup screen's Auto is 600 lines = 100 % (as large as before, now sharp).
+
+Windows: the menu's default (680 x 400) and minimum (520 x 300) size scale; a size saved in
+imgui.ini is rescaled when the menu size changes (imgui.ini records the scale it was saved at,
+section `[LMUiScale]`; sizes from older versions count as 100 %), and the window is kept on the
+screen. The slider applies on release (dragging only changes its label); - and + apply at once, and
+the menu is rescaled about the mouse so the button stays under it.
+
+| Check | Status | What was checked / found |
+|-------|--------|---------------------------|
+| ID check (`LM_MENU_ID_CHECK=exit`) | OK | 0 conflicts at 100 % and at 300 % (1920x1080 window, all 12 pages) |
+| Clipping / overlap | OK | Visuals, Controls (port table, input-test drawing scaled), Game at 1280x720 with 300 % chosen (200 % in effect, note shown); 1920x1080 at 100 / 150 / 250 %; 3840x2160 Auto = 200 % looks like 1080p at 100 % |
+| Mouse (`LM_MENU_SIZE_TEST=1`) | OK | "+" clicked 100 -> 300 %: the mouse stays on "+" up to 200 %; at 250 / 300 % the 1700 / 2040 px wide menu is pushed back onto the 1920 px screen, so the button moves (unavoidable); "-" stays under the mouse; dragging the slider does not change the size until release |
+| Other windows | OK | Show FPS, F3 info (4K Auto), "Preparing shaders" (large font, 1.5 x menu size: as large as before at 1080p, sharp), model viewer (F4) at 150 %, setup screen (1920x1080 Auto = 175 %); update / refresh-rate notices use the same font and scaled margins (not shown in a dev build) |
+| Restore all defaults | OK (code check) | the settings go back to Auto; the size is read every frame, so it applies at the next frame |
+| Keyboard / controller | note | not changed: the port does not enable ImGui's keyboard/gamepad navigation flags, and no input code was touched. Not exercised by the automated runs. A size change made without the mouse (e.g. Tab + arrow keys on the slider) applies when the slider is deactivated and rescales the menu about the slider |
+
+Test aids: `LM_SETTINGS_AT=0:interface.menu_scale=<pct>`, `LM_MENU_SIZE_TEST=1` (with
+`LM_MENU=Visuals`; logs `[ui-test]`), `[ui] menu size ...` log line on every change.
+
 ## Game > Updates (added after v1.1)
 
 | Option | Status | What was checked / found |

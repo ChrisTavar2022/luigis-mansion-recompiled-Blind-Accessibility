@@ -12,6 +12,7 @@
 #include "recomp/version.h"
 #include "recomp/room_swap.h"
 #include "recomp/coop.h"
+#include "recomp/ui_scale.h"
 #include "recomp/unused2.h"
 
 #include <imgui.h>
@@ -429,7 +430,8 @@ void drawOverlays() {
         }
     }
     if (sInfoOverlay) {
-        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - 8, vp->Pos.y + 8), ImGuiCond_Always, ImVec2(1, 0));
+        ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + vp->Size.x - 8 * recomp::ui::scale(), vp->Pos.y + 8 * recomp::ui::scale()),
+                                ImGuiCond_Always, ImVec2(1, 0));
         ImGui::SetNextWindowBgAlpha(0.5f);
         ImGui::Begin("##devinfo", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |

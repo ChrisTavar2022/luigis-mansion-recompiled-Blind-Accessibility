@@ -43,6 +43,8 @@ float sScale = 1.0f;
 int sPercent = 100, sAuto = 100, sFit = kSteps[kStepCount - 1];
 float sFontPx = 0.0f;       // atlas font size, physical pixels
 float sFontDensity = 0.0f;  // physical pixels per ImGui unit the atlas was built for
+ImFont* sLarge = nullptr;     // the same font kLarge times larger (largeFont)
+constexpr float kLarge = 1.5f;
 ImGuiStyle sBaseStyle;
 bool sHaveBase = false;
 float sStyleScale = 0.0f;
@@ -134,7 +136,9 @@ void frameCallback(const AuroraWindowSize* size) {
         cfg.OversampleH = cfg.OversampleV = 1;
         cfg.PixelSnapH = true;
         cfg.SizePixels = fontPx;
-        io.Fonts->AddFontDefault(&cfg);
+        io.Fonts->AddFontDefault(&cfg);  // Fonts[0]: ImGui's default
+        cfg.SizePixels = std::round(13.0f * s * kLarge * density);
+        sLarge = io.Fonts->AddFontDefault(&cfg);
         io.FontGlobalScale = 1.0f / density;  // physical pixels back to ImGui units: 1:1 on screen
         sFontPx = fontPx;
         sFontDensity = density;
@@ -177,6 +181,7 @@ void install(Context context) {
 }
 
 float scale() { return sScale; }
+ImFont* largeFont() { return sLarge; }
 int autoPercent() { return sAuto; }
 int fitPercent() { return sFit; }
 int percent() { return sPercent; }
