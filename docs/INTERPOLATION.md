@@ -1856,8 +1856,9 @@ model; there is no such lever.)
 - Original 30 with default settings: dumps 2000-2110 byte-identical with and without the change,
   and 2010-2105 byte-identical to the unchanged build (the change is only in `replayPair` for
   alpha < 1).
-- Render-resolution before/after with the user's settings (120 fps, Enhanced lighting Ultra):
-  `out/hat_clip/`.
+- Live at the user's settings (120 fps target, Enhanced lighting Ultra, 1920x1080, `LM_SHOT`
+  2036-2056, the presented in-between frames): dark-red cap pixels 16965 before, **616** after
+  (background level 23-48 per frame). Before/after PNGs: `out/hat_clip/` (not in the repo).
 
 ## Known limitations
 
