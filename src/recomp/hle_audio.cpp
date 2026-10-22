@@ -373,13 +373,14 @@ void callWithInterruptsOff(Ctx& c, const char* name) {
     if (ee) c.poll();
 }
 }  // namespace
-// (r4 = the JAISound** handle, r6 = the sound id: Luigi's voice pitch, silly_world.cpp)
-HLE(fn_8019754C) {
+HLE(fn_8019754C) { callWithInterruptsOff(c, "fn_8019754C"); }
+// Sound-effect start (r4 = the JAISound** handle, r6 = the sound id): Luigi's voice pitch,
+// silly_world.cpp.
+HLE(fn_80197810) {
     const u32 handle = c.r[4], id = c.r[6];
-    callWithInterruptsOff(c, "fn_8019754C");
+    callWithInterruptsOff(c, "fn_80197810");
     sillyworld::onSeStarted(c, id, handle);
 }
-HLE(fn_80197810) { callWithInterruptsOff(c, "fn_80197810"); }
 HLE(fn_80197B30) { callWithInterruptsOff(c, "fn_80197B30"); }
 
 // JAI sound-effect frame update (US fn_80191A1C, r3 = JAI SE manager): for each category

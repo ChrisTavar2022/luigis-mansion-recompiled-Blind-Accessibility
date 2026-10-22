@@ -338,9 +338,9 @@ alloc__10JKRExpHeapFUli us pal
 # Silly options, world (src/recomp/silly_world.cpp, docs/ENHANCEMENTS.md "Silly options: world"):
 # moon gravity (coin / bill grain updates, treasure item fall state), confetti (coin / bill
 # bursts), ghost size (S3D calcView: the view matrix the joints are put into eye space with).
-fn_80157030
-fn_8015066C
-fn_800CD1F4
-fn_801589A8
-fn_80151CC8
-fn_80059710
+fn_80157030 us pal
+fn_8015066C us pal
+fn_800CD1F4 us pal
+fn_801589A8 us pal
+fn_80151CC8 us pal
+fn_80059710 us pal

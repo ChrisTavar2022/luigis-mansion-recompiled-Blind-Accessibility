@@ -12,12 +12,18 @@ namespace recomp::sillyworld {
 
 // End of every guest frame (dev_tools.cpp LMChangeFrameBuffer hook): test aids, disco clock.
 void onFrame(Ctx& c);
-// A JAI sound effect was started (hle_audio.cpp fn_8019754C hook, after the original):
+// A JAI sound effect was started (hle_audio.cpp fn_80197810 hook, after the original):
 // id = sound id, handle = the JAISound** the start filled in.
 void onSeStarted(Ctx& c, u32 id, u32 handle);
 // Ghost layer lighting (tags.cpp fn_800581E8 hook, before the original): r3 points to a stack
 // copy of the ghost's material colour (actor +0xE9); the ghost shuffle tints it.
 void ghostMaterialColor(u32 actor, u32 colorPtr);
+// After the original: the warm ambient colour fn_800581E8 loads (E6C882) is replaced by the
+// ghost's own colour.
+void ghostLightingDone(Ctx& c, u32 actor);
+// GXSetChanMatColor (hle_gx.cpp): the S3D material colours of the ghost being drawn in the ghost
+// pass (fn_80058C30 sets them per material) get the ghost's shuffled colour.
+void tintGhostColor(u8 rgba[4]);
 // Enhanced lighting ghost lights (ghost_lights.cpp): the light colour of a ghost (sRGB bytes);
 // true when the colour shuffle replaced it.
 bool ghostGlowColor(u32 actor, u32 rgb[3]);

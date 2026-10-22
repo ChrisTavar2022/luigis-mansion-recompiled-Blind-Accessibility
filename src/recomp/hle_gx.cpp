@@ -15,6 +15,7 @@
 #include "recomp/interp.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
+#include "recomp/silly_world.h"
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
 #include "port/settings.h"
@@ -1277,7 +1278,9 @@ GXHLE(GXSetChanCtrl) {
 }
 GXHLE(GXSetChanMatColor) {
     const u32 at = interp::mark();
-    GXSetChanMatColor(GXChannelID(c.r[3]), color(c.r[4]));
+    GXColor col = color(c.r[4]);
+    sillyworld::tintGhostColor(&col.r);  // ghost colour shuffle (F1 > Enhancements > Silly)
+    GXSetChanMatColor(GXChannelID(c.r[3]), col);
     interp::noteColors(at);
 }
 GXHLE(GXSetChanAmbColor) {

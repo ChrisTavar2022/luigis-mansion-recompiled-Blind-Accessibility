@@ -2,6 +2,7 @@
 #include "recomp/silly_world.h"
 
 #include "port/settings.h"
+#include "recomp/enhanced_lighting.h"
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
@@ -44,19 +45,26 @@ bool isGhostType(u32 type) { return type < kTypeCount && (rd16(kTypeTable + type
 
 // ---- research aids ---------------------------------------------------------------------------
 const int sSeLog = envInt("LM_SW_SE_LOG");
-const int sPhysLog = envInt("LM_SW_PHYS_LOG");
+const int sPhysLog = envInt("LM_SW_LOG");  // LM_SW_LOG=1: physics, confetti, per-second counters
+u32 sCntView = 0, sCntGhostView = 0, sCntScaled = 0, sCntTint = 0, sCntTintCalls = 0;
 
 // ---- moon gravity ----------------------------------------------------------------------------
 // Spilled money is not made of actors: coins and bills are "grains" of the money managers
 // (saGrainControl<CoinControl, MoneyParam> / <BillControl, MoneyParam>), whose physics
 // constants are static floats in .sdata (one block per manager type):
-//   coins (fn_80157030, one grain per call): 0x804D68B8 gravity 2.5 (subtracted from the
-//     acceleration's y every frame), 0x804D68BC restitution 0.75 (floor bounce, fn_801580C8 ->
-//     fn_8015243C), 0x804D68B4 air drag 0.99.
-//   bills (fn_8015066C): 0x804D65FC gravity 1.5 (the fluttering bill's sink rate).
+//   coins (fn_80157030, one grain per call): r13-0x16A8 (0x804D68B8) gravity 2.5 (subtracted from
+//     the acceleration's y every frame), r13-0x16A4 restitution 0.75 (floor bounce, fn_801580C8 ->
+//     fn_8015243C), r13-0x16AC air drag 0.99.
+//   bills (fn_8015066C): r13-0x1964 (0x804D65FC) gravity 1.5 (the fluttering bill's sink rate).
+// The European game has the same block 8 bytes lower in .sdata (same r13): its coin/bill code
+// reads them at r13-0x16B0 / -0x16AC / -0x196C (matched instruction by instruction).
 // Treasure items (gems, gold bars, pearls; EnItem strategies) fall in the state function
 // fn_800CD1F4(mover): mover +0x30 = TParam "sGravity" (3.0 by default), +0x44 sResistance.
 // Each wrapper scales the constant for the call only and puts it back.
+#define kCoinGravity (c.r[13] - VOFF(0x16A8, 0x16B0))
+#define kCoinRestitution (c.r[13] - VOFF(0x16A4, 0x16AC))
+#define kBillGravity (c.r[13] - VOFF(0x1964, 0x196C))
+
 float moonScale() { return cfg().moonGravity ? std::clamp(cfg().moonGravityScale, 0.05f, 1.0f) : 1.0f; }
 
 struct FloatPatch {
@@ -84,10 +92,10 @@ HLE(fn_80157030) {
     const float k = moonScale();
     if (k == 1.0f) return callOriginal(c, "fn_80157030");
     FloatPatch g, r;
-    g.apply(VA(0x804D68B8), gu::rdf(VA(0x804D68B8)) * k);
+    g.apply(kCoinGravity, gu::rdf(kCoinGravity) * k);
     // Bouncier: restitution 0.75 -> up to 0.88 at the lowest gravity.
-    const float rest = gu::rdf(VA(0x804D68BC));
-    r.apply(VA(0x804D68BC), std::min(0.9f, rest + (1.0f - k) * 0.17f));
+    const float rest = gu::rdf(kCoinRestitution);
+    r.apply(kCoinRestitution, std::min(0.9f, rest + (1.0f - k) * 0.17f));
     if (sPhysLog) {
         static u32 sN = 0;
         if (sN++ % 200 == 0) log("[silly] coin grain %08X pos %.0f,%.0f,%.0f vel %.2f,%.2f,%.2f state %u life %d", c.r[5],
@@ -102,7 +110,9 @@ HLE(fn_8015066C) {
     const float k = moonScale();
     if (k == 1.0f) return callOriginal(c, "fn_8015066C");
     FloatPatch g;
-    g.apply(VA(0x804D65FC), gu::rdf(VA(0x804D65FC)) * k);
+    // Bills flutter: their wind lift beats a full Moon gravity and they would hang at the ceiling,
+    // so they get half the change (Gravity 0.20x: bills sink at 0.6x).
+    g.apply(kBillGravity, gu::rdf(kBillGravity) * (0.5f + 0.5f * k));
     callOriginal(c, "fn_8015066C");
 }
 
@@ -128,15 +138,18 @@ namespace {
 u32 sUp = 0;  // guest vector (0, 1, 0): effect direction
 
 // Colourful effects of the game's effect table (fn_80164F5C ids, lbl_80381B58 + 0xA90): the
-// four coloured spark bursts of the Boo-key/portrait rewards (bkey_p/g/b/y_senko: pink, green,
-// blue, yellow) and the gold sparkle of picked-up treasure.
-const u32 kConfetti[] = {62, 64, 66, 68, 74};
+// twinkles of the treasures themselves (kira_cdia, kira_gold, kira_emerald, kira_ruby,
+// kira_sapphire: white, gold, green, red, blue stars that drift and fade over about a second).
+// Chosen from a sweep of the table (LM_SW_FX); the Boo-key spark bursts (bkey_*_senko) were too
+// big a flash for every coin burst.
+const u32 kConfetti[] = {62, 64, 66, 68};
 
 void confetti(Ctx& c, u32 pos) {
-    if (!cfg().confettiCoins || !gu::inMem1(pos)) return;
+    if (!cfg().confettiCoins || pos < 0x80000000u || pos >= 0x84000000u) return;
     if (!sUp && (sUp = unused2::extraAlloc(16, 8))) gu::wrf(sUp + 4, 1.0f);
     if (!sUp) return;
     for (u32 id : kConfetti) gu::call(c, GU_SYM("fn_80164F5C"), {id, pos, sUp});
+    if (sPhysLog) log("[silly] confetti at %.0f,%.0f,%.0f", gu::rdf(pos), gu::rdf(pos + 4), gu::rdf(pos + 8));
 }
 }  // namespace
 }  // namespace recomp::sillyworld
@@ -192,23 +205,21 @@ float ghostScaleFor(u32 actor) {
 
 HLE(fn_80059710) {
     const u32 obj = c.r[3], view = c.r[4];
+    const u32 dbgActor = sPhysLog && gu::inMem1(obj) ? actorForModel(obj) : 0;
+    if (sPhysLog) sCntView++, sCntGhostView += dbgActor && isGhostType(rd32(dbgActor + 0x3C));
     const float s = gu::inMem1(obj) && gu::inMem1(view) ? ghostScaleFor(actorForModel(obj)) : 1.0f;
+    if (s != 1.0f) sCntScaled++;
     if (s == 1.0f) return callOriginal(c, "fn_80059710");
     static u32 sTmp = 0;
     if (!sTmp) sTmp = unused2::extraAlloc(0x30, 32);
-    const u32 actor = actorForModel(obj);
     if (!sTmp) return callOriginal(c, "fn_80059710");
-    float v[12], p[3];
+    float v[12];
     for (int i = 0; i < 12; i++) v[i] = gu::rdf(view + 4 * i);
-    for (int i = 0; i < 3; i++) p[i] = gu::rdf(actor + 0x44 + 4 * i);
-    // view x [sI | (1-s) p]
+    // The joints are in model space and `view` is the actor's model-view matrix: view x sI scales
+    // the model about its origin (the actor's position).
     for (int r = 0; r < 3; r++) {
-        float t = v[r * 4 + 3];
-        for (int k = 0; k < 3; k++) {
-            gu::wrf(sTmp + 4 * (r * 4 + k), v[r * 4 + k] * s);
-            t += v[r * 4 + k] * (1.0f - s) * p[k];
-        }
-        gu::wrf(sTmp + 4 * (r * 4 + 3), t);
+        for (int k = 0; k < 3; k++) gu::wrf(sTmp + 4 * (r * 4 + k), v[r * 4 + k] * s);
+        gu::wrf(sTmp + 4 * (r * 4 + 3), v[r * 4 + 3]);
     }
     c.r[4] = sTmp;
     callOriginal(c, "fn_80059710");
@@ -267,7 +278,7 @@ struct IdRange {
     u32 lo, hi;
 };
 const IdRange kVoice[] = {
-    {0, 0},  // filled in below (research)
+    {0x2800, 0x28FF},  // Luigi: 0x288E calling Mario (A), 0x2810 hurt, 0x287C/0x287F, 0x281C
 };
 bool isLuigiVoice(u32 id) {
     const u32 n = id & 0xFFFFFu;
@@ -280,24 +291,56 @@ bool isLuigiVoice(u32 id) {
 
 void onFrame(Ctx& c) {
     sDiscoFrames++;
-    // Test aid: LM_SW_TREASURE=<guest frame>,... throws 15 coins, 9 bills and a gold bar out in
-    // front of Luigi as furniture does (fn_801589A8 / fn_80151CC8 / fn_800E8904).
+    if (sPhysLog && sDiscoFrames % 60 == 0) {
+        log("[silly] f%u calcView %u (ghosts %u, scaled %u), ghost lighting %u (tinted %u)", skip::guestFrames(), sCntView,
+            sCntGhostView, sCntScaled, sCntTintCalls, sCntTint);
+        sCntView = sCntGhostView = sCntScaled = sCntTint = sCntTintCalls = 0;
+    }
+    // Research aid: LM_SW_FX=<guest frame>:<effect id>,... starts effect table entries
+    // (fn_80164F5C) 100 units up, 350 units into the room from Luigi.
+    static const char* sFx = std::getenv("LM_SW_FX");
+    if (sFx) {
+        const u32 now = skip::guestFrames();
+        for (const char* p = sFx; p && *p;) {
+            unsigned frame = 0, id = 0;
+            if (std::sscanf(p, "%u:%u", &frame, &id) == 2 && frame == now) {
+                const u32 luigi = gu::call(c, GU_SYM("fn_800E9750__Q24Koga9EnManagerFl"), {0});
+                static u32 sV = 0;
+                if (!sV) sV = unused2::extraAlloc(0x20, 8);
+                if (gu::inMem1(luigi) && sV && id < 142) {
+                    gu::wrf(sV, gu::rdf(luigi + 0x44));
+                    gu::wrf(sV + 4, gu::rdf(luigi + 0x48) + 100.0f);
+                    gu::wrf(sV + 8, gu::rdf(luigi + 0x4C) - 350.0f);
+                    gu::wrf(sV + 0x14, 1.0f);
+                    gu::call(c, GU_SYM("fn_80164F5C"), {id, sV, sV + 0x10});
+                    log("[silly] f%u effect %u", now, id);
+                }
+            }
+            const char* comma = std::strchr(p, ',');
+            p = comma ? comma + 1 : nullptr;
+        }
+    }
+    // Test aid: LM_SW_TREASURE=<guest frame>[:dx:dz],... throws 15 coins, 9 bills and a gold bar
+    // out (as furniture does: fn_801589A8 / fn_80151CC8 / fn_800E8904) 80 units up at Luigi's
+    // position + (dx, dz) (default 0, -350: into the room for the usual camera behind him).
     static const char* sEnv = std::getenv("LM_SW_TREASURE");
     if (sEnv) {
         const u32 now = skip::guestFrames();
         for (const char* p = sEnv; p && *p;) {
-            if (u32(std::strtoul(p, nullptr, 10)) == now) {
+            unsigned frame = 0;
+            float dx = 0.0f, dz = -350.0f;
+            std::sscanf(p, "%u:%f:%f", &frame, &dx, &dz);
+            if (frame == now) {
                 const u32 luigi = gu::call(c, GU_SYM("fn_800E9750__Q24Koga9EnManagerFl"), {0});
                 static u32 sVec = 0;
                 if (!sVec) sVec = unused2::extraAlloc(0x20, 8);
                 if (gu::inMem1(luigi) && sVec) {
-                    const float fx = gu::rdf(luigi + 0xF48), fz = gu::rdf(luigi + 0xF50);
-                    gu::wrf(sVec + 0, gu::rdf(luigi + 0x44) + fx * 180.0f);
+                    gu::wrf(sVec + 0, gu::rdf(luigi + 0x44) + dx);
                     gu::wrf(sVec + 4, gu::rdf(luigi + 0x48) + 80.0f);
-                    gu::wrf(sVec + 8, gu::rdf(luigi + 0x4C) + fz * 180.0f);
-                    gu::wrf(sVec + 0x10, -fx * 0.4f);
-                    gu::wrf(sVec + 0x14, 0.92f);
-                    gu::wrf(sVec + 0x18, -fz * 0.4f);
+                    gu::wrf(sVec + 8, gu::rdf(luigi + 0x4C) + dz);
+                    gu::wrf(sVec + 0x10, 0.0f);
+                    gu::wrf(sVec + 0x14, 0.95f);
+                    gu::wrf(sVec + 0x18, 0.3f);
                     gu::call(c, GU_SYM("fn_801589A8"), {sVec, sVec + 0x10, 15, 0x1E0, 0}, {25.0});
                     gu::call(c, GU_SYM("fn_80151CC8"), {sVec, sVec + 0x10, 0x1E, 9, 0x1E0}, {25.0});
                     gu::call(c, GU_SYM("fn_800E8904"), {0xCB, sVec, 0});
@@ -319,8 +362,23 @@ void onSeStarted(Ctx& c, u32 id, u32 handle) {
     gu::call(c, GU_SYM("setPitch__8JAISoundFfUlUc"), {snd, 0, 0}, {double(pitch)});
 }
 
+namespace {
+u32 sTintGhost = 0;  // ghost whose lighting was set up last (its draw follows in the ghost pass)
+}
+
+void tintGhostColor(u8 rgba[4]) {
+    if (!sTintGhost || !enh::ghostPass() || !shuffleOn(sTintGhost)) return;
+    float h[3];
+    hueRgb(ghostHue(sTintGhost), h);
+    const float m = float(std::max({rgba[0], rgba[1], rgba[2]}));
+    for (int k = 0; k < 3; k++) rgba[k] = u8(std::min(255.0f, m * (0.2f + 1.3f * h[k]) + 0.5f));
+}
+
 void ghostMaterialColor(u32 actor, u32 colorPtr) {
-    if (!shuffleOn(actor) || !gu::inMem1(colorPtr)) return;
+    sCntTintCalls++;
+    sTintGhost = actor;
+    if (!shuffleOn(actor) || colorPtr < 0x80000000u || colorPtr >= 0x84000000u) return;
+    sCntTint++;
     float rgb[3];
     hueRgb(ghostHue(actor), rgb);
     u8* p = hostp(colorPtr);
@@ -328,7 +386,19 @@ void ghostMaterialColor(u32 actor, u32 colorPtr) {
     // light: the same strength, in the ghost's own colour (a little brighter, as one saturated
     // channel carries less light than a grey).
     const float m = float(std::max({p[0], p[1], p[2]}));
-    for (int k = 0; k < 3; k++) p[k] = u8(std::min(255.0f, rgb[k] * m * 1.6f + 0.5f));
+    for (int k = 0; k < 3; k++) p[k] = u8(std::min(255.0f, rgb[k] * m * 3.0f + 0.5f));
+}
+
+void ghostLightingDone(Ctx& c, u32 actor) {
+    if (!shuffleOn(actor)) return;
+    static u32 sCol = 0;
+    if (!sCol && !(sCol = unused2::extraAlloc(8, 8))) return;
+    float h[3];
+    hueRgb(ghostHue(actor), h);
+    for (int k = 0; k < 3; k++) hostp(sCol)[k] = u8(std::lround(30.0f + 200.0f * h[k]));
+    hostp(sCol)[3] = 0xFF;
+    gu::call(c, GU_SYM("GXSetChanAmbColor"), {4, sCol});
+    gu::call(c, GU_SYM("GXSetChanAmbColor"), {5, sCol});
 }
 
 bool ghostGlowColor(u32 actor, u32 rgb[3]) {

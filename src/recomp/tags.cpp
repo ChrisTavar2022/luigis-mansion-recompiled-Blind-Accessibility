@@ -344,8 +344,10 @@ HLE(fn_80057F90) {
 HLE(fn_800581E8) {
     const bool inLoop = c.lr >= VA(0x80060E70) && c.lr < VA(0x80061278);
     TagScope t(inLoop ? TagCat::Object : TagCat::View, inLoop ? c.r[21] : 0, inLoop ? 0x581E8 : 0);
-    if (inLoop) sillyworld::ghostMaterialColor(c.r[21], c.r[3]);  // ghost colour shuffle (F1 > Enhancements > Silly)
+    const u32 actor = c.r[21];
+    if (inLoop) sillyworld::ghostMaterialColor(actor, c.r[3]);  // ghost colour shuffle (F1 > Enhancements > Silly)
     callOriginal(c, "fn_800581E8");
+    if (inLoop) sillyworld::ghostLightingDone(c, actor);
 }
 
 // --- map rooms and furniture (bin models) ---------------------------------------------------------
