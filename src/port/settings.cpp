@@ -241,6 +241,7 @@ std::vector<Field> fields() {
         flag("gameplay", "no_heart_drops", g.noHeartDrops),
         num("gameplay", "vacuum_strength", g.vacuumStrength),
         flag("gameplay", "always_ride", g.alwaysRide),
+        flag("gameplay", "mirror_world", g.mirrorWorld),
         flag("debug", "particle_report", e.dbgParticleReport),
         flag("debug", "depth_blur", e.dbgDepthBlur),
         flag("debug", "luigi_debug_flags", e.dbgLuigiFlags),

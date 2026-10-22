@@ -84,6 +84,16 @@ fn_80041214 us pal
 fn_80009148
 fn_80055C54 us pal
 set__7JUTRectFiiii
+# Mirror outside the screen copy, also for "Mirror world" (src/recomp/mirror_world.cpp,
+# docs/ENHANCEMENTS.md): Game Boy Horror map draws (both games), the USA game's map focus,
+# camera reset and Luigi's map effect (the European code's equivalent).
+fn_80029DD4 us pal
+fn_8002A01C us pal
+fn_8001D894
+fn_8002A5A0
+fn_8002A74C
+fn_8002AE74
+fn_80164F5C
 # Unused content (src/recomp/unused_content.cpp, docs/UNUSED_CONTENT.md): Game Boy Horror
 # HUD update (live camera screen mode) and the actor draw pass
 # (early ghost shading).
@@ -165,8 +175,6 @@ fn_8002B6D4 us pal
 # hidden; those where the USA game reads it too see the real flag; Luigi's state update
 # applies the riding mode (USA rules: no Boolossus mode; "always ride" on the European game).
 fn_80029A74 pal
-fn_80029DD4 pal
-fn_8002A01C pal
 fn_8006CFBC pal
 fn_8006D0DC pal
 fn_8006D4B8 pal

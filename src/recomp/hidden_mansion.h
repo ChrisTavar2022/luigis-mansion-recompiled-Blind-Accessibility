@@ -80,7 +80,21 @@ s32 overlayRead(s32 entry, void* dst, s32 length, s32 offset);
 void syncConstants();
 
 // ---- Mirror (PAL draws the hidden mansion left/right mirrored) -----------------------------
+// Mirror world (F1 > Enhancements > Gameplay, docs/ENHANCEMENTS.md "Mirror world"): the same
+// mirror in every mode (normal mansion, either Hidden Mansion, either game). On while the
+// option is on (setting gameplay.mirror_world, LM_MIRROR=1, LM_GAMEPLAY=mirror=1) and the main
+// game scene is current (title / file select / Options never run the mirror code anyway).
+bool mirrorWorld();
+// The picture is mirrored now (either game): the European Hidden Mansion (PAL rules + the
+// game's flag; LM_HM_MIRROR=0 turns that part off on the USA game) or mirror world.
+bool mirrorOn();
+// USA game: the mirror hooks apply (mirrorOn() on the USA game; false on the European one,
+// whose own code mirrors, driven through callMirror).
 bool mirrorActive();
+// European game: calls one of its mirror functions (the ones that read the hidden-mansion
+// flag only for the mirror, docs/HIDDEN_MANSION.md) with the flag reading mirrorOn() for the
+// duration. Replaces callWithoutFlag for them (USA rules on the European game: flag hidden).
+void callMirror(Ctx& c, const char* name);
 // Negate the X row of a perspective projection (orthographic 2D/HUD is left alone).
 void mirrorProjection(float m[4][4], bool perspective);
 // Mirroring flips triangle winding: swap GX_CULL_FRONT and GX_CULL_BACK.
