@@ -1731,6 +1731,70 @@ tape). The second intro arrival and the save route's foyer hold 120. At 60 the u
 held their cap on both routes. Offscreen test windows falsely detect VRR and cap at 57 = 60 - 3,
 which is the VRR cap, not a slowdown.
 
+## CPU scheduling and transient stalls (issue #18)
+
+Report: "fps drops from 60 to 45-35 in the cutscene before you fight the baby ghost boss" (Chauncey:
+the nursery cutscene, event 50, and the arena intro with the rocking horses and balls, event 64,
+"and scenes with ghosts in general"). RTX 4090, i9-14900K (8 P-cores + 16 E-cores), 4K, 60 fps,
+Enhanced lighting with shadows; probably v1.1 or v1.1.1.
+
+### Measurements (i9-12900KS: 8 P + 8 E, hybrid like the 14900K; RTX 3090 Ti)
+
+The owner's settings.ini with target 60, a 3840x2160 window (render scale "match window"),
+offscreen (VRR detected: cap 57 fps), normal priority, muted, warm shader cache. Routes:
+`LM_START_MAP=10` (arena fight from the start), and the nursery cutscene route
+`LM_START_MAP=2 LM_START_APPEAR=1 LM_SKIP_TEST=2600:flag:47` (flag 47 starts event 50 in the
+nursery: the baby, the dialogue, the warp to map 10 and event 64, the arena intro with 12 rocking
+horses; then the fight) with A pressed every 45 frames. `[perf]` lines (below) every 15/30 s:
+
+| scene | policy | presented / game fps | host ms p95 | worker ms p95 | GPU ms p95 |
+|---|---|---|---|---|---|
+| arena fight, 3 runs x 190 s | off / on | 57.0 / 30.0 in every window | 3.4-5.0 | 1.5-2.2 | 9.4-10.0 |
+| nursery + event 64 + fight | off | 57.0 / 30.0 | 7.9-10.9 | 3.2-5.2 | 13.5-15.5 |
+| the same | on | 57.0 / 30.0 | 4.5-12.9 | 1.7-5.4 | 14.5-15.5 |
+| the same, critical threads on E-cores only (`LM_CPU_SETS=e`) | | 57.0 / 30.0 | 7.9-11.6 | 2.9-4.8 | 14.6-17.5 |
+| arena fight + 16 busy processes at normal priority | off | 57.0 / 30.0; worst 30 s: 24 intervals over 1.5x | 2.3-6.9 | 1.5-4.9 | 10.4-14.6 |
+| the same | on | 57.0 / 30.0; worst 30 s: 6 | 3.0-6.8 | 1.2-4.0 | 11.8-13.2 |
+
+GPU busy time (`AURORA_GPU_PROFILE`) in the fight: 3.5-4.5 ms per presented frame (the GPU column
+above is completion time, which includes queueing behind the previous frame). The scenes fit a 60
+fps budget with a wide margin on this PC; the reporter's 4090 + 14900K is faster on both sides.
+Without the thread policy Windows ran the time-critical threads on E-cores for 1-50% of samples
+(more while other programs were busy); even all of them pinned to E-cores still held 57 fps here.
+
+Every drop seen in these runs came from **another game instance** (other agents' test runs)
+sharing the GPU and CPU: for seconds the frames completed 87 ms after Present, 47 ms apart, with
+our own GPU work unchanged. The governor then did what it was built to do, and then too much:
+"15 of 15 frames late ... limited to 20.5 fps", and the 10 s floor (no speed-up past a rate that
+failed in the last 10 s) held ~21 fps for 10 s after the stall had ended (34.5 fps over that 15 s
+window, 47.4 over the next). Any transient stall on a player's PC (a background program, the
+driver, a browser video, a recorder) looks the same: "drops to 45-35 for several seconds".
+
+### What changed
+
+- **Thread policy** (`src/recomp/cpu_qos.cpp`, Aurora 0237 thread hooks): the host thread (highest
+  priority, as before), render worker, FIFO processor and guest threads (above normal), timers and
+  the AI DMA thread (highest) are excluded from power throttling (EcoQoS), the process too (timer
+  resolution honoured in the background), and on hybrid CPUs they get the performance cores as
+  their CPU set (`SetThreadSelectedCpuSets`, the highest `EfficiencyClass`). The shader compile
+  pool and Dawn's threads keep any core. `last_run.log`: `[cpu]` lines with the CPU model, hybrid
+  yes/no, each role's policy, every 60 s the share of samples each role ran on P-cores, and window
+  focus changes. A/B: `LM_CPU_QOS=0`; `LM_CPU_SETS=any|e`.
+- **Governor floor release** (pacing.cpp): while slowed down, once the median cost of the last 15
+  frames (busiest stage, without the present hold) is under 75% of the target period, the floor is
+  dropped and the rate climbs back at 2% per frame. A GPU that clocked down while slowed shows a
+  higher cost and keeps the floor, as before. Test with `LM_PACING_STALL=100,30,1.5` (30 ms extra
+  per frame for 1.5 s at 100 s): limited for 10.4 s (382 frames under 50 fps) before, 2.5 s (84)
+  now. `LM_PACING_FLOOR_RELEASE=0`: the old rule.
+- **`[perf]` summary** every 60 s in last_run.log (`LM_PERF_LOG=<s>`): presented and game fps,
+  intervals over 1.5x the target, host / render worker / GPU ms per frame (median/p95/max),
+  slowdowns and hitches. A player's log now tells which stage misses the budget.
+- `LM_PACING_LOG` F lines end with replay / menu / hold / end-frame ms (host phases).
+- `LM_PROFILE=<roles>,<start s>,<secs>[,<file>]`: a sampling profiler for the role threads (stack
+  walk + PDB symbols; self and inclusive shares). In the arena fight the guest thread ran ~30% of
+  the time (game logic, the tape close, the audio DSP stand-in) and the host waited for its
+  schedule 84% of the time.
+
 ## Known limitations
 
 - On the test machine presentation never exceeded the display's 60 Hz even with VSync off

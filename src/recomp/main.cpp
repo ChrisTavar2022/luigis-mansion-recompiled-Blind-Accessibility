@@ -18,6 +18,7 @@
 #include "port/settings.h"
 #include "port/update.h"
 #include "recomp/audio.h"
+#include "recomp/cpu_qos.h"
 #include "recomp/frame.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/menu.h"
@@ -288,6 +289,7 @@ int main(int argc, char* argv[]) {
     // stays on top and a fullscreen window is not minimized when another window takes the focus.
     const bool topmost = std::getenv("LM_TOPMOST") != nullptr;
     if (topmost) SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
+    cpu::init();  // thread policy + Aurora thread hooks (issue #18), before Aurora starts its threads
     aurora_initialize(argc, argv, &config);
     if (topmost)
         if (SDL_Window* w = aurora_get_window()) SDL_SetWindowAlwaysOnTop(w, true);
@@ -505,6 +507,7 @@ int main(int argc, char* argv[]) {
         ws::beginFrame();
         port::setPhase(frame::interpolating() ? "game loop: replaying a game frame" : "game loop: running the game (lockstep)");
         const bool running = frame::hostFrame();
+        pacing::afterReplay();
         interp::hostMark(2);
         port::setPhase("game loop: F1 menu / overlays");
         menu::draw();

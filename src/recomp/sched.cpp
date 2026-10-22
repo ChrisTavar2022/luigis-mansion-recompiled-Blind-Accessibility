@@ -1,5 +1,6 @@
 #include "recomp/sched.h"
 
+#include "recomp/cpu_qos.h"
 #include "recomp/hle.h"
 
 #include <cstring>
@@ -114,6 +115,7 @@ void handOff(GuestThread* next) {
 
 void waitForCpu(std::unique_lock<std::mutex>& lk, GuestThread* self) {
     self->cv.wait(lk, [&] { return sRunning == self || g_shutdown; });
+    cpu::tick();
     if (g_shutdown) {
         lk.unlock();
         throw ThreadExit{};
@@ -170,6 +172,7 @@ void finishThread(GuestThread* t, u32 val) {
 
 void threadMain(GuestThread* t) {
     tSelf = t;
+    cpu::setCurrent(cpu::Role::Guest);
     u32 val = 0;
     try {
         {
@@ -483,6 +486,7 @@ std::multimap<std::chrono::steady_clock::time_point, std::function<void(Ctx&)>> 
 std::thread sTimerThread;
 
 void timerMain() {
+    cpu::setCurrent(cpu::Role::Timer);
 #ifdef _WIN32
     timeBeginPeriod(1);  // 1 ms scheduler resolution for timed interrupts
 #endif

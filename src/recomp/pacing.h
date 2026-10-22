@@ -22,6 +22,7 @@ using Clock = std::chrono::steady_clock;
 // Host loop, interpolated presentation only (frame::interpolating()).
 void beforeFrame();  // before aurora_begin_frame: waits for this frame's scheduled start
 void afterBegin();   // after a successful aurora_begin_frame (LM_PACING_LOG)
+void afterReplay();  // after the game frame / interpolated replay was issued (LM_PACING_LOG)
 // Before aurora_end_frame: on an even grid (VRR, or VSync off), holds a frame that was built faster
 // than usual until the usual time after its start, so it is presented a constant time after the
 // time its picture is for (frames built in 3 ms and 10 ms were presented 7 ms apart in time but

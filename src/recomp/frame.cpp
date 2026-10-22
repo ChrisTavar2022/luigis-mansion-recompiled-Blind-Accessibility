@@ -2,6 +2,7 @@
 
 #include "port/recovery.h"
 #include "port/settings.h"
+#include "recomp/cpu_qos.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
@@ -76,6 +77,7 @@ bool interpolationWanted() {
 
 void start(Entry boot) {
     sBoot = std::thread([boot] {
+        cpu::setCurrent(cpu::Role::Guest);
         {
             std::unique_lock lk(sM);
             sCv.wait(lk, [] { return sTurn == Turn::Guest || sStopping; });
@@ -201,6 +203,7 @@ void setHostPaused(bool paused) { sPauseGuest = paused && sHostDecoupled; }
 bool gamePaused() { return sPauseGuest.load(std::memory_order_relaxed); }
 
 void present(Ctx& c, u32, bool) {
+    cpu::tick();
     // Test aid LM_TEST_GUEST_STALL=<frame>[,<seconds>]: the game thread stops for <seconds> (default
     // 40) at that frame, holding the guest CPU (hang reports: main.cpp, port::reportStall).
     static const std::pair<u32, int> sStall = [] {
