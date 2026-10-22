@@ -92,8 +92,11 @@ fn_8002A01C us pal
 fn_8001D894
 fn_8002A5A0
 fn_8002A74C
-fn_8002AE74
-fn_80164F5C
+# Luigi's map effect (fn_8002AE74's fn_80164F5C call) redirected while mirrored to the empty
+# stub fn_80164F58, whose hook spawns it at the mirrored position (a hook on fn_80164F5C itself
+# changed the vacuum dust with the mirror off).
+fn_80164F58
+patch 60 8002B034 48139F25
 # Unused content (src/recomp/unused_content.cpp, docs/UNUSED_CONTENT.md): Game Boy Horror
 # HUD update (live camera screen mode) and the actor draw pass
 # (early ghost shading).

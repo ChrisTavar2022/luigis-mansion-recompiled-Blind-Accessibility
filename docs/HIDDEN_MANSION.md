@@ -277,7 +277,7 @@ scripts while the variant is PAL.
 | `fn_8007F9B8`, `fn_800807EC`, `fn_800809CC` | Mirror: main/C stick X negated for Luigi's input |
 | `fn_80041214` + `fn_80009148` | Mirror: projected HUD positions x = 640 - x |
 | `fn_80055C54` + `set__7JUTRectFiiii` | Mirror: iris wipe centred at 328 |
-| `fn_80029DD4`, `fn_8002A01C` + `fn_80015BDC`, `fn_8001D894`; `fn_8002A5A0`, `fn_8002A74C`, `fn_8002AE74` + `fn_80164F5C` | Mirror: Game Boy Horror map (map model view x Scale(-1,1,1) with the mirrored cull row; map focus, camera reset and Luigi's map effect with x negated; `src/recomp/mirror_world.cpp`) |
+| `fn_80029DD4`, `fn_8002A01C` + `fn_80015BDC`, `fn_8001D894`; `fn_8002A5A0`, `fn_8002A74C`; patch 60 + `fn_80164F58` | Mirror: Game Boy Horror map (map model view x Scale(-1,1,1) with the mirrored cull row; map focus, camera reset and Luigi's map effect with x negated; `src/recomp/mirror_world.cpp`) |
 | `fn_8000C188` | Dev only: `LM_START_MAP=<n>` loads map n instead of the mansion (now in `dev_tools.cpp`, docs/UNUSED_CONTENT.md) |
 
 **Literal patches** (`hm::syncConstants`, every frame): `0x804DB278` 1.8 → 3.6 (rocking horse

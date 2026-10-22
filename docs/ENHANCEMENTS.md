@@ -722,7 +722,7 @@ Mirror world (while the game scene is current).
 | Luigi's main and C stick X negated (push right = right on screen) | `fn_8007F9B8`, `fn_800807EC`, `fn_800809CC` | pad +0x44/+0x54 negated for the call (player 2's pad too) |
 | HUD markers placed at positions the game projects itself: x = 640 - x | `fn_80041214` | `fn_80009148` result inside `fn_80041214` |
 | Iris wipe centred at x = 328 instead of 312 | `fn_80055C54` | `JUTRect::set` inside the wipe |
-| Game Boy Horror map: view x Scale(-1, 1, 1) for the map model, mirrored cull row, map focus/camera reset/Luigi's map effect with x negated | `fn_80029A74` (sign), `fn_80029DD4`, `fn_8002A01C`, `fn_8002A5A0`, `fn_8002A74C`, `fn_8002AE74` | hooks on the same functions + `fn_80015BDC` (matrix argument), `fn_8001D894` (cull row; a port-side flag, since the USA `lbl_804D8230` is also read by the model node draws), `fn_80164F5C` (effect position) |
+| Game Boy Horror map: view x Scale(-1, 1, 1) for the map model, mirrored cull row, map focus/camera reset/Luigi's map effect with x negated | `fn_80029A74` (sign), `fn_80029DD4`, `fn_8002A01C`, `fn_8002A5A0`, `fn_8002A74C`, `fn_8002AE74` | hooks on `fn_80029DD4`, `fn_8002A01C`, `fn_8002A5A0`, `fn_8002A74C` + `fn_80015BDC` (matrix argument), `fn_8001D894` (cull row; a port-side flag, since the USA `lbl_804D8230` is also read by the model node draws); Luigi's map effect: instruction patch 60 sends `fn_8002AE74`'s `fn_80164F5C` call to the empty stub `fn_80164F58`, whose hook spawns it at -x (switched on only while mirrored, so the effect spawner itself is not hooked) |
 | Speakers swapped | `fn_8018865C`/`fn_80189054` set the JAudio flag, `Jac_VframeWork` swaps | `audio_out.cpp` swaps |
 
 ### Where it turns itself off (as in the European Hidden Mansion)
@@ -754,6 +754,15 @@ whole screen puts each back on its own side, both mirrored. The GBH search view 
 keeps the one-player rule (not deferred).
 
 ### Verification (2026-10-22)
+
+Default-off identity caveat: the nursery dust motes (the dust in the flashlight's light pool
+around Luigi) depend on host timing. On one route (`LM_START_MAP=2 LM_START_APPEAR=1
+LM_TEST_STATE=poltergust`, dumps 2600-2900) one and the same binary gives two different but
+repeatable pictures depending on timing: with `LM_TRACE` on (no traced function is ever called)
+it matches main byte for byte, without it it does not, and `LM_DVD_SPEED=1` gives a third
+picture. Code changes that never run on that route (a hook on a function the route never calls,
+an instruction patch that is switched off) were enough to flip it. Byte comparisons on routes
+with that dust therefore need a check run of both builds under the same timing aid.
 
 Scratch APPDATA/card, `LM_SHOT` render-resolution shots (`out/mirror_world/` in the main checkout):
 
