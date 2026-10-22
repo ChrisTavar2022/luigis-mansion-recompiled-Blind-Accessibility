@@ -19,6 +19,8 @@ Scenarios (US disc; game frames from 2600 on, scripted with LM_INPUT_CLOCK=frame
   ghosts   gold ghosts room: LM_GHOST_HUNT stuns and vacuums the ghosts (Luigi dragged around by
            them), the scripted mix on top
   boss     Boolossus' arena (map 11), the run mix (one quick check)
+  event    the lab's "The Mansion" demo: the walk-up to the front door behind Luigi (own camera;
+           run it with --secs 10)
 """
 import argparse
 import os
@@ -118,6 +120,13 @@ def scenario(name):
         start = 2700
         # the hunt drives the stick and R while it has a target; in between, the mix
         inp = heavy_mix(start, end)
+    elif name == "event":
+        # an event scene with its own camera: the lab's "The Mansion" demo, the camera close behind
+        # Luigi (Poltergust and hose on his back) up to the front door (game frames ~2010-2105;
+        # docs/INTERPOLATION.md "Event scenes: models far from their origin")
+        env = {"LM_INPUT_CLOCK": "frames", "LM_START_MAP": "1",
+               "LM_SKIP_TEST": ";".join(f"{f}:flag:7" for f in range(1200, 1330, 3))}
+        return env, "600:START*10,1000:A*6,1450:A,1550:A,1650:A,1750:A", 1990
     elif name == "boss":
         env["LM_START_MAP"] = "11"
         env.pop("LM_START_APPEAR", None)

@@ -3929,13 +3929,17 @@ void trackJudge(const ProbeReplay& pr, const std::vector<ProbeRec>& recs) {
         const s32 pb = k < b.bundleSlots.size() ? b.bundleSlots[k][r.mtxIdx] : -1;
         const Patch* P = pb >= 0 && u32(pb) < b.patches.size() ? &b.patches[pb] : nullptr;
         if (P && (P->role != 0 || P->kind != Kind::PosMtx || P->count != 12)) P = nullptr;
-        const auto* cam = camOf(P ? P->view : b.mainView);
+        // A scene with its own camera (events: fn_80114E18) is blended as drawn, in view space: judged
+        // there (every vertex of it, Luigi's place being in another space).
+        const bool own = P && P->ownCamera;
+        static const std::pair<M34, M34> kIdentity{M34{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}, M34{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}};
+        const auto* cam = own ? &kIdentity : camOf(P ? P->view : b.mainView);
         if (!cam) continue;
         f32 e[3], aw[3];
         xform34(r.mtx, r.pos, e);
         xform34(cam->second.data(), e, aw);
-        if (std::hypot(aw[0] - luigi[0], aw[1] - luigi[1], aw[2] - luigi[2]) > sTrackRadius) continue;
-        const bool nearNoz = haveNoz && std::hypot(aw[0] - noz[0], aw[1] - noz[1], aw[2] - noz[2]) < 60.0f;
+        if (!own && std::hypot(aw[0] - luigi[0], aw[1] - luigi[1], aw[2] - luigi[2]) > sTrackRadius) continue;
+        const bool nearNoz = !own && haveNoz && std::hypot(aw[0] - noz[0], aw[1] - noz[1], aw[2] - noz[2]) < 60.0f;
         const s32 j = P && !b.partner.empty() ? b.partner[pb] : -1;
         if (!P) {
             sTrackTotals.unknown++, sTrackWindow.unknown++;
@@ -3945,11 +3949,15 @@ void trackJudge(const ProbeReplay& pr, const std::vector<ProbeRec>& recs) {
             sTrackTotals.unpaired++, sTrackWindow.unpaired++;
             continue;
         }
+        // The element streams' drops take a random orientation every game frame (tumblers): their
+        // vertices have no straight path to follow (spray_check.py judges them by their centre).
+        if (P->tumble || P->stream) continue;
         const Patch& Q = a->patches[j];
-        M34 ia, ib;
-        if (Q.view >= a->views.size() || P->view >= b.views.size() || !invertAffine(a->views[Q.view].data(), ia.data()) ||
-            !invertAffine(b.views[P->view].data(), ib.data()))
+        M34 ia = kIdentity.first, ib = kIdentity.first;
+        if (!own && (Q.view >= a->views.size() || P->view >= b.views.size() || !invertAffine(a->views[Q.view].data(), ia.data()) ||
+                     !invertAffine(b.views[P->view].data(), ib.data())))
             continue;
+        if (own && !Q.ownCamera) continue;
         f32 ma[12], mb[12], va[3], vb[3], wa[3], wb[3];
         for (int c = 0; c < 12; c++) ma[c] = val(*a, Q, c), mb[c] = val(b, *P, c);
         xform34(ma, r.pos, va);
@@ -4000,10 +4008,10 @@ void trackJudge(const ProbeReplay& pr, const std::vector<ProbeRec>& recs) {
         compose(ib.data(), mb, Wb.data());
         const float turn = turnDegrees(Wa.data(), Wb.data(), 4);
         const float ostep = std::hypot(Wa[3] - Wb[3], Wa[7] - Wb[7], Wa[11] - Wb[11]);
-        trackLine("H %u %llu f%u %.3f px %.1f w %.1f chord %.1f frac %.2f turn %.0f ostep %.1f cen %d pol %u mm %d noz %d key %016llX grp %016llX site %08X src %08X slot %u draw %u prim %u "
+        trackLine("H %u %llu f%u %.3f px %.1f w %.1f chord %.1f frac %.2f turn %.0f ostep %.1f cen %d pol %u mm %d noz %d own %d key %016llX grp %016llX site %08X src %08X slot %u draw %u prim %u "
                   "at %.1f %.1f %.1f a %.1f %.1f %.1f b %.1f %.1f %.1f\n",
                   pr.present, (unsigned long long)b.seq, b.gameFrame, t, errPx, errW, chord, chord2 > 1e-6f ? along / chord2 : 0.0f, turn, ostep,
-                  int(drawCentre(b, *P) != nullptr), pol, int(member), int(nearNoz), (unsigned long long)P->key, (unsigned long long)P->group, P->site, P->source, r.mtxIdx, k, n,
+                  int(drawCentre(b, *P) != nullptr), pol, int(member), int(nearNoz), int(own), (unsigned long long)P->key, (unsigned long long)P->group, P->site, P->source, r.mtxIdx, k, n,
                   aw[0], aw[1], aw[2], wa[0], wa[1], wa[2], wb[0], wb[1], wb[2]);
     }
     if (b.seq % 60 == 0 && b.seq != sCensusSeq && !census.empty()) {
