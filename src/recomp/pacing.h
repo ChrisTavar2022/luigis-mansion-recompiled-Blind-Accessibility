@@ -47,9 +47,15 @@ bool vsyncOn();
 // the refresh (VSync off, variable refresh, unknown refresh rate).
 float fixedRefreshFps(int fps);
 float presentedFps();
-// GPU keep-warm (F1 > Visuals > Rendering "Keep GPU clocks up in menus") can run on this system:
-// Windows only. On Linux with NVIDIA's driver it made the GPU stop completing work about 20 s into
-// the title screen (issue #2: a frozen picture on Wayland, a failed fence or device lost on X11).
+// Per-frame GPU completion tracking (Aurora 0197 present timing: a helper thread polls each frame's
+// OnSubmittedWorkDone): Windows only. On Linux/Vulkan it made the GPU stop completing work within
+// about 20 s (issue #2, NVIDIA: a frozen picture on Wayland, a failed fence or device lost on X11;
+// at 30 fps through keep-warm, above 30 through frame pacing; likely also the Steam Deck freeze
+// above 30 fps, issue #11). Without it frames are paced by the timer and the governor (start
+// intervals), with no frame-ahead limit and no GPU cost figures. LM_PRESENT_TIMING=0/1 overrides.
+bool presentTimingAvailable();
+// GPU keep-warm (F1 > Visuals > Rendering "Keep GPU clocks up in menus") can run: it is sized from
+// the tracked GPU cost, so wherever the tracking is.
 bool keepWarmAvailable();
 // The setting and the system allow it.
 bool keepWarmOn();

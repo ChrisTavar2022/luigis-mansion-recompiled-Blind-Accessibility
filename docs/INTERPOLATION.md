@@ -220,7 +220,9 @@ A value of game frame b pairs with the value of frame a that has the same key an
   keep the modulo-1 rule.
 - SubView scopes (`fn_80114E18`: event scenes, E. Gadd's call portrait, the door close-ups) have their
   own camera: their values are not factored by the game camera; a model that moves by more than a
-  tenth of its distance in one game frame switches.
+  tenth of its distance in one game frame switches. A skinned model there blends entrywise as a
+  whole, other matrices rigidly about their draw's centre (their origin can be thousands of units
+  away: "Event scenes: models far from their origin").
 - Appear / disappear: b's set of draws is drawn for the whole interval (a new thing appears, a gone
   thing disappears, at the game frame); nothing is faded or redrawn from a.
 - Camera cuts: b's main camera (the view most main-pass model matrices use) has no counterpart in a,
@@ -1885,6 +1887,69 @@ driver, a browser video, a recorder) looks the same: "drops to 45-35 for several
   walk + PDB symbols; self and inclusive shares). In the arena fight the guest thread ran ~30% of
   the time (game logic, the tape close, the audio DSP stand-in) and the host waited for its
   schedule 84% of the time.
+
+## Event scenes: models far from their origin (branch hat-clip)
+
+User report: "In the cutscene where Luigi walks up to the mansion from E. Gadd's lab, Luigi's
+hair can be seen clipping through his hat" (a brown strip across the back of the green cap).
+
+**Scene.** Lab menu "The Mansion" (`event08.txt` case `"back"`: `<OMOTELUIGI>` + `<OPENING>`)
+plays the demo: mansion and lightning, E. Gadd waving at his lab, the gate, then the camera
+follows close behind Luigi (Poltergust on his back) up to the front door. Route:
+`LM_INPUT_CLOCK=frames LM_START_MAP=1`, `LM_SKIP_TEST` = flag 7 every 3 frames from 1200 to 1329
+(the lab's intro event is skipped; one early set is lost to the new game's flag reset), input
+`600:START*10,1000:A*6,1450:A,1550:A,1650:A,1750:A` (talk to E. Gadd, pick the first entry); the
+walk-up is game frames ~2010-2105, the clip shows around 2038-2050. (The route's frame numbers
+shift with load timing; check the dumps.)
+
+**Which configurations.** Original 30: never (every guest frame clean: default settings, and the
+user's settings with Enhanced lighting off set to 30). Interpolated (tested at 120) with Enhanced lighting on or off, early Luigi
+on or off: in the in-between frames only, so with any target above 30.
+`LM_INTERP_TEST=2` (deterministic): the game frames (`_fresh`) and tape N-1 replayed at alpha 1
+(`_s2`) are clean, the alpha 0.5 replay (`_s1`) shows the strip (dark-red pixels on the cap,
+frames 2040-2048: 94 / 81 / **3906**). So it is a port bug in the blend, not the model: on the
+console (and at 30) the hair stays under the cap. Not depth precision, MSAA, vertex snapshots or
+the morphs: those are the same in the `_fresh` frames.
+
+**Cause.** The scene is drawn by the event-scene renderer `fn_80114E18`, a `TagCat::SubView`
+scope with its own camera, so its values are not camera-factored: each model matrix was blended
+on its own as drawn (view space), rotation slerped about the matrix's origin and the origin moved
+in a straight line (`blendRigid`). The demo's models have their origin far from their geometry:
+Luigi's model matrices there have translations of 4000-5600 units (the demo scene's origin; their
+vertices are that far from it), and his matrices turn by up to 3-7 degrees per game frame (the
+following camera, the walk). A rigid blend about an origin that far away moves the geometry off
+its straight path by `distance x (1 - cos(turn / 2))`, several units mid-interval, and by a
+different amount for every matrix: the skin envelopes (weighted sums of joints, sheared) and the
+cap's joint matrix drifted apart and the hair's top edge came out through the cap.
+(Under the game camera the same models blend in world space, where their matrices sit at the
+model; there is no such lever.)
+
+**Fix** (`interp.cpp`, `sOwnInstances`; generic for every own-camera scene):
+- An own-camera model instance with a skinned member (a sheared or flat matrix, `skinMatrix`) is
+  blended entrywise as a whole (`forceGroups`, the policy the game camera's skinned instances get
+  on a fast turn): every vertex moves in a straight line between its two game-frame places, so
+  the skin stays together. A camera turn of a few degrees per game frame shrinks nothing visibly
+  (cos(3.5 deg) = 0.998).
+- Any other own-camera model matrix is still blended rigidly, but about the centre of its draw's
+  geometry (`bundleCentre`), which moves in a straight line (as spinners already are under the game
+  camera), not about its far-off origin.
+- The per-matrix "placed anew" switch for own-camera scenes (more than a tenth of the distance in
+  a game frame) is unchanged.
+- `[interp] own-camera scenes per present: ...` in the stats lines; `LM_OWNCAM_INSTANCES=0` restores
+  the old blend (A/B).
+
+**Verified** (`LM_INTERP_TEST`, native dumps; dark-red pixels on the cap, top-left of the frame):
+- Walk-up, frames 2030-2070, 4 steps: fresh 446, alpha 0.25 / 0.5 / 0.75: **436 / 429 / 419**
+  (before: 1504-3906 for 2040-2049 alone), i.e. the background level (the brim's shadow).
+- The rest of the demo (E. Gadd waving, the gate, 1831-2010): mid-interval error against the mean
+  of the two game frames unchanged (1.36 / 1.35); the nursery door-knob close-up (hand, arm, door,
+  3009-3100): 0.43 vs 0.44, pixels far from both game frames 216 vs 337.
+- Original 30 with default settings: dumps 2000-2110 byte-identical with and without the change,
+  and 2010-2105 byte-identical to the unchanged build (the change is only in `replayPair` for
+  alpha < 1).
+- Live at the user's settings (120 fps target, Enhanced lighting Ultra, 1920x1080, `LM_SHOT`
+  2036-2056, the presented in-between frames): dark-red cap pixels 16965 before, **616** after
+  (background level 23-48 per frame). Before/after PNGs: `out/hat_clip/` (not in the repo).
 
 ## Known limitations
 
