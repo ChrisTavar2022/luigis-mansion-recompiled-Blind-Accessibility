@@ -900,7 +900,61 @@ frames with jumps near Luigi, 308 of them at the nozzle (old rules). Classes:
 - The judder detector's ideal follows the same rules. (A polar decomposition instead of
   Gram-Schmidt for sheared envelope matrices was tried: no measurable change, not kept.)
 
-RESULTS_PLACEHOLDER
+- Event scenes (own camera, merged with "Event scenes: models far from their origin"): the
+  per-draw pivot of that fix is not applied on top of the screw blend (the screw already turns
+  each matrix about its own motion's axis, the same axis for neighbouring pieces; moving each
+  piece's centre in a straight line on top opened the seams of Luigi's glove in the opening map
+  scene; `LM_OWNCAM_PIVOT=1` brings it back), its switch test ("moves more than a tenth of its
+  distance") measures at the geometry, not at the origin 4000-5600 units away, and its pivot uses
+  the slot's vertex centre when it is on. Skinned own-camera instances still blend entrywise.
+
+**Results** (path check, 180 s of the heavy mix per run from game frame 2600, 120 fps target
+unless noted, off-screen 1280x720, default settings; the machine was shared with other agents'
+game instances, so presented rates were 55-80 fps; "events" = game frames with at least one
+jumping vertex; old = the same build with `LM_SCREW_BLEND=0`):
+
+| scenario | vertices judged | events near the nozzle old / new | events near Luigi old / new | flagged vertices old / new |
+|---|---|---|---|---|
+| run (nursery) | 24.6M | 297 / **0** | 577 / **0** | 8685 / **0** |
+| foyer (stairs, doors) | 25.7M | (old run went astray: 1.2M judged, 4) / **0** | 21 / **0** | 81 / **0** |
+| fire | 24.0M | 395 / **0** | 659 / **0** | 8474 / **0** |
+| water | 18.5M | 450 / **0** | 1115 / **0** | 74615 / **0** (drops judged by spray_check, not here) |
+| ice | 24.2M | 394 / **0** | 702 / **0** | 9395 / **0** |
+| hit | 24.4M | 397 / **0** | 695 / **0** | 8422 / **0** |
+| ghosts (dragged by ghosts) | 14.0-17.3M | 456 / **0-3** | 1011 / **3-12** | 12406 / **6-45** |
+| boss (Boolossus) | 14.1-17.8M | 280 / **0** | 810 / **12-16** (an arena particle, not Luigi) | 10924 / **15-16** |
+| run 60 / 144 | 24.5M | - / **0** / **0** | - / **0** / **0** | **0** / **0** |
+| ghosts 60 / 144 | 17.0M | - / 3 / 3 | - / 12 / 13 | 46 / 53 |
+| run, user's settings (Enhanced lighting Ultra etc., 2560x1440) | 10.0M | - / **0** | - / 1 | 3 (5 units) |
+| ghosts, user's settings | 7.9M | - / 1 | - / 9 | 20 |
+
+What is left: in the ghost fights (Luigi pulled about by a ghost) 3 game frames in 3 minutes
+where a few vertices of Luigi's body or hose leave their path by 3-12 units mid-interval (no
+switch; matrices turning 40-80 degrees while their weights change by less than the 30% rule); in
+the boss arena one particle renderer's particles (`fn_80162898`) switch for a place jump. Old
+first-build numbers of the run scenario before each step (2 minutes, nursery): origin blend 525
+events (308 at the nozzle) -> screw blend 74 (13) -> no untwist, centres, steady members 22 (5)
+-> slot centres 7 (2) -> outliers by centre, half turns, rescales 0.
+
+Whole scene (`--radius 1e9`: every object vertex in view, foyer, 120 s): old 39,321 flagged
+vertices, new 48; the judder detector (1.5 px) 0 blend defects in both, policy jumps 35-408 per
+5 s old, 0 new. Event scenes (own camera, `--radius 1e9`, about 8 s each): the opening map scene
+old (`LM_SCREW_BLEND=0 LM_OWNCAM_INSTANCES=0`) 3300 flagged vertices in 51 game frames, new 118
+in 14 (all in frames 1569-1600, models placed anew by >1000 units, shown at the game frame by
+design; none in the map frames 1395-1500); the lab's walk-up demo old 7255, new 0-59.
+
+Original 30 is byte-identical: 71 frames (2690-2760) of the run mix at a 30 target, main's
+executable (8b7a97f) vs this branch, 0 differ. The new code runs only while tapes are captured,
+and the path check only with `LM_TRACK_LOG`.
+
+Rerun: `python tools/interp/hose_suite.py <out> --scenario run --scenario foyer --scenario fire
+--scenario water --scenario ice --scenario hit --scenario ghosts --scenario boss --fps 120 --secs
+180` (add `--env LM_SCREW_BLEND=0` for the old rules, `--fps 60 --fps 144`, `--user-settings
+--window 2560x1440`, `--radius 1e9` for the whole scene, `--scenario opening` / `event --secs 8`
+for the event scenes); each run prints `hose_check.py`'s summary and a table at the end. The runs
+never open a physical controller (SDL joystick backends off in their environment).
+Frame strips (LM_PRESENT_DUMP, 60 fps, frames 3102-3105 of the run mix, old vs new):
+`out/hose_jump/` in the main checkout (not in the repository).
 
 ### Results (first build, October 2026)
 
