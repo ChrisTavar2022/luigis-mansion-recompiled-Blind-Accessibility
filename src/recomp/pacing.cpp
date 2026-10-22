@@ -1,6 +1,7 @@
 #include "recomp/pacing.h"
 
 #include "port/settings.h"
+#include "recomp/cpu_qos.h"
 #include "recomp/frame.h"
 #include "recomp/hle.h"
 #include "recomp/interp.h"
@@ -74,6 +75,7 @@ using WaitFn = LONG(APIENTRY*)(const KmtWait*);
 using CloseFn = LONG(APIENTRY*)(const KmtClose*);
 
 void vblankThread() {
+    cpu::setCurrent(cpu::Role::Timer);
     HMODULE gdi = GetModuleHandleW(L"gdi32.dll");
     if (!gdi) gdi = LoadLibraryW(L"gdi32.dll");
     const auto open = gdi ? reinterpret_cast<OpenFn>(GetProcAddress(gdi, "D3DKMTOpenAdapterFromGdiDisplayName")) : nullptr;
@@ -185,10 +187,12 @@ struct FrameRec {
     double gpuCost = 0;
     u32 warm = 0;  // GPU keep-warm units when the frame was built
     double held = 0;  // s: beforeEnd's hold
+    Clock::time_point replayed{}, ending{};  // after the game frame / interpolated replay; at beforeEnd
 };
 FrameRec sCur;  // the frame being built
 std::deque<FrameRec> sFrames;     // recent frames, oldest first
 std::deque<double> sCost;         // per frame: the time it occupied the busiest stage (s)
+std::deque<double> sCostNoHold;   // the same without beforeEnd's hold, last 15 frames (governor floor)
 std::deque<double> sGpuCost;      // per frame: the GPU's time on it (s)
 double sLastDone = 0;
 
@@ -202,7 +206,8 @@ FILE* sLog = [] {
     if (f) {
         std::fprintf(f,
                      "# F frame mode target_ms need_ms period_ms | enter sched woke started opened ended submit present "
-                     "done (ms since start) | cost_ms cpu_ms gpu_ms | tape newest_tape newest_age_ms alpha stalled warm_units\n"
+                     "done (ms since start) | cost_ms cpu_ms gpu_ms | tape newest_tape newest_age_ms alpha stalled warm_units replay_ms "
+                     "menu_ms hold_ms endframe_ms\n"
                      "# mode: G grid, V vblank, F fifo (swap chain paces), U unlimited, L lockstep (not interpolating)\n"
                      "# enter=beforeFrame entered, sched=scheduled start, woke=after the schedule wait, started=after "
                      "the GPU wait, opened=after aurora_begin_frame, ended=after aurora_end_frame\n"
@@ -232,12 +237,14 @@ void logFrame(const FrameRec& r, const AuroraPresentTiming& t, double cost, doub
     const double present = t.presentNs ? nsToSec(t.presentNs) : 0.0, done = t.doneNs ? nsToSec(t.doneNs) : 0.0;
     std::fprintf(sLog,
                  "F %llu %c %.3f %.3f %.3f | %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f | %.3f %.3f %.3f | %llu %llu %.2f "
-                 "%.3f %d %u\n",
+                 "%.3f %d %u %.3f %.3f %.3f %.3f\n",
                  (unsigned long long)r.frame, r.mode, r.target * 1e3, r.need * 1e3, r.period * 1e3, logMs(r.enter), logMs(r.sched),
                  logMs(r.woke), logMs(r.started), logMs(r.opened), logMs(r.ended), logMs(t.submitNs ? nsToSec(t.submitNs) : 0.0),
                  logMs(present), logMs(done), cost * 1e3, cpu * 1e3, gpu * 1e3, (unsigned long long)r.tape,
                  (unsigned long long)r.newestTape, r.newestDone ? (tpSec(r.opened) - r.newestDone) * 1e3 : 0.0, r.alpha,
-                 r.stalled ? 1 : 0, r.warm);
+                 r.stalled ? 1 : 0, r.warm, r.replayed != Clock::time_point{} ? secs(r.replayed - r.opened) * 1e3 : 0.0,
+                 r.ending != Clock::time_point{} && r.replayed != Clock::time_point{} ? secs(r.ending - r.replayed) * 1e3 : 0.0,
+                 r.held * 1e3, r.ending != Clock::time_point{} ? secs(r.ended - r.ending) * 1e3 - r.held * 1e3 : 0.0);
     // Summary per second of log time.
     Summary& s = sSum;
     const double now = secs(r.ended - sLogT0);
@@ -307,10 +314,28 @@ struct KeepWarm {
     u32 units = 0;
 } sWarm;
 
+void setWarmUnits(KeepWarm& w, u32 u) {
+    // (Logged so a report shows whether the filler ran: the first start, then at most every 60 s
+    // how often it started since; it can start and stop several times a second over a menu.)
+    if (w.units == 0 && u != 0) {
+        static u32 sStarts = 0;
+        static Clock::time_point sLogged{};
+        const auto now = Clock::now();
+        sStarts++;
+        if (sLogged == Clock::time_point{} || now - sLogged > std::chrono::seconds(60)) {
+            log("[pacing] GPU keep-warm running (%u starts since the last line; %u units, heavy %.1f ms)", sStarts, u,
+                w.heavy * 1e3);
+            sStarts = 0;
+            sLogged = now;
+        }
+    }
+    aurora_set_gpu_keep_warm(w.units = u);
+}
+
 void keepWarm(double gpu, double period) {
     KeepWarm& w = sWarm;
-    if (!port::settings().rendering.gpuKeepWarm || gpu <= 0 || period <= 0) {
-        if (w.units) aurora_set_gpu_keep_warm(w.units = 0);
+    if (!keepWarmOn() || gpu <= 0 || period <= 0) {
+        if (w.units) setWarmUnits(w, 0);
         return;
     }
     // (Held while filling: a long menu must not lower the level the GPU is kept at; measured at
@@ -326,7 +351,33 @@ void keepWarm(double gpu, double period) {
     else if (gpu > period * 0.9 || gpu > want * 1.6) u = 0;  // the full scene is back (or too much)
     else if (gpu > want * 1.15) u = u * 7 / 8;
     else if (gpu < want * 0.75) u = u == 0 ? 2 : std::min<u32>(u + u / 5 + 1, 400);
-    if (u != w.units) aurora_set_gpu_keep_warm(w.units = u);
+    if (u != w.units) setWarmUnits(w, u);
+}
+
+// --- performance summary in the log (last_run.log), issue #18 ------------------------------------
+// Every LM_PERF_LOG seconds (default 60, 0 = off) while interpolating: presented and game frame
+// rates, present intervals over 1.5x the target, and the per-frame time of each stage (host thread
+// without the present hold, render worker, GPU) as median / 95th percentile / max, plus the
+// governor's slowdowns. A player's log then shows which stage misses the budget.
+struct Perf {
+    std::vector<float> host, worker, gpu;  // ms
+    double lastPresent = 0, first = 0, last = 0;
+    u32 presents = 0, over = 0;
+} sPerf;
+
+void perfFrame(const FrameRec& r, const AuroraPresentTiming& t, double cpu, double worker, double gpu) {
+    if (r.mode == 'L') return;
+    Perf& p = sPerf;
+    p.host.push_back(float(std::max(0.0, cpu - r.held) * 1e3));
+    p.worker.push_back(float(worker * 1e3));
+    p.gpu.push_back(float(gpu * 1e3));
+    if (t.presentNs) {
+        const double pr = nsToSec(t.presentNs);
+        if (p.lastPresent && r.target > 0 && pr - p.lastPresent > 1.5 * r.target) p.over++;
+        if (!p.presents++) p.first = pr;
+        p.last = pr;
+        p.lastPresent = pr;
+    }
 }
 
 void pollTimings() {
@@ -352,11 +403,14 @@ void pollTimings() {
                 r.gpuCost = gpu;
                 if (r.mode != 'L') {
                     sCost.push_back(cost);
+                    sCostNoHold.push_back(std::max({gpu, cpu - r.held, worker}));
+                    if (sCostNoHold.size() > 15) sCostNoHold.pop_front();
                     sGpuCost.push_back(gpu);
                     if (sCost.size() > 30) sCost.pop_front();
                     if (sGpuCost.size() > 30) sGpuCost.pop_front();
                 }
                 logFrame(r, t[i], cost, cpu, gpu);
+                perfFrame(r, t[i], cpu, worker, gpu);
                 keepWarm(gpu, r.target > 0 ? r.target : 1.0 / double(frame::targetFps()));
                 break;
             }
@@ -469,11 +523,60 @@ void governFrame(Clock::time_point start, double expected, double target, bool s
         g.slowdowns++;
         return;
     }
+    // The 10 s floor guards against slowing down again right after speeding up. When the frames
+    // cost far less than the target now (every stage of the last 15 frames' median under 75% of the
+    // target period), the cause of the slowdown is gone (a GPU stall, another program's load: issue
+    // #18, a 0.4 s stall cut 57 -> 20.5 fps and the floor held ~21 fps for 10 s while the frames cost
+    // 3-5 ms). The floor is then released and the rate climbs back at 2% per frame. A GPU that
+    // clocked down while slowed shows a higher cost here, which keeps the floor (as before).
+    // LM_PACING_FLOOR_RELEASE=0: the old rule (A/B).
+    static const bool sRelease = [] { const char* v = std::getenv("LM_PACING_FLOOR_RELEASE"); return !(v && *v == '0'); }();
+    if (sRelease && g.limit > 0 && start >= g.holdUntil && start < g.floorUntil && sCostNoHold.size() >= 15) {
+        std::vector<double> v(sCostNoHold.begin(), sCostNoHold.end());
+        std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+        if (v[v.size() / 2] < 0.75 * target) {
+            g.floorUntil = start;
+            log("[pacing] frames cost %.1f ms again (target %.1f ms): the rate climbs back from %.1f fps", v[v.size() / 2] * 1e3,
+                target * 1e3, 1.0 / g.limit);
+        }
+    }
     if (g.limit > 0 && start >= g.holdUntil && misses == 0 && late * 3 < n) {
         g.limit *= 0.98;
         if (start < g.floorUntil) g.limit = std::max(g.limit, g.floor);
         if (g.limit <= target * 1.005) g.limit = 0;
     }
+}
+
+void perfReport() {
+    static const double sEvery = [] { const char* e = std::getenv("LM_PERF_LOG"); return e ? std::atof(e) : 60.0; }();
+    if (sEvery <= 0) return;
+    static Clock::time_point sSince = Clock::now();
+    static u32 sGuest = frame::guestFrames(), sSlow = 0, sHitch = 0;
+    const auto now = Clock::now();
+    const double span = secs(now - sSince);
+    if (span < sEvery) return;
+    Perf& p = sPerf;
+    const u32 guest = frame::guestFrames();
+    if (p.host.size() >= 30) {
+        const auto stat = [](std::vector<float>& v, char* out, size_t n) {
+            std::sort(v.begin(), v.end());
+            std::snprintf(out, n, "%.1f/%.1f/%.1f", v[v.size() / 2], v[v.size() * 95 / 100], v.back());
+        };
+        char h[48], w[48], g[48];
+        stat(p.host, h, sizeof(h));
+        stat(p.worker, w, sizeof(w));
+        stat(p.gpu, g, sizeof(g));
+        const double fps = p.presents > 1 && p.last > p.first ? double(p.presents - 1) / (p.last - p.first) : 0.0;
+        log("[perf] last %.0f s: %.1f fps presented (target %d%s), game %.1f fps, %u intervals over 1.5x; ms per frame "
+            "median/p95/max: host %s, render worker %s, GPU %s; slowdowns %u, hitches %u",
+            span, fps, frame::targetFps(), sGov.limit > 0 ? ", limited now" : "", double(guest - sGuest) / span, p.over, h, w, g,
+            sGov.slowdowns - sSlow, sGov.hitches - sHitch);
+    }
+    sSince = now;
+    sGuest = guest;
+    sSlow = sGov.slowdowns;
+    sHitch = sGov.hitches;
+    p = Perf{};
 }
 
 // --- schedule ------------------------------------------------------------------------------------
@@ -532,6 +635,23 @@ bool gamescope() {
     }();
     return sOn;
 }
+
+bool presentTimingAvailable() {
+    // LM_PRESENT_TIMING=0/1 (test aid): off / on on any system.
+    static const bool sOn = [] {
+        if (const char* e = std::getenv("LM_PRESENT_TIMING")) return *e == '1';
+#ifdef _WIN32
+        return true;
+#else
+        return false;
+#endif
+    }();
+    return sOn;
+}
+
+bool keepWarmAvailable() { return presentTimingAvailable(); }
+
+bool keepWarmOn() { return keepWarmAvailable() && port::settings().rendering.gpuKeepWarm; }
 
 bool vsyncOn() {
     static const bool sKeep = [] { const char* e = std::getenv("LM_GAMESCOPE_VSYNC"); return e && *e == '0'; }();
@@ -600,7 +720,9 @@ void beforeFrame() {
     // among the guest, FIFO, render worker, audio and pipeline threads).
     static const bool sPriority = SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_HIGH);
     (void)sPriority;
+    cpu::report();
     pollTimings();
+    perfReport();
     vblankFollowWindow();
     const auto now = Clock::now();
     const Clock::time_point prevFrameTime = sFrameTime;
@@ -737,12 +859,25 @@ void beforeFrame() {
 }
 
 void afterBegin() { sCur.opened = Clock::now(); }
+void afterReplay() { sCur.replayed = Clock::now(); }
 
 namespace {
 std::deque<double> sLeads;  // recent frames' time from their scheduled start to beforeEnd (s)
 }
 
 void beforeEnd() {
+    // Test aid LM_PACING_STALL=<start s>,<ms per frame>,<seconds>: each frame in that window takes
+    // that much longer on the host (a transient stall, e.g. another program's load), for governor tests.
+    static const auto sStall = [] {
+        struct S { double at = 0, ms = 0, secs = 0; } s;
+        if (const char* e = std::getenv("LM_PACING_STALL")) std::sscanf(e, "%lf,%lf,%lf", &s.at, &s.ms, &s.secs);
+        return s;
+    }();
+    if (sStall.ms > 0) {
+        const double t = secs(Clock::now() - sLogT0);
+        if (t >= sStall.at && t < sStall.at + sStall.secs) SDL_DelayPrecise(u64(sStall.ms * 1e6));
+    }
+    sCur.ending = Clock::now();
     static const bool sOff = [] { const char* e = std::getenv("LM_PRESENT_HOLD"); return e && *e == '0'; }();
     if (sOff || !sPacing || sMode != Mode::Grid) {
         sLeads.clear();
@@ -770,7 +905,7 @@ void beforeEnd() {
 }
 
 void afterFrame() {
-    if (!sPacing && !sLog && !port::settings().rendering.gpuKeepWarm) return;
+    if (!sPacing && !sLog && !keepWarmOn()) return;
     FrameRec r = sCur;
     r.frame = aurora_frame_counter();
     r.begun = sFrameTime;
@@ -790,9 +925,9 @@ void afterFrame() {
     sFrames.push_back(r);
     while (sFrames.size() > 16) sFrames.pop_front();
     // Present timing records the GPU completion of every frame (one fence wait per frame on a
-    // helper thread, Aurora patch 0197).
+    // helper thread, Aurora patch 0197). Not on Linux (presentTimingAvailable).
     static bool enabled = false;
-    if (!enabled) aurora_present_timing_enable(enabled = true);
+    if (!enabled && presentTimingAvailable()) aurora_present_timing_enable(enabled = true);
 }
 
 // (Fifo: the swap chain's wait happens in aurora_begin_frame, after beforeFrame: the time the

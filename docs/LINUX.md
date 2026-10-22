@@ -233,6 +233,35 @@ stack; llvmpipe's worker threads block the signal and are listed as such; frame 
 `binary(+offset)`, resolved offline with `llvm-symbolizer --obj=<binary>`). `LM_GAMESCOPE=1` with
 VSync off gave FifoRelaxed on Windows (Vulkan, 90 fps presented) and in WSL.
 
+## NVIDIA: the picture froze about 20 s after start (issue #2)
+
+EndeavourOS, RTX 4060 Ti, NVIDIA 615.78 (open kernel module), Wayland, original 30 fps, either
+disc: about 20-25 s after the game started (title screen, intro map or foyer, whatever was on
+screen) the picture stopped while the music played on. Wayland: the render worker waited in
+GetCurrentTexture (the swap chain image never came back); X11 (`SDL_VIDEO_DRIVER=x11`):
+`CreateFence failed with VK_ERROR_OUT_OF_HOST_MEMORY` or `vkQueueSubmit failed with
+VK_ERROR_DEVICE_LOST`. No overlays/layers involved, no NVRM Xid lines, file descriptors flat
+(checked on the same package under llvmpipe: 45 fds over 900 frames). The player's test:
+`[rendering] gpu_keep_warm=0` fixed it on both discs.
+
+At 30 fps that setting is what runs the GPU keep-warm filler (Aurora 0215, a compute pass after
+the frame) and the per-frame GPU completion tracking (OnSubmittedWorkDone futures polled by the
+present-timing thread, Aurora 0197/0216). The player's next test settled which: with
+`gpu_keep_warm=0` any frame rate above 30 (even 35; VSync on or off) froze again, and above 30 the
+tracking runs for frame pacing without any filler. So the completion tracking is the trigger: a
+helper thread polling `WaitAny(OnSubmittedWorkDone future, 0)` every 0.25 ms while the render
+worker submits and presents (likely an unsynchronized fence/queue access in Dawn's Vulkan backend
+that D3D12 tolerates). The Steam Deck freeze above 30 fps (issue #11) fits the same cause.
+
+Now the tracking is Windows-only (`pacing::presentTimingAvailable`; `LM_PRESENT_TIMING=0/1`
+overrides on any system), and keep-warm with it (it is sized from the tracked GPU cost; the F1
+checkbox is greyed with a note on Linux). Without it frames are paced exactly as before by the
+timer and the governor (start intervals); what is missing is the frame-ahead limit (the GPU at
+most one frame behind: with VSync the swap chain limits it instead) and GPU ms in the `[perf]`
+lines. Checked on Windows with `LM_PRESENT_TIMING=0` at a 120 fps target (VRR window capped at
+57): 57.0 fps presented, game 30.0, the same as with the tracking. `[pacing] GPU keep-warm running`
+lines (at most one a minute) show when the filler runs where it is available.
+
 ## Known issues / not done
 
 - Real GPUs: only tested on Mesa's CPU Vulkan driver (WSLg). NVIDIA/AMD/Intel drivers on a

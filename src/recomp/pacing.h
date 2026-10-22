@@ -22,6 +22,7 @@ using Clock = std::chrono::steady_clock;
 // Host loop, interpolated presentation only (frame::interpolating()).
 void beforeFrame();  // before aurora_begin_frame: waits for this frame's scheduled start
 void afterBegin();   // after a successful aurora_begin_frame (LM_PACING_LOG)
+void afterReplay();  // after the game frame / interpolated replay was issued (LM_PACING_LOG)
 // Before aurora_end_frame: on an even grid (VRR, or VSync off), holds a frame that was built faster
 // than usual until the usual time after its start, so it is presented a constant time after the
 // time its picture is for (frames built in 3 ms and 10 ms were presented 7 ms apart in time but
@@ -46,5 +47,17 @@ bool vsyncOn();
 // the refresh (VSync off, variable refresh, unknown refresh rate).
 float fixedRefreshFps(int fps);
 float presentedFps();
+// Per-frame GPU completion tracking (Aurora 0197 present timing: a helper thread polls each frame's
+// OnSubmittedWorkDone): Windows only. On Linux/Vulkan it made the GPU stop completing work within
+// about 20 s (issue #2, NVIDIA: a frozen picture on Wayland, a failed fence or device lost on X11;
+// at 30 fps through keep-warm, above 30 through frame pacing; likely also the Steam Deck freeze
+// above 30 fps, issue #11). Without it frames are paced by the timer and the governor (start
+// intervals), with no frame-ahead limit and no GPU cost figures. LM_PRESENT_TIMING=0/1 overrides.
+bool presentTimingAvailable();
+// GPU keep-warm (F1 > Visuals > Rendering "Keep GPU clocks up in menus") can run: it is sized from
+// the tracked GPU cost, so wherever the tracking is.
+bool keepWarmAvailable();
+// The setting and the system allow it.
+bool keepWarmOn();
 
 }  // namespace recomp::pacing

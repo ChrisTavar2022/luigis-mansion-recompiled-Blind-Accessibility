@@ -12,6 +12,7 @@
 // JAudio's audio thread waits for. See docs/AUDIO.md.
 #include "port/settings.h"
 #include "recomp/audio.h"
+#include "recomp/cpu_qos.h"
 #include "recomp/hle.h"
 #include "recomp/sched.h"
 
@@ -107,6 +108,7 @@ struct PacingStats {
 } sPacing;
 
 void dmaThread() {
+    cpu::setCurrent(cpu::Role::Audio);
     using clock = std::chrono::steady_clock;
     auto next = clock::now();
     double smoothed = -1;

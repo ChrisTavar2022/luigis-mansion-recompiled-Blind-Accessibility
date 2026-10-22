@@ -172,9 +172,20 @@ in the program helped. Now (`src/port/recovery.cpp`):
   deletes `game/`, `hidden_mansion/` and the pipeline/shader caches, so setup recompiles the
   module and rebuilds the overlay) and **Put saves aside** (each `<region>/Card A|B` folder is moved
   to `Card A (put aside <time>)`; nothing is deleted). It appears again after each crash.
-- **Run log (Windows).** The console closes with the game, so everything the game logs (recomp
-  `log`/`fatal`, Aurora's log callback, the crash handler's stack) also goes to `last_run.log`; the
-  run before it is kept as `previous_run.log`. The fatal-error dialog names the file.
+- **Run log (Windows).** Everything the game logs (recomp `log`/`fatal`, Aurora's log callback,
+  the crash handler's stack) also goes to `last_run.log`; the run before it is kept as
+  `previous_run.log`. The fatal-error dialog names the file.
+- **No console window (Windows, since 1.1.4).** LuigisMansionRecomp is a windowed program
+  (`WIN32_EXECUTABLE`, entry still `main`); `port::recovery::setupConsole` decides where output
+  goes: redirected stdout/stderr (test scripts, a pipe) stay as they are; started from a terminal it
+  attaches to that terminal; `--console` or `LM_CONSOLE=1` opens a console window (the old look);
+  otherwise (a double-click) stdout and stderr are reopened onto `last_run.log` itself, so every
+  `printf` line is in the log too, and `logLine` stops writing its copies (no duplicates).
+  `LM_CONSOLE=0` (test aid) acts like a double-click. In a windowed program stdout/stderr start
+  without a descriptor (fileno -2): stdout is `freopen`ed onto the log (which then refuses other
+  writers, so the run log *is* stdout), stderr is bound to NUL and `_dup2`ed onto stdout's
+  descriptor; a stream reopen that fails must not be written to (the CRT stops the program).
+  The dev build lmrecomp keeps its console.
 - **Damaged settings.ini.** One with binary data (NUL bytes) is moved to `settings.ini.corrupt`
   and the defaults are used. Bad values in a text file were already clamped and unknown keys ignored.
 - The GX FIFO itself no longer stops on malformed data (docs/RENDERING.md "Malformed FIFO data").

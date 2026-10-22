@@ -3,6 +3,7 @@
 // handed to the host loop (see frame.h) before the game continues.
 #include "port/install.h"
 #include "port/settings.h"
+#include "recomp/cpu_qos.h"
 #include "recomp/frame.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
@@ -52,6 +53,7 @@ void startTimer() {
     sRetraceQueue = hleAlloc(8);
     sTimerRun = true;
     sTimer = std::thread([] {
+        cpu::setCurrent(cpu::Role::Timer);
         using clock = std::chrono::steady_clock;
         auto period = std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(1.0 / retraceHz()));
         auto next = clock::now() + period;
