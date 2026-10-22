@@ -63,6 +63,7 @@ std::vector<Field> fields() {
     auto& l = sSettings.enhancedLighting;
     auto& u = sSettings.unused2;
     return {
+        num("interface", "menu_scale", sSettings.ui.menuScale),
         num("video", "target_fps", v.targetFps),
         flag("video", "unlimited_fps", v.unlimitedFps),
         flag("video", "match_display_refresh", v.matchDisplay),
@@ -280,6 +281,8 @@ void clampEnum(E& v, E last, E def = E(0)) {
 // scale or MSAA count fails to create the GPU targets at startup.
 void sanitize() {
     auto& v = sSettings.video;
+    // Menu size: 0 (Auto) or a percentage (the UI snaps it to its nearest step).
+    if (sSettings.ui.menuScale != 0) clampTo(sSettings.ui.menuScale, 75, 300);
     clampTo(v.targetFps, kMinFps, kMaxFps);
     clampEnum(v.aspect, AspectMode::Ultra32x9, AspectMode::Auto);
     clampTo(v.resolutionScale, 0, 8);

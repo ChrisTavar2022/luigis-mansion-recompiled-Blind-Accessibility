@@ -4,6 +4,7 @@
 #include "port/crash_handler.h"
 #include "port/dol.h"
 #include "recomp/precache.h"
+#include "recomp/ui_scale.h"
 #include "setup/disc.h"
 #include "setup/hm_overlay.h"
 #include "setup/module_builder.h"
@@ -188,6 +189,7 @@ enum class Screen { Pick, Working, Shaders, Failed };
 }  // namespace
 
 bool run(const Options& opts, LaunchInfo& launch) {
+    recomp::ui::install(recomp::ui::Context::Setup);
     port::loadInstall();
     auto& inst = port::install();
     Slot slots[2];
@@ -269,8 +271,8 @@ bool run(const Options& opts, LaunchInfo& launch) {
         ImGui::Begin("##setup", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                          ImGuiWindowFlags_NoBringToFrontOnFocus);
-        const float scale = std::max(1.0f, vp->WorkSize.y / 600.0f);
-        ImGui::SetWindowFontScale(scale);
+        // Menu size (ui_scale.cpp; setup's Auto: 600 lines = 100%), font rasterized at that size.
+        const float scale = recomp::ui::scale();
         ImGui::Dummy(ImVec2(0, 12 * scale));
         ImGui::Text("Luigi's Mansion Recompiled");
         ImGui::Separator();

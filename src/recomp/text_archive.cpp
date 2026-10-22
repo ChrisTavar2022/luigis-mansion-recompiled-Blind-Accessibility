@@ -20,6 +20,7 @@
 #include "port/settings.h"
 #include "recomp/hle.h"
 #include "recomp/rarc.h"
+#include "recomp/ui_scale.h"
 #include "recomp/unused2.h"
 #include "recomp/menu.h"
 #include "recomp/version.h"
@@ -445,7 +446,7 @@ void textArchiveWindow() {
     if (sEnv && !sEnvOnce) sEnvOnce = sTextOpen = true;
     if (!sTextOpen) return;
     scanSome();
-    ImGui::SetNextWindowSize(ImVec2(820, 600), ImGuiCond_FirstUseEver);
+    recomp::ui::beforeWindow("Text archive", ImVec2(820, 600), ImVec2(320, 240));
     if (!ImGui::Begin("Text archive", &sTextOpen)) {
         ImGui::End();
         return;
