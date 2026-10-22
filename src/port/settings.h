@@ -316,8 +316,8 @@ struct Unused2Settings {
 // F1 > Enhancements > Silly: world options (src/recomp/silly_world.cpp; docs/ENHANCEMENTS.md
 // "Silly options: world"). Cosmetic fun; every default is the retail game.
 struct SillyWorldSettings {
-    float ghostHeadScale = 1.0f;   // Big Head Mode for ghosts: head joint scale, 0.5..3 (1 = off)
-    int ghostHeadTargets = 0;      // 0 all ghosts, 1 Boos only
+    float ghostSize = 1.0f;        // ghost size (whole model, visual only), 0.5..3 (1 = off)
+    int ghostSizeTargets = 0;      // 0 all ghosts, 1 Boos only
     bool ghostColorShuffle = false;  // every ghost gets its own random body/glow colour
     bool disco = false;            // room lights cycle through colours
     float discoSpeed = 1.0f;       // colour cycles per 10 s, 0.1..5

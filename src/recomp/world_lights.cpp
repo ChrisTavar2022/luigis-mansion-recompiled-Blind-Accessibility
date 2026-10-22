@@ -18,6 +18,7 @@
 #include "recomp/enhanced_lighting.h"
 #include "recomp/hle.h"
 #include "recomp/rarc.h"
+#include "recomp/silly_world.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
 
@@ -566,6 +567,7 @@ void onMainView(Ctx& c) {
             ExtraLight l{};
             toView(view, lp.pos, l.pos);
             for (int i = 0; i < 3; i++) l.color[i] = rgb[i] / mx;
+            if (sillyworld::discoOn()) sillyworld::discoLight(u32(lp.room), l.color);  // F1 > Enhancements > Silly
             l.radius = lp.chandelier ? 950.0f : 520.0f;
             float I = (lp.chandelier ? 1.5f : 1.0f) * master * std::clamp(w.intensity[port::kWlLamps], 0.0f, 3.0f);
             if (w.flicker && lp.chandelier) I *= flameFlicker(t, lp.id, 0.12f);  // candle-lit chandeliers breathe a little

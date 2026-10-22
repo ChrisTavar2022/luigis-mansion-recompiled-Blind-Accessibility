@@ -43,7 +43,6 @@ const char* typeName(u32 type) {
 bool isGhostType(u32 type) { return type < kTypeCount && (rd16(kTypeTable + type * 0x1C + 0x08) & 8); }
 
 // ---- research aids ---------------------------------------------------------------------------
-const int sJointLog = envInt("LM_SW_JOINT_LOG");
 const int sSeLog = envInt("LM_SW_SE_LOG");
 const int sPhysLog = envInt("LM_SW_PHYS_LOG");
 
@@ -156,10 +155,17 @@ HLE(fn_80151CC8) {
     if (count) confetti(c, pos);
 }
 
-// ---- Big Head Mode (research: joint dump) ---------------------------------------------------
+// ---- ghost size --------------------------------------------------------------------------
+// S3D models keep their joints in world space (S3DModel +0x14); calcView fn_80059710(model,
+// view) puts them in eye space (+0x18 = view x joint) and builds the normal matrices (+0x1C, the
+// inverse transpose, fn_8000A0D0) for every pass that draws the model (scene, ghost layer, shadow
+// maps). For a ghost the view is replaced by view x S, S = scale about the actor's position
+// (+0x44), so the whole ghost is drawn bigger or smaller: its joints, collision, hit test, vacuum
+// fight, glow light and camera are the game's own, unchanged. The normal matrices are multiplied
+// back by the scale (the inverse transpose shrinks them by 1/s, which would change the lighting),
+// and the view copy calcView keeps (lbl_803CFAB0 + 4) is put back to the real view afterwards.
 namespace recomp::sillyworld {
 namespace {
-std::unordered_set<u32> sDumped;
 
 u32 actorForModel(u32 obj) {
     const u32 n = std::min(rd32(kActorCount), kMaxSlots);
@@ -170,39 +176,110 @@ u32 actorForModel(u32 obj) {
     return 0;
 }
 
-void dumpJoints(u32 actor, u32 obj) {
+bool isBooType(u32 type) { return std::strstr(typeName(type), "tele") != nullptr; }
+
+float ghostScaleFor(u32 actor) {
+    const float s = std::clamp(cfg().ghostSize, 0.5f, 3.0f);
+    if (s == 1.0f || !gu::inMem1(actor)) return 1.0f;
     const u32 type = rd32(actor + 0x3C);
-    if (!sDumped.insert(type).second) return;
-    const u32 mdl = rd32(obj + 4);
-    const u32 nj = rd16(mdl + 8), nodes = rd32(mdl + 0x30), joints = rd32(obj + 0x14);
-    log("[silly-joints] type %u %s: %u joints, nodes %08X", type, typeName(type), nj, nodes);
-    for (u32 n = 0; n < nj + 8 && gu::inMem1(nodes); n++) {
-        const u32 nd = nodes + n * 16;
-        const s16 j = s16(rd16(nd)), o2 = s16(rd16(nd + 2)), o4 = s16(rd16(nd + 4));
-        if (j < 0 || u32(j) >= nj) break;
-        const u32 m = joints + u32(j) * 0x30;
-        log("[silly-joints]   node %2u joint %2d +2 %d +4 %d  world %.1f %.1f %.1f  scale %.2f", n, j, o2, o4, gu::rdf(m + 0x0C),
-            gu::rdf(m + 0x1C), gu::rdf(m + 0x2C),
-            std::sqrt(gu::rdf(m) * gu::rdf(m) + gu::rdf(m + 0x10) * gu::rdf(m + 0x10) + gu::rdf(m + 0x20) * gu::rdf(m + 0x20)));
-    }
+    if (!isGhostType(type)) return 1.0f;
+    if (cfg().ghostSizeTargets == 1 && !isBooType(type)) return 1.0f;
+    return s;
 }
+
 }  // namespace
 }  // namespace recomp::sillyworld
 
-// S3D model envelope matrices from the joints (second half of calcJoints fn_800589B0; the actor
-// update fn_800613C8 calls it after the joint animation fn_8005A944).
-HLE(fn_80058850) {
-    if (sJointLog) {
-        const u32 obj = c.r[3];
-        const u32 actor = actorForModel(obj);
-        if (actor && isGhostType(rd32(actor + 0x3C))) dumpJoints(actor, obj);
+HLE(fn_80059710) {
+    const u32 obj = c.r[3], view = c.r[4];
+    const float s = gu::inMem1(obj) && gu::inMem1(view) ? ghostScaleFor(actorForModel(obj)) : 1.0f;
+    if (s == 1.0f) return callOriginal(c, "fn_80059710");
+    static u32 sTmp = 0;
+    if (!sTmp) sTmp = unused2::extraAlloc(0x30, 32);
+    const u32 actor = actorForModel(obj);
+    if (!sTmp) return callOriginal(c, "fn_80059710");
+    float v[12], p[3];
+    for (int i = 0; i < 12; i++) v[i] = gu::rdf(view + 4 * i);
+    for (int i = 0; i < 3; i++) p[i] = gu::rdf(actor + 0x44 + 4 * i);
+    // view x [sI | (1-s) p]
+    for (int r = 0; r < 3; r++) {
+        float t = v[r * 4 + 3];
+        for (int k = 0; k < 3; k++) {
+            gu::wrf(sTmp + 4 * (r * 4 + k), v[r * 4 + k] * s);
+            t += v[r * 4 + k] * (1.0f - s) * p[k];
+        }
+        gu::wrf(sTmp + 4 * (r * 4 + 3), t);
     }
-    callOriginal(c, "fn_80058850");
+    c.r[4] = sTmp;
+    callOriginal(c, "fn_80059710");
+    const u32 keep = VA(0x803CFAB0) + 4;
+    for (int i = 0; i < 12; i++) gu::wrf(keep + 4 * i, v[i]);
+    const u32 mdl = rd32(obj + 4), nrm = rd32(obj + 0x1C);
+    if (gu::inMem1(mdl) && gu::inMem1(nrm)) {
+        const u32 n = u32(rd16(mdl + 8)) + rd16(mdl + 0xC);
+        for (u32 m = 0; m < n; m++)
+            for (int r = 0; r < 3; r++)
+                for (int k = 0; k < 3; k++) {
+                    const u32 a = nrm + m * 0x30 + 4 * (r * 4 + k);
+                    gu::wrf(a, gu::rdf(a) * s);
+                }
+    }
 }
 
 namespace recomp::sillyworld {
+namespace {
+
+// ---- colours ---------------------------------------------------------------------------------
+void hueRgb(float h, float out[3]) {
+    h = h - std::floor(h);
+    const float x = h * 6.0f;
+    out[0] = std::clamp(std::fabs(x - 3.0f) - 1.0f, 0.0f, 1.0f);
+    out[1] = std::clamp(2.0f - std::fabs(x - 2.0f), 0.0f, 1.0f);
+    out[2] = std::clamp(2.0f - std::fabs(x - 4.0f), 0.0f, 1.0f);
+}
+
+u32 hashU32(u32 h) {
+    h ^= h >> 16;
+    h *= 0x7FEB352Du;
+    h ^= h >> 15;
+    h *= 0x846CA68Bu;
+    h ^= h >> 16;
+    return h;
+}
+
+// Per-ghost hue: the actor (characters are pooled, so a ghost keeps its slot for its life) and its
+// type. Golden-ratio steps of the hash spread neighbouring ghosts over the colour wheel.
+float ghostHue(u32 actor) { return float(hashU32(actor * 0x9E3779B1u ^ rd32(actor + 0x3C)) & 0xFFFF) / 65536.0f; }
+
+bool shuffleOn(u32 actor) { return cfg().ghostColorShuffle && gu::inMem1(actor) && isGhostType(rd32(actor + 0x3C)); }
+
+// Disco clock: game frames (the colour changes at the game rate; slow enough not to step visibly).
+u32 sDiscoFrames = 0;
+float discoHue() { return float(sDiscoFrames) / 300.0f * std::clamp(cfg().discoSpeed, 0.1f, 5.0f); }
+
+// ---- Luigi's voice ---------------------------------------------------------------------------
+// Luigi's voice clips are sound effects of their own (JAI SE ids, LM_SW_SE_LOG lists every start):
+// the "Mario?" calls, yelps, gasps, laughs, humming and whistling. kVoice holds their ids.
+// A started one gets JAISound::setPitch (the same per-sound pitch the game uses for its own
+// effects), which JAudio multiplies into the voice's DSP pitch; music and other effects are not
+// touched. The ids are shared by Play as Mario (the Mario model keeps Luigi's sounds).
+struct IdRange {
+    u32 lo, hi;
+};
+const IdRange kVoice[] = {
+    {0, 0},  // filled in below (research)
+};
+bool isLuigiVoice(u32 id) {
+    const u32 n = id & 0xFFFFFu;
+    for (const IdRange& r : kVoice)
+        if (r.hi && n >= r.lo && n <= r.hi) return true;
+    return false;
+}
+
+}  // namespace
 
 void onFrame(Ctx& c) {
+    sDiscoFrames++;
     // Test aid: LM_SW_TREASURE=<guest frame>,... throws 15 coins, 9 bills and a gold bar out in
     // front of Luigi as furniture does (fn_801589A8 / fn_80151CC8 / fn_800E8904).
     static const char* sEnv = std::getenv("LM_SW_TREASURE");
@@ -234,29 +311,119 @@ void onFrame(Ctx& c) {
 }
 
 void onSeStarted(Ctx& c, u32 id, u32 handle) {
-    (void)c;
     const u32 snd = gu::inMem1(handle) ? rd32(handle) : 0;
-    if (sSeLog) log("[silly-se] f%u id %08X sound %08X", skip::guestFrames(), id, snd);
+    const bool voice = isLuigiVoice(id);
+    if (sSeLog) log("[silly-se] f%u id %08X sound %08X%s", skip::guestFrames(), id, snd, voice ? " (Luigi voice)" : "");
+    const float pitch = std::clamp(cfg().luigiVoicePitch, 0.5f, 2.0f);
+    if (!voice || pitch == 1.0f || !gu::inMem1(snd) || rd32(snd + 8) != id) return;
+    gu::call(c, GU_SYM("setPitch__8JAISoundFfUlUc"), {snd, 0, 0}, {double(pitch)});
 }
 
 void ghostMaterialColor(u32 actor, u32 colorPtr) {
-    (void)actor;
-    (void)colorPtr;
+    if (!shuffleOn(actor) || !gu::inMem1(colorPtr)) return;
+    float rgb[3];
+    hueRgb(ghostHue(actor), rgb);
+    u8* p = hostp(colorPtr);
+    // The material colour is a grey (0x40 for a fully visible ghost) that the ghost layer adds as
+    // light: the same strength, in the ghost's own colour (a little brighter, as one saturated
+    // channel carries less light than a grey).
+    const float m = float(std::max({p[0], p[1], p[2]}));
+    for (int k = 0; k < 3; k++) p[k] = u8(std::min(255.0f, rgb[k] * m * 1.6f + 0.5f));
 }
+
 bool ghostGlowColor(u32 actor, u32 rgb[3]) {
-    (void)actor;
-    (void)rgb;
-    return false;
+    if (!shuffleOn(actor)) return false;
+    float h[3];
+    hueRgb(ghostHue(actor), h);
+    for (int k = 0; k < 3; k++) rgb[k] = u32(std::lround(40.0f + 215.0f * h[k]));
+    return true;
 }
-void discoAmbient(u8 rgb[3]) { (void)rgb; }
+
+void discoAmbient(u8 rgb[3]) {
+    float h[3];
+    hueRgb(discoHue(), h);
+    // Same overall light, in a saturated colour (a pure hue carries a third to two thirds of a
+    // grey's light, so it is lifted).
+    const float lum = (float(rgb[0]) + float(rgb[1]) + float(rgb[2])) / 3.0f;
+    for (int k = 0; k < 3; k++) rgb[k] = u8(std::min(255.0f, lum * (0.15f + 1.85f * h[k]) + 0.5f));
+}
+
 void discoLight(u32 id, float color[3]) {
-    (void)id;
-    (void)color;
+    float h[3];
+    (void)id;  // one colour for the whole mansion, in step with the room light
+    hueRgb(discoHue(), h);
+    for (int k = 0; k < 3; k++) color[k] = 0.08f + 0.92f * h[k];
 }
+
 bool discoOn() { return cfg().disco; }
 
 }  // namespace recomp::sillyworld
 
+// ---- F1 > Enhancements > Silly ---------------------------------------------------------------
+#include "recomp/menu.h"
+
+#include <imgui.h>
+
 namespace recomp::silly {
-void drawWorldOptions() {}
+namespace {
+void tipW(const char* t) { ImGui::SetItemTooltip("%s", t); }
+}  // namespace
+
+void drawWorldOptions() {
+    auto& s = port::settings().sillyWorld;
+    bool save = false;
+    ImGui::SeparatorText("Ghosts");
+    menu::SliderFloat("Ghost size", &s.ghostSize, 0.5f, 3.0f, "%.2fx");
+    save |= ImGui::IsItemDeactivatedAfterEdit();
+    tipW("Tiny or giant ghosts: every ghost's whole model is drawn scaled about its position.\n"
+         "Visual only: their hit boxes, the vacuum fight and the camera are the original ones.\n"
+         "1.00x = original.");
+    ImGui::BeginDisabled(s.ghostSize == 1.0f);
+    ImGui::Indent();
+    save |= ImGui::RadioButton("All ghosts##swsize", &s.ghostSizeTargets, 0);
+    ImGui::SameLine();
+    save |= ImGui::RadioButton("Boos only##swsize", &s.ghostSizeTargets, 1);
+    ImGui::Unindent();
+    ImGui::EndDisabled();
+    save |= menu::Checkbox("Ghost colour shuffle", &s.ghostColorShuffle);
+    tipW("Every ghost glows in a colour of its own, picked at random and kept for that ghost.\n"
+         "With Enhanced lighting, the light it casts on the room takes the same colour.\n"
+         "Portrait ghosts and bosses change too; Boos as well.");
+
+    ImGui::SeparatorText("Mansion");
+    save |= menu::Checkbox("Disco mansion", &s.disco);
+    tipW("The room light slowly cycles through the colours of the rainbow. Works on the game's\n"
+         "own room light; with Enhanced lighting the lamps and chandeliers join in.\n"
+         "Dark rooms stay dark until their lights come on.");
+    ImGui::BeginDisabled(!s.disco);
+    ImGui::Indent();
+    menu::SliderFloat("Disco speed", &s.discoSpeed, 0.1f, 5.0f, "%.1f");
+    save |= ImGui::IsItemDeactivatedAfterEdit();
+    tipW("Colour cycles per 10 seconds.");
+    ImGui::Unindent();
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Luigi's voice");
+    menu::SliderFloat("Voice pitch", &s.luigiVoicePitch, 0.5f, 2.0f, "%.2fx");
+    save |= ImGui::IsItemDeactivatedAfterEdit();
+    tipW("Higher (chipmunk) or lower (deep) Luigi: only his voice (calling Mario, yelps, gasps,\n"
+         "humming and whistling), not the music or other sounds. Applies to the next thing he\n"
+         "says. 1.00x = original.");
+
+    ImGui::SeparatorText("Treasure");
+    save |= menu::Checkbox("Moon gravity", &s.moonGravity);
+    tipW("Coins, bills, gold bars and gems that spill out fall slowly, fly higher and bounce more,\n"
+         "then settle as usual and can be collected. They vanish after the usual time.");
+    ImGui::BeginDisabled(!s.moonGravity);
+    ImGui::Indent();
+    menu::SliderFloat("Gravity", &s.moonGravityScale, 0.05f, 1.0f, "%.2fx");
+    save |= ImGui::IsItemDeactivatedAfterEdit();
+    tipW("Gravity on spilled treasure while Moon gravity is on (0.17x is the Moon's).");
+    ImGui::Unindent();
+    ImGui::EndDisabled();
+    save |= menu::Checkbox("Confetti coins", &s.confettiCoins);
+    tipW("Every burst of coins or bills throws a shower of coloured sparkles (the game's own\n"
+         "pink, green, blue and yellow key sparkles and its gold treasure glitter).");
+    if (save) port::saveSettings();
+}
 }  // namespace recomp::silly

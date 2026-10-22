@@ -259,8 +259,8 @@ std::vector<Field> fields() {
         flag("unused2", "pink_mice", u.pinkMice),
         flag("unused2", "blue_ghost_guys", u.blueGhostGuys),
         flag("unused2", "extra_speedy_spirits", u.extraSpeedySpirits),
-        num("silly_world", "ghost_head_scale", sSettings.sillyWorld.ghostHeadScale),
-        num("silly_world", "ghost_head_targets", sSettings.sillyWorld.ghostHeadTargets),
+        num("silly_world", "ghost_size", sSettings.sillyWorld.ghostSize),
+        num("silly_world", "ghost_size_targets", sSettings.sillyWorld.ghostSizeTargets),
         flag("silly_world", "ghost_color_shuffle", sSettings.sillyWorld.ghostColorShuffle),
         flag("silly_world", "disco", sSettings.sillyWorld.disco),
         num("silly_world", "disco_speed", sSettings.sillyWorld.discoSpeed),
@@ -374,8 +374,8 @@ void sanitize() {
     clampTo(u.overheatBlowCool, 1.0f, 10.0f);
     clampTo(u.overheatDamage, 0, 50);
     auto& sw = sSettings.sillyWorld;
-    clampTo(sw.ghostHeadScale, 0.5f, 3.0f);
-    clampTo(sw.ghostHeadTargets, 0, 1);
+    clampTo(sw.ghostSize, 0.5f, 3.0f);
+    clampTo(sw.ghostSizeTargets, 0, 1);
     clampTo(sw.discoSpeed, 0.1f, 5.0f);
     clampTo(sw.luigiVoicePitch, 0.5f, 2.0f);
     clampTo(sw.moonGravityScale, 0.05f, 1.0f);

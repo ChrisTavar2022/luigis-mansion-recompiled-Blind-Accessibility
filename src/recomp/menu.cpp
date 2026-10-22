@@ -17,6 +17,7 @@
 #include "recomp/hidden_mansion.h"
 #include "recomp/interp.h"
 #include "recomp/pacing.h"
+#include "recomp/silly_world.h"
 #include "recomp/skip.h"
 #include "recomp/ui_scale.h"
 #include "recomp/unused2.h"
@@ -86,7 +87,7 @@ constexpr Page kPages[] = {
     {"Visuals", "General"},       {"Visuals", "Rendering"},        {"Visuals", "Enhanced lighting"},
     {"Sound", nullptr},           {"Controls", "Ports"},           {"Controls", "Bindings"},
     {"Controls", "Analog"},       {"Enhancements", "General"},     {"Enhancements", "Gameplay"},
-    {"Enhancements", "Unused content"}, {"Enhancements", "Debug"}, {"Game", nullptr},
+    {"Enhancements", "Silly"},          {"Enhancements", "Unused content"}, {"Enhancements", "Debug"}, {"Game", nullptr},
 };
 constexpr int kPageCount = int(sizeof(kPages) / sizeof(kPages[0]));
 constexpr float kXs[] = {0.05f, 0.3f, 0.6f, 0.88f};
@@ -1834,6 +1835,11 @@ void enhancementsTab() {
         }
         if (ImGui::BeginTabItem("Gameplay", nullptr, envTab("Gameplay"))) {
             gameplayTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Silly", nullptr, envTab("Silly"))) {
+            ImGui::TextDisabled("Just for fun. Every option off = the original game.");
+            recomp::silly::drawWorldOptions();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Unused content", nullptr, envTab("Unused content"))) {
