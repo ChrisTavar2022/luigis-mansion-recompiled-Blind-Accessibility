@@ -21,6 +21,7 @@ Scenarios (US disc; game frames from 2600 on, scripted with LM_INPUT_CLOCK=frame
   boss     Boolossus' arena (map 11), the run mix (one quick check)
   event    the lab's "The Mansion" demo: the walk-up to the front door behind Luigi (own camera;
            run it with --secs 10)
+  opening  the opening cutscene where Luigi reads the map (own camera; --secs 6)
 """
 import argparse
 import os
@@ -127,6 +128,9 @@ def scenario(name):
         env = {"LM_INPUT_CLOCK": "frames", "LM_START_MAP": "1",
                "LM_SKIP_TEST": ";".join(f"{f}:flag:7" for f in range(1200, 1330, 3))}
         return env, "600:START*10,1000:A*6,1450:A,1550:A,1650:A,1750:A", 1990
+    elif name == "opening":
+        # the opening cutscene: Luigi reads the map (game frames ~1395-1500; own camera)
+        return {"LM_INPUT_CLOCK": "frames"}, "600:START*10,1000:A*6", 1380
     elif name == "boss":
         env["LM_START_MAP"] = "11"
         env.pop("LM_START_APPEAR", None)
@@ -187,7 +191,10 @@ def run_one(a, name, fps, out):
     track = os.path.join(out, "track.log")
     env.update({"APPDATA": appdata, "LM_CARD_DIR": os.path.join(out, "card"), "LM_AUDIO": "0", "LM_BACKGROUND": "1",
                 "LM_OFFSCREEN": "1", "LM_JUDDER_LOG": os.path.join(out, "judder.log"), "LM_JUDDER_EVERY": "1",
-                "LM_JUDDER_PX": "100000", "LM_TRACK_LOG": f"{track},{a.radius}"})
+                "LM_JUDDER_PX": "100000", "LM_TRACK_LOG": f"{track},{a.radius}",
+                # never see or open a physical controller (the owner may be using one): scripted input only
+                "SDL_JOYSTICK_HIDAPI": "0", "SDL_JOYSTICK_RAWINPUT": "0", "SDL_JOYSTICK_WGI": "0", "SDL_XINPUT_ENABLED": "0",
+                "SDL_JOYSTICK_DIRECTINPUT": "0", "SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS": "0"})
     for e in a.env:
         k, v = e.split("=", 1)
         env[k] = v

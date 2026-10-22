@@ -38,35 +38,38 @@ def main():
         p = line.split()
         if not p:
             continue
-        if p[0] == "HT" and len(p) >= 13:
-            tapes[int(p[1])] = (int(p[2][1:]), int(p[3]), [float(x) for x in p[4:13]])
-        elif p[0] == "HR" and len(p) >= 12:
-            seq = int(p[2])
-            if first_seq is None:
-                first_seq = seq
-            if seq < first_seq + a.skip_tapes:
-                continue
-            replays += 1
-            judged += int(p[5])
-            flagged += int(p[7])
-            nozJ += int(p[9])
-            nozF += int(p[10])
-        elif p[0] == "H" and len(p) > 20:
-            d = {"present": int(p[1]), "seq": int(p[2]), "frame": int(p[3][1:]), "alpha": float(p[4])}
-            i = 5
-            while i + 1 < len(p):
-                k = p[i]
-                if k in ("at", "a", "b"):
-                    d[k] = [float(x) for x in p[i + 1:i + 4]]
-                    i += 4
+        try:
+            if p[0] == "HT" and len(p) >= 13:
+                tapes[int(p[1])] = (int(p[2][1:]), int(p[3]), [float(x) for x in p[4:13]])
+            elif p[0] == "HR" and len(p) >= 12:
+                seq = int(p[2])
+                if first_seq is None:
+                    first_seq = seq
+                if seq < first_seq + a.skip_tapes:
                     continue
-                d[k] = p[i + 1]
-                i += 2
-            if first_seq is not None and d["seq"] < first_seq + a.skip_tapes:
-                continue
-            flags.append(d)
-        elif p[0] == "HC" and len(p) >= 6:
-            hc.append((int(p[1]), int(p[2]), p[3], float(p[4]), p[5]))
+                replays += 1
+                judged += int(p[5])
+                flagged += int(p[7])
+                nozJ += int(p[9])
+                nozF += int(p[10])
+            elif p[0] == "H" and len(p) > 20:
+                d = {"present": int(p[1]), "seq": int(p[2]), "frame": int(p[3][1:]), "alpha": float(p[4])}
+                i = 5
+                while i + 1 < len(p):
+                    k = p[i]
+                    if k in ("at", "a", "b"):
+                        d[k] = [float(x) for x in p[i + 1:i + 4]]
+                        i += 4
+                        continue
+                    d[k] = p[i + 1]
+                    i += 2
+                if first_seq is not None and d["seq"] < first_seq + a.skip_tapes:
+                    continue
+                flags.append(d)
+            elif p[0] == "HC" and len(p) >= 6:
+                hc.append((int(p[1]), int(p[2]), p[3], float(p[4]), p[5]))
+        except (ValueError, IndexError):
+            continue  # a line cut off when the game was stopped
 
     print(f"replays judged {replays}, vertices near Luigi judged {judged}, off their path {flagged} "
           f"({100.0 * flagged / max(judged, 1):.4f}%); near the nozzle {nozJ} judged, {nozF} off")

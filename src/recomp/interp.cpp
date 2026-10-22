@@ -3889,7 +3889,8 @@ struct TrackTotals {
 void trackJudge(const ProbeReplay& pr, const std::vector<ProbeRec>& recs) {
     const Tape& b = *pr.b;
     const Tape* a = pr.a.get();
-    if (!a || b.pairedWith != a || b.cut || !a->trackOk || !b.trackOk) return;
+    if (!a || b.pairedWith != a || b.cut) return;
+    const bool haveLuigi = a->trackOk && b.trackOk;  // (without him only own-camera scenes are judged)
     const float t = pr.alpha;
     f32 luigi[3], noz[3];
     for (int c = 0; c < 3; c++) {
@@ -3939,7 +3940,7 @@ void trackJudge(const ProbeReplay& pr, const std::vector<ProbeRec>& recs) {
         f32 e[3], aw[3];
         xform34(r.mtx, r.pos, e);
         xform34(cam->second.data(), e, aw);
-        if (!own && std::hypot(aw[0] - luigi[0], aw[1] - luigi[1], aw[2] - luigi[2]) > sTrackRadius) continue;
+        if (!own && (!haveLuigi || std::hypot(aw[0] - luigi[0], aw[1] - luigi[1], aw[2] - luigi[2]) > sTrackRadius)) continue;
         const bool nearNoz = !own && haveNoz && std::hypot(aw[0] - noz[0], aw[1] - noz[1], aw[2] - noz[2]) < 60.0f;
         const s32 j = P && !b.partner.empty() ? b.partner[pb] : -1;
         if (!P) {
@@ -3974,6 +3975,9 @@ void trackJudge(const ProbeReplay& pr, const std::vector<ProbeRec>& recs) {
             along += (aw[c] - wa[c]) * d[c];
         }
         const float chord = std::sqrt(chord2);
+        // (An own-camera model that moves by more than a tenth of its distance in one game frame was
+        // placed anew or its camera cut: shown at b by design, like a cut of the game camera.)
+        if (own && chord > std::max(20.0f, 0.1f * std::sqrt(wb[0] * wb[0] + wb[1] * wb[1] + wb[2] * wb[2]))) continue;
         const float errW = std::hypot(aw[0] - line[0], aw[1] - line[1], aw[2] - line[2]);
         // Group census (every 60 tapes): each model instance drawn near Luigi, its members' place;
         // every 600 tapes all vertices (HV lines: what each instance is, by its shape).
@@ -4830,8 +4834,11 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 // A scene with its own camera (event portraits, door close-ups): the camera is static or
                 // slow, so a model that moves by more than a tenth of its distance in one game frame was
                 // placed anew (the call portrait parked off screen as the call closes): switch.
-                const float d = std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]);
-                const float j = std::hypot(va[3] - vb[3], va[7] - vb[7], va[11] - vb[11]);
+                // (Measured where its geometry is, placeStep: the event scenes' models have their origin
+                // 4000-5600 units from their vertices, and a turn of a few degrees moved the origin by
+                // 1000-10000 units: switched while the model moved 50-900, path check.)
+                const float d = viewDist(vb, drawCentre(b, p));
+                const float j = placeStep(va, vb, drawCentre(b, p));
                 ok = blendable(p.kind, va, vb, p.count) && j <= std::max(20.0f, 0.1f * d);
             } else if (p.bundle < b.bundlePass.size() && b.bundlePass[p.bundle] == 1 && sLightPair.ok) {
                 // The shadow caster pass, while its light blends: everything in it blends with the
@@ -4859,7 +4866,12 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 for (int k = 0; k < p.count; k++)
                     out[k] = std::isfinite(va[k]) && std::isfinite(vb[k]) ? va[k] + (vb[k] - va[k]) * alpha : vb[k];
             // An own-camera model matrix blended rigidly: about its draw's centre (see sOwnInstances).
-            if (sOwnInstances && p.ownCamera && p.kind == Kind::PosMtx && p.count == 12 && p.role == 0 && !forced &&
+            // (Not with the screw blend: it already turns each matrix about the axis of its own motion,
+            // the same for neighbouring pieces of one model, whatever their origin; moving each piece's
+            // centre in a straight line on top opened the seams of Luigi's glove in the opening map
+            // scene. LM_OWNCAM_PIVOT=1: pivot anyway.)
+            static const bool sOwnPivot = !sScrewBlend || std::getenv("LM_OWNCAM_PIVOT") != nullptr;
+            if (sOwnInstances && sOwnPivot && p.ownCamera && p.kind == Kind::PosMtx && p.count == 12 && p.role == 0 && !forced &&
                 drawCentre(b, p)) {  // (the vertices of its own slot when known: hose-jump SlotCentres)
                 const f32* c = drawCentre(b, p);
                 f32 pa[3], pb[3], have[3];
