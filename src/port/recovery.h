@@ -33,10 +33,19 @@ void onCrash(const char* what);
 // prompt shows if this start is then killed. nullptr: it continued (the reason is cleared).
 void noteHang(const char* what);
 
+// Windows, first thing in main: LuigisMansionRecomp is a windowed program (no console window for
+// players). Output that was redirected (a pipe or file from the starting program) stays there;
+// started from a terminal it prints to that terminal; LM_CONSOLE=1 or --console opens a console
+// window (the old behaviour). Otherwise there is nowhere to print: stdout and stderr then go into
+// last_run.log once openRunLog opens it, so nothing printed is lost.
+void setupConsole(int argc, char** argv);
 // Windows: opens last_run.log (moves the old one to previous_run.log). Null elsewhere / on failure.
 void openRunLog();
 std::FILE* runLog();
-// Writes a line to the run log (if open), flushed.
+// Writes a line to the run log (if open), flushed. Nothing when stdout/stderr already go into the
+// run log (setupConsole): the callers print the same text there.
 void logLine(const char* text, std::size_t len);
+// stdout and stderr are written into the run log.
+bool stdioInLog();
 
 }  // namespace port::recovery

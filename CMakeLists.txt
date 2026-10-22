@@ -166,6 +166,12 @@ file(GLOB SETUP_SOURCES CONFIGURE_DEPENDS src/setup/*.cpp src/setup/*.h)
 add_executable(LuigisMansionRecomp ${RECOMP_RUNTIME_SOURCES} ${SETUP_SOURCES})
 lm_runtime_target(LuigisMansionRecomp)
 target_link_libraries(LuigisMansionRecomp PRIVATE lm_recompiler)  # nod comes with aurora::dvd
+if (WIN32)
+    # A windowed program: no console window opens with the game (output: src/port/recovery.h
+    # setupConsole). main() stays the entry point. lmrecomp (dev build) keeps its console.
+    set_target_properties(LuigisMansionRecomp PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(LuigisMansionRecomp PRIVATE "LINKER:/ENTRY:mainCRTStartup")
+endif ()
 # Setup's inputs are embedded in the executable (src/setup/embedded.cpp): symbol maps,
 # hooks, and the game module's freestanding sources.
 add_executable(lmembed tools/recomp/lmembed.cpp)
