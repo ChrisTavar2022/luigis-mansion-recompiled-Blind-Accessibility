@@ -5,6 +5,7 @@
 #include "recomp/enhanced_lighting.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
+#include "recomp/ui_scale.h"
 
 #include <aurora/pipeline_cache.h>
 #include <imgui.h>
@@ -302,7 +303,9 @@ void drawHold() {
     const uint32_t total = std::max(sHoldMax, 1u);
     const uint32_t done = total - std::min(s.rebuildPending, total);
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const float scale = std::max(1.0f, vp->WorkSize.y / 720.0f);
+    // Menu size (ui_scale.cpp) x 1.5 with the large font (rasterized at that size, sharp): as large
+    // as before at 1080p (it used to be a stretched 13 px font) and larger with the menu size.
+    const float scale = recomp::ui::scale() * 1.5f;
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(460 * scale, 0), ImGuiCond_Always);
@@ -310,7 +313,8 @@ void drawHold() {
     ImGui::Begin("##preparing", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove);
-    ImGui::SetWindowFontScale(scale);
+    ImFont* large = recomp::ui::largeFont();
+    if (large) ImGui::PushFont(large);
     if (!compiling && (sHoldMax < 64 || t < 2.0)) {
         ImGui::TextUnformatted("Loading...");
     } else if (!compiling) {
@@ -340,6 +344,7 @@ void drawHold() {
             ImGui::TextWrapped("Some shaders are new (new graphics settings or a game update) and are compiled "
                                "once; the rest load from the cache.");
     }
+    if (large) ImGui::PopFont();
     ImGui::End();
 }
 

@@ -18,6 +18,7 @@
 #include "recomp/interp.h"
 #include "recomp/pacing.h"
 #include "recomp/skip.h"
+#include "recomp/ui_scale.h"
 #include "recomp/unused2.h"
 
 #include <aurora/aurora.h>
@@ -61,6 +62,9 @@ ImGuiTabItemFlags envTab(const char* name) {
 }
 bool sDirty = false;
 bool sQuit = false;  // "Quit game" confirmed
+// The menu window. The ID after ### is the old title, so imgui.ini keeps the window's saved size
+// and place.
+constexpr const char* kMenuWindow = "Luigi's Mansion Recompiled  (F1)###Luigi's Mansion PC  (F1)";
 std::string sOpenTab = sEnvTab ? "Enhancements" : "";  // tab to select once (LM_MENU / LM_MENU_TAB)
 
 // ---- Test aid LM_MENU_ID_CHECK=1: Dear ImGui ID-conflict sweep ----------------------------
@@ -144,7 +148,8 @@ void beforeWindow() {
     if (sDone) return;
     if (sPage >= 0) applyMouse();
     const ImVec2 ds = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowSize(ImVec2(680.0f, std::max(400.0f, ds.y - 16.0f)), ImGuiCond_Always);
+    const float s = recomp::ui::scale();  // (the default width at the current menu size)
+    ImGui::SetNextWindowSize(ImVec2(std::min(680.0f * s, ds.x - 16.0f), std::max(400.0f, ds.y - 16.0f)), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(8.0f, 8.0f), ImGuiCond_Always);
 }
 
@@ -544,7 +549,7 @@ void updateToast() {
     const float alpha = age > kShow - 1.0 ? float(kShow - age) : 1.0f;
     const auto st = port::update::state();
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 16.0f, vp->WorkPos.y + vp->WorkSize.y - 16.0f),
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 16.0f * recomp::ui::scale(), vp->WorkPos.y + vp->WorkSize.y - 16.0f * recomp::ui::scale()),
                             ImGuiCond_Always, ImVec2(1.0f, 1.0f));
     ImGui::SetNextWindowBgAlpha(0.8f);
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
@@ -593,7 +598,7 @@ void refreshRateToast() {
     if (sOpen || age > kShow) return;
     const float alpha = age > kShow - 1.0 ? float(kShow - age) : 1.0f;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + 16.0f, vp->WorkPos.y + vp->WorkSize.y - 16.0f), ImGuiCond_Always,
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + 16.0f * recomp::ui::scale(), vp->WorkPos.y + vp->WorkSize.y - 16.0f * recomp::ui::scale()), ImGuiCond_Always,
                             ImVec2(0.0f, 1.0f));
     ImGui::SetNextWindowBgAlpha(0.8f);
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
@@ -1290,8 +1295,155 @@ void frameRateControls(port::VideoSettings& v) {
     }
 }
 
+// Test aid LM_MENU_SIZE_TEST=1 (with LM_MENU=Visuals): drives ImGui's mouse on the Menu size row
+// like a player: clicks "+" until 300%, "-" twice, then drags the slider from the left end to the
+// right end. Logs "[ui-test]" lines: after each click whether the mouse is still on the button it
+// clicked (the menu is rescaled about the mouse), during the drag that the size in effect does not
+// change, after the release the new size. Ends with "[ui-test] done".
+// (The SDL backend feeds the real cursor every frame, so the test's mouse position is applied at
+// the start of the menu window as in the ID check, and the button state set directly.)
+ImVec2 sSizeTestMouse(-1.0f, -1.0f);
+void menuSizeTestMouse() {
+    if (sSizeTestMouse.x < 0.0f) return;
+    ImGuiContext& g = *GImGui;
+    g.IO.MousePos = sSizeTestMouse;
+    ImGuiWindow* hovered = nullptr;
+    ImGuiWindow* under = nullptr;
+    ImGui::FindHoveredWindowEx(sSizeTestMouse, false, &hovered, &under);
+    g.HoveredWindow = hovered;
+    g.HoveredWindowUnderMovingWindow = under;
+}
+void menuSizeTest(ImVec2 sliderMin, ImVec2 sliderMax) {
+    static const bool sOn = std::getenv("LM_MENU_SIZE_TEST") != nullptr;
+    static int sFrame = 0, sStep = 0, sClicks = 0;
+    static ImVec2 sTarget;
+    if (!sOn) return;
+    if (sStep < 0) {
+        sSizeTestMouse = ImVec2(-1.0f, -1.0f);
+        return;
+    }
+    struct Io {
+        ImGuiIO& io;
+        void AddMousePosEvent(float x, float y) { sSizeTestMouse = ImVec2(x, y); }
+        void AddMouseButtonEvent(int b, bool down) { io.MouseDown[b] = down; }
+        ImVec2& MousePos = io.MousePos;
+    } io{ImGui::GetIO()};
+    const float h = ImGui::GetFrameHeight(), gap = ImGui::GetStyle().ItemInnerSpacing.x;
+    const ImVec2 plus(sliderMin.x - gap - h * 0.5f, (sliderMin.y + sliderMax.y) * 0.5f);
+    const ImVec2 minus(plus.x - gap - h, plus.y);
+    const auto inside = [&](ImVec2 c) {
+        return std::fabs(io.MousePos.x - c.x) <= h * 0.5f && std::fabs(io.MousePos.y - c.y) <= h * 0.5f;
+    };
+    const int f = ++sFrame;
+    if (sStep == 0) {  // settle
+        if (f >= 90) sStep = 1, sFrame = 0;
+        return;
+    }
+    if (sStep == 1) {  // one click: move (0), press (3), release (5), look (25)
+        static int sMinus = -1;  // "-" clicks so far (-1: still going up)
+        if (f == 1 && sMinus < 0 && (ui::percent() >= 300 || sClicks >= 10)) sMinus = 0;
+        if (f == 1) sTarget = sMinus >= 0 ? minus : plus;
+        if (f == 1) io.AddMousePosEvent(sTarget.x, sTarget.y);
+        if (f == 3) io.AddMouseButtonEvent(0, true);
+        if (f == 5) io.AddMouseButtonEvent(0, false);
+        if (f == 25) {
+            const bool onPlus = inside(plus), onMinus = inside(minus);
+            std::printf("[ui-test] click %d: size %d%%, mouse %.0f,%.0f on %s\n", sClicks + 1, ui::percent(), io.MousePos.x,
+                        io.MousePos.y, onPlus ? "+" : onMinus ? "-" : "neither button");
+            std::fflush(stdout);
+            sFrame = 0;
+            sClicks++;
+            if (sMinus >= 0 && ++sMinus >= 2) sStep = 2;
+        }
+        return;
+    }
+    if (sStep == 2) {  // drag from the left end to the right end
+        static int sBefore = 0;
+        if (f == 1) {
+            sBefore = ui::percent();
+            io.AddMousePosEvent(sliderMin.x + 2.0f, (sliderMin.y + sliderMax.y) * 0.5f);
+        }
+        if (f == 3) io.AddMouseButtonEvent(0, true);
+        if (f > 4 && f <= 24)
+            io.AddMousePosEvent(sliderMin.x + (sliderMax.x - sliderMin.x - 2.0f) * float(f - 4) / 20.0f,
+                                (sliderMin.y + sliderMax.y) * 0.5f);
+        if (f == 14 || f == 26) {
+            std::printf("[ui-test] dragging: size in effect %d%% (before %d%%), %s\n", ui::percent(), sBefore,
+                        ui::percent() == sBefore ? "unchanged" : "CHANGED DURING THE DRAG");
+            std::fflush(stdout);
+        }
+        if (f == 27) io.AddMouseButtonEvent(0, false);
+        if (f == 45) {
+            std::printf("[ui-test] released: size %d%%\n[ui-test] done\n", ui::percent());
+            std::fflush(stdout);
+            sStep = -1;
+        }
+    }
+}
+
+// Menu size (issue #20; ui_scale.cpp): Auto or a step. Dragging the slider only previews the
+// value in its label; the size changes when the slider is released (or at once with - / +), and
+// the menu is rescaled about the mouse so the control stays under it.
+void menuSizeControl() {
+    namespace ui = recomp::ui;
+    int& setting = port::settings().ui.menuScale;
+    int cur = 0;  // slider index: 0 Auto, else 1 + the nearest step
+    if (setting > 0) {
+        cur = 1;
+        for (int i = 1; i < ui::kStepCount; i++)
+            if (std::abs(ui::kSteps[i] - setting) < std::abs(ui::kSteps[cur - 1] - setting)) cur = i + 1;
+    }
+    static int sDrag = -1;  // index shown while the slider is held
+    int idx = sDrag >= 0 ? sDrag : cur;
+    char label[64];
+    if (idx == 0) std::snprintf(label, sizeof(label), "Auto (%d%%%%)", ui::autoPercent());
+    else std::snprintf(label, sizeof(label), "%d%%%%", ui::kSteps[idx - 1]);
+    const bool changed = recomp::menu::SliderInt("Menu size", &idx, 0, ui::kStepCount, label,
+                                                 ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput);
+    const bool active = ImGui::IsItemActive();
+    const ImVec2 itemCenter((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
+                            (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
+    bool commit = false;
+    if (active) {
+        if (changed || sDrag < 0) sDrag = idx;
+    } else if (sDrag >= 0) {
+        idx = sDrag;  // released
+        sDrag = -1;
+        commit = true;
+    } else if (changed) {
+        commit = true;  // - / + (or a click without a drag)
+    }
+    ImGui::SetItemTooltip("Size of this menu, its text and the game's other overlays (frame-rate counter,\n"
+                          "notices, shader preparation, debug windows). Auto picks it from the window\n"
+                          "height and the display's scaling setting: 100%% at 1080p, 200%% on a 4K screen,\n"
+                          "150%% on a Steam Deck. Text is drawn at the chosen size, so it stays sharp.\n"
+                          "Applies when the slider is released (or at once with - and +). A size too large\n"
+                          "for the window is limited to the largest that fits.");
+    if (commit) {
+        const int value = idx == 0 ? 0 : ui::kSteps[idx - 1];
+        if (value != setting) {
+            setting = value;
+            sDirty = true;
+            const ImGuiIO& io = ImGui::GetIO();
+            const bool mouse = ImGui::IsMousePosValid() && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+            recomp::ui::setAnchor(kMenuWindow, mouse ? io.MousePos : itemCenter);
+            if (value == 0) std::printf("[ui] menu size set to Auto\n");
+            else std::printf("[ui] menu size set to %d%%\n", value);
+            std::fflush(stdout);
+        }
+    }
+    menuSizeTest(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+    if (cur > 0 && ui::percent() < ui::kSteps[cur - 1]) {
+        char note[96];
+        std::snprintf(note, sizeof(note), "%d%% is the largest that fits this window", ui::percent());
+        pending(note);
+    }
+}
+
 void visualsTab() {
     auto& v = port::settings().video;
+    ImGui::SeparatorText("Menu");
+    menuSizeControl();
     ImGui::SeparatorText("Frame rate and view");
     frameRateControls(v);
     static const char* kAspects[] = {"Original 4:3", "Match window", "16:9", "16:10", "21:9", "32:9"};
@@ -1702,7 +1854,7 @@ void fpsOverlay() {
         frames = 0;
         last = now;
     }
-    ImGui::SetNextWindowPos(ImVec2(8, 8));
+    ImGui::SetNextWindowPos(ImVec2(8 * recomp::ui::scale(), 8 * recomp::ui::scale()));
     ImGui::SetNextWindowBgAlpha(0.4f);
     ImGui::Begin("##fps", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
@@ -1717,6 +1869,7 @@ void fpsOverlay() {
 
 void init() {
     port::loadSettings();
+    recomp::ui::install(recomp::ui::Context::Game);
     applyWindowSettings();
     // LM_MENU=<tab> (testing/screenshots): start with the menu open on that tab.
     if (const char* tab = std::getenv("LM_MENU"); tab && *tab) {
@@ -1919,12 +2072,14 @@ void draw() {
     updateToast();
     refreshRateToast();
     if (!sOpen) return;
-    ImGui::SetNextWindowSize(ImVec2(680, 400), ImGuiCond_FirstUseEver);
+    // Default 680 x 400 and at least 520 x 300 at 100%, scaled with the menu size and kept on the
+    // screen (ui_scale.cpp; after the first-use position, which would replace the one it sets).
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+    recomp::ui::beforeWindow(kMenuWindow, ImVec2(680, 400), ImVec2(520, 300));
     idcheck::beforeWindow();
+    menuSizeTestMouse();
     bool open = true;
-    // The ID after ### is the old title, so imgui.ini keeps the window's saved size and place.
-    if (ImGui::Begin("Luigi's Mansion Recompiled  (F1)###Luigi's Mansion PC  (F1)", &open, ImGuiWindowFlags_NoCollapse)) {
+    if (ImGui::Begin(kMenuWindow, &open, ImGuiWindowFlags_NoCollapse)) {
         ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.45f);
         if (ImGui::BeginTabBar("tabs")) {
             if (tab("Visuals")) {

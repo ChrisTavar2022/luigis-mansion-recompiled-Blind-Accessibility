@@ -19,6 +19,7 @@
 #include "recomp/menu.h"
 #include "recomp/rarc.h"
 #include "recomp/skip.h"
+#include "recomp/ui_scale.h"
 #include "recomp/unused2.h"
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
@@ -298,7 +299,7 @@ void galleryWindow() {
     static bool sEnvOnce = false;
     if (sEnv && !sEnvOnce) sEnvOnce = sGalleryOpen = true;
     if (!sGalleryOpen) return;
-    ImGui::SetNextWindowSize(ImVec2(720, 560), ImGuiCond_FirstUseEver);
+    recomp::ui::beforeWindow("Gallery: unused textures", ImVec2(720, 560), ImVec2(320, 240));
     if (!ImGui::Begin("Gallery: unused textures", &sGalleryOpen)) {
         ImGui::End();
         return;

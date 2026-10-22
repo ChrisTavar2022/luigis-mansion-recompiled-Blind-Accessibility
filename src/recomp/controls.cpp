@@ -15,6 +15,7 @@
 // [controls.pad.<guid>]) through port::addSettingsExtension.
 #include "recomp/menu.h"
 #include "recomp/controls.h"
+#include "recomp/ui_scale.h"
 
 #include "port/settings.h"
 
@@ -976,9 +977,9 @@ bool portsTab() {
     ImGui::TextWrapped("Choose what drives each GameCube controller port. Luigi's Mansion is played on port 1. "
                        "\"Auto\" takes the next connected controller that no other port has chosen.");
     if (ImGui::BeginTable("ports", 4, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_RowBg)) {
-        ImGui::TableSetupColumn("Port", ImGuiTableColumnFlags_WidthFixed, 40);
+        ImGui::TableSetupColumn("Port", ImGuiTableColumnFlags_WidthFixed, 40 * recomp::ui::scale());
         ImGui::TableSetupColumn("Device", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn("+ Keyboard", ImGuiTableColumnFlags_WidthFixed, 80);
+        ImGui::TableSetupColumn("+ Keyboard", ImGuiTableColumnFlags_WidthFixed, 80 * recomp::ui::scale());
         ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch, 1.1f);
         ImGui::TableHeadersRow();
         for (int port = 0; port < PAD_MAX_CONTROLLERS; port++) {
@@ -1048,45 +1049,46 @@ bool portsTab() {
     } else {
         const PADStatus& s = st.last;
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        const float r = 34.0f;
+        const float k = recomp::ui::scale();  // menu size (ui_scale.cpp): the drawing scales with the text
+        const float r = 34.0f * k;
         const ImVec2 origin = ImGui::GetCursorScreenPos();
         const ImU32 rim = ImGui::GetColorU32(ImGuiCol_Border), dot = IM_COL32(120, 220, 120, 255);
         auto stick = [&](float cx, s8 x, s8 y, const char* label) {
-            const ImVec2 c(origin.x + cx, origin.y + r + 2);
-            dl->AddCircle(c, r, rim, 32, 1.5f);
-            dl->AddCircleFilled(ImVec2(c.x + x / 127.0f * r, c.y - y / 127.0f * r), 5, dot);
-            dl->AddText(ImVec2(c.x - ImGui::CalcTextSize(label).x / 2, c.y + r + 4), ImGui::GetColorU32(ImGuiCol_Text), label);
+            const ImVec2 c(origin.x + cx, origin.y + r + 2 * k);
+            dl->AddCircle(c, r, rim, 32, 1.5f * k);
+            dl->AddCircleFilled(ImVec2(c.x + x / 127.0f * r, c.y - y / 127.0f * r), 5 * k, dot);
+            dl->AddText(ImVec2(c.x - ImGui::CalcTextSize(label).x / 2, c.y + r + 4 * k), ImGui::GetColorU32(ImGuiCol_Text), label);
         };
-        stick(r + 4, s.stickX, s.stickY, "Stick");
-        stick(3 * r + 24, s.substickX, s.substickY, "C");
+        stick(r + 4 * k, s.stickX, s.stickY, "Stick");
+        stick(3 * r + 24 * k, s.substickX, s.substickY, "C");
         auto bar = [&](float x, float y, u8 v, const char* label) {
-            const ImVec2 a(origin.x + x, origin.y + y), b(a.x + 90, a.y + 12);
-            dl->AddRectFilled(a, ImVec2(a.x + 90 * v / 255.0f, b.y), dot);
+            const ImVec2 a(origin.x + x, origin.y + y), b(a.x + 90 * k, a.y + 12 * k);
+            dl->AddRectFilled(a, ImVec2(a.x + 90 * k * v / 255.0f, b.y), dot);
             dl->AddRect(a, b, rim);
-            dl->AddText(ImVec2(b.x + 6, a.y - 2), ImGui::GetColorU32(ImGuiCol_Text), label);
+            dl->AddText(ImVec2(b.x + 6 * k, a.y - 2 * k), ImGui::GetColorU32(ImGuiCol_Text), label);
         };
-        const float bx = 4 * r + 50;
-        bar(bx, 6, s.triggerLeft, "L");
-        bar(bx, 26, s.triggerRight, "R");
+        const float bx = 4 * r + 50 * k;
+        bar(bx, 6 * k, s.triggerLeft, "L");
+        bar(bx, 26 * k, s.triggerRight, "R");
         static const std::pair<u16, const char*> kBtns[] = {
             {PAD_BUTTON_A, "A"}, {PAD_BUTTON_B, "B"}, {PAD_BUTTON_X, "X"}, {PAD_BUTTON_Y, "Y"},
             {PAD_TRIGGER_Z, "Z"}, {PAD_TRIGGER_L, "L"}, {PAD_TRIGGER_R, "R"}, {PAD_BUTTON_START, "START"},
             {PAD_BUTTON_UP, "Up"}, {PAD_BUTTON_DOWN, "Down"}, {PAD_BUTTON_LEFT, "Left"}, {PAD_BUTTON_RIGHT, "Right"}};
         float x = bx;
-        float y = 50;
+        float y = 50 * k;
         for (const auto& [bit, name] : kBtns) {
             const ImVec2 sz = ImGui::CalcTextSize(name);
-            const ImVec2 a(origin.x + x, origin.y + y), b(a.x + sz.x + 10, a.y + sz.y + 4);
-            if (s.button & bit) dl->AddRectFilled(a, b, dot, 3);
-            dl->AddRect(a, b, rim, 3);
-            dl->AddText(ImVec2(a.x + 5, a.y + 2), ImGui::GetColorU32(ImGuiCol_Text), name);
-            x += sz.x + 16;
+            const ImVec2 a(origin.x + x, origin.y + y), b(a.x + sz.x + 10 * k, a.y + sz.y + 4 * k);
+            if (s.button & bit) dl->AddRectFilled(a, b, dot, 3 * k);
+            dl->AddRect(a, b, rim, 3 * k);
+            dl->AddText(ImVec2(a.x + 5 * k, a.y + 2 * k), ImGui::GetColorU32(ImGuiCol_Text), name);
+            x += sz.x + 16 * k;
             if (bit == PAD_BUTTON_START) {
                 x = bx;
-                y += sz.y + 10;
+                y += sz.y + 10 * k;
             }
         }
-        ImGui::Dummy(ImVec2(0, 2 * r + 26));
+        ImGui::Dummy(ImVec2(0, 2 * r + 26 * k));
         ImGui::TextDisabled("buttons %04X  stick %d,%d  C %d,%d  L %u  R %u", s.button, s.stickX, s.stickY,
                             s.substickX, s.substickY, s.triggerLeft, s.triggerRight);
         ImGui::TextDisabled("Keyboard keys reach the game only while this menu does not have focus.");
@@ -1167,7 +1169,7 @@ bool bindingsTab() {
         kCaptureSeconds - std::chrono::duration<float>(Clock::now() - sCap.start).count();
     if (ImGui::BeginChild("bindings", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - 4))) {
         if (ImGui::BeginTable("bind", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
-            ImGui::TableSetupColumn("GameCube", ImGuiTableColumnFlags_WidthFixed, 150);
+            ImGui::TableSetupColumn("GameCube", ImGuiTableColumnFlags_WidthFixed, 150 * recomp::ui::scale());
             ImGui::TableSetupColumn("Primary");
             ImGui::TableSetupColumn("Alternate");
             ImGui::TableHeadersRow();
