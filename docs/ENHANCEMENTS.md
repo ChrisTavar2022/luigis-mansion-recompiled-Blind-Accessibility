@@ -639,3 +639,50 @@ start; `[silly] ...` log lines name the Luigi models found and the textures reco
   neck joint 92 and its textures recoloured (log), but was not caught on screen.
 - Screenshots: `out/silly/` in the main checkout (not committed).
 
+## 6. Silly options: world (F1 > Enhancements > Silly)
+
+`src/recomp/silly_world.cpp` (settings `[silly_world]`, `port::SillyWorldSettings`), drawn below the
+Luigi options by `recomp::silly::drawWorldOptions()`. Every default is the retail game: with all of
+them off the frame dumps are byte-identical to main and Luigi's voices start with the same DSP
+pitch. US and PAL (hooks tagged `us pal`).
+
+| Option | How |
+|---|---|
+| Ghost size (0.5-3x, all ghosts / Boos only) | Hook `fn_80059710` (S3D calcView: model-view x joints -> eye matrices + normal matrices). For an actor whose type has the ghost-layer flag 8 the model-view matrix is multiplied by a uniform scale; the normal matrices are multiplied back by the scale and calcView's own copy of the matrix (`lbl_803CFAB0`+4) is restored. Ghost joints are in model space, so the ghost grows about its origin with everything in its model (Ghost Guys' masks and spears). Visual only: collision, hit tests, the vacuum fight, the camera and the ghost light position are unchanged. "Boos only" = type names containing `tele` (telesa, btelesa, kptelesa, ...). Not the shared `silly::addJointScaler` hook: scaling the joints there would leave the normal matrices shrunk by 1/s. |
+| Ghost colour shuffle | Per ghost a hue from a hash of its actor and type. In the ghost pass (`enh::ghostPass()`), from the ghost's lighting setup (`fn_800581E8`, hooked in tags.cpp) until the next one, the S3D material colours (`GXSetChanMatColor` HLE: `fn_80058C30` sets them per material) and the ghost ambient (`E6C882` loaded by `fn_800581E8`, replaced after it with `GXSetChanAmbColor`) take that hue. Enhanced lighting's ghost light uses the same colour (ghost_lights.cpp). Ghosts whose texture is coloured (orange Ghost Guys) keep part of their texture colour; white ones (Boos, white Ghost Guys) take the hue fully. |
+| Disco mansion (speed 0.1-5 cycles per 10 s) | The room record's ambient RGB (+0x2C) during the room ambient update `fn_800168EC` (wrapper in hidden_mansion_hooks.cpp, after the ambient factor) is replaced by a saturated rainbow hue of the same average brightness; with Enhanced lighting the lamp and chandelier lights (world_lights.cpp) take the same hue. Works without Enhanced lighting. Dark rooms stay dark (their ambient is low). |
+| Luigi voice pitch (0.5-2x) | Luigi's voice clips are JAI sound effects with ids `0x28xx` (`0x288E` calling Mario with A, `0x2810` hit, `0x287C`/`0x287F`/`0x281C` other reactions; `LM_SW_SE_LOG=1`). After the SE start (`fn_80197810`, hle_audio.cpp) the sound gets `JAISound::setPitch` (`setPitch__8JAISoundFfUlUc`); JAudio multiplies it into the DSP voice pitch (call voice at ARAM 2950E0: 0x0BFD at 1x, 0x17FA at 2x). Music and other sounds are untouched. Play as Mario keeps Luigi's sound ids, so Mario's voice follows the slider too. |
+| Moon gravity (gravity 0.05-1x) | Money is not actors but "grains" of the money managers. Coins: wrapper on the grain update `fn_80157030` scales the gravity constant (r13-0x16A8 = 2.5; PAL r13-0x16B0) and raises the floor restitution (r13-0x16A4 = 0.75, up to 0.9) for the call. Bills: `fn_8015066C`, gravity r13-0x1964 = 1.5 (PAL -0x196C) scaled by 0.5 + 0.5 x gravity (at full Moon gravity their flutter lift made them hang at the ceiling). Gold bars, gems, pearls (EnItem strategies): the falling state `fn_800CD1F4`, mover +0x30 = TParam `sGravity` (3.0). Coins settle (state 2/3), can be collected and vanish after their usual lifetime; bills land. |
+| Confetti coins | Wrappers on the coin and bill burst functions (`fn_801589A8` coins, `fn_80151CC8` bills; furniture `fn_800316FC`, chests `fn_801541D0`/`fn_801542A8`) start effect table entries 62/64/66/68 (`bkey_p/g/b/y_senko`, the Boo-key reward sparks: pink, green, blue, yellow) at the burst's position through `fn_80164F5C`. The treasure twinkles (`kira_*`) were rejected: they follow Luigi's head and keep sparkling. On screen the burst reads mostly as white-gold rays with coloured sparks. |
+
+### Test aids
+
+- `LM_SW_TREASURE=<guest frame>[:dx:dz],...` throws 15 coins, 9 bills and a gold bar as furniture
+  does, 80 units up at Luigi + (dx, dz) (default 0, -350).
+- `LM_SW_FX=<guest frame>:<effect id>,...` starts effect table entries near Luigi (the sweep used
+  to pick the confetti).
+- `LM_SW_LOG=1`: coin grain / item fall physics, confetti positions, and every 60 frames the
+  calcView / ghost-lighting counters (how many ghosts were scaled / tinted). `LM_SW_SE_LOG=1`: every
+  SE start with its id (Luigi's voice marked).
+
+### Verification (2026-10-22)
+
+Ballroom route (`LM_TEST_STATE=poltergust LM_START_APPEAR=1 LM_SKIP_CUTSCENES=1 LM_SKIP_AUTO=30
+LM_TELEPORT=1800,0,-1400,100`, frame dumps):
+- Defaults: frames 2500-3400 byte-identical to a build of main (the LM_AUDIO_WAV capture itself makes
+  runs diverge, so the identity runs were made without it). Luigi's call voice starts with pitch
+  0x0BFD on both builds (audio is not run-to-run deterministic, so whole captures can't be compared).
+- Ghost size 2x and 1.5x, colour shuffle, disco (both without and with Enhanced lighting), moon
+  gravity + confetti with `LM_SW_TREASURE`, voice pitch 2x (DSP pitch doubled). All options with
+  Enhanced lighting at 120 fps (interpolated, 4 consecutive presented frames): the scaled,
+  coloured ghost and the floating coins move smoothly, the ghost light has the ghost's colour.
+- PAL build (GLMP01): same route with every option on: ghosts scaled and coloured, disco,
+  coins/bills/gold bar with moon gravity, confetti, the same voice ids (`0x281C`, `0x288E`).
+- F1 menu: `LM_MENU_ID_CHECK=exit` sweep, 0 ID conflicts.
+- Screenshots: `out/silly_world/` in the main checkout (not committed).
+
+Not covered: boss ghosts (Boolossus, Chauncey, Bogmire, King Boo) and portrait-ghost fights were not
+played with the size/colour options; humming/whistling ids were not seen in the runs (if they are not
+`0x28xx` they keep their pitch); disco was not checked in every room type (rooms whose look comes
+from lamps rather than ambient change less without Enhanced lighting).
+

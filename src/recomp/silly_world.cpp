@@ -137,11 +137,11 @@ namespace recomp::sillyworld {
 namespace {
 u32 sUp = 0;  // guest vector (0, 1, 0): effect direction
 
-// Colourful effects of the game's effect table (fn_80164F5C ids, lbl_80381B58 + 0xA90): the
-// twinkles of the treasures themselves (kira_cdia, kira_gold, kira_emerald, kira_ruby,
-// kira_sapphire: white, gold, green, red, blue stars that drift and fade over about a second).
-// Chosen from a sweep of the table (LM_SW_FX); the Boo-key spark bursts (bkey_*_senko) were too
-// big a flash for every coin burst.
+// Colourful effects of the game's effect table (fn_80164F5C ids, lbl_80381B58 + 0xA90): the four
+// spark bursts of the Boo-key rewards (bkey_p/g/b/y_senko: pink, green, blue, yellow rays and
+// sparks, about a second), started at the burst's position. Chosen from a sweep of the table
+// (LM_SW_FX); the treasure twinkles (kira_*) were rejected: they stick to Luigi's head and keep
+// sparkling.
 const u32 kConfetti[] = {62, 64, 66, 68};
 
 void confetti(Ctx& c, u32 pos) {
@@ -169,14 +169,16 @@ HLE(fn_80151CC8) {
 }
 
 // ---- ghost size --------------------------------------------------------------------------
-// S3D models keep their joints in world space (S3DModel +0x14); calcView fn_80059710(model,
-// view) puts them in eye space (+0x18 = view x joint) and builds the normal matrices (+0x1C, the
-// inverse transpose, fn_8000A0D0) for every pass that draws the model (scene, ghost layer, shadow
-// maps). For a ghost the view is replaced by view x S, S = scale about the actor's position
-// (+0x44), so the whole ghost is drawn bigger or smaller: its joints, collision, hit test, vacuum
-// fight, glow light and camera are the game's own, unchanged. The normal matrices are multiplied
-// back by the scale (the inverse transpose shrinks them by 1/s, which would change the lighting),
-// and the view copy calcView keeps (lbl_803CFAB0 + 4) is put back to the real view afterwards.
+// A ghost's S3D joints (S3DModel +0x14) are in model space (joint 0 at the origin); calcView
+// fn_80059710(model, modelView) puts them in eye space (+0x18 = modelView x joint) and builds the
+// normal matrices (+0x1C, the inverse transpose, fn_8000A0D0) for every pass that draws the model
+// (scene, ghost layer, shadow maps). For a ghost the model-view matrix is replaced by
+// modelView x sI, so the whole ghost (and everything in its model: masks, the Ghost Guys' spears)
+// is drawn bigger or smaller about its origin. Its joints, collision, hit test, vacuum fight, glow
+// light and the camera stay the game's own. The normal matrices are multiplied back by s (the
+// inverse transpose shrinks them by 1/s, which would change the lighting), and the matrix copy
+// calcView keeps (lbl_803CFAB0 + 4) is put back afterwards. (Not the shared joint hook
+// recomp::silly::addJointScaler: scaling the joints alone would leave the normal matrices 1/s.)
 namespace recomp::sillyworld {
 namespace {
 
@@ -270,7 +272,8 @@ float discoHue() { return float(sDiscoFrames) / 300.0f * std::clamp(cfg().discoS
 
 // ---- Luigi's voice ---------------------------------------------------------------------------
 // Luigi's voice clips are sound effects of their own (JAI SE ids, LM_SW_SE_LOG lists every start):
-// the "Mario?" calls, yelps, gasps, laughs, humming and whistling. kVoice holds their ids.
+// ids 0x28xx (seen: 0x288E calling Mario with A, 0x2810 hit, 0x287C / 0x287F / 0x281C other
+// reactions). kVoice holds them; other characters' voices are other ids.
 // A started one gets JAISound::setPitch (the same per-sound pitch the game uses for its own
 // effects), which JAudio multiplies into the voice's DSP pitch; music and other effects are not
 // touched. The ids are shared by Play as Mario (the Mario model keeps Luigi's sounds).
@@ -458,7 +461,7 @@ void drawWorldOptions() {
     save |= menu::Checkbox("Ghost colour shuffle", &s.ghostColorShuffle);
     tipW("Every ghost glows in a colour of its own, picked at random and kept for that ghost.\n"
          "With Enhanced lighting, the light it casts on the room takes the same colour.\n"
-         "Portrait ghosts and bosses change too; Boos as well.");
+         "Applies to every ghost the ghost layer draws (ordinary ghosts, Boos, portrait ghosts).");
 
     ImGui::SeparatorText("Mansion");
     save |= menu::Checkbox("Disco mansion", &s.disco);
@@ -476,8 +479,8 @@ void drawWorldOptions() {
     ImGui::SeparatorText("Luigi's voice");
     menu::SliderFloat("Voice pitch", &s.luigiVoicePitch, 0.5f, 2.0f, "%.2fx");
     save |= ImGui::IsItemDeactivatedAfterEdit();
-    tipW("Higher (chipmunk) or lower (deep) Luigi: only his voice (calling Mario, yelps, gasps,\n"
-         "humming and whistling), not the music or other sounds. Applies to the next thing he\n"
+    tipW("Higher (chipmunk) or lower (deep) Luigi: only his voice clips (calling Mario, yelps\n"
+         "and other reactions), not the music or other sounds. Applies to the next thing he\n"
          "says. 1.00x = original.");
 
     ImGui::SeparatorText("Treasure");
@@ -492,8 +495,8 @@ void drawWorldOptions() {
     ImGui::Unindent();
     ImGui::EndDisabled();
     save |= menu::Checkbox("Confetti coins", &s.confettiCoins);
-    tipW("Every burst of coins or bills throws a shower of coloured sparkles (the game's own\n"
-         "pink, green, blue and yellow key sparkles and its gold treasure glitter).");
+    tipW("Every burst of coins or bills throws coloured sparks (the game's own pink, green,\n"
+         "blue and yellow Boo-key sparkles).");
     if (save) port::saveSettings();
 }
 }  // namespace recomp::silly
