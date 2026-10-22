@@ -3074,7 +3074,10 @@ undefined behaviour where Dawn's release build compiles the unreachable out. 4x 
   has not come back to its loop for 15 s it logs `[hang] <t> s after start: main thread has not
   returned to its loop for 15 s (<phase>)` to stderr, then every 30 s, and once when it continues.
   Phases: graphics initialization (device, render targets, anti-aliasing), setup, loading the
-  game, game loop, shutdown; a window paused in the background is not reported.
+  game, game loop, shutdown; a window paused in the background is not reported. The lines also go
+  to `last_run.log`, and during a start the stall becomes the reason in `last_run_state.ini` that
+  the recovery prompt shows after a killed start (`recovery::noteHang`, docs/SETUP.md "When the
+  game does not start").
 - The startup / settings hold reports a stall: with no pipeline finished for 20 s, `[precache] no
   pipeline finished for N s: P pending, T threads; creations running for over 10 s (graphics
   driver): config <hash> (type n) for N s` every 20 s (Aurora's in-flight table,
@@ -3109,3 +3112,106 @@ settings.ini with the level preset, scratch APPDATA, one shader cache per backen
 
 F1 > Visuals on Vulkan with 8x saved: the list is Off / 4x, 4x selected, note "(8x not supported by
 this graphics device; 4x in use)". Not tested: a real AMD GPU / RADV (the report's device), Metal.
+
+## Malformed FIFO data (issue #17, Aurora 0235)
+
+**Report.** A player (version not stated, 1.1 or 1.1.1) got the fatal dialog `command_processor:
+unknown opcode 0x1D at pos 11946`, and afterwards was "no longer able to launch the game at all".
+0x1D is no GX opcode (0x1D & 0xF8 = 0x18). `pos` is the offset in the block the FIFO thread was
+processing: everything published since it last stopped (at a `GX_BP_REG_DRAWDONE` or the end of
+the previous block). So the bad byte sat 11946 bytes into a display list, a draw sequence or a
+replayed tape (interpolation). Up to 1.1.1 any bad command stopped the game.
+
+**What goes into the stream.** Aurora's own commands from the GX HLE (`hle_gx.cpp`), the game's
+raw write-gather-pipe bytes (vertex data after `GXBegin`, inlined register writes; `hw::fifoWrite`),
+display lists copied whole from guest memory (`GXCallDisplayList`), and with interpolation the
+captured tapes, replayed by the host thread with blended values patched in (`interp.cpp`). A draw
+whose vertex count does not match the bytes that follow, a list that is not what the game wrote,
+or two threads appending at once all shift the stream. The next "opcode" is then data.
+
+### Recovery (0235)
+
+- Every command is checked before it is carried out: an unknown opcode, a draw with an impossible
+  primitive or more vertex data than the block holds, a truncated BP/CP/XF/indexed load, an XF load
+  past the end, a known Aurora subcommand that does not fit or carries an impossible draw, an
+  indexed XF load from an unmapped array. Draws of 0 vertices and strips/fans of fewer than 3 are
+  skipped (their index buffer size underflowed: an out-of-memory crash on garbage).
+- The bad command is reported: `[ERROR: aurora::gx::fifo] FIFO: <what> at stream position N (offset
+  O of a S-byte block); K bytes skipped, resynchronized | rest of the block dropped (error E)`, with
+  the 64 bytes before it and the 32 from it on. The first 10 errors are logged, then at most one a
+  second (with the count of those not shown).
+- The port names the writer (`[fifo] malformed GX command (...)`, `fifoErrorReport` in
+  `hle_gx.cpp`). For lockstep frames it uses a ring of the last 1024 GX call sites with the stream
+  position each started at (`gx::noteCallSite`). For interpolated frames it uses the replay that put
+  the tape in the stream (`interp::describeStreamPos`: game frame, tape, offset in it, the GX calls
+  before it in the tape, with symbol names).
+- Processing resumes at the next position where at least 8 plausible commands parse in a row
+  (exact opcodes, known CP and XF addresses, sane counts, Aurora subcommand lengths; NOPs and empty
+  draws do not count), or where commands parse to the exact end of the block. Otherwise the rest of
+  the block (one publish: a draw, a display list call, a replay) is dropped, and the next block
+  starts on a command boundary. A new Aurora subcommand must be added to `aurora_payload_len`, or
+  resync never accepts it (processing it is unchanged).
+- Only a stream that stays broken is fatal: `AURORA_FIFO_ERROR_LIMIT` errors (default 300) within
+  10 s, with a message that says so. A bad tape is replayed several times (4 at 120 fps), so one
+  bad frame is about 4 errors.
+- Recordings (display lists, captures) stop at the first write that does not fit. They used to drop
+  only that write and go on, leaving a list cut inside a command. `GXEndDisplayList` returns 0 for
+  a list that overflowed, as the SDK does (`[gx] display list overflowed its N-byte buffer (begun
+  at ...)`). Aurora's texture and array loads are longer than the console's, so a list sized for
+  the console could overflow. None did in the routes below.
+
+Test aids: `LM_FIFO_CORRUPT=<frame>[:byte|draw|junk|xf],...` writes malformed data into the FIFO
+(or that frame's tape) at the end of a game frame; `AURORA_FIFO_ERROR_LIMIT=<n>`. Verified at 30
+(lockstep) and 120 fps (tapes): all four kinds are reported with the right caller
+(`LMChangeFrameBuffer__Fv`, `fn_8000783C__Fv`) and game frame, and the game goes on. With
+`AURORA_FIFO_ERROR_LIMIT=3` and four bad frames in a row the fatal message comes, and the next start
+offers recovery (docs/SETUP.md "When the game does not start").
+
+### Guest threads and the FIFO
+
+The console has one CPU FIFO that every thread writes to. Here each guest thread is a host thread
+(only one runs guest code at a time). With interpolation the drawing thread records its frame into
+a capture that belongs to its host thread, while the host thread appends replays to Aurora's FIFO.
+LM's loader thread (`803A32A0` on the USA game) makes GX calls too: `GXInitTexObj`/`LOD` and
+`GXGetTexBufferSize` at every map load (`fn_8005D41C` shadow setup, `fn_8005F0C4`,
+`JUTTexture::initTexObj`) and `GXInvalidateTexAll` at boot (`fn_8003A430`, game frame 69, after
+interpolation has started). Each of them used to run the whole GX entry on the loader thread:
+
+- it closed the drawing thread's open draw (`gx::endPendingDraw`), although that thread may have
+  been preempted between `GXBegin` and the end of its vertices. For a held 2D draw (widescreen)
+  the held bytes were then replayed, and for any draw the next "raw write" state check emitted
+  state commands, in the middle of that draw's vertex data;
+- with interpolation, whatever it wrote went into Aurora's FIFO buffer directly, at the same time
+  as the host thread's replays (an unsynchronized append from two threads).
+
+Now (`hle_gx.cpp`, `interp.cpp`): functions that never touch the FIFO on the console
+(`GXInitTexObj*`, `GXInitTlutObj`, `GXInitLight*`, `GXInitSpecularDir`, `GXGetTexBufferSize`,
+`GXInitTexCacheRegion`, `GXInitFogAdjTable`) are `GXHLE_CPU`: they close no draw and are not call
+sites. Other GX calls close only a draw their own thread opened (else `[gx] GX call ... while
+thread X has a draw open; left open`). A guest thread other than the capturing one joins the
+capture (`AuroraCaptureJoin`; `[interp] guest thread X joins the frame capture`), so its commands
+land in the tape in the order the guest issued them. In a 400 s run at 120 fps through 14 map
+warps (maps 1/2/3/9/10/11), 7100 GX calls came from the loader thread, none while a draw was open,
+and no malformed command was reported. The race exists, but it was not caught causing #17.
+
+### What was checked for "no longer able to launch"
+
+- **Game module**: its key covers the program version, the module ABI version and hashes of ctx.h,
+  module_abi.h, module_rt.cpp, the recompiler, hooks and symbol maps, and the DLL is renamed into
+  place before the key is written (docs/SETUP.md). An update always rebuilds it, and the loader also
+  checks `abiVersion` and `sizeof(RuntimeApi)`. Ctx, GameModule and RuntimeApi did not change in
+  1.1 or 1.1.1.
+- **settings.ini / install.ini**: parsed line by line; unknown keys are ignored and values clamped.
+  A settings.ini with binary data (a cut-off write) is now put aside as `settings.ini.corrupt`.
+- **Pipeline/shader caches**: they never feed the FIFO. Up to 1.1 every unclean end counted as a
+  crash, and the next start deleted both caches and compiled everything again behind "Preparing
+  shaders" (minutes with Enhanced lighting, easily taken for a hang; a kill there counted as another
+  crash). Fixed in 1.1.1 (0231).
+- **Memory card**: Aurora skips GCI files whose size does not match their header, and the game
+  checks its own checksum. The 1.1 event01 bug decompressed 0x4E280 bytes to address 0: the OS
+  globals and the start of `.text` (0x80003100-0x8004E280), which the recompiled code never reads.
+  The save data comes from the game's own structures in the heap and `.bss`, so a save made on 1.1
+  is not expected to carry the corruption (not verified with a 1.1 build).
+- **Hidden Mansion overlay**: only read in the Hidden Mansion, after the file select.
+- **Not reproduced**: boot to the foyer, the file select, 14 map warps, 5 to 7 minute sessions at
+  120 fps, lockstep runs at 30 fps.

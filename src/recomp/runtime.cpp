@@ -3,6 +3,7 @@
 #include "recomp/interp.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
+#include "port/recovery.h"
 
 #include <dolphin/gx.h>
 
@@ -17,6 +18,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -173,6 +175,14 @@ void log(const char* fmt, ...) {
     }
     va_list ap;
     va_start(ap, fmt);
+    if (port::recovery::runLog()) {  // Windows: also into last_run.log (port/recovery.h)
+        char buf[2048];
+        va_list copy;
+        va_copy(copy, ap);
+        const int n = std::vsnprintf(buf, sizeof(buf), fmt, copy);
+        va_end(copy);
+        if (n > 0) port::recovery::logLine(buf, std::min<size_t>(size_t(n), sizeof(buf) - 1));
+    }
     std::vfprintf(stdout, fmt, ap);
     va_end(ap);
     std::fputc('\n', stdout);
@@ -182,6 +192,16 @@ void log(const char* fmt, ...) {
 void fatal(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
+    char buf[1024];
+    va_list copy;
+    va_copy(copy, ap);
+    std::vsnprintf(buf, sizeof(buf), fmt, copy);
+    va_end(copy);
+    port::recovery::noteFatal(buf);
+    if (port::recovery::runLog()) {
+        const std::string line = std::string("[recomp FATAL] ") + buf;
+        port::recovery::logLine(line.c_str(), line.size());
+    }
     std::fprintf(stderr, "[recomp FATAL] ");
     std::vfprintf(stderr, fmt, ap);
     va_end(ap);
@@ -268,6 +288,24 @@ u32 guestSymbol(const char* name) {
     auto it = map->find(name);
     if (it == map->end()) fatal("guest symbol %s not found", name);
     return it->second;
+}
+
+// "name+0xOFF" of the symbol at or below a guest code address (diagnostics), or the bare address.
+std::string guestSymbolize(u32 addr) {
+    static const auto* sorted = [] {
+        auto* v = new std::vector<std::pair<u32, const char*>>;
+        for (u32 i = 0; i < g_module->symCount; i++) v->emplace_back(g_module->syms[i].addr, g_module->syms[i].name);
+        std::sort(v->begin(), v->end());
+        return v;
+    }();
+    char buf[160];
+    auto it = std::upper_bound(sorted->begin(), sorted->end(), std::pair<u32, const char*>{addr, nullptr},
+                               [](const auto& a, const auto& b) { return a.first < b.first; });
+    if (it == sorted->begin() || addr - std::prev(it)->first > 0x10000)
+        std::snprintf(buf, sizeof(buf), "%08X", addr);
+    else
+        std::snprintf(buf, sizeof(buf), "%s+0x%X (%08X)", std::prev(it)->second, addr - std::prev(it)->first, addr);
+    return buf;
 }
 
 void callOriginal(Ctx& c, const char* name) {

@@ -5,6 +5,7 @@
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
 #include "recomp/pacing.h"
+#include "recomp/sched.h"
 
 #include <aurora/present_timing.h>
 #include <dolphin/gx.h>
@@ -34,6 +35,7 @@
 
 namespace recomp {
 u32 copyDispCount();  // hle_gx.cpp
+std::string guestSymbolize(u32 addr);  // runtime.cpp
 }
 
 namespace recomp::interp {
@@ -139,6 +141,9 @@ struct ShadowLight {
 
 struct Tape {
     std::vector<u8> bytes;
+    // (tape offset, guest lr) of every GX call in it: names the caller of a malformed command
+    // (Aurora 0235, describeStreamPos).
+    std::shared_ptr<const std::vector<std::pair<u32, u32>>> sites;
     std::vector<Patch> patches;
     std::vector<u64> bundleIds;  // per draw: what is drawn (display list, vertex layout)
     std::vector<u64> bundleKey;  // per draw: its tag scope instance (0: untagged)
@@ -224,6 +229,18 @@ u32 usSince(std::chrono::steady_clock::time_point& t) {
 std::vector<u8> sScratch;
 u64 sSeq = 0;  // tapes captured so far
 bool sCapturing = false;
+std::vector<std::pair<u32, u32>> sTapeSites;  // the capture's GX call sites (noteCallSite)
+// Recent replays: where each put its tape in Aurora's FIFO stream (describeStreamPos).
+struct ReplayRec {
+    u64 start = 0;
+    u32 size = 0;
+    u64 seq = 0;
+    u32 gameFrame = 0;
+    std::shared_ptr<const std::vector<std::pair<u32, u32>>> sites;
+};
+std::mutex sReplayRecM;
+std::array<ReplayRec, 16> sReplayRecs;
+u32 sReplayRecNext = 0;
 bool sSuspended = false;  // the game is recording its own display list
 u32 sBase = 0;            // start of the current capture segment in sScratch
 std::vector<Patch> sPatches;
@@ -1330,6 +1347,47 @@ void checkIdentity(const Tape& t0, const Tape& t1, const Tape& t2) {
 
 bool capturing() { return sCapturing && !sSuspended; }
 
+bool g_captureOpen = false;
+u32 g_captureGen = 1;
+thread_local u32 t_captureGen = 0;
+
+void joinCaptureSlow() {
+    AuroraCaptureJoin(1);
+    t_captureGen = g_captureGen;
+    static int sLogged = 0;
+    if (sLogged++ < 8) log("[interp] guest thread %08X joins the frame capture (GX calls outside the drawing thread)", sched::currentGuest());
+}
+
+void noteCallSite(u32 lr) {
+    if (capturing()) sTapeSites.emplace_back(mark(), lr);
+}
+
+std::string describeStreamPos(u64 streamPos) {
+    ReplayRec rec;
+    {
+        std::lock_guard lk(sReplayRecM);
+        for (const ReplayRec& r : sReplayRecs)
+            if (r.size && streamPos >= r.start && streamPos < r.start + r.size) rec = r;
+    }
+    if (!rec.size) return {};
+    const u32 off = u32(streamPos - rec.start);
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "in the replay of game frame %u (tape %llu) at offset %u of %u", rec.gameFrame,
+                  static_cast<unsigned long long>(rec.seq), off, rec.size);
+    std::string s = buf;
+    if (rec.sites) {
+        const auto& v = *rec.sites;
+        auto it = std::upper_bound(v.begin(), v.end(), std::pair<u32, u32>{off, ~0u});
+        s += "; GX calls before it (bytes before the bad one): ";
+        for (int i = 0; i < 4 && it != v.begin(); i++) {
+            --it;
+            std::snprintf(buf, sizeof(buf), "%s-%u B: ", i ? "; " : "", off - it->first);
+            s += buf + guestSymbolize(it->second);
+        }
+    }
+    return s;
+}
+
 void beginTape() {
     if (sScratch.empty()) sScratch.resize(kCaptureSize);
     sBase = 0;
@@ -1357,8 +1415,18 @@ void beginTape() {
     sVirtBase = 0;
     sSlotPatch.fill(-1);
     sBundleSlots.clear();
+    sTapeSites.clear();
+    // The thread that begins the capture owns it. When it is not one already sharing the current
+    // capture, a new group starts in its own recording; the other guest threads join it at their
+    // next GX call (joinCapture).
+    if (t_captureGen != g_captureGen) {
+        g_captureGen++;
+        AuroraCaptureJoin(0);
+        t_captureGen = g_captureGen;
+    }
     AuroraCaptureBegin(sScratch.data(), kCaptureSize);
     sCapturing = true;
+    g_captureOpen = true;
     sSuspended = false;
     detail::vtxBeginTape();
     sTagLogFrame = sTagLog && copyDispCount() + 1 >= sTagLogFirst && copyDispCount() + 1 <= sTagLogLast ? copyDispCount() + 1 : ~0ull;
@@ -1378,6 +1446,7 @@ void endTape(u32 retraceCount) {
     detail::drawEnd(mark());
     detail::noteDraw(0);
     sCapturing = false;
+    g_captureOpen = false;
     if (sTagLog && sTagLogFrame != ~0ull) std::fflush(sTagLog);
     auto tp = t0;
     const u32 vtxUs = usSince(tp);
@@ -1390,6 +1459,8 @@ void endTape(u32 retraceCount) {
     tape->seq = ++sSeq;
     tape->gameFrame = copyDispCount() + 1;
     tape->bytes.assign(sScratch.begin(), sScratch.begin() + size);
+    tape->sites = std::make_shared<const std::vector<std::pair<u32, u32>>>(std::move(sTapeSites));
+    sTapeSites = {};
     tape->patches = std::move(sPatches);
     sPatches = {};
     tape->bundleIds = std::move(sBundleIds);
@@ -4733,6 +4804,11 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
     // Only the first replay of a tape reads its copies back into memory (bit 6 on the others).
     GXSetCopyGenerationAurora(u8((b.seq & 3) | 0x80 | (b.replayed.exchange(true) ? 0x40 : 0)));
     probeBeforeReplay(a, b, alpha, sReplay);
+    {
+        std::lock_guard lk(sReplayRecM);
+        sReplayRecs[sReplayRecNext++ % sReplayRecs.size()] =
+            ReplayRec{AuroraFifoStreamPos(), u32(sReplay.size()), b.seq, b.gameFrame, b.sites};
+    }
     AuroraReplay(sReplay.data(), u32(sReplay.size()));
     GXSaveStateAurora(u8(b.seq & 3));
     sEndSeq[b.seq & 3] = b.seq;

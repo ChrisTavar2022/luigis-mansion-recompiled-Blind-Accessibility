@@ -1,5 +1,6 @@
 #include "recomp/frame.h"
 
+#include "port/recovery.h"
 #include "port/settings.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hidden_mansion.h"
@@ -201,6 +202,7 @@ void present(Ctx& c, u32, bool) {
     hm::onFrame();
     if (skip::onGuestFrame(c)) return;  // fast-forward: this frame is not shown
     const u32 presents = ++sPresents;
+    if (presents == 600) port::recovery::markRunning();  // the start succeeded (port/recovery.h)
     if (presents % 30 == 0 || presents < 60) log("[frame] %u presents, %u retraces", presents, viRetraceCount());
     if (sGuestDecoupled) {
         interp::endTape(frameStamp());

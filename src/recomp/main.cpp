@@ -13,10 +13,12 @@
 #include "port/dol.h"
 #include "port/install.h"
 #include "port/options.h"
+#include "port/recovery.h"
 #include "port/settings.h"
 #include "port/update.h"
 #include "recomp/audio.h"
 #include "recomp/frame.h"
+#include "recomp/gx_bridge.h"
 #include "recomp/menu.h"
 #include "recomp/pacing.h"
 #include "recomp/hle.h"
@@ -99,12 +101,20 @@ void logCallback(AuroraLogLevel level, const char* module, const char* message, 
     static const char* names[] = {"DEBUG", "INFO", "WARNING", "ERROR", "FATAL"};
     std::fprintf(level >= LOG_ERROR ? stderr : stdout, "[%s: %s] %s\n", names[level], module, message);
     std::fflush(stdout);
+    if (port::recovery::runLog()) {
+        const std::string line = std::string("[") + names[level] + ": " + module + "] " + message;
+        port::recovery::logLine(line.c_str(), line.size());
+    }
+    if (level == LOG_FATAL) port::recovery::noteFatal(message);
     if (level == LOG_ERROR && std::strstr(message, "Failed to create adapter")) sNoGpuAdapter = true;
     if (level == LOG_FATAL) {
         std::fflush(stderr);
         // Without any usable GPU Aurora falls back to its null device and stops on the first
         // allocation; tell the player what is missing instead of only crashing.
-        std::string text = std::string("The game stopped with an error:\n\n") + message;
+        std::string text = std::string("The game stopped with an error:\n\n") + message +
+                           "\n\nThe log of this run (last_run.log) is in the folder of settings.ini; please "
+                           "attach it to a bug report. If the game no longer starts, the next start offers "
+                           "to reset the settings or rebuild the game data.";
         if (sNoGpuAdapter) {
 #ifdef _WIN32
             text = "No usable graphics adapter was found (Direct3D 12, Direct3D 11 or Vulkan).\n\n"
@@ -156,15 +166,41 @@ int main(int argc, char* argv[]) {
     port::setLaunchArgs(argc, argv);
     std::printf("Luigi's Mansion Recompiled %s\n", port::update::buildVersion());
     std::fflush(stdout);
+    // A game folder too deep for the graphics start-up (docs/SETUP.md "Long paths"): say so
+    // instead of stopping without a word.
+    if (const std::string p = port::installPathProblem(); !p.empty()) {
+        std::fprintf(stderr, "%s\n", p.c_str());
+        if (!std::getenv("LM_BACKGROUND"))
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Luigi's Mansion Recompiled", p.c_str(), nullptr);
+        return 1;
+    }
+    // Portable or system folders (docs/SETUP.md "Portable mode"), before any file is opened: a
+    // data move the F1 menu asked for runs here.
+    port::dataLocation();
+    // Windows: last_run.log (recovery.h), in the folder dataLocation just chose (portable or system).
+    port::recovery::openRunLog();
 
     AuroraConfig config{};
     config.appName = "Luigi's Mansion Recompiled";
     config.logCallback = &logCallback;
     port::loadSettings();
+    // Start-up recovery (docs/SETUP.md "When the game does not start"): after a start that failed,
+    // offers to reset the settings, rebuild the game data or put the saves aside.
+#ifdef LM_STATIC_MODULE
+    port::recovery::onStart(false);
+#else
+    port::recovery::onStart(true);
+#endif
     // Updates (docs/SETUP.md "Updates"): remove what a finished update left, then look for a newer
     // release in the background (never blocks; the F1 menu shows the result).
     port::update::cleanupAfterUpdate();
     port::update::startupCheck();
+    // A data folder too deep for the files Aurora writes with plain paths (docs/SETUP.md "Long paths").
+    if (const std::string p = port::dataPathProblem(); !p.empty()) {
+        std::fprintf(stderr, "%s\n", p.c_str());
+        if (!std::getenv("LM_BACKGROUND"))  // automated runs must not block on a dialog
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_WARNING, "Luigi's Mansion Recompiled", p.c_str(), nullptr);
+    }
     config.msaa = u32(port::settings().video.msaa);
     config.vsync = port::settings().video.vsync;
     // LM_BACKEND=d3d12|d3d11|vulkan (testing): graphics backend instead of Aurora's choice.
@@ -231,6 +267,7 @@ int main(int argc, char* argv[]) {
     precache::init();
     ws::init();
     port::setPhase("loading the game");
+    gx::installFifoErrorReport();
 
 #ifdef LM_STATIC_MODULE
     // lmrecomp (developer build): the game was recompiled at build time and linked in.
@@ -254,6 +291,7 @@ int main(int argc, char* argv[]) {
     so.palDisc = argValue(argc, argv, "--pal-disc");
     setup::LaunchInfo launch;
     if (!setup::run(so, launch)) {
+        port::recovery::onExit();
         aurora_shutdown();
         std::_Exit(0);
     }
@@ -404,5 +442,6 @@ int main(int argc, char* argv[]) {
     frame::stop();
     audio::outShutdown();
     aurora_shutdown();
+    port::recovery::onExit();
     std::_Exit(0);
 }

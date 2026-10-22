@@ -1,6 +1,7 @@
 #include "setup/module_builder.h"
 
 #include "port/dol.h"
+#include "port/install.h"
 #include "port/update.h"
 #include "recomp/ctx.h"
 #include "recompiler/recompiler.h"
@@ -71,19 +72,21 @@ constexpr const char* kExeSuffix = "";
 constexpr const char* kLinkerName = "ld.lld";
 #endif
 
+// Paths here are plain (they are also clang/lld arguments, which take no \\?\ prefix; LLVM
+// itself handles plain paths past MAX_PATH). Our own file calls go through port::longPath, so a
+// deep %APPDATA% works without Windows' long path policy (docs/SETUP.md "Long paths").
+using port::longPath;
+
 bool writeText(const std::filesystem::path& p, std::string_view text) {
-    std::ofstream o(p, std::ios::binary);
+    std::ofstream o(longPath(p), std::ios::binary);
     o.write(text.data(), std::streamsize(text.size()));
     return bool(o);
 }
 
-std::string utf8(const std::filesystem::path& p) {
-    const auto s = p.u8string();
-    return std::string(s.begin(), s.end());
-}
+std::string utf8(const std::filesystem::path& p) { return port::displayPath(p); }
 
 std::string readText(const std::filesystem::path& p) {
-    std::ifstream in(p, std::ios::binary);
+    std::ifstream in(longPath(p), std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(in), {});
 }
 
@@ -98,10 +101,10 @@ std::wstring widen(const std::string& s) {
 
 // Runs a tool and waits; its output goes to `log`. Returns the exit code (-1: not started).
 int run(const std::filesystem::path& exe, const std::vector<std::string>& args, const std::filesystem::path& log) {
-    std::wstring cmd = L"\"" + exe.wstring() + L"\"";
+    std::wstring cmd = L"\"" + port::plainPath(exe).wstring() + L"\"";
     for (const auto& a : args) cmd += L" \"" + widen(a) + L"\"";
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
-    HANDLE out = CreateFileW(log.wstring().c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS,
+    HANDLE out = CreateFileW(longPath(log).c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS,
                              FILE_ATTRIBUTE_NORMAL, nullptr);
     STARTUPINFOW si{sizeof(si)};
     si.dwFlags = STARTF_USESTDHANDLES;
@@ -109,7 +112,9 @@ int run(const std::filesystem::path& exe, const std::vector<std::string>& args, 
     si.hStdError = out;
     si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     PROCESS_INFORMATION pi{};
-    const BOOL ok = CreateProcessW(exe.wstring().c_str(), cmd.data(), nullptr, nullptr, TRUE,
+    // The program by its plain path: started by an extended name, it sees that (4 characters
+    // longer) as its own path, and LLVM's tools fail on it sooner (toolAtShortPath).
+    const BOOL ok = CreateProcessW(port::plainPath(exe).c_str(), cmd.data(), nullptr, nullptr, TRUE,
                                    CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, nullptr, nullptr, &si, &pi);
     if (out != INVALID_HANDLE_VALUE) CloseHandle(out);
     if (!ok) return -1;
@@ -161,6 +166,53 @@ std::filesystem::path exeDir() {
 #endif
 }
 
+#ifdef _WIN32
+// clang.exe and lld-link.exe read their own path into a MAX_PATH buffer and stop ("The data area
+// passed to a system call is too small") when it is longer, whatever the long path policy says
+// (LLVM 22: 257 characters run, 259 fail). From such a game folder they are linked (or copied,
+// on another drive) into <dataDir>\llvm and run from there; the copy is refreshed when the
+// original changes (an update). The program is also started by its plain path (run()).
+constexpr size_t kMaxToolPath = 250;
+bool toolAtShortPath(std::filesystem::path& tool, std::string& error) {
+    namespace fs = std::filesystem;
+    if (tool.native().size() <= kMaxToolPath) return true;
+    const fs::path dir = port::dataDir() / "llvm", to = dir / tool.filename();
+    if (to.native().size() > kMaxToolPath) {
+        error = "The game's folders are too deep for the bundled compiler: " + utf8(tool) + " is " +
+                std::to_string(tool.native().size()) + " characters long (at most " +
+                std::to_string(kMaxToolPath) + "). Move the game to a shorter folder (e.g. C:\\Games\\Luigi's "
+                "Mansion Recompiled) and start it from there.";
+        return false;
+    }
+    std::error_code ec;
+    const fs::path from = longPath(tool), dst = longPath(to);
+    const auto size = fs::file_size(from, ec);
+    const auto time = fs::last_write_time(from, ec);
+    std::error_code e1, e2;
+    if (fs::file_size(dst, e1) != size || fs::last_write_time(dst, e2) != time || e1 || e2) {
+        fs::create_directories(longPath(dir), ec);
+        fs::remove(dst, ec);
+        const char* how = "linked";
+        if (!CreateHardLinkW(dst.c_str(), from.c_str(), nullptr)) {
+            how = "copied";
+            fs::copy_file(from, dst, fs::copy_options::overwrite_existing, ec);
+            if (!ec) fs::last_write_time(dst, time, ec);
+            if (ec) {
+                error = "The game's folder is too deep for the bundled compiler (" + utf8(tool) +
+                        "), and copying it to " + utf8(to) + " failed: " + ec.message() +
+                        ". Move the game to a shorter folder (e.g. C:\\Games\\Luigi's Mansion Recompiled).";
+                return false;
+            }
+        }
+        std::printf("[setup] %s is %zu characters long (deeper than the compiler accepts); %s to %s\n",
+                    utf8(tool).c_str(), tool.native().size(), how, utf8(to).c_str());
+        std::fflush(stdout);
+    }
+    tool = to;
+    return true;
+}
+#endif
+
 }  // namespace
 
 std::filesystem::path moduleDir(port::GameVersion v) { return port::dataDir() / "game" / port::gameId(v); }
@@ -189,7 +241,7 @@ std::string moduleKey(const Disc& disc) {
 bool moduleUpToDate(const Disc& disc) {
     const auto dir = moduleDir(disc.version());
     std::error_code ec;
-    return std::filesystem::exists(dir / kModuleFile, ec) && readText(dir / "module.key") == moduleKey(disc);
+    return std::filesystem::exists(longPath(dir / kModuleFile), ec) && readText(dir / "module.key") == moduleKey(disc);
 }
 
 bool findToolchain(std::filesystem::path& clang, std::filesystem::path& lld, std::string& error) {
@@ -216,9 +268,9 @@ bool findToolchain(std::filesystem::path& clang, std::filesystem::path& lld, std
     for (const auto& d : dirs) {
         std::error_code ec;
         const auto c = d / (std::string("clang") + exe), l = d / (std::string(kLinkerName) + exe);
-        if (std::filesystem::exists(c, ec) && std::filesystem::exists(l, ec)) {
-            clang = c;
-            lld = l;
+        if (std::filesystem::exists(longPath(c), ec) && std::filesystem::exists(longPath(l), ec)) {
+            clang = port::plainPath(longPath(c));
+            lld = port::plainPath(longPath(l));
             return true;
         }
     }
@@ -239,6 +291,9 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
     auto cancelled = [&] { return progress.cancel && progress.cancel->load(); };
     std::filesystem::path clang, lld;
     if (!findToolchain(clang, lld, error)) return false;
+#ifdef _WIN32
+    if (!toolAtShortPath(clang, error) || !toolAtShortPath(lld, error)) return false;
+#endif
     std::printf("[setup] building the %s game module with %s and %s\n", port::gameId(disc.version()),
                 utf8(clang).c_str(), utf8(lld).c_str());
     std::fflush(stdout);
@@ -248,10 +303,10 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
     const auto dir = moduleDir(disc.version());
     const auto work = dir / "build";
     std::error_code ec;
-    std::filesystem::remove_all(work, ec);
-    std::filesystem::create_directories(work / "src", ec);
-    std::filesystem::create_directories(work / "obj", ec);
-    std::filesystem::create_directories(work / "include" / "recomp", ec);
+    std::filesystem::remove_all(longPath(work), ec);
+    std::filesystem::create_directories(longPath(work / "src"), ec);
+    std::filesystem::create_directories(longPath(work / "obj"), ec);
+    std::filesystem::create_directories(longPath(work / "include" / "recomp"), ec);
 
     // 1. Recompile.
     report("Translating the game code", 0.0f);
@@ -270,7 +325,7 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
     std::vector<std::filesystem::path> sources;
     for (auto& [name, text] : out.files) {
         if (!writeText(work / "src" / name, text)) {
-            error = "Could not write to " + (work / "src").string();
+            error = "Could not write to " + utf8(work / "src");
             return false;
         }
         if (name.size() > 4 && name.substr(name.size() - 4) == ".cpp") sources.push_back(work / "src" / name);
@@ -286,7 +341,7 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
     // 2. Compile in parallel (largest files first keeps all cores busy to the end).
     std::sort(sources.begin(), sources.end(), [](auto& a, auto& b) {
         std::error_code e;
-        return std::filesystem::file_size(a, e) > std::filesystem::file_size(b, e);
+        return std::filesystem::file_size(longPath(a), e) > std::filesystem::file_size(longPath(b), e);
     });
     const unsigned jobs = std::max(1u, std::min<unsigned>(unsigned(sources.size()), std::thread::hardware_concurrency()));
     std::mutex m;
@@ -354,8 +409,8 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
         error = "Linking the game module failed (exit " + std::to_string(rc) + "):\n" + readText(work / "link.log").substr(0, 2000);
         return false;
     }
-    std::filesystem::remove(dir / kModuleFile, ec);
-    std::filesystem::rename(tmpDll, dir / kModuleFile, ec);
+    std::filesystem::remove(longPath(dir / kModuleFile), ec);
+    std::filesystem::rename(longPath(tmpDll), longPath(dir / kModuleFile), ec);
     if (ec) {
         error = "Could not install the game module: " + ec.message();
         return false;
@@ -363,7 +418,7 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
     writeText(dir / "module.key", moduleKey(disc));
     writeText(dir / "recompiler.log", out.summary + "\n");
     // Generated code is derived from the user's game; keep it only while building.
-    if (!std::getenv("LM_KEEP_BUILD")) std::filesystem::remove_all(work, ec);
+    if (!std::getenv("LM_KEEP_BUILD")) std::filesystem::remove_all(longPath(work), ec);
     std::printf("[setup] game module built in %.1f s (%u compile jobs)\n",
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - buildStart).count(), jobs);
     std::fflush(stdout);

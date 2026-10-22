@@ -91,6 +91,21 @@ void addSiteTag(const SiteTag& t);
 
 // --- guest thread ---------------------------------------------------------------
 bool capturing();
+// Before a GX call or raw FIFO write: while a frame is being captured, a guest thread other than the
+// capturing one joins the capture (AuroraCaptureJoin, Aurora 0235), so its commands land in the
+// tape in the order the guest issued them instead of in Aurora's FIFO beside the host's replays.
+void joinCaptureSlow();
+extern bool g_captureOpen;  // a tape is being captured (any guest thread)
+extern u32 g_captureGen;    // the group of guest threads sharing the capture (new when its owner changes)
+extern thread_local u32 t_captureGen;
+inline void joinCapture() {
+    if (g_captureOpen && t_captureGen != g_captureGen) [[unlikely]] joinCaptureSlow();
+}
+// The GX call site at the current tape position (malformed-FIFO reports, Aurora 0235).
+void noteCallSite(u32 lr);
+// Host/FIFO thread: which replayed tape (game frame, offset, GX calls before it) holds an absolute
+// FIFO stream position; empty if none of the recent replays does.
+std::string describeStreamPos(u64 streamPos);
 void beginTape();                 // starts capturing the next guest frame
 void endTape(u32 retraceCount);   // closes it and hands it to the host (LM_INTERP_TEST: and waits)
 

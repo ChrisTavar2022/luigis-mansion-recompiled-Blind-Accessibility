@@ -1,11 +1,14 @@
 #include "port/settings.h"
 
 #include "port/install.h"
+#include "port/recovery.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -366,7 +369,12 @@ Settings& settings() { return sSettings; }
 
 void addSettingsExtension(const SettingsExtension& ext) { extensions().push_back(ext); }
 
-std::string settingsPath() { return (configDir() / "settings.ini").string(); }
+std::string settingsPath() { return displayPath(configDir() / "settings.ini"); }
+
+namespace {
+// The file itself: an extended path, so a deep %APPDATA% works without the long path policy.
+std::filesystem::path settingsFile() { return longPath(configDir() / "settings.ini"); }
+}  // namespace
 
 bool setSetting(const std::string& section, const std::string& key, const std::string& value) {
     bool known = false;
@@ -381,7 +389,26 @@ bool setSetting(const std::string& section, const std::string& key, const std::s
 
 void loadSettings() {
     for (auto& ext : extensions()) ext.reset();
-    std::ifstream in(settingsPath());
+    // A settings.ini that is not text (NUL bytes: a write cut off by a crash or power loss on a
+    // file system that leaves zero-filled blocks) is put aside as settings.ini.corrupt and the
+    // defaults are used (docs/SETUP.md "When the game does not start"). Unknown keys and bad
+    // values in a text file are ignored and clamped (sanitize) as before.
+    {
+        std::ifstream probe(settingsFile(), std::ios::binary);
+        const std::string raw((std::istreambuf_iterator<char>(probe)), std::istreambuf_iterator<char>());
+        if (raw.find('\0') != std::string::npos) {
+            probe.close();
+            std::error_code ec;
+            const std::string bad = settingsPath() + ".corrupt";
+            std::filesystem::rename(settingsFile(), std::filesystem::path(settingsFile()) += ".corrupt", ec);
+            const std::string msg = "[settings] settings.ini is damaged (binary data); moved to " + bad + ", using the defaults";
+            std::fprintf(stderr, "%s\n", msg.c_str());
+            recovery::logLine(msg.c_str(), msg.size());
+            sanitize();
+            return;
+        }
+    }
+    std::ifstream in(settingsFile());
     if (!in) return;
     auto table = fields();
     std::string line, section;
@@ -424,7 +451,7 @@ void resetSettingsToDefaults() {
 void saveSettings() {
     // Written to a temporary file and renamed over settings.ini, so a crash or power loss while
     // saving never leaves a truncated file (which would reset every setting on the next launch).
-    const std::string path = settingsPath(), tmp = path + ".tmp";
+    const std::filesystem::path path = settingsFile(), tmp = std::filesystem::path(path) += ".tmp";
     {
         std::ofstream out(tmp, std::ios::trunc);
         if (!out) return;

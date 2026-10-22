@@ -3,6 +3,7 @@
 // (LuigisMansionRecomp.exe, docs/SETUP.md).
 #include "recomp/module_loader.h"
 
+#include "port/install.h"
 #include "recomp/hle.h"
 #include "recomp/module_abi.h"
 #include "recomp/runtime.h"
@@ -60,9 +61,9 @@ bool loadGameModule(const std::filesystem::path& path, std::string& error) {
     static RuntimeApi api;  // the module keeps a pointer to it
     api = makeApi();
 #ifdef _WIN32
-    HMODULE h = LoadLibraryW(path.wstring().c_str());
+    HMODULE h = LoadLibraryW(port::longPath(path).c_str());  // any length (docs/SETUP.md "Long paths")
     if (!h) {
-        error = "could not load " + path.string() + " (error " + std::to_string(GetLastError()) + ")";
+        error = "could not load " + port::displayPath(path) + " (error " + std::to_string(GetLastError()) + ")";
         return false;
     }
     auto init = reinterpret_cast<ModuleInitFn>(GetProcAddress(h, LM_MODULE_INIT_SYMBOL));

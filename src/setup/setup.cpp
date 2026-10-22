@@ -58,7 +58,7 @@ std::optional<std::string> sPicked[2];
 std::string sDialogError;  // the file dialog could not open (Linux: no xdg-desktop-portal/zenity)
 
 std::string readText(const std::filesystem::path& p) {
-    std::ifstream in(p, std::ios::binary);
+    std::ifstream in(port::longPath(p), std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(in), {});
 }
 
@@ -149,7 +149,7 @@ void startJob(Job& job, const Slot slots[2], const Plan& plan) {
             if (!us.open(paths[0], err) || !pal.open(paths[1], err)) return fail(err);
             const auto dir = port::hiddenMansionOverlayDir();
             if (!buildHiddenMansionOverlay(us, pal, dir, err)) return fail(err);
-            std::ofstream(dir / "overlay.key", std::ios::binary) << overlayKey(us, pal);
+            std::ofstream(port::longPath(dir / "overlay.key"), std::ios::binary) << overlayKey(us, pal);
         }
         std::lock_guard lk(job.m);
         job.stage = "Done";
@@ -277,6 +277,15 @@ bool run(const Options& opts, LaunchInfo& launch) {
         if (screen == Screen::Pick) {
             ImGui::TextWrapped("This port runs your own copy of Luigi's Mansion. Choose your disc image (ISO or RVZ). "
                                "The game is translated and compiled for this PC once; that takes a minute or two.");
+            // Portable mode (docs/SETUP.md): where everything goes, or why it was not possible.
+            if (const auto& loc = port::dataLocation(); loc.portable) {
+                const auto s = loc.root.u8string();
+                ImGui::TextDisabled("Portable mode: everything is stored in %s", std::string(s.begin(), s.end()).c_str());
+            } else if (!loc.problem.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.4f, 1));
+                ImGui::TextWrapped("%s", loc.problem.c_str());
+                ImGui::PopStyleColor();
+            }
             ImGui::Dummy(ImVec2(0, 8 * scale));
             const char* labels[2] = {"USA disc (GLME01)", "Europe disc (GLMP01)"};
             const char* notes[2] = {"", "Playable on its own; with a USA disc it also adds the European Hidden Mansion."};
@@ -396,8 +405,8 @@ bool run(const Options& opts, LaunchInfo& launch) {
     inst.usReady = slots[0].valid;
     inst.palReady = slots[1].valid;
     inst.hmOverlayReady = slots[0].valid && slots[1].valid &&
-                          std::filesystem::exists(port::hiddenMansionOverlayDir() / "manifest.txt") &&
-                          std::filesystem::exists(port::hiddenMansionOverlayDir() / "usa" / "manifest.txt");
+                          std::filesystem::exists(port::longPath(port::hiddenMansionOverlayDir() / "manifest.txt")) &&
+                          std::filesystem::exists(port::longPath(port::hiddenMansionOverlayDir() / "usa" / "manifest.txt"));
     inst.running = base;
     launch.version = base;
     launch.disc = slots[base == GameVersion::PAL ? 1 : 0].path;

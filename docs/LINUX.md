@@ -52,6 +52,9 @@ only places that decide where files go; on Windows all three are the one `%APPDA
 folder. Each moves a 1.0.x "Luigi's Mansion PC" folder to the new name on first use
 (docs/SETUP.md "What lives where"). Test runs: point `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and
 `LM_CARD_DIR` at empty folders (the Linux equivalent of a scratch `APPDATA`).
+Portable mode (docs/SETUP.md "Portable mode": `portable.txt` / a `portable` folder next to the
+program, or `LM_PORTABLE=1`) makes all three `<program folder>/portable`, the flat Windows layout;
+the launcher then logs there too.
 
 ### The game module (.so)
 
@@ -126,7 +129,8 @@ configures with `LM_LLVM_DIR=<LLVM bin dir>`, builds, runs `cmake --install --st
 
 ```
 LuigisMansionRecompiled.sh  launcher: log to ~/.local/share/Luigi's Mansion Recompiled/last_run.log
-                         (previous_run.log), chmod +x in case unzip dropped the bits,
+                         (previous_run.log; portable mode: portable/last_run.log), chmod +x in case
+                         unzip dropped the bits,
                          LD_LIBRARY_PATH=lib/ if a lib/ folder is ever added
 LuigisMansionRecomp      the program (stripped; symbolize crash offsets with the
                          unstripped build/linux-clang/LuigisMansionRecomp of the same commit)

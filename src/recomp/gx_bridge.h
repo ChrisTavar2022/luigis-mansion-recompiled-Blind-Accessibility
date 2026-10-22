@@ -28,6 +28,10 @@ bool smoothBandingForced();
 void recheckDrawState();
 // Closes a draw opened by GXBegin whose vertices were written through the FIFO.
 void endPendingDraw();
+// Malformed FIFO data (Aurora 0235): the guest GX call sites before each FIFO stream position, for
+// naming the caller when Aurora reports a bad command (docs/RENDERING.md "Malformed FIFO data").
+void noteCallSite(uint32_t lr);
+void installFifoErrorReport();
 // Model viewer: draw with textures replaced by white (TEV colour inputs / modes).
 void setUntextured(bool on);
 // The guest finished a frame (VISetNextFrameBuffer): closes any open draw.

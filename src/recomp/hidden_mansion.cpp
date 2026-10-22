@@ -44,7 +44,7 @@ std::string overlayDir() {
         std::filesystem::path d;
         if (env && *env) {
             d = env;
-        } else if (std::filesystem::exists(port::hiddenMansionOverlayDir() / "manifest.txt")) {
+        } else if (std::filesystem::exists(port::longPath(port::hiddenMansionOverlayDir() / "manifest.txt"))) {
             d = port::hiddenMansionOverlayDir();  // built by setup (docs/SETUP.md)
         } else {
             for (auto p = std::filesystem::current_path();; p = p.parent_path()) {
@@ -58,9 +58,16 @@ std::string overlayDir() {
                 }
             }
         }
-        return d.generic_string() + "/";
+        const std::u8string u8 = d.generic_u8string();  // UTF-8: any user name survives
+        return std::string(u8.begin(), u8.end()) + "/";
     }();
     return dir;
+}
+
+// A file of the overlay (UTF-8, '/' separators, from overlayDir()) as an extended path, so a
+// deep %APPDATA% works without Windows' long path policy (docs/SETUP.md "Long paths").
+std::filesystem::path hostFile(const std::string& utf8) {
+    return port::longPath(std::filesystem::path(std::u8string(utf8.begin(), utf8.end())));
 }
 
 struct Redirect {
@@ -117,7 +124,7 @@ OverlayFile* entryFile(s32 entry) {
 bool ensureLoaded(OverlayFile& f) {
     if (f.loaded) return !f.bytes.empty();
     f.loaded = true;
-    std::ifstream in(f.hostPath, std::ios::binary);
+    std::ifstream in(hostFile(f.hostPath), std::ios::binary);
     if (!in) {
         log("[hm] overlay file missing: %s (run tools/hidden_mansion_data.py)", f.hostPath.c_str());
         return false;
@@ -162,7 +169,7 @@ void setGameFlag(unsigned n, bool on) {
 // older ones only had the variant's own script, served while that variant was selected.
 bool labOverlay() {
     static const bool sLab = [] {
-        std::ifstream in(overlayDir() + (usBase() ? "manifest.txt" : "usa/manifest.txt"));
+        std::ifstream in(hostFile(overlayDir() + (usBase() ? "manifest.txt" : "usa/manifest.txt")));
         for (std::string line; std::getline(in, line);)
             if (line.find("event08.szp") != std::string::npos && line.find("[always]") != std::string::npos) return true;
         return false;
@@ -183,7 +190,7 @@ Variant initialVariant() {
     bool pal = v != "us";
     if (pal && port::hiddenMansionPal() != port::Avail::Yes) pal = false;
     if (!pal && port::hiddenMansionUs() != port::Avail::Yes) pal = true;
-    const bool have = std::filesystem::exists(overlayDir() + (usBase() ? "manifest.txt" : "usa/manifest.txt"));
+    const bool have = std::filesystem::exists(hostFile(overlayDir() + (usBase() ? "manifest.txt" : "usa/manifest.txt")));
     log("[hm] Hidden Mansion variant: %s on the %s game%s (overlay %s%s%s)", pal ? "PAL" : "USA", usBase() ? "USA" : "European",
         sForced ? ", forced" : "", overlayDir().c_str(), have || pal != usBase() ? "" : ": missing, run tools/hidden_mansion_data.py",
         have && !labOverlay() ? "; old format without the lab menu choice, rebuild it" : "");

@@ -64,7 +64,8 @@ Game > *Add or change discs...*) opens the screen again.
 
 ### What lives where (`%APPDATA%\Luigi's Mansion Recompiled`)
 
-Linux: the XDG config/data/cache folders of the same name (docs/LINUX.md). Up to 1.0.1 the
+Linux: the XDG config/data/cache folders of the same name (docs/LINUX.md). Portable mode (below):
+`<program folder>/portable`, same layout on both platforms. Up to 1.0.1 the
 product was "Luigi's Mansion PC": at the first start of 1.1 or later, each folder of that old
 name whose new-name folder does not exist yet is renamed to the new name (`port::configDir`
 / `dataDir` / `cacheDir`, `migrateOldFolder` in `src/port/install.cpp`), so settings, install.ini,
@@ -85,6 +86,9 @@ open by another program, another volume) the folder is copied and the old one ke
 | `USA/Card A`, ... | memory cards (unchanged) |
 | `pipeline_cache.db` | every pipeline config this PC has used (Aurora), rebuilt at startup |
 | `dawn_cache.db` | Dawn's compiled shader blobs; stale entries pruned after the startup rebuild |
+| `last_run.log`, `previous_run.log` | Windows: the log of this run and the one before (Linux: written by the launcher) |
+| `last_run_state.ini` | how the last run ended (start-up recovery, below) |
+| `settings.ini.bak-<time>`, `settings.ini.corrupt` | settings put aside by start-up recovery / a damaged settings.ini |
 
 A module's key is the SHA-1 of: the module ABI version, the game ID and DOL SHA-1, the
 compile and link flags, and the embedded inputs (symbol map, splits, PAL version map,
@@ -92,10 +96,99 @@ hooks.txt, ctx.h, module_abi.h, module_rt.cpp, recompiler.cpp). Any change to th
 new release rebuilds the module on first launch. The overlay key covers both DOL hashes
 and the overlay format version (3: lab menu choice in event08).
 
+### Portable mode
+
+Public issues #9 and #16: everything in one folder next to the program, so the game folder can be
+moved to another drive or PC and deleting it removes everything (`port::dataLocation`,
+`src/port/install.cpp`).
+
+- **Opt in.** A file `portable.txt` or a folder `portable` next to `LuigisMansionRecomp(.exe)`, or
+  the environment variable `LM_PORTABLE=1`, turns it on; `LM_PORTABLE=0` forces the system folders
+  (testing). The data root is `<program folder>/portable/` (created when only `portable.txt`
+  exists). Decided once, at the first path lookup (the start of `main`, before any file is opened).
+- **Layout.** `configDir()`, `dataDir()` and `cacheDir()` all return the data root, so it holds the
+  same flat tree as `%APPDATA%\Luigi's Mansion Recompiled` (table above) on both platforms: on
+  Linux the three XDG folders are merged into it. The 1.0.x folder migration only runs for the
+  system folders.
+- **Read-only program folder** (e.g. Program Files, a read-only mount): the probe file fails, portable
+  mode stays off, the data goes to the system folders, and the setup screen, F1 > Game and the log
+  (`[data] Portable mode is requested ... cannot be written ...`) say why.
+- **F1 > Game > Data folder** shows where the data lives (the portable root, or the system folder(s))
+  and offers *Make this installation portable...* or *Move data back to the system folder...*
+  (disabled when `LM_PORTABLE=1` forces it). The button first checks that the move can work (program
+  folder writable; the target empty: a system folder holding another installation's data is never
+  overwritten, one with only the Linux launcher's logs counts as empty; free space for a full copy
+  + 64 MB) and shows the reason otherwise; then a confirmation (save first), settings are saved, a
+  request file `.lm-data-move` (direction + PID) is written next to the program and the game
+  restarts. The new process waits for the old one to exit (its game module and SQLite caches are
+  only consistent then), deletes the request (a failed move is never retried by itself) and moves
+  the data before it opens any file:
+  - *to portable*: every system folder is copied into `portable.lm-tmp` (each file's size checked),
+    which is renamed to `portable` (the switch), then the system folders are deleted;
+  - *back*: each file goes to the system folder it belongs in (Linux: `settings.ini`/`install.ini`
+    config, `pipeline_cache.*`/`dawn_cache.*`/`imgui.log`/`texture_dumps` cache, the rest data),
+    built as `<folder>.lm-tmp` and renamed into place; then `portable.txt` is removed and
+    `portable` renamed to `portable.lm-old` (the switch) and deleted.
+  Any failure before the switch removes the copies and leaves the data where it was; the result
+  (green, or red with the reason) is shown in F1 > Game and logged as `[data] ...`. Leftover
+  `portable.lm-tmp` / `portable.lm-old` folders of an interrupted move are deleted at the next start
+  (the first is an unfinished copy, the second's data is already in the system folders).
+- **Moving the folder.** Nothing inside the data root depends on where it is: module and overlay
+  keys hash the program and the disc's DOL, not paths (a moved folder, or another PC, keeps its
+  game module: it is generic x86-64 code; only a different program version rebuilds it). Disc
+  paths: `install.ini` keeps each disc's absolute path and, in portable mode, its path relative to
+  the program folder (`us_disc_rel` / `pal_disc_rel`). A disc not found at its absolute path is
+  looked for at the relative path, then by file name next to the program and in `portable/`
+  (`[install] disc ... not found; using ...`); only when none exists does the setup screen ask for
+  it. Keep the disc images inside the game folder to move everything together. Another GPU or
+  driver only recompiles shaders: `pipeline_cache.db` holds GPU-independent configs (rebuilt into
+  pipelines at startup) and Dawn's `dawn_cache.db` keys include the adapter.
+- **Updates** keep a portable install portable: the updater installs into the program folder,
+  skips any package entry named `portable`, `portable.txt`, `.lm-data-move` or `portable.lm-*`
+  (`port::isPortableDataPath`), and stages in `upd` (next to `portable`, never inside it). In portable mode the toolchain links for deep
+  paths (`<data folder>/llvm`, "Long paths") live in `portable/llvm` and move with it.
+- **Linux launcher**: `LuigisMansionRecompiled.sh` makes the same decision (portable.txt, portable
+  folder, `LM_PORTABLE`; writable) and then writes `last_run.log` / `previous_run.log` into
+  `portable/`. Its exit status file is a `mktemp` file now (the data folder may move during the run).
+
 Command-line helpers (testing): `--us-disc <path>`, `--pal-disc <path>` prefill the slots,
 `--setup-auto` starts installing without a click, `--setup` forces the screen.
 `LM_CACHE_DIR` separates the GPU caches of test runs; pointing `APPDATA` at an empty folder
 gives a fresh install.
+
+### When the game does not start (start-up recovery)
+
+Issue #17: after a fatal error in play the player could no longer start the game, and nothing
+in the program helped. Now (`src/port/recovery.cpp`):
+
+- **Run state.** Each run writes `last_run_state.ini`: `starting` at once, `running` after 600
+  game frames (`frame.cpp`), `exited` on a clean quit, `crashed` from the crash handler with the
+  error text (Aurora `FATAL` or the recompiler's `fatal()`, else the exception) and the phase
+  (`startup` or `play`).
+- **Prompt.** After a crash (start-up or play), or after two starts in a row that never reached
+  `running` (killed or hung), the next start shows a dialog before anything else loads, with the
+  last error: **Start normally** (default), **Reset settings** (settings.ini kept as
+  `settings.ini.bak-<time>`, then the defaults), **Rebuild game data** (LuigisMansionRecomp only:
+  deletes `game/`, `hidden_mansion/` and the pipeline/shader caches, so setup recompiles the
+  module and rebuilds the overlay) and **Put saves aside** (each `<region>/Card A|B` folder is moved
+  to `Card A (put aside <time>)`; nothing is deleted). It appears again after each crash.
+- **Run log (Windows).** The console closes with the game, so everything the game logs (recomp
+  `log`/`fatal`, Aurora's log callback, the crash handler's stack) also goes to `last_run.log`; the
+  run before it is kept as `previous_run.log`. The fatal-error dialog names the file.
+- **Damaged settings.ini.** One with binary data (NUL bytes) is moved to `settings.ini.corrupt`
+  and the defaults are used. Bad values in a text file were already clamped and unknown keys ignored.
+- The GX FIFO itself no longer stops on malformed data (docs/RENDERING.md "Malformed FIFO data").
+- **Hung starts** (issue #14): the hang watchdog (`crash_handler.cpp`, always on) logs
+  `[hang] ... (<phase>)` to stderr and `last_run.log` when the main thread makes no progress for
+  15 s, and while the run is still `starting` records "the game stopped responding: no progress for
+  N s during <phase>" as its reason, so the prompt after a killed start names it (cleared if it
+  continues). A saved anti-aliasing level the graphics API cannot create no longer stops the start
+  at all (docs/RENDERING.md "Anti-aliasing sample counts").
+
+Test aids: `LM_RECOVERY=<0 normal | 1 reset settings | 2 rebuild | 3 saves aside>` shows no dialog
+and takes that choice (automated runs, `LM_BACKGROUND`, never show it either);
+`AURORA_FIFO_ERROR_LIMIT=3 LM_FIFO_CORRUPT=650:junk,651:junk,652:junk,653:junk` produces a fatal
+error in play.
 
 ## Updates
 
@@ -129,17 +222,20 @@ clicks: nothing is downloaded or replaced on its own.
    deleted) and offers the release page.
 5. **Stage.** Before downloading, the install folder must be a release folder and writable (a probe
    file); otherwise (e.g. Program Files) the menu explains and offers *Open download page*. The
-   package goes to `<install>/update.tmp/`, is unpacked there with the system `tar` (Windows 10
-   1803+ `System32\tar.exe`, bsdtar, reads zip; Linux GNU tar), any link in it is refused, and the
-   folder holding the program (top level or its single subfolder) must contain the program,
-   `pipelines.bin`, `llvm/bin/clang` and `lld-link` / `ld.lld`.
+   package goes to `<install>/upd/` (up to 1.1.1: `update.tmp/new/<package folder>/`, see "Long
+   paths"), is listed and unpacked there with the system `tar` (Windows 10 1803+
+   `System32\tar.exe`, bsdtar, reads zip; Linux GNU tar) with `--strip-components 1` when every
+   member is in one top folder, so `upd` holds the install layout itself; any link in it is
+   refused, and the folder holding the program (`upd`, or its single subfolder for a package that
+   was not flattened) must contain the program, `pipelines.bin`, `llvm/bin/clang` and `lld-link` /
+   `ld.lld`.
 6. **Install** (*Install and restart*, confirmed in a popup that says to save first; the game state
    is not saved): every file of the package is moved over the install: an existing file is first
    renamed to `<name>.old` (Windows cannot overwrite a running exe or a loaded DLL, but can rename
    them), then the new one is moved in; any failure moves everything back. Linux deletes the `.old`
    files at once and sets the executable bits of the program, launcher, clang and ld.lld; Windows
    lists them in `<install>/update-cleanup.txt` and the next start deletes them (retrying for 10 s
-   while the old process exits). `update.tmp` is removed right after the move (a leftover one, e.g.
+   while the old process exits). `upd` is removed right after the move (a leftover one, or an old `update.tmp`, e.g.
    from a cancelled or failed run, at the next start). Then settings are saved and the program
    restarts with the same arguments: Windows starts the exe at its original path and exits; Linux
    `execv`s the installed file in place of the running process (same PID, so the launcher script
@@ -149,7 +245,8 @@ clicks: nothing is downloaded or replaced on its own.
    old folder) an unmodified one (SHA-256 of the shipped file) is replaced by a three-line
    forwarder to the new launcher, so desktop entries keep working; an edited one is kept as it is.
 7. **Data stays.** `%APPDATA%` / the XDG folders (settings, saves, install.ini, game modules,
-   overlays, shader caches) are never touched by the updater (the new version's first start only
+   overlays, shader caches), and in portable mode the `portable` folder next to the program (package
+   entries under it are skipped, "Portable mode"), are never touched by the updater (the new version's first start only
    renames a 1.0.x "Luigi's Mansion PC" folder, see "What lives where"). The module key includes the program version, so the
    first start of a new version rebuilds the game module automatically (about 20 s, setup's
    progress screen, no clicks), even when the embedded sources it hashes did not change.
@@ -183,6 +280,71 @@ replaced (executable bits kept, no `.old` left), `execv` into v1.0 (same log), w
 module and ran to frame 1500 (no `update.tmp` or cleanup list left). A run that hit a DNS outage in
 WSL mid-way ended with "The download failed: could not resolve the server name (offline?)" and the
 game kept running.
+
+## Long paths (Windows)
+
+The bug (1.1 -> 1.1.1 from a deep folder): "The package does not contain the game program." The
+staged `<install>\update.tmp\new\LuigisMansionRecompiled-<ver>-windows-x64\LuigisMansionRecomp.exe`
+was 267 characters; std::filesystem in a process without long path support reports such an
+existing file as missing. The 1.1 exe had no long path manifest at all, so it failed even with the
+system policy on.
+
+What the program does now:
+- **Manifest.** `packaging/windows/longpath.manifest` (`longPathAware`) is merged into the default
+  manifest of the Windows executables (CMake `lm_runtime_target`). Windows honours it only when the
+  policy `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled` is 1; the log says
+  `Windows long paths on/off` (`port::longPathsEnabled`, ntdll `RtlAreLongPathsEnabled`).
+- **Extended paths.** `port::longPath(p)` (`src/port/install.h`) gives `\\?\C:\...` /
+  `\\?\UNC\...` (absolute, normalized, backslashes), which every file call takes at any length
+  with the policy off too; `port::plainPath` / `displayPath` drop the prefix for messages, logs and
+  other programs' arguments (clang, lld-link and tar reject `\\?\`). Used by the updater (all of
+  it: staging, download, unpacking checks, `.old` renames, moves, rollback, cleanup; `installDir()`
+  is extended, package-relative names are joined with `make_preferred`, "inside the install" is a
+  lexical check because `weakly_canonical` drops the prefix), the module build (sources, objects,
+  logs, `module.key`, the module rename; the module is loaded by its extended path), the Hidden
+  Mansion overlay (setup's writer and the game's reader, now UTF-8), `install.ini`, `settings.ini`
+  and `pipelines.bin` past MAX_PATH. A restart by the updater uses the extended program name only
+  past MAX_PATH (a program started that way sees the longer name as its own path).
+- **Short staging.** The package is unpacked into `<install>\upd\` with its top folder flattened
+  (above): the deepest staged file is 4 characters longer than its installed path. tar.exe is not
+  long-path aware and runs in `upd` (its working directory must stay below MAX_PATH): a game folder
+  whose `upd` would be longer than 247 characters gets "The game folder's path is too long for the
+  updater (...). Move the game to a shorter folder ..." and the download page, before downloading.
+- **Compiler.** clang.exe and lld-link.exe (LLVM 22) take plain paths of any length as arguments
+  (LLVM widens them itself) but stop with "The data area passed to a system call is too small" when
+  their *own* path is too long (257 characters run, 259 fail; also when started by an extended
+  name, which adds 4). Setup starts them by their plain path, and from a game folder where they are
+  deeper than 250 characters it hard-links them (copies them, across drives) into
+  `<dataDir>\llvm\` and runs them from there (refreshed when size or time differ, e.g. after an
+  update). If that is still too long: "Move the game to a shorter folder".
+- **Game folder limit.** From a folder deeper than 234 characters the prebuilt Dawn / Direct3D 12
+  start-up stops without a word (measured on 1.1.1 and this build, policy on or off: 234 runs,
+  236 and deeper end at the adapter request), so the program checks first and says "The game's
+  folder ... is N characters long ... Move the game's folder to a shorter path" (message box, exit
+  1; `port::installPathProblem`). Every installed file is then below MAX_PATH (deepest
+  `llvm\bin\lld-link.exe`, folder + 22); staged and `.old` files may exceed it and use `\\?\`.
+- **Data folder.** Setup's own files work in any `%APPDATA%` depth. Aurora (memory cards, Dawn and
+  pipeline caches, imgui.ini) uses plain paths: with long paths off and a data folder longer than
+  259 - 52 characters (deepest: `USA\Card A\01-GLME-LUIGI_MANSION_SAVEDATA_v3.gci`, the module build's
+  obj files), the start shows a warning that saving and caches may fail and how to fix it
+  (`port::dataPathProblem`; not in automated runs, logged always).
+
+Checked (October 2026, Windows 11, policy on; "no manifest" = this build with the manifest
+replaced by one without `longPathAware`, which behaves as policy off), all with the real v1.1.1
+release and `LM_UPDATE_VERSION=1.1`:
+- game folder of 222 characters (the old staging path would be 300): setup built the module, the
+  update downloaded, verified, staged in `upd` (top folder flattened), installed 14 files and
+  restarted into v1.1.1, which removed the `.old` files;
+- no manifest, 234 characters (staged `upd\llvm\bin\lld-link.exe` 260): setup linked clang/lld-link
+  into the data folder (253/256 characters) and built the module; the update installed and
+  restarted. (The restarted 1.1.1, still without long path support, then failed its own next
+  download in `update.tmp`, and left `.old` files past MAX_PATH it could not see: the 1.1.1 bug.)
+- normal folder (145): unchanged behaviour, update installed and restarted;
+- `%APPDATA%` of 215 characters (data folder 242), both discs: with the manifest everything works
+  (two modules, Hidden Mansion overlay found, caches); without it setup still builds both modules
+  and the overlay, the game runs, the warning is shown and Aurora's SQLite caches fail as it says;
+- game folder of 240: the message, exit 1 (1.1.1 there: silent stop at the adapter request); 234
+  runs.
 
 ## Module boundary
 
