@@ -4860,8 +4860,8 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     out[k] = std::isfinite(va[k]) && std::isfinite(vb[k]) ? va[k] + (vb[k] - va[k]) * alpha : vb[k];
             // An own-camera model matrix blended rigidly: about its draw's centre (see sOwnInstances).
             if (sOwnInstances && p.ownCamera && p.kind == Kind::PosMtx && p.count == 12 && p.role == 0 && !forced &&
-                p.bundle < b.bundleCentre.size() && std::isfinite(b.bundleCentre[p.bundle][0])) {
-                const f32* c = b.bundleCentre[p.bundle].data();
+                drawCentre(b, p)) {  // (the vertices of its own slot when known: hose-jump SlotCentres)
+                const f32* c = drawCentre(b, p);
                 f32 pa[3], pb[3], have[3];
                 xform34(va, c, pa);
                 xform34(vb, c, pb);
