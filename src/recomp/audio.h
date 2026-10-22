@@ -53,6 +53,8 @@ void outSetRate(double rate);
 void outTagBlock(u32 dac, u32 bufL, u32 frames);
 // Queues one AI DMA block: big-endian s16 stereo frames read from guest memory.
 void outPushGuestBlock(u32 addr, u32 bytes);
+// Stereo frames of the AI stream pushed so far (= the LM_AUDIO_WAV_RAW sample position), for test logs.
+unsigned long long outRawFrames();
 // Seconds of audio queued on the host device (0 when there is no device).
 double outQueuedSeconds();
 // Closes the device stream before Aurora shuts SDL down (SDL_Quit frees every stream; the

@@ -298,6 +298,9 @@ patch 50 80011BB4 480000D8 pal
 # With the bordered view and the Game Boy Horror camera both on, views 1/2 get the rectangles
 # the two-view case would set (unused2.cpp).
 fn_80010F20 us pal
+# Jukebox: Mario.com (an unused sequence) is moved to the bank it was written for where JAudio
+# takes sequence data (src/recomp/jukebox.cpp).
+Jaq_SetSeqData_Limit us pal
 # Luigi's message handler (poison mushroom, startle -> crawling fear) and the element-meter HUD
 # (overheat meter): luigi_states.cpp.
 fn_800AEEA8 us pal

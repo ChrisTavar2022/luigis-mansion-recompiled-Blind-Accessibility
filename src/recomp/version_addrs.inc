@@ -39,6 +39,8 @@
     {0x801796ECu, 0x8017CB84u},  // start of fn_801796EC
     {0x8017996Cu, 0x8017CE04u},  // start of fn_8017996C
     {0x80188D04u, 0x8018C1B0u},  // start of fn_80188D04
+    {0x8018D6C0u, 0x80190C5Cu},  // start of fn_8018D6C0
+    {0x8019E620u, 0x801A1BE0u},  // start of DVDT_UnPause__Fv
     {0x8021DB68u, 0x80222CA0u},  // pointed at by sSceneTable+0x8 (sSceneTable+0x8 (object moved by +0x50c8))
     {0x8021DBD8u, 0x80222D10u},  // pointed at by sSceneTable+0x10 (sSceneTable+0x10 (object moved by +0x50c8))
     {0x802FF218u, 0x80304340u},  // lbl_802FF218: 2 matching reference(s)
@@ -81,6 +83,7 @@
     {0x804D07C8u, 0x804BDE80u},  // lbl_804D07C8: 2 matching reference(s)
     {0x804D07E0u, 0x804BDE98u},  // lbl_804D07E0: 2 matching reference(s)
     {0x804D2428u, 0x804BFAE0u},  // lbl_804D2428: 1 matching reference(s)
+    {0x804D7828u, 0x804C4EE0u},  // lbl_804D7828: 53 matching reference(s)
     {0x804D783Cu, 0x804C4EF4u},  // lbl_804D783C: 7 matching reference(s)
     {0x804D8078u, 0x804C5738u},  // sGamePad: 43 matching reference(s)
     {0x804D8080u, 0x804C5740u},  // lbl_804D8080: 2 matching reference(s)
@@ -128,6 +131,8 @@
     {0x804D8C80u, 0x804C6368u},  // sManager__Q24Koga14EnTypesManager: 30 matching reference(s)
     {0x804D8E04u, 0x804C64ECu},  // lbl_804D8E04: 1 matching reference(s)
     {0x804D91A4u, 0x804C688Cu},  // lbl_804D91A4: 57 matching reference(s)
+    {0x804D91A8u, 0x804C6890u},  // lbl_804D91A8: 8 matching reference(s)
+    {0x804D93B8u, 0x804C6AA8u},  // DVDT_PAUSE_FLAG: 4 matching reference(s)
     {0x804D94F0u, 0x804C6BE0u},  // sSystemHeap__7JKRHeap: 7 matching reference(s)
     {0x804D94F4u, 0x804C6BE4u},  // sCurrentHeap__7JKRHeap: 30 matching reference(s)
     {0x804D94F8u, 0x804C6BE8u},  // sRootHeap__7JKRHeap: 8 matching reference(s)

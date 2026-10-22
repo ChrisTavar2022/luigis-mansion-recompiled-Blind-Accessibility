@@ -273,6 +273,9 @@ void outTagBlock(u32 dac, u32 bufL, u32 frames) {
     b->v = std::move(v);
 }
 
+std::atomic<unsigned long long> sRawFrames{0};
+unsigned long long outRawFrames() { return sRawFrames.load(); }
+
 void outPushGuestBlock(u32 addr, u32 bytes) {
     const u32 frames = bytes / 4;
     if (!frames) return;
@@ -289,6 +292,7 @@ void outPushGuestBlock(u32 addr, u32 bytes) {
         raw[i * 2 + 1] = kRightFirst ? a : b;
     }
     sWavRaw.write(raw.data(), frames, 2, u32(std::lround(sRate)));
+    sRawFrames += frames;
 
     // Output layout. Discrete surround needs a device with at least 6 channels (without a
     // device, for WAV captures, the chosen layout is used as is); otherwise it falls back to
