@@ -39,7 +39,7 @@ s16 rds16(u32 a) { return s16(rd16(a)); }
 struct Overrides {
     bool any = false;
     port::GameplaySettings v;
-    bool has[8] = {};
+    bool has[9] = {};
 };
 
 const Overrides& overrides() {
@@ -66,6 +66,7 @@ const Overrides& overrides() {
             else if (k == "hearts") r.v.noHeartDrops = f == 0, r.has[5] = true;
             else if (k == "vacuum") r.v.vacuumStrength = f, r.has[6] = true;
             else if (k == "ride") r.v.alwaysRide = f != 0, r.has[7] = true;
+            else if (k == "mirror") r.v.mirrorWorld = f != 0, r.has[8] = true;
             else continue;
             r.any = true;
         }
@@ -89,6 +90,7 @@ port::GameplaySettings current() {
         if (o.has[5]) g.noHeartDrops = o.v.noHeartDrops;
         if (o.has[6]) g.vacuumStrength = o.v.vacuumStrength;
         if (o.has[7]) g.alwaysRide = o.v.alwaysRide;
+        if (o.has[8]) g.mirrorWorld = o.v.mirrorWorld;
     }
     return g;
 }

@@ -138,6 +138,7 @@ struct GameplaySettings {
     bool noHeartDrops = false;           // recovery hearts never appear (and any that do heal nothing)
     float vacuumStrength = 1.0f;         // Poltergust drain rate on ghost HP, 0.25..4
     bool alwaysRide = false;             // Luigi always uses the Poltergust-riding movement (PAL Boolossus mode)
+    bool mirrorWorld = false;            // the European Hidden Mansion's left/right mirror in every mode (hm::mirrorWorld)
 };
 
 // Hardware-accuracy rendering features (F1 > Visuals > Rendering). Every costly accuracy

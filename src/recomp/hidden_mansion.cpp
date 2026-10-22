@@ -6,7 +6,9 @@
 #include "port/install.h"
 #include "port/options.h"
 #include "port/settings.h"
+#include "recomp/gameplay.h"
 #include "recomp/hle.h"
+#include "recomp/mirror_world.h"
 #include "recomp/version.h"
 
 #include <algorithm>
@@ -286,6 +288,7 @@ void onFrame() {
             sForced ? ", forced" : labChoice() ? ", chosen in the lab" : "");
     }
     syncConstants();
+    mirror::onFrame();
 }
 bool palActive() { return usBase() && variant() == Variant::Pal && hiddenActive(); }
 bool usaOnPalActive() { return !usBase() && variant() == Variant::Us && hiddenActive(); }
@@ -372,12 +375,49 @@ void syncConstants() {
     sApplied = want;
 }
 
-bool mirrorActive() {
-    static const bool sOff = [] {  // LM_HM_MIRROR=0 disables the mirror (debugging)
+bool mirrorWorld() {
+    // LM_MIRROR=1/0 (test aid) overrides the setting (and LM_GAMEPLAY=mirror=...).
+    static const int sEnv = [] {
+        const char* env = std::getenv("LM_MIRROR");
+        if (!env || !*env) return -1;
+        log("[mirror] LM_MIRROR=%s", env);
+        return *env == '0' ? 0 : 1;
+    }();
+    const bool on = sEnv >= 0 ? sEnv == 1 : gameplay::current().mirrorWorld;
+    // Only in the main game scene (the scene manager's current scene, lbl_804CFF98), where the
+    // mirror code runs; the title, file select and Options screens are other scenes.
+    return on && rd32(VA(0x804CFF98)) == VA(0x8021DB68);
+}
+
+bool mirrorOn() {
+    static const bool sOff = [] {  // LM_HM_MIRROR=0 disables the Hidden Mansion mirror (debugging)
         const char* env = std::getenv("LM_HM_MIRROR");
         return env && *env == '0';
     }();
-    return !sOff && palActive();
+    return (!sOff && palRulesActive()) || mirrorWorld();
+}
+
+bool mirrorActive() { return usBase() && mirrorOn(); }
+
+void callMirror(Ctx& c, const char* name) {
+    // Same bookkeeping as callWithoutFlag: while sHidden the real value is in sHiddenSaved, so
+    // the functions that read the real flag (callWithFlag) still see it from inside the call.
+    const u32 want = mirrorOn() ? 1 : 0;
+    const u32 shown = rd32(kUraFlag);
+    if (shown == want) return callOriginal(c, name);
+    const bool outer = !sHidden;
+    if (outer) {
+        sHiddenSaved = shown;
+        sHidden = true;
+    }
+    wr32(kUraFlag, want);
+    callOriginal(c, name);
+    if (outer) {
+        if (sHidden && rd32(kUraFlag) == want) wr32(kUraFlag, sHiddenSaved);
+        sHidden = false;
+    } else if (rd32(kUraFlag) == want) {
+        wr32(kUraFlag, shown);
+    }
 }
 
 void mirrorProjection(float m[4][4], bool perspective) {

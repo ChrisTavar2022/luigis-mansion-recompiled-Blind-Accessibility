@@ -10,6 +10,7 @@
 // arguments, and call-site ranges go through VA().
 #include "recomp/hle.h"
 #include "recomp/interp.h"
+#include "recomp/mirror_world.h"
 #include "recomp/version.h"
 
 #include <cmath>
@@ -370,9 +371,13 @@ HLE(fn_80015CF4) {
 // lights and its ambient colour (GXSetChanAmbColor at 0x80015C88). Untagged, the ambient fades
 // (arriving in the foyer, a room's lights coming on, lit/dark changes: ~10/255 per game frame)
 // stepped at 30 Hz (sweep C: 94% of the foyer's ramp at the tape change).
+// Also called by the Game Boy Horror map draw with the map's view matrix, which the mirror
+// replaces there (mirror_world.cpp).
 HLE(fn_80015BDC) {
     TagScope t(TagCat::World, c.r[3], 0x15BDC);
+    mirror::mapViewMatrix(c);
     callOriginal(c, "fn_80015BDC");
+    mirror::afterMapViewMatrix();
 }
 
 HLE(fn_80015844) {  // one node (r6) of the model being drawn, recursive

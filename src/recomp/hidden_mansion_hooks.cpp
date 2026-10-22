@@ -6,6 +6,7 @@
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
 #include "recomp/lightning_test.h"
+#include "recomp/mirror_world.h"
 #include "recomp/runtime.h"
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
@@ -401,17 +402,15 @@ HLE(fn_800A926C) {  // bomb: enter "thrown" state
 // fn_8008907C argument) and the JAudio stereo-swap flag.
 #define HM_HIDE(name) \
     HLE(name) { hm::callWithoutFlag(c, #name); }
-HM_HIDE(fn_80029A74)
-HM_HIDE(fn_80029DD4)
-HM_HIDE(fn_8002A01C)
 HM_HIDE(fn_8006CFBC)
 HM_HIDE(fn_8006D0DC)
 HM_HIDE(fn_8006D4B8)
 HM_HIDE(fn_8006E414)
 HM_HIDE(fn_800A09D0)
 HM_HIDE(fn_800A1BCC)
-HM_HIDE(fn_8018865C)
-HM_HIDE(fn_80189054)
+// The GBH map mirror (fn_80029A74, fn_80029DD4, fn_8002A01C) and the stereo-swap flag
+// (fn_8018865C, fn_80189054) are mirror code: they run with the flag reading hm::mirrorOn()
+// (callMirror; mirror_world.cpp has their hooks, with the USA game's equivalent).
 
 // Functions that read the flag in both releases (USA hidden-mansion behaviour): they see the
 // real value even when reached from inside a hidden call. Damage x2 (fn_800B9680), the GBH
@@ -440,7 +439,8 @@ u32 flipQuadS(u32 v, int size) {
 }  // namespace
 
 HLE(fn_8005F8B8) {
-    if (ver::pal()) return hm::callWithoutFlag(c, "fn_8005F8B8");
+    if (mirror::deferSceneCopy()) return;  // 2-player: after the last view (mirror_world.h)
+    if (ver::pal()) return hm::callMirror(c, "fn_8005F8B8");
     if (!hm::mirrorActive()) return callOriginal(c, "fn_8005F8B8");
     HM_FIRST("fn_8005F8B8 mirrored screen copy");
     sLastFifoSize = 0;
@@ -471,17 +471,17 @@ struct ScopedStickFlip {
 }  // namespace
 
 HLE(fn_8007F9B8) {  // Luigi movement input (r4 -> {pad, ...})
-    if (ver::pal()) return hm::callWithoutFlag(c, "fn_8007F9B8");
+    if (ver::pal()) return hm::callMirror(c, "fn_8007F9B8");
     ScopedStickFlip flip(rd32(c.r[4]));
     callOriginal(c, "fn_8007F9B8");
 }
 HLE(fn_800807EC) {  // pad axis reader (r3 = pad)
-    if (ver::pal()) return hm::callWithoutFlag(c, "fn_800807EC");
+    if (ver::pal()) return hm::callMirror(c, "fn_800807EC");
     ScopedStickFlip flip(c.r[3]);
     callOriginal(c, "fn_800807EC");
 }
 HLE(fn_800809CC) {  // pad stick-pair reader (r4 = pad)
-    if (ver::pal()) return hm::callWithoutFlag(c, "fn_800809CC");
+    if (ver::pal()) return hm::callMirror(c, "fn_800809CC");
     ScopedStickFlip flip(c.r[4]);
     callOriginal(c, "fn_800809CC");
 }
@@ -493,7 +493,7 @@ bool sInWipe = false;   // inside fn_80055C54 (iris wipe)
 
 HLE(fn_80041214) {
     ws::AnchorScope centered(0);  // drawn at Luigi's projected position: not edge-anchored
-    if (ver::pal()) return hm::callWithoutFlag(c, "fn_80041214");
+    if (ver::pal()) return hm::callMirror(c, "fn_80041214");
     sInHud = hm::mirrorActive();
     callOriginal(c, "fn_80041214");
     sInHud = false;
@@ -508,7 +508,7 @@ HLE(fn_80009148) {
 
 HLE(fn_80055C54) {
     ws::WipeScope wipe;  // widescreen: the mask covers the whole width (widescreen.h)
-    if (ver::pal()) return hm::callWithoutFlag(c, "fn_80055C54");
+    if (ver::pal()) return hm::callMirror(c, "fn_80055C54");
     sInWipe = hm::mirrorActive();
     callOriginal(c, "fn_80055C54");
     sInWipe = false;

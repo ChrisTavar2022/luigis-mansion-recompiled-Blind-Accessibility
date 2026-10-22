@@ -5,6 +5,7 @@
 
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
+#include "recomp/mirror_world.h"
 #include "recomp/skip.h"
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
@@ -235,8 +236,11 @@ HLE(fn_80020654) {
     if (sInViewSetup && fixes()) {
         const u32 cam = rd32(kCurCamera);  // the camera being updated (fn_8002064C)
         const bool split = rd32(kViewCount) >= 2;
-        if (cam == rd32(kCameras)) setViewport(cam, 0, 0, split ? 320 : 640, 480);
-        else if (split && cam == rd32(kCameras + 4)) setViewport(cam, 320, 0, 640, 480);
+        // Mirrored (mirror world / European Hidden Mansion): the halves are swapped here and the
+        // mirrored copy of the whole screen puts player 1 back on the left (mirror_world.h).
+        const u32 p1x = split && mirror::swapSplitHalves() ? 320 : 0;
+        if (cam == rd32(kCameras)) setViewport(cam, p1x, 0, split ? p1x + 320 : 640, 480);
+        else if (split && cam == rd32(kCameras + 4)) setViewport(cam, 320 - p1x, 0, 640 - p1x, 480);
     }
     callOriginal(c, "fn_80020654");
 }
@@ -597,6 +601,7 @@ void drawP2Meter(Ctx& c, bool split) {
 }  // namespace
 
 HLE(fn_8003E7B0) {
+    mirror::beforeViewHud(c, c.r[3]);  // mirrored 2-player views: the scene copy (mirror_world.h)
     if (!fixes() || sGbhView) return callOriginal(c, "fn_8003E7B0");
     const u32 view = c.r[3];
     const u32 views = rd32(kViewCount);
