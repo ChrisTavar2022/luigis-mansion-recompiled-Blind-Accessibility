@@ -36,10 +36,10 @@ index 0000000..a5dd552
 +}
 +#endif
 diff --git a/lib/gfx/render_worker.cpp b/lib/gfx/render_worker.cpp
-index 85783b6..458dd46 100644
+index 213f16b..f28c9a3 100644
 --- a/lib/gfx/render_worker.cpp
 +++ b/lib/gfx/render_worker.cpp
-@@ -50,6 +50,7 @@ void worker_main(std::stop_token token) {
+@@ -52,6 +52,7 @@ void worker_main(std::stop_token token) {
      }
      complete_sync(item->sync);
      g_pendingItems.fetch_sub(1, std::memory_order_acq_rel);
@@ -48,12 +48,12 @@ index 85783b6..458dd46 100644
        break;
      }
 diff --git a/lib/gx/fifo.cpp b/lib/gx/fifo.cpp
-index 39a5811..91715ab 100644
+index b3bb29a..aab7f6d 100644
 --- a/lib/gx/fifo.cpp
 +++ b/lib/gx/fifo.cpp
-@@ -97,6 +97,7 @@ void worker_main(std::stop_token token) noexcept {
-         std::this_thread::sleep_for(std::chrono::microseconds(kWorkerDelayUs));
+@@ -99,6 +99,7 @@ void worker_main(std::stop_token token) noexcept {
        }
+       const activity::Scope busy{activity::Thread::Fifo, "processing GX commands"};
        process_to(published, std::memory_order_release);
 +      thread::tick();
        continue;
