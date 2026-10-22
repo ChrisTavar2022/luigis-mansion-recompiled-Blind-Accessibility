@@ -264,11 +264,17 @@ u32 hashU32(u32 h) {
 // type. Golden-ratio steps of the hash spread neighbouring ghosts over the colour wheel.
 float ghostHue(u32 actor) { return float(hashU32(actor * 0x9E3779B1u ^ rd32(actor + 0x3C)) & 0xFFFF) / 65536.0f; }
 
-bool shuffleOn(u32 actor) { return cfg().ghostColorShuffle && gu::inMem1(actor) && isGhostType(rd32(actor + 0x3C)); }
+// Ghost colours: Colour shuffle and/or Disco mansion. With Disco every ghost runs through the disco
+// colour cycle, offset by its own (shuffle) hue, so a room of ghosts is a dance floor rather than
+// one colour; with Colour shuffle alone each ghost keeps its hue.
+bool shuffleOn(u32 actor) {
+    return (cfg().ghostColorShuffle || cfg().disco) && gu::inMem1(actor) && isGhostType(rd32(actor + 0x3C));
+}
 
 // Disco clock: game frames (the colour changes at the game rate; slow enough not to step visibly).
 u32 sDiscoFrames = 0;
 float discoHue() { return float(sDiscoFrames) / 300.0f * std::clamp(cfg().discoSpeed, 0.1f, 5.0f); }
+float ghostColor(u32 actor) { return ghostHue(actor) + (cfg().disco ? discoHue() : 0.0f); }
 
 // ---- Luigi's voice ---------------------------------------------------------------------------
 // Luigi's voice clips are sound effects of their own (JAI SE ids, LM_SW_SE_LOG lists every start):
@@ -372,7 +378,7 @@ u32 sTintGhost = 0;  // ghost whose lighting was set up last (its draw follows i
 void tintGhostColor(u8 rgba[4]) {
     if (!sTintGhost || !enh::ghostPass() || !shuffleOn(sTintGhost)) return;
     float h[3];
-    hueRgb(ghostHue(sTintGhost), h);
+    hueRgb(ghostColor(sTintGhost), h);
     const float m = float(std::max({rgba[0], rgba[1], rgba[2]}));
     for (int k = 0; k < 3; k++) rgba[k] = u8(std::min(255.0f, m * (0.2f + 1.3f * h[k]) + 0.5f));
 }
@@ -383,7 +389,7 @@ void ghostMaterialColor(u32 actor, u32 colorPtr) {
     if (!shuffleOn(actor) || colorPtr < 0x80000000u || colorPtr >= 0x84000000u) return;
     sCntTint++;
     float rgb[3];
-    hueRgb(ghostHue(actor), rgb);
+    hueRgb(ghostColor(actor), rgb);
     u8* p = hostp(colorPtr);
     // The material colour is a grey (0x40 for a fully visible ghost) that the ghost layer adds as
     // light: the same strength, in the ghost's own colour (a little brighter, as one saturated
@@ -397,7 +403,7 @@ void ghostLightingDone(Ctx& c, u32 actor) {
     static u32 sCol = 0;
     if (!sCol && !(sCol = unused2::extraAlloc(8, 8))) return;
     float h[3];
-    hueRgb(ghostHue(actor), h);
+    hueRgb(ghostColor(actor), h);
     for (int k = 0; k < 3; k++) hostp(sCol)[k] = u8(std::lround(30.0f + 200.0f * h[k]));
     hostp(sCol)[3] = 0xFF;
     gu::call(c, GU_SYM("GXSetChanAmbColor"), {4, sCol});
@@ -407,7 +413,7 @@ void ghostLightingDone(Ctx& c, u32 actor) {
 bool ghostGlowColor(u32 actor, u32 rgb[3]) {
     if (!shuffleOn(actor)) return false;
     float h[3];
-    hueRgb(ghostHue(actor), h);
+    hueRgb(ghostColor(actor), h);
     for (int k = 0; k < 3; k++) rgb[k] = u32(std::lround(40.0f + 215.0f * h[k]));
     return true;
 }
@@ -461,13 +467,18 @@ void drawWorldOptions() {
     save |= menu::Checkbox("Ghost colour shuffle", &s.ghostColorShuffle);
     tipW("Every ghost glows in a colour of its own, picked at random and kept for that ghost.\n"
          "With Enhanced lighting, the light it casts on the room takes the same colour.\n"
-         "Applies to every ghost the ghost layer draws (ordinary ghosts, Boos, portrait ghosts).");
+         "Applies to every ghost the ghost layer draws (ordinary ghosts, Boos, portrait ghosts).\n"
+         "With Disco mansion on, the ghosts cycle through the disco colours instead (each\n"
+         "starting from its shuffled colour).");
 
     ImGui::SeparatorText("Mansion");
     save |= menu::Checkbox("Disco mansion", &s.disco);
     tipW("The room light slowly cycles through the colours of the rainbow. Works on the game's\n"
          "own room light; with Enhanced lighting the lamps and chandeliers join in.\n"
-         "Dark rooms stay dark until their lights come on.");
+         "Dark rooms stay dark until their lights come on.\n"
+         "The ghosts dance along: each one cycles through the same colours, starting from its own\n"
+         "(shuffled) colour so no two are in step, and with Enhanced lighting its light follows.\n"
+         "Disco overrides Ghost colour shuffle while it is on.");
     ImGui::BeginDisabled(!s.disco);
     ImGui::Indent();
     menu::SliderFloat("Disco speed", &s.discoSpeed, 0.1f, 5.0f, "%.1f");
