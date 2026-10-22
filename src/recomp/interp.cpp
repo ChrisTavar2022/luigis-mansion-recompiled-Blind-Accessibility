@@ -84,6 +84,13 @@ constexpr double kRetrace = 1001.0 / 60000.0;  // seconds per VI field (NTSC)
 constexpr u32 kCaptureSize = 64u << 20;        // one guest frame's commands
 constexpr u32 kKinds = u32(Kind::Count);
 
+// The centre of the vertices each position matrix slot moves in one draw (model space).
+struct SlotCentres {
+    u32 bundle;
+    u16 mask;
+    f32 c[10][3];
+};
+
 // A value in the tape that moves between frames.
 struct Patch {
     u32 offset;   // first float, in tape bytes
@@ -151,6 +158,8 @@ struct Tape {
     std::vector<u8> bundlePass;                    // per draw: the pass (0 main, 1 shadow casters)
     // Per draw: the centre of the bounding box of its indexed positions (model space; x NaN: unknown).
     std::vector<std::array<f32, 3>> bundleCentre;
+    // Draws whose vertices pick their matrix (direct PNMTXIDX): the centre per slot (by bundle, ascending).
+    std::vector<SlotCentres> slotCentres;
     // Per draw (judder detector only): which noted position matrix each PNMTX slot held (-1: unknown).
     std::vector<std::array<s32, 10>> bundleSlots;
     std::vector<M34> views;    // camera view matrices the values were noted under
@@ -213,6 +222,9 @@ struct Tape {
     u32 dumpOffset = ~0u;  // LM_INTERP_TEST: tape offset of the LM_FRAME_DUMP copy's target pointer
     u32 dumpFrame = 0;
     u32 gameFrame = 0;  // GXCopyDisp count + 1 when captured (LM_FRAME_DUMP / LM_INTERP_DRAWS numbering; logs)
+    // LM_TRACK_LOG: Luigi, Poltergust and nozzle actor places at the end of the game frame (detail::trackPoints).
+    std::array<f32, 9> track{};
+    bool trackOk = false;
     u32 guestUs = 0;  // guest-thread time spent closing the tape (array copies' bookkeeping, pairing)
     // Breakdown of guestUs: array bookkeeping, tape copy, pairing, -, cut check.
     u32 phaseUs[5] = {};
@@ -250,6 +262,7 @@ std::vector<u64> sBundleKey;
 std::vector<std::array<u32, 2>> sBundleRange;
 std::vector<u8> sBundlePass;
 std::vector<std::array<f32, 3>> sBundleCentre;
+std::vector<SlotCentres> sSlotCentres;  // (by bundle, ascending)
 s32 sOpenDraw = -1;  // immediate-mode draw whose end is not known yet
 std::vector<M34> sViews;
 std::vector<u64> sViewKeys;
@@ -279,6 +292,35 @@ const float sProbeThresh = [] {
     const char* v = std::getenv("LM_JUDDER_PX");
     return v ? float(std::atof(v)) : 1.5f;
 }();
+// Path check (LM_TRACK_LOG=<file>[,<radius>[,<px>]], needs LM_JUDDER_LOG for the draw probe; see
+// trackJudge): every drawn vertex near Luigi (radius, default 300 units) against the straight line
+// between its two game-frame places, whatever the blending policy.
+FILE* const sTrackOut = [] {
+    const char* p = std::getenv("LM_TRACK_LOG");
+    if (!p || !*p) return (FILE*)nullptr;
+    std::string s(p);
+    return std::fopen(s.substr(0, s.find(',')).c_str(), "w");
+}();
+const float sTrackRadius = [] {
+    const char* p = std::getenv("LM_TRACK_LOG");
+    const char* c = p ? std::strchr(p, ',') : nullptr;
+    return c ? float(std::atof(c + 1)) : 300.0f;
+}();
+const float sTrackPx = [] {
+    const char* p = std::getenv("LM_TRACK_LOG");
+    const char* c = p ? std::strchr(p, ',') : nullptr;
+    c = c ? std::strchr(c + 1, ',') : nullptr;
+    return c ? float(std::atof(c + 1)) : 3.0f;
+}();
+std::mutex sTrackFileM;
+void trackLine(const char* fmt, ...) {
+    if (!sTrackOut) return;
+    std::lock_guard lk(sTrackFileM);
+    va_list ap;
+    va_start(ap, fmt);
+    std::vfprintf(sTrackOut, fmt, ap);
+    va_end(ap);
+}
 std::mutex sProbeFileM;
 void probeLine(const char* fmt, ...) {
     std::lock_guard lk(sProbeFileM);
@@ -525,6 +567,68 @@ bool decompose(const f32* m, int cols, Rigid& out) {
     return true;
 }
 
+// The translation of a blended 3x4 matrix as a screw motion (docs/INTERPOLATION.md "The hose
+// nozzle"). Blending the rotation by slerp and the translation linearly turns the part about its
+// matrix ORIGIN, so its in-betweens depend on where that origin happens to be. For a skinned or
+// articulated model the origin of a joint's draw matrix is the model's origin carried along by the
+// joint (vertices are stored in model space), often 100-1000 units from the vertices it moves: a
+// hose segment or hand turning 45 degrees about its joint swung its origin by 50-200 units, and the
+// linear origin path pulled the vertices off their own path by about their whole step (the
+// Poltergust hose and nozzle "jumping" mid-interval), worse the farther the origin. The motion from
+// a to b (ignoring the change of scale/shear) is a rotation by theta about an axis n through some
+// point c plus a slide along n; turning the part by t x theta about that same axis (and sliding t of
+// the way) moves every point along an arc about the part's real pivot, the same whatever origin
+// the matrix has, and a point on the pivot does not move at all. The 3x3 part is unchanged (slerp).
+// qa, qb: the two rotations as blendRigid has them (qb on qa's side); a, b, out: 3x4 row-major.
+// LM_SCREW_BLEND=0: the old linear origin (A/B).
+const bool sScrewBlend = [] {
+    const char* v = std::getenv("LM_SCREW_BLEND");
+    return !(v && *v == '0');
+}();
+void screwTranslation(const float* qa, const float* qb, const f32* a, const f32* b, float t, f32* out) {
+    // Relative rotation r = qb * conj(qa) (w >= 0: the short way, as the slerp).
+    const float x = qb[0], y = qb[1], z = qb[2], w = qb[3];
+    const float cx = -qa[0], cy = -qa[1], cz = -qa[2], cw = qa[3];
+    float r[4] = {w * cx + x * cw + y * cz - z * cy, w * cy - x * cz + y * cw + z * cx, w * cz + x * cy - y * cx + z * cw,
+                  w * cw - x * cx - y * cy - z * cz};
+    if (r[3] < 0)
+        for (float& v : r) v = -v;
+    const float s = std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]);
+    const float theta = 2.0f * std::atan2(s, r[3]);
+    if (!(theta > 0.01f) || !(theta < 3.1f)) return;  // nearly no turn (linear is the limit), or a half turn (axis unsure)
+    const float n[3] = {r[0] / s, r[1] / s, r[2] / s};
+    // Rotation matrix of a quaternion (unit), applied to v.
+    const auto rot = [](const float* q, const float* v, float* o) {
+        const float qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+        const float R[3][3] = {{1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)},
+                               {2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)},
+                               {2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)}};
+        for (int i = 0; i < 3; i++) o[i] = R[i][0] * v[0] + R[i][1] * v[1] + R[i][2] * v[2];
+    };
+    const float ta[3] = {a[3], a[7], a[11]}, tb[3] = {b[3], b[7], b[11]};
+    // d = tb - Rd ta: the motion is x -> Rd x + d.
+    float rta[3], d[3];
+    rot(r, ta, rta);
+    for (int i = 0; i < 3; i++) d[i] = tb[i] - rta[i];
+    const float along = d[0] * n[0] + d[1] * n[1] + d[2] * n[2];
+    float dp[3];
+    for (int i = 0; i < 3; i++) dp[i] = d[i] - along * n[i];
+    // The axis point c: (I - Rd) c = dp, c = dp / 2 + cot(theta / 2) / 2 (n x dp).
+    const float k = 0.5f / std::tan(0.5f * theta);
+    const float nx[3] = {n[1] * dp[2] - n[2] * dp[1], n[2] * dp[0] - n[0] * dp[2], n[0] * dp[1] - n[1] * dp[0]};
+    float c[3], v[3], o[3];
+    for (int i = 0; i < 3; i++) c[i] = 0.5f * dp[i] + k * nx[i], v[i] = ta[i] - c[i];
+    const float h = 0.5f * t * theta;
+    const float qt[4] = {n[0] * std::sin(h), n[1] * std::sin(h), n[2] * std::sin(h), std::cos(h)};
+    rot(qt, v, o);
+    float res[3];
+    for (int i = 0; i < 3; i++) {
+        res[i] = o[i] + c[i] + t * along * n[i];
+        if (!std::isfinite(res[i])) return;
+    }
+    for (int i = 0; i < 3; i++) out[4 * i + 3] = res[i];
+}
+
 // Blends two matrices by rotation (slerp), scale/shear and translation, so a turning
 // object keeps its shape at in-between frames (an entrywise blend shrinks it).
 bool blendRigid(const f32* a, const f32* b, int cols, float t, f32* out) {
@@ -556,8 +660,10 @@ bool blendRigid(const f32* a, const f32* b, int cols, float t, f32* out) {
         for (int j = 0; j < 3; j++) U[i][j] = ra.u[i][j] + (rb.u[i][j] - ra.u[i][j]) * t;
     for (int r = 0; r < 3; r++)
         for (int j = 0; j < 3; j++) out[cols * r + j] = R[r][0] * U[0][j] + R[r][1] * U[1][j] + R[r][2] * U[2][j];
-    if (cols == 4)
+    if (cols == 4) {
         for (int r = 0; r < 3; r++) out[4 * r + 3] = a[4 * r + 3] + (b[4 * r + 3] - a[4 * r + 3]) * t;
+        if (sScrewBlend) screwTranslation(ra.q, qb, a, b, t, out);
+    }
     return true;
 }
 
@@ -962,6 +1068,13 @@ bool flatMatrix(const f32* m) {
 bool invertAffine(const f32* m, f32* out);
 
 bool untwist(f32* wa, const f32* wb, int cols = 4) {
+    // Not with the screw blend (blendRigid): the twist was taken about the matrix's local axis
+    // through its ORIGIN, which for the hose's joint matrices (origin at the model's origin, 20-160
+    // units away) threw the hose rings 15-145 units off their place for a whole interval at every
+    // fast roll (LM_TRACK_LOG: hose and nozzle tip jumping while the game frames barely moved them).
+    // The screw blend turns a twisting part about its own axis, and "the slerp pulled the tube off
+    // its line" that this rule was made for was the linear origin path the screw blend replaced.
+    if (sScrewBlend) return false;
     // The turn from a to b in a's local frame: Ma^-1 Mb (3x3 parts).
     f32 a34[12] = {}, ia[12];
     for (int r = 0; r < 3; r++)
@@ -1036,7 +1149,46 @@ bool skewFlip(const f32* wa, const f32* wb, int cols = 4) {
 }
 // `anyScale`: no limit on scale changes (an element stream's drop, tumbler: splashes grow from almost
 // nothing within a game frame, 5-8x along one axis; a 16x limit on a flat drop switched them).
-bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -1.0f, float prevTurn = -1.0f, bool anyScale = false) {
+// How far a matrix's geometry moved: its draw's centre (model space, `centre`) carried by both
+// matrices, or (unknown centre) its origin. A joint matrix of a skinned or articulated model has
+// its origin at the model's origin carried along by the joint, often hundreds of units from the
+// vertices it moves: the Poltergust's suction swirl (a J3D model of ~10 joints spinning 60-150
+// degrees per game frame about the nozzle) moved its origins by 300-1100 units while the swirl
+// itself moved 50-350, and its members were switched one by one as "jumps" (torn for an interval).
+// LM_SCREW_BLEND=0: origins (old).
+float placeStep(const f32* wa, const f32* wb, const f32* centre) {
+    if (!centre || !sScrewBlend)
+        return std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
+    f32 pa[3], pb[3];
+    for (int r = 0; r < 3; r++) {
+        pa[r] = wa[4 * r] * centre[0] + wa[4 * r + 1] * centre[1] + wa[4 * r + 2] * centre[2] + wa[4 * r + 3];
+        pb[r] = wb[4 * r] * centre[0] + wb[4 * r + 1] * centre[1] + wb[4 * r + 2] * centre[2] + wb[4 * r + 3];
+    }
+    const float d = std::hypot(pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]);
+    return std::isfinite(d) ? d : std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
+}
+// Where the geometry of position matrix patch p is (model space; nullptr: unknown): the centre of
+// the vertices of its draw that use its slot, else of the whole draw.
+const f32* drawCentre(const Tape& t, const Patch& p) {
+    if (p.kind == Kind::PosMtx && p.slot % 3 == 0 && p.slot / 3 < 10 && !t.slotCentres.empty()) {
+        const auto it = std::lower_bound(t.slotCentres.begin(), t.slotCentres.end(), p.bundle,
+                                         [](const SlotCentres& s, u32 b) { return s.bundle < b; });
+        if (it != t.slotCentres.end() && it->bundle == p.bundle && (it->mask & (1u << (p.slot / 3)))) return it->c[p.slot / 3];
+    }
+    return p.bundle < t.bundleCentre.size() && std::isfinite(t.bundleCentre[p.bundle][0]) ? t.bundleCentre[p.bundle].data() : nullptr;
+}
+// Distance from the camera of view-space matrix v's geometry (centre as placeStep).
+float viewDist(const f32* v, const f32* centre) {
+    if (centre && sScrewBlend) {
+        f32 p[3];
+        for (int r = 0; r < 3; r++) p[r] = v[4 * r] * centre[0] + v[4 * r + 1] * centre[1] + v[4 * r + 2] * centre[2] + v[4 * r + 3];
+        const float d = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+        if (std::isfinite(d)) return d;
+    }
+    return std::sqrt(v[3] * v[3] + v[7] * v[7] + v[11] * v[11]);
+}
+bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -1.0f, float prevTurn = -1.0f, bool anyScale = false,
+                    const f32* centre = nullptr) {
     Rigid ra, rb;
     if (!decompose(wa, 4, ra) || !decompose(wb, 4, rb)) {
         for (int i = 0; i < 12; i++)
@@ -1062,10 +1214,8 @@ bool blendableWorld(const f32* wa, const f32* wb, float dist, float prevStep = -
             if (!anyScale && std::max(sa, sb) > 0.05f && (sb > 16.0f * sa + 1e-4f || sa > 16.0f * sb + 1e-4f)) return false;
         }
     }
-    float dd = 0;
-    for (int r = 0; r < 3; r++) dd += (wa[4 * r + 3] - wb[4 * r + 3]) * (wa[4 * r + 3] - wb[4 * r + 3]);
     const float limit = std::max({200.0f, 0.5f * dist, prevStep >= 0 ? 2.0f * prevStep + 60.0f : 0.0f});
-    return std::sqrt(dd) <= limit;
+    return placeStep(wa, wb, centre) <= limit;
 }
 
 // Orientation ambiguity: a matrix built from direction vectors (a hose segment's frame, look-at
@@ -1473,6 +1623,8 @@ void endTape(u32 retraceCount) {
     sBundlePass = {};
     tape->bundleCentre = std::move(sBundleCentre);
     sBundleCentre = {};
+    tape->slotCentres = std::move(sSlotCentres);
+    sSlotCentres = {};
     tape->bundleSlots = std::move(sBundleSlots);
     sBundleSlots = {};
     tape->views = std::move(sViews);
@@ -1497,6 +1649,12 @@ void endTape(u32 retraceCount) {
     tape->textures = std::move(textures);
     tape->textureBytes = textureBytes;
     tape->retrace = retraceCount;
+    if (sTrackOut) {
+        tape->trackOk = detail::trackPoints(tape->track.data());
+        const auto& t = tape->track;
+        trackLine("HT %llu f%u %d %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f %.1f\n", (unsigned long long)tape->seq, tape->gameFrame,
+                  int(tape->trackOk), t[0], t[1], t[2], t[3], t[4], t[5], t[6], t[7], t[8]);
+    }
     tape->phaseUs[0] = vtxUs;
     tape->phaseUs[1] = usSince(tp);
     if (sDumpAt != ~0u) {
@@ -2803,6 +2961,15 @@ void detail::noteDraw(u64 id) {
 void detail::noteDrawCentre(const float c[3]) {
     if (!sBundleCentre.empty()) sBundleCentre.back() = {c[0], c[1], c[2]};
 }
+void detail::noteDrawSlotCentres(const float c[10][3], u16 mask) {
+    if (sBundleCentre.empty()) return;
+    SlotCentres sc;
+    sc.bundle = u32(sBundleCentre.size() - 1);
+    sc.mask = mask;
+    for (int s = 0; s < 10; s++)
+        for (int k = 0; k < 3; k++) sc.c[s][k] = c[s][k];
+    sSlotCentres.push_back(sc);
+}
 
 u64 detail::arrayKey() {
     if (!capturing() || sFrameLock > 0) return 0;
@@ -3582,9 +3749,13 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
                     untwist(Wa.data(), Wb.data());
                 }
                 const u8 groupPolicy = b.groupSnap ? b.groupSnap[pb].load(std::memory_order_relaxed) : 0;
-                if (groupPolicy != 2 &&
-                    !blendableWorld(Wa.data(), Wb.data(), std::sqrt(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]),
-                                    a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f, prevTurn, P.tumble)) {
+                const bool steadyMember = sScrewBlend && groupPolicy == 0 && u32(pb) < b.multiMember.size() && b.multiMember[pb] &&
+                                          b.worldErratic && b.worldErratic[pb].load(std::memory_order_relaxed) == 0 &&
+                                          blendableWorld(Wa.data(), Wb.data(), 1e9f, -1.0f, prevTurn, P.tumble, drawCentre(b, P));
+                if (groupPolicy != 2 && !steadyMember &&
+                    !blendableWorld(Wa.data(), Wb.data(), viewDist(m, drawCentre(b, P)),
+                                    a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f, prevTurn, P.tumble,
+                                    drawCentre(b, P))) {
                     cause = 1;
                     Rigid ra, rb;
                     if (decompose(Wa.data(), 4, ra) && decompose(Wb.data(), 4, rb)) {
@@ -3702,6 +3873,155 @@ void probeJudge(const ProbeReplay& pr, std::vector<ProbeRec>& recs) {
     probeLine( "R %u %llu %.3f judged %u flagged %u\n", pr.present, (unsigned long long)b.seq, pr.alpha, judged, flagged);
 }
 
+// Path check (LM_TRACK_LOG; docs/INTERPOLATION.md "The hose nozzle"). Independent of the blending
+// policies: every draw of the main pass whose first vertex lies within sTrackRadius of Luigi is
+// followed in world space (the drawn view-space place through the inverse of the ideal in-between
+// camera) and compared with the straight line between its two game-frame places (the matrices its
+// slot held at capture in a and b). Anything that leaves that line by more than a rigid turn's arc
+// allows (0.4 x the game-frame step + 1 unit) and sTrackPx pixels (2160-line picture) is a jump,
+// switches by policy included: a part shown at b (or held at a) for an interval while the rest of
+// the body blends is what the eye sees as a jump. H lines per flagged vertex, HR per replay.
+struct TrackTotals {
+    u64 replays = 0, judged = 0, flagged = 0, nozJudged = 0, nozFlagged = 0, unknown = 0, unpaired = 0;
+    float maxPx = 0, nozMaxPx = 0;
+} sTrackTotals, sTrackWindow;
+void trackJudge(const ProbeReplay& pr, const std::vector<ProbeRec>& recs) {
+    const Tape& b = *pr.b;
+    const Tape* a = pr.a.get();
+    if (!a || b.pairedWith != a || b.cut || !a->trackOk || !b.trackOk) return;
+    const float t = pr.alpha;
+    f32 luigi[3], noz[3];
+    for (int c = 0; c < 3; c++) {
+        luigi[c] = a->track[c] + (b.track[c] - a->track[c]) * t;
+        noz[c] = a->track[3 + c] + (b.track[3 + c] - a->track[3 + c]) * t;  // (+0x7A4: placed at the nozzle)
+    }
+    const bool haveNoz = std::isfinite(noz[0] + noz[1] + noz[2]);
+    // The ideal in-between camera of each view pair (inverse), by b's view index.
+    static std::unordered_map<u32, std::pair<M34, M34>> cams;  // vt, its inverse
+    cams.clear();
+    const auto camOf = [&](u16 v) -> const std::pair<M34, M34>* {
+        if (v >= b.views.size() || v >= b.viewToA.size() || b.viewToA[v] < 0 || u32(b.viewToA[v]) >= a->views.size()) return nullptr;
+        auto it = cams.find(v);
+        if (it == cams.end()) {
+            std::pair<M34, M34> c;
+            if (!idealCamera(a->views[b.viewToA[v]], b.views[v], t, c.first) || !invertAffine(c.first.data(), c.second.data())) return nullptr;
+            it = cams.emplace(v, c).first;
+        }
+        return &it->second;
+    };
+    static std::unordered_map<u32, u32> occ;  // per draw: records so far (one per primitive)
+    occ.clear();
+    struct Census {
+        u32 n = 0, srcLo = ~0u, srcHi = 0;
+        float sum[3] = {}, nozMin = 1e9f;
+        std::unordered_set<u64> keys;
+    };
+    static std::unordered_map<u64, Census> census;
+    static u64 sCensusSeq = 0;
+    u32 judged = 0, flagged = 0, nozJ = 0, nozF = 0;
+    float maxPx = 0;
+    for (const ProbeRec& r : recs) {
+        const u32 k = r.tag & 0xFFFFF;
+        const u32 n = occ[k]++;
+        if (k >= b.bundleKey.size() || !r.hasPos || !perspective(r.proj) || r.mtxIdx >= 10) continue;
+        if (k < b.bundlePass.size() && b.bundlePass[k] != 0) continue;
+        if (!(r.viewport[2] >= 600.0f && r.viewport[3] >= 440.0f)) continue;
+        const s32 pb = k < b.bundleSlots.size() ? b.bundleSlots[k][r.mtxIdx] : -1;
+        const Patch* P = pb >= 0 && u32(pb) < b.patches.size() ? &b.patches[pb] : nullptr;
+        if (P && (P->role != 0 || P->kind != Kind::PosMtx || P->count != 12)) P = nullptr;
+        const auto* cam = camOf(P ? P->view : b.mainView);
+        if (!cam) continue;
+        f32 e[3], aw[3];
+        xform34(r.mtx, r.pos, e);
+        xform34(cam->second.data(), e, aw);
+        if (std::hypot(aw[0] - luigi[0], aw[1] - luigi[1], aw[2] - luigi[2]) > sTrackRadius) continue;
+        const bool nearNoz = haveNoz && std::hypot(aw[0] - noz[0], aw[1] - noz[1], aw[2] - noz[2]) < 60.0f;
+        const s32 j = P && !b.partner.empty() ? b.partner[pb] : -1;
+        if (!P) {
+            sTrackTotals.unknown++, sTrackWindow.unknown++;
+            continue;
+        }
+        if (j < 0 || !P->key || P->cat == TagCat::World) {
+            sTrackTotals.unpaired++, sTrackWindow.unpaired++;
+            continue;
+        }
+        const Patch& Q = a->patches[j];
+        M34 ia, ib;
+        if (Q.view >= a->views.size() || P->view >= b.views.size() || !invertAffine(a->views[Q.view].data(), ia.data()) ||
+            !invertAffine(b.views[P->view].data(), ib.data()))
+            continue;
+        f32 ma[12], mb[12], va[3], vb[3], wa[3], wb[3];
+        for (int c = 0; c < 12; c++) ma[c] = val(*a, Q, c), mb[c] = val(b, *P, c);
+        xform34(ma, r.pos, va);
+        xform34(ia.data(), va, wa);
+        xform34(mb, r.pos, vb);
+        xform34(ib.data(), vb, wb);
+        f32 line[3], d[3];
+        float chord2 = 0, along = 0;
+        for (int c = 0; c < 3; c++) {
+            line[c] = wa[c] + (wb[c] - wa[c]) * t;
+            d[c] = wb[c] - wa[c];
+            chord2 += d[c] * d[c];
+            along += (aw[c] - wa[c]) * d[c];
+        }
+        const float chord = std::sqrt(chord2);
+        const float errW = std::hypot(aw[0] - line[0], aw[1] - line[1], aw[2] - line[2]);
+        // Group census (every 60 tapes): each model instance drawn near Luigi, its members' place;
+        // every 600 tapes all vertices (HV lines: what each instance is, by its shape).
+        if (b.seq % 600 == 0 && b.seq != sCensusSeq)
+            trackLine("HV %llu grp %016llX src %08X %.1f %.1f %.1f\n", (unsigned long long)b.seq, (unsigned long long)P->group, P->source,
+                      aw[0] - luigi[0], aw[1] - luigi[1], aw[2] - luigi[2]);
+        if (b.seq % 60 == 0 && P->group) {
+            auto& g = census[P->group];
+            g.n++;
+            g.srcLo = std::min(g.srcLo, P->source), g.srcHi = std::max(g.srcHi, P->source);
+            for (int c = 0; c < 3; c++) g.sum[c] += aw[c] - luigi[c];
+            if (haveNoz) g.nozMin = std::min(g.nozMin, std::hypot(aw[0] - noz[0], aw[1] - noz[1], aw[2] - noz[2]));
+            g.keys.insert(P->key);
+        }
+        f32 lv[3], ps[2], pa[2];
+        xform34(cam->first.data(), line, lv);
+        if (!project(r.proj, lv, ps) || !project(r.proj, e, pa)) continue;
+        const float errPx = std::hypot(ps[0] - pa[0], ps[1] - pa[1]);
+        judged++;
+        nozJ += nearNoz;
+        // A rigid turn moves a vertex along an arc, off the line by up to ~0.4 of its step mid-interval
+        // and little near the game frames; a part shown at b early (or held at a), or swinging out
+        // farther than any turn would, is a jump.
+        const float arc = 0.45f * std::min(1.0f, 4.0f * t * (1.0f - t)) + 0.03f;
+        if (!(errW > 1.0f + arc * chord) || !(errPx > sTrackPx)) continue;
+        flagged++;
+        nozF += nearNoz;
+        maxPx = std::max(maxPx, errPx);
+        const u8 pol = b.groupSnap ? b.groupSnap[pb].load(std::memory_order_relaxed) : 0;
+        const bool member = u32(pb) < b.multiMember.size() && b.multiMember[pb];
+        M34 Wa, Wb;
+        compose(ia.data(), ma, Wa.data());
+        compose(ib.data(), mb, Wb.data());
+        const float turn = turnDegrees(Wa.data(), Wb.data(), 4);
+        const float ostep = std::hypot(Wa[3] - Wb[3], Wa[7] - Wb[7], Wa[11] - Wb[11]);
+        trackLine("H %u %llu f%u %.3f px %.1f w %.1f chord %.1f frac %.2f turn %.0f ostep %.1f cen %d pol %u mm %d noz %d key %016llX grp %016llX site %08X src %08X slot %u draw %u prim %u "
+                  "at %.1f %.1f %.1f a %.1f %.1f %.1f b %.1f %.1f %.1f\n",
+                  pr.present, (unsigned long long)b.seq, b.gameFrame, t, errPx, errW, chord, chord2 > 1e-6f ? along / chord2 : 0.0f, turn, ostep,
+                  int(drawCentre(b, *P) != nullptr), pol, int(member), int(nearNoz), (unsigned long long)P->key, (unsigned long long)P->group, P->site, P->source, r.mtxIdx, k, n,
+                  aw[0], aw[1], aw[2], wa[0], wa[1], wa[2], wb[0], wb[1], wb[2]);
+    }
+    if (b.seq % 60 == 0 && b.seq != sCensusSeq && !census.empty()) {
+        sCensusSeq = b.seq;
+        for (const auto& [g, c] : census)
+            if (c.n >= 8)
+                trackLine("HG %llu grp %016llX vertices %u matrices %zu src %08X-%08X off %.0f %.0f %.0f nozzle %.0f\n", (unsigned long long)b.seq,
+                          (unsigned long long)g, c.n, c.keys.size(), c.srcLo, c.srcHi, c.sum[0] / c.n, c.sum[1] / c.n, c.sum[2] / c.n, c.nozMin);
+    }
+    census.clear();
+    trackLine("HR %u %llu %.3f judged %u flagged %u noz %u %u max %.1f\n", pr.present, (unsigned long long)b.seq, t, judged, flagged, nozJ, nozF,
+              maxPx);
+    for (TrackTotals* tt : {&sTrackTotals, &sTrackWindow}) {
+        tt->replays++, tt->judged += judged, tt->flagged += flagged, tt->nozJudged += nozJ, tt->nozFlagged += nozF;
+        tt->maxPx = std::max(tt->maxPx, maxPx);
+    }
+}
+
 void probeProcess() {
     if (!sProbeOut) return;
     std::vector<ProbeRec> in;
@@ -3726,12 +4046,19 @@ void probeProcess() {
         }
         if (auto it = byReplay.find(pr.id); it != byReplay.end()) {
             if (pr.b) probeJudge(pr, it->second);
+            if (pr.b && sTrackOut) trackJudge(pr, it->second);
             byReplay.erase(it);
         }
     }
     if (byReplay.size() > 256) byReplay.clear();
     static u32 n = 0;
-    if (++n % 64 == 0) std::fflush(sProbeOut);
+    if (++n % 64 == 0) {
+        std::fflush(sProbeOut);
+        if (sTrackOut) {
+            std::lock_guard lk(sTrackFileM);
+            std::fflush(sTrackOut);
+        }
+    }
 }
 
 void auroraCmd(std::vector<u8>& out, u16 sub, u8 arg) {
@@ -3881,7 +4208,8 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
         // stretched into long straight sticks (user clips, 0a5e5f2: tape 160 a 0.05 / 0.34, tape 165
         // a 0.67); switching the whole hose (2f69188) detached it from Luigi's hand.
         {
-            static std::unordered_set<u64> snapGroups, forceGroups, fastGroups, skinGroups;
+            static std::unordered_set<u64> snapGroups, forceGroups, fastGroups, skinGroups, tearGroups;
+            tearGroups.clear();
             snapGroups.clear();
             forceGroups.clear();
             fastGroups.clear();
@@ -3915,7 +4243,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 Member m{i, j};
                 compose(vp->ia.data(), va, m.wa.data());
                 compose(vp->ib.data(), vb, m.wb.data());
-                m.dist = std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]);
+                m.dist = viewDist(vb, drawCentre(b, p));
                 byGroup[p.group].push_back(u32(members.size()));
                 members.push_back(m);
             }
@@ -3930,7 +4258,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     for (const u32 m : idx) {
                         const M34& x = members[m].wa;
                         const M34& y = members[m].wb;
-                        st.push_back(std::hypot(x[3] - y[3], x[7] - y[7], x[11] - y[11]));
+                        st.push_back(placeStep(x.data(), y.data(), drawCentre(b, b.patches[members[m].i])));
                     }
                     std::nth_element(st.begin(), st.begin() + st.size() / 2, st.end());
                     if (idx.size() >= 4)
@@ -4009,7 +4337,7 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 // envelope matrices are weighted sums of its joints.)
                 const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
                 const float dist = members[mi].dist;
-                const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
+                const float step = placeStep(wa.data(), wb.data(), drawCentre(b, p));
                 // (Recorded here too: a switched instance skips the per-matrix path that records it.)
                 if (b.worldStep && b.worldStep[i].load(std::memory_order_relaxed) < 0.0f)
                     b.worldStep[i].store(step, std::memory_order_relaxed);
@@ -4041,8 +4369,8 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                     if (groupLog && (held > 0 || now)) sExcluded[i] = now ? 2 : 3;
                     if (held > 0 || now) continue;
                 }
-                const bool near = blendableWorld(wa.data(), wb.data(), dist, prev, prevTurn, p.tumble);
-                const bool anyDist = blendableWorld(wa.data(), wb.data(), 1e9f, -1.0f, prevTurn, p.tumble);
+                const bool near = blendableWorld(wa.data(), wb.data(), dist, prev, prevTurn, p.tumble, drawCentre(b, p));
+                const bool anyDist = blendableWorld(wa.data(), wb.data(), 1e9f, -1.0f, prevTurn, p.tumble, drawCentre(b, p));
                 jumpVotes[p.group].second++;
                 if (!near && anyDist) {  // only the place jumped
                     if (sTrace && jumpVotes[p.group].first == 0)
@@ -4050,8 +4378,14 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                             (unsigned long long)b.seq, (unsigned long long)p.group, (unsigned long long)p.key, p.site, step, prev, dist,
                             groupStep[mi], byGroup.count(p.group) ? byGroup[p.group].size() : 0);
                     jumpVotes[p.group].first++;
+                    if (sScrewBlend && i < b.multiMember.size() && b.multiMember[i]) tearGroups.insert(p.group);
                     continue;
                 }
+                // A member that cannot be blended rigidly at all (a mirror flip, a turn over ~150 degrees
+                // without spin evidence, a 16x scale) would be switched on its own while the rest of its
+                // model blends: the model tears for an interval (the suction swirl). The whole instance
+                // blends entrywise instead, unless it is switched as a whole (below).
+                if (!anyDist && sScrewBlend && i < b.multiMember.size() && b.multiMember[i]) tearGroups.insert(p.group);
                 const bool flat = flatMatrix(wa.data()) || flatMatrix(wb.data());
                 bool fast = !anyDist || flat, skin = flat;
                 Rigid ra, rb;
@@ -4060,6 +4394,10 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 } else {
                     const float d = std::fabs(ra.q[0] * rb.q[0] + ra.q[1] * rb.q[1] + ra.q[2] * rb.q[2] + ra.q[3] * rb.q[3]);
                     fast = fast || d < 0.7071f;  // turned by more than 90 degrees
+                    // A half turn (over ~170 degrees) has no knowable direction: a member of an articulated
+                    // model blended the short way swept its geometry through either side of the model
+                    // (the suction swirl, 400 units a game frame); the whole instance goes entrywise.
+                    if (d < 0.087f && sScrewBlend && i < b.multiMember.size() && b.multiMember[i]) tearGroups.insert(p.group);
                     // A weighted (envelope) matrix of joints that point different ways is sheared.
                     for (const Rigid* r : {&ra, &rb}) {
                         const float diag = std::max({std::fabs(r->u[0][0]), std::fabs(r->u[1][1]), std::fabs(r->u[2][2]), 1e-6f});
@@ -4070,7 +4408,10 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                 // the instance is at a pose its skin cannot follow rigidly, so all of it goes entrywise.
                 // Members blended rigidly next to entrywise ones skinned from different poses and
                 // Chauncey's body tore into shards for half an interval at a spin (sweep C, frame 6990).
-                const bool skew = skewFlip(wa.data(), wb.data()) || tumblerMirror(p, wa.data(), wb.data());
+                // (Also a rigid member of an articulated instance whose handedness flips: switched on its own
+                // it tore the Poltergust's suction swirl for an interval, LM_TRACK_LOG; entrywise like the rest.)
+                const bool skew = skewFlip(wa.data(), wb.data()) || tumblerMirror(p, wa.data(), wb.data()) ||
+                                  (sScrewBlend && i < b.multiMember.size() && b.multiMember[i] && (det3(wa.data()) < 0) != (det3(wb.data()) < 0));
                 if (skew) fast = skin = true;
                 if (fast) fastGroups.insert(p.group);
                 if (skin) skinGroups.insert(p.group);
@@ -4099,6 +4440,8 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
             // turning half a turn shrank to a sliver: the bubbles faded between game frames).
             for (const u64 g : fastGroups)
                 if (skinGroups.count(g)) forceGroups.insert(g);
+            for (const u64 g : tearGroups)
+                if (!snapGroups.count(g)) forceGroups.insert(g);
             for (u32 i = 0; i < b.patches.size(); i++) {
                 const u64 g = b.patches[i].group;
                 const u8 v = !g ? 0 : snapGroups.count(g) ? 1 : forceGroups.count(g) ? 2 : 0;
@@ -4376,10 +4719,15 @@ void replayPair(const Tape* a, const Tape& b, float alpha, void* dump) {
                         flipped = resolveFlip(wa.data(), wb.data(), 4);
                         untwisted = untwist(wa.data(), wb.data());
                     }
-                    const float step = std::hypot(wa[3] - wb[3], wa[7] - wb[7], wa[11] - wb[11]);
+                    const float step = placeStep(wa.data(), wb.data(), drawCentre(b, p));
                     if (b.worldStep) b.worldStep[i].store(step, std::memory_order_relaxed);
                     const float prev = a->worldStep ? a->worldStep[j].load(std::memory_order_relaxed) : -1.0f;
-                    ok = forced || blendableWorld(wa.data(), wb.data(), std::sqrt(vb[3] * vb[3] + vb[7] * vb[7] + vb[11] * vb[11]), prev, prevTurn, p.tumble);
+                    ok = forced || blendableWorld(wa.data(), wb.data(), viewDist(vb, drawCentre(b, p)), prev, prevTurn, p.tumble, drawCentre(b, p));
+                    // A member of an articulated or skinned instance that was not switched as a whole and is not
+                    // erratic moves with its instance: its place is not a jump (switched on its own it tore the
+                    // model for an interval: the suction swirl swinging with the nozzle, 300 units a game frame).
+                    if (!ok && sScrewBlend && member && groupPolicy == 0 && b.worldErratic && b.worldErratic[i].load(std::memory_order_relaxed) == 0)
+                        ok = blendableWorld(wa.data(), wb.data(), 1e9f, -1.0f, prevTurn, p.tumble, drawCentre(b, p));
                     if (excl) {
                         ExclStat& st = sExclStats[p.group];
                         st.n++, st.snapped += !ok, st.flipped += flipped && !forced, st.untwisted += untwisted && !forced;
@@ -5244,6 +5592,9 @@ bool replay(bool final) {
     sSprayPresent = sLastPresent.present;
     replayPair(final ? nullptr : a.get(), *b, alpha, presentDump);
     probeFill(a, b);
+    if (sTrackOut && !final && (!a || b->cut || b->pairedWith != a.get()))  // the whole picture at b (a camera cut, a gap)
+        trackLine("HC %u %llu f%u %.3f %s\n", sLastPresent.present, (unsigned long long)b->seq, b->gameFrame, alpha,
+                  !a ? "no-a" : b->cut ? "cut" : "not-consecutive");
     if (sJudder && a && !final && alpha < 1.0f) {
         // V present m[12]: the blended camera of b's main camera (most position matrices), the one
         // static scenery is drawn with: tools/interp/judder.py --camera checks that a fixed point
@@ -5330,6 +5681,15 @@ bool replay(bool final) {
                 (unsigned long long)sIdTotals.flagged, (unsigned long long)sIdTotals.checked,
                 (unsigned long long)sIdTotals.vertsFlagged, (unsigned long long)sIdTotals.vertsChecked);
             sProbeWindow = {};
+        }
+        if (sTrackOut && sTrackWindow.replays) {
+            const auto& w = sTrackWindow;
+            log("[track] %llu in-betweens: %llu vertices near Luigi judged, %llu off their path (> %.0f px; worst %.1f); near the nozzle "
+                "%llu judged, %llu off; %llu without a known matrix, %llu unpaired",
+                (unsigned long long)w.replays, (unsigned long long)w.judged, (unsigned long long)w.flagged, sTrackPx, w.maxPx,
+                (unsigned long long)w.nozJudged, (unsigned long long)w.nozFlagged, (unsigned long long)w.unknown,
+                (unsigned long long)w.unpaired);
+            sTrackWindow = {};
         }
         if (sXlPaired + sXlNew)
             log("[interp] extra lights per present: %.1f blended by identity, %.1f without partner (%.2f whose identity jumped >200 units)",

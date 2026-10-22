@@ -145,7 +145,12 @@ u32 vertexSize(int fmt) {
 bool sBoxOn = false;
 f32 sBoxLo[3], sBoxHi[3];
 bool sBoxAny = false;
+// The same per position matrix slot (vertices with a direct PNMTXIDX): where the geometry each
+// matrix moves is (a joint matrix's origin is often far from it; interp.cpp placeStep).
+f32 sSlotLo[10][3], sSlotHi[10][3];
+u16 sSlotAny = 0;
 void boxPositions(int fmt, const u8* v, u32 count, u32 vtxSize, u32 offset, u32 idxSize) {
+    const bool pnIdx = gx::vtxDesc(GX_VA_PNMTXIDX) == GX_DIRECT;
     const Binding& b = sBind[0];
     if (!b.valid || !inMem1(b.guest) || b.stride == 0) return;
     u8 cnt = 0, type = 0, frac = 0;
@@ -178,6 +183,14 @@ void boxPositions(int fmt, const u8* v, u32 count, u32 vtxSize, u32 offset, u32 
             if (!std::isfinite(f)) return;
             if (!sBoxAny) sBoxLo[c] = sBoxHi[c] = f;
             sBoxLo[c] = std::min(sBoxLo[c], f), sBoxHi[c] = std::max(sBoxHi[c], f);
+            if (pnIdx) {
+                const u32 slot = v[i * vtxSize] / 3;
+                if (slot < 10) {
+                    if (!(sSlotAny & (1u << slot))) sSlotLo[slot][c] = sSlotHi[slot][c] = f;
+                    sSlotLo[slot][c] = std::min(sSlotLo[slot][c], f), sSlotHi[slot][c] = std::max(sSlotHi[slot][c], f);
+                    if (c == 2) sSlotAny |= u16(1u << slot);
+                }
+            }
         }
         sBoxAny = true;
     }
@@ -505,11 +518,18 @@ void vtxDisplayList(u32 guestAddr, const u8* data, u32 size) {
     if (sParseTapeBase != ~0u) detail::drawRange(sParseTapeBase, end);
     sBoxOn = true;
     sBoxAny = false;
+    sSlotAny = 0;
     parse(data, size, false);
     sBoxOn = false;
     if (sBoxAny) {
         const f32 c[3] = {0.5f * (sBoxLo[0] + sBoxHi[0]), 0.5f * (sBoxLo[1] + sBoxHi[1]), 0.5f * (sBoxLo[2] + sBoxHi[2])};
         detail::noteDrawCentre(c);
+    }
+    if (sSlotAny) {
+        f32 c[10][3];
+        for (int s = 0; s < 10; s++)
+            for (int k = 0; k < 3; k++) c[s][k] = (sSlotAny & (1u << s)) ? 0.5f * (sSlotLo[s][k] + sSlotHi[s][k]) : 0.0f;
+        detail::noteDrawSlotCentres(c, sSlotAny);
     }
     sParseTapeBase = ~0u;
 }
