@@ -17,6 +17,7 @@ bool runUntilPresent();       // false once the guest has exited
 bool hostFrame();             // false once the guest has exited
 void pace();                  // after aurora_end_frame (lockstep only; interpolated frames: pacing.h)
 bool interpolating();         // host: frames are replayed tapes (decoupled guest)
+u32 guestFrames();             // frames the game has finished (VISetNextFrameBuffer), fast-forwarded ones included
 // Presentation target (F1 > Visuals > Frame rate): the slider, or the refresh rate of the
 // display the window is on. 30 = the game's own rate without interpolation.
 int targetFps();

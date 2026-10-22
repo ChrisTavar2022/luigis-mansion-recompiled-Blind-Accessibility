@@ -23,8 +23,10 @@
 #include <dbghelp.h>
 #include <tlhelp32.h>
 #else
+#include <dirent.h>
 #include <dlfcn.h>
 #include <execinfo.h>
+#include <sys/syscall.h>
 #include <ucontext.h>
 #include <unistd.h>
 #endif
@@ -254,9 +256,82 @@ void dumpAllThreads(const char* reason) {
     std::fprintf(stderr, "=== end of thread stacks ===\n");
     std::fflush(stderr);
 }
+#else
+// Linux (issue #11: a Steam Deck log said nothing about where the game stopped): each thread is
+// sent a signal whose handler writes its own backtrace ("binary(symbol+off) [addr]" lines, without
+// allocating) to stderr, which the launcher puts into last_run.log. One thread at a time, each
+// acknowledged (or given up on after 300 ms: a thread with the signal blocked).
+std::atomic<int> sDumpAck{0};
+void onDumpSignal(int) {
+    void* frames[48];
+    const int n = backtrace(frames, 48);
+    backtrace_symbols_fd(frames, n, STDERR_FILENO);
+    sDumpAck.store(1, std::memory_order_release);
+}
+
+void dumpAllThreads(const char* reason) {
+    const int sig = SIGRTMIN + 7;
+    static const bool sInstalled = [sig] {
+        struct sigaction sa{};
+        sa.sa_handler = &onDumpSignal;
+        sa.sa_flags = SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        return sigaction(sig, &sa, nullptr) == 0;
+    }();
+    if (!sInstalled) return;
+    std::fprintf(stderr, "\n=== %s: all thread stacks ===\n", reason);
+    std::fflush(stderr);
+    const pid_t pid = getpid();
+    const pid_t self = pid_t(syscall(SYS_gettid));
+    DIR* dir = opendir("/proc/self/task");
+    if (!dir) return;
+    while (const dirent* e = readdir(dir)) {
+        const pid_t tid = pid_t(std::atoi(e->d_name));
+        if (tid <= 0 || tid == self) continue;
+        char path[64], name[64] = "?";
+        std::snprintf(path, sizeof(path), "/proc/self/task/%d/comm", int(tid));
+        if (std::FILE* f = std::fopen(path, "r")) {
+            if (std::fgets(name, sizeof(name), f)) name[std::strcspn(name, "\n")] = 0;
+            std::fclose(f);
+        }
+        std::fprintf(stderr, "--- thread %d (%s) ---\n", int(tid), name);
+        std::fflush(stderr);
+        sDumpAck.store(0, std::memory_order_relaxed);
+        if (syscall(SYS_tgkill, pid, tid, sig) != 0) continue;
+        for (int i = 0; i < 300 && !sDumpAck.load(std::memory_order_acquire); i++)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (!sDumpAck.load(std::memory_order_acquire)) std::fprintf(stderr, "  (no answer: signal blocked)\n");
+    }
+    closedir(dir);
+    std::fprintf(stderr, "=== end of thread stacks ===\n");
+    std::fflush(stderr);
+}
 #endif
 
+std::atomic<HangDetailFn> sHangDetail{nullptr};
+
+// One "[hang]" line: stderr (Linux: last_run.log through the launcher) and last_run.log (Windows).
+void hangLine(const char* line) {
+    std::fputs(line, stderr);
+    std::fflush(stderr);
+    recovery::logLine(line, std::strlen(line));
+}
+
 }  // namespace
+
+void setHangDetail(HangDetailFn fn) { sHangDetail.store(fn, std::memory_order_release); }
+
+void reportStall(const char* what, bool dumpThreads) {
+    char detail[512] = "";
+    if (const HangDetailFn fn = sHangDetail.load(std::memory_order_acquire)) fn(detail, sizeof(detail), false);
+    char line[1024];
+    std::snprintf(line, sizeof(line), "[hang] %s%s%s\n", what, detail[0] ? "; " : "", detail);
+    hangLine(line);
+    if (dumpThreads) {
+        static std::atomic<int> sDumps{0};
+        if (sDumps.fetch_add(1) < 2) dumpAllThreads(what);
+    }
+}
 
 void heartbeat() {
     sHeartbeat.fetch_add(1, std::memory_order_relaxed);
@@ -269,7 +344,10 @@ void startHangWatchdog() {
     // log): when the main thread has not come back to its loop for 15 s, say what it was doing
     // (setPhase), again every 30 s while it lasts and once when it continues. A program that is
     // only slow (a long load) gets a few lines; one that hangs has its last phase in the log.
-    // LM_HANG_DUMP=<seconds> (Windows, debugging) also prints every thread's stack.
+    // LM_HANG_DUMP=<seconds> also prints every thread's stack (three samples a second apart). Linux
+    // prints them once by itself at the first report of a run (the log is the only evidence a
+    // player can send; issue #11). Each report also says what Aurora's threads are doing and
+    // whether the game kept running (setHangDetail).
     const char* env = std::getenv("LM_HANG_DUMP");
     const int dumpSeconds = env ? std::atoi(env) : 0;
     const auto t0 = std::chrono::steady_clock::now();
@@ -297,31 +375,41 @@ void startHangWatchdog() {
                 continue;
             }
             ++still;
+            if (still == 1) {
+                if (const HangDetailFn fn = sHangDetail.load(std::memory_order_acquire)) {
+                    char ignored[8];
+                    fn(ignored, sizeof(ignored), true);  // the stall's start (game frames since)
+                }
+            }
             if (still == 15 || (still > 15 && (still - 15) % 30 == 0)) {
                 stalledIn = phase;
-                char line[256];
+                char detail[512] = "";
+                if (const HangDetailFn fn = sHangDetail.load(std::memory_order_acquire)) fn(detail, sizeof(detail), false);
+                char line[1024];
                 std::snprintf(line, sizeof(line),
-                              "[hang] %.0f s after start: main thread has not returned to its loop for %d s (%s)\n", up(),
-                              still, phase);
-                std::fputs(line, stderr);
-                std::fflush(stderr);
+                              "[hang] %.0f s after start: main thread has not returned to its loop for %d s (%s)%s%s\n", up(),
+                              still, phase, detail[0] ? "; " : "", detail);
                 // Windows: also last_run.log. While the game is still starting, this is the reason the
                 // recovery prompt names if the start is then killed (recovery.h).
-                recovery::logLine(line, std::strlen(line));
+                hangLine(line);
+#ifndef _WIN32
+                // Linux: every thread's stack, once per run, at the first report.
+                static bool sDumped = false;
+                if (!sDumped && dumpSeconds <= 0) {
+                    sDumped = true;
+                    dumpAllThreads("main loop stalled for 15 s");
+                }
+#endif
                 char what[160];
                 std::snprintf(what, sizeof(what), "no progress for %d s during %s", still, phase);
                 recovery::noteHang(what);
             }
-#ifdef _WIN32
             // Only once the main loop has run at all (startup can block longer).
             if (dumpSeconds > 0 && now && still >= dumpSeconds && still < dumpSeconds + 3) {  // three samples
                 char reason[96];
                 std::snprintf(reason, sizeof(reason), "main loop stalled for %d s (LM_HANG_DUMP)", dumpSeconds);
                 dumpAllThreads(reason);
             }
-#else
-            (void)dumpSeconds;
-#endif
         }
     }).detach();
 }

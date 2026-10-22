@@ -35,6 +35,9 @@ Clock::time_point frameTime();
 // For F1: a short description of the current pacing ("120 fps (VRR)", "60 fps = 120 Hz / 2 ...").
 const char* status();
 bool vrrActive();
+// Running under Gamescope (Steam Deck game mode): presentation always waits for the display's
+// refresh there (VSync on; main.cpp), issue #11.
+bool gamescope();
 float presentedFps();
 
 }  // namespace recomp::pacing

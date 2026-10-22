@@ -17,6 +17,8 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
+#include <utility>
 #include <atomic>
 #include <cmath>
 #include <chrono>
@@ -50,6 +52,7 @@ std::thread sBoot;
 // waits for the host in present() but captures each frame into a tape, while the
 // host replays tapes at display rate. Entered and left at a guest present.
 std::atomic<u32> sPresents{0};
+std::atomic<u32> sGuestFrames{0};  // every present() call (hang reports: guestFrames)
 bool sEnterDecoupled = false;   // host -> guest, under sM: continue decoupled after this wait
 std::atomic<bool> sStayDecoupled{false};  // host -> guest: keep going decoupled at the next present
 bool sGuestDecoupled = false;   // guest thread
@@ -163,6 +166,7 @@ int targetFps() {
 }
 
 bool interpolating() { return sHostDecoupled; }
+u32 guestFrames() { return sGuestFrames.load(std::memory_order_relaxed); }
 
 void pace() {
     // Interpolated presentation is paced by pacing::beforeFrame (pacing.cpp); lockstep frames are
@@ -197,6 +201,18 @@ void setHostPaused(bool paused) { sPauseGuest = paused && sHostDecoupled; }
 bool gamePaused() { return sPauseGuest.load(std::memory_order_relaxed); }
 
 void present(Ctx& c, u32, bool) {
+    // Test aid LM_TEST_GUEST_STALL=<frame>[,<seconds>]: the game thread stops for <seconds> (default
+    // 40) at that frame, holding the guest CPU (hang reports: main.cpp, port::reportStall).
+    static const std::pair<u32, int> sStall = [] {
+        const char* e = std::getenv("LM_TEST_GUEST_STALL");
+        if (!e) return std::pair<u32, int>{0, 0};
+        const char* comma = std::strchr(e, ',');
+        return std::pair<u32, int>{u32(std::strtoul(e, nullptr, 10)), comma ? std::atoi(comma + 1) : 40};
+    }();
+    if (const u32 n = sGuestFrames.fetch_add(1, std::memory_order_relaxed) + 1; sStall.first && n == sStall.first) {
+        log("[test] game thread stalls for %d s at frame %u (LM_TEST_GUEST_STALL)", sStall.second, n);
+        std::this_thread::sleep_for(std::chrono::seconds(sStall.second));
+    }
     verifyLowMemory();
     gx::endFrame();
     hm::onFrame();

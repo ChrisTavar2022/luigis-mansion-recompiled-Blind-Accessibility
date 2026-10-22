@@ -18,6 +18,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -520,6 +521,59 @@ bool vrrActive() {
     return s == 1 || (s == 0 && sVrrSeen);
 }
 
+bool gamescope() {
+    // Gamescope sets GAMESCOPE_WAYLAND_DISPLAY for the programs it runs (Steam Deck game mode, or
+    // `gamescope -- <program>` on a desktop). LM_GAMESCOPE=0/1 (test aid) overrides the detection.
+    static const bool sOn = [] {
+        if (const char* e = std::getenv("LM_GAMESCOPE")) return *e == '1';
+        const char* d = std::getenv("GAMESCOPE_WAYLAND_DISPLAY");
+        const char* desk = std::getenv("XDG_CURRENT_DESKTOP");
+        return (d && *d) || (desk && std::strstr(desk, "gamescope"));
+    }();
+    return sOn;
+}
+
+namespace {
+// The frame-ahead limit (aurora_wait_frame_done) needs the GPU completion of each frame (present
+// timing, Aurora 0197/0216). A backend or driver that does not report it would make every frame
+// wait for the full timeout; after a few in a row frames are paced by the timer alone until
+// completions are reported again (issue #11: never wait on a signal that does not come).
+struct FrameAhead {
+    u32 timeouts = 0;    // in a row
+    u32 recovered = 0;   // completions seen in a row while off
+    bool off = false;
+} sAhead;
+
+void waitFrameAhead(u64 frame) {
+    FrameAhead& a = sAhead;
+    if (a.off) {
+        // Probe without waiting; back on after a few frames whose completion arrived in time.
+        if (aurora_wait_frame_done(frame, 0)) {
+            if (++a.recovered >= 30) {
+                a.off = false;
+                a.timeouts = 0;
+                log("[pacing] GPU frame completions are reported again: frame-ahead limit back on");
+            }
+        } else {
+            a.recovered = 0;
+        }
+        return;
+    }
+    if (aurora_wait_frame_done(frame, 50'000'000)) {
+        a.timeouts = 0;
+        return;
+    }
+    if (++a.timeouts >= 8) {
+        a.off = true;
+        a.recovered = 0;
+        log("[pacing] %u frames in a row were not reported finished by the GPU within 50 ms (a slow GPU, or present "
+            "timing not working: %llu frames never reported): frames are paced by the timer alone, without the "
+            "frame-ahead limit",
+            a.timeouts, (unsigned long long)aurora_present_timing_timeouts());
+    }
+}
+}  // namespace
+
 void beforeFrame() {
     // The host thread waits for each frame's scheduled start (SDL_DelayPrecise); at normal priority
     // that wait overslept by ~10 ms about once in 5 minutes (the thread not scheduled back in time
@@ -636,7 +690,7 @@ void beforeFrame() {
     sMode = mode;
     // The GPU at most one frame behind: the time from a frame's start to its display stays constant.
     const u64 begun = aurora_frame_counter();
-    if (mode != Mode::Fifo && begun > 1) aurora_wait_frame_done(begun - 1, 50'000'000);
+    if (mode != Mode::Fifo && begun > 1) waitFrameAhead(begun - 1);
     sStarts.push_back(Clock::now());
     sCur.started = sStarts.back();
     while (sStarts.size() > 1 && sStarts.back() - sStarts.front() > std::chrono::seconds(1)) sStarts.pop_front();
