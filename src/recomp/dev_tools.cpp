@@ -14,6 +14,7 @@
 #include "recomp/coop.h"
 #include "recomp/ui_scale.h"
 #include "recomp/unused2.h"
+#include "recomp/silly_world.h"
 
 #include <imgui.h>
 #include <SDL3/SDL.h>
@@ -396,6 +397,7 @@ HLE(LMChangeFrameBuffer__Fv) {
         }
 
     unused2::onFrame(c);
+    sillyworld::onFrame(c);
     viewer::guestFrame(c);
     callOriginal(c, "LMChangeFrameBuffer__Fv");
 }

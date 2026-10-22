@@ -15,6 +15,8 @@
 #include "recomp/interp.h"
 #include "recomp/runtime.h"
 #include "recomp/sched.h"
+#include "recomp/silly_world.h"
+#include "recomp/silly.h"
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
 #include "port/settings.h"
@@ -1277,7 +1279,9 @@ GXHLE(GXSetChanCtrl) {
 }
 GXHLE(GXSetChanMatColor) {
     const u32 at = interp::mark();
-    GXSetChanMatColor(GXChannelID(c.r[3]), color(c.r[4]));
+    GXColor col = color(c.r[4]);
+    sillyworld::tintGhostColor(&col.r);  // ghost colour shuffle (F1 > Enhancements > Silly)
+    GXSetChanMatColor(GXChannelID(c.r[3]), col);
     interp::noteColors(at);
 }
 GXHLE(GXSetChanAmbColor) {
@@ -1327,7 +1331,9 @@ static void noteTexImage(u32 obj, u32 image) {
     sTexImage[idx] = phys(image);
 }
 GXHLE_CPU(GXInitTexObj) {
-    GXInitTexObj(sTex.forInit(c.r[3], kTexTag), ptr(c.r[4]), u16(c.r[5]), u16(c.r[6]), GXTexFmt(c.r[7]),
+    // F1 > Enhancements > Silly: Luigi's clothes / Poltergust colours (a recoloured host copy).
+    const void* image = recomp::silly::texOverride(c.r[4], u16(c.r[5]), u16(c.r[6]), c.r[7]);
+    GXInitTexObj(sTex.forInit(c.r[3], kTexTag), image ? image : ptr(c.r[4]), u16(c.r[5]), u16(c.r[6]), GXTexFmt(c.r[7]),
                  GXTexWrapMode(c.r[8]), GXTexWrapMode(c.r[9]), GXBool(c.r[10]));
     noteTexImage(c.r[3], c.r[4]);
     static const bool sHudTraceSet = std::getenv("LM_HUD_TRACE") != nullptr;  // texture sizes in its held lines

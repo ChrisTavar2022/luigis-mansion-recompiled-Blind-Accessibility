@@ -144,6 +144,9 @@ fn_800B36B8 us pal
 # Unused model swaps (src/recomp/unused_models.cpp, early_luigi.cpp): model archive setup
 # (registry entry); unused models / the early Luigi .mdl are swapped in after it.
 fn_80061C94 us pal
+# F1 > Enhancements > Silly (src/recomp/silly.cpp): Luigi's joints (head/body size, wobble, paper)
+# are changed before the S3D skinning matrices are built from them.
+fn_80058850 us pal
 # Play as Mario (src/recomp/play_as_mario.cpp): S3DModel vertex morphs (Luigi's face shapes)
 # are skipped for the Mario model.
 fn_8005C760 us pal
@@ -335,3 +338,12 @@ draw__7J2DPaneFiiPC14J2DGrafContextb us pal
 free__10JKRExpHeapFPv us pal
 # Game heap allocations: failures logged loudly, LM_HEAP_LOG=1 logs all (src/recomp/tags.cpp).
 alloc__10JKRExpHeapFUli us pal
+# Silly options, world (src/recomp/silly_world.cpp, docs/ENHANCEMENTS.md "Silly options: world"):
+# moon gravity (coin / bill grain updates, treasure item fall state), confetti (coin / bill
+# bursts), ghost size (S3D calcView: the view matrix the joints are put into eye space with).
+fn_80157030 us pal
+fn_8015066C us pal
+fn_800CD1F4 us pal
+fn_801589A8 us pal
+fn_80151CC8 us pal
+fn_80059710 us pal

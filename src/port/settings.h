@@ -313,6 +313,33 @@ struct Unused2Settings {
     bool extraSpeedySpirits = false;  // Speedy Spirits 16-20 at invented spots (NOT original placements)
 };
 
+// F1 > Enhancements > Silly: world options (src/recomp/silly_world.cpp; docs/ENHANCEMENTS.md
+// "Silly options: world"). Cosmetic fun; every default is the retail game.
+struct SillyWorldSettings {
+    float ghostSize = 1.0f;        // ghost size (whole model, visual only), 0.5..3 (1 = off)
+    int ghostSizeTargets = 0;      // 0 all ghosts, 1 Boos only
+    bool ghostColorShuffle = false;  // every ghost gets its own random body/glow colour
+    bool disco = false;            // room lights cycle through colours
+    float discoSpeed = 1.0f;       // colour cycles per 10 s, 0.1..5
+    float luigiVoicePitch = 1.0f;  // Luigi's voice pitch, 0.5..2 (1 = off)
+    bool moonGravity = false;      // spilled treasure falls slowly, bounces higher
+    float moonGravityScale = 0.25f;  // gravity multiplier while on, 0.05..1
+    bool confettiCoins = false;    // money bursts throw confetti sparkles
+};
+
+// F1 > Enhancements > Silly: Luigi options (src/recomp/silly.cpp, docs/ENHANCEMENTS.md "Silly").
+// Visual only; the defaults are the retail look.
+enum SillyPiece { kSillyHat, kSillyShirt, kSillyOveralls, kSillyShoes, kSillyPoltergust, kSillyPieceCount };
+struct SillyLuigiSettings {
+    float headScale = 1.0f;       // Luigi's head (and hat, face) about the neck, 0.25..3
+    float bodyScale = 1.0f;       // whole model about his feet, 0.25..3 (camera/collision unchanged)
+    bool wobble = false;          // head on a spring driven by his movement
+    float wobbleStrength = 1.0f;  // 0.25..3
+    bool paper = false;           // flat along his facing axis (Paper Mario)
+    bool colorOn[kSillyPieceCount] = {};
+    unsigned colorRgb[kSillyPieceCount] = {0x3CA03C, 0x3CA03C, 0x2C3C8C, 0x6A3A1E, 0xD82020};  // 0xRRGGBB
+};
+
 // Self-updater (F1 > Game > Updates; src/port/update.cpp, docs/SETUP.md "Updates").
 struct UpdateSettings {
     bool checkAtStartup = true;  // look for a newer GitHub release in the background at startup
@@ -336,6 +363,8 @@ struct Settings {
     EnhancementSettings enhancements;
     GameplaySettings gameplay;
     Unused2Settings unused2;
+    SillyWorldSettings sillyWorld;
+    SillyLuigiSettings sillyLuigi;
     UpdateSettings updates;
 };
 

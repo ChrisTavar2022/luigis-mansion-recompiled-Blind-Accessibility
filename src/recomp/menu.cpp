@@ -17,6 +17,8 @@
 #include "recomp/hidden_mansion.h"
 #include "recomp/interp.h"
 #include "recomp/pacing.h"
+#include "recomp/silly_world.h"
+#include "recomp/silly.h"
 #include "recomp/skip.h"
 #include "recomp/ui_scale.h"
 #include "recomp/unused2.h"
@@ -86,7 +88,7 @@ constexpr Page kPages[] = {
     {"Visuals", "General"},       {"Visuals", "Rendering"},        {"Visuals", "Enhanced lighting"},
     {"Sound", nullptr},           {"Controls", "Ports"},           {"Controls", "Bindings"},
     {"Controls", "Analog"},       {"Enhancements", "General"},     {"Enhancements", "Gameplay"},
-    {"Enhancements", "Unused content"}, {"Enhancements", "Debug"}, {"Game", nullptr},
+    {"Enhancements", "Silly"},          {"Enhancements", "Unused content"}, {"Enhancements", "Debug"}, {"Game", nullptr},
 };
 constexpr int kPageCount = int(sizeof(kPages) / sizeof(kPages[0]));
 constexpr float kXs[] = {0.05f, 0.3f, 0.6f, 0.88f};
@@ -1826,6 +1828,13 @@ void debugTab() {
     recomp::unused2::debugSection();
 }
 
+// Silly options (off by default): Luigi (silly.cpp), then ghosts, mansion, voice and treasure (silly_world.cpp).
+void sillyTab() {
+    ImGui::TextDisabled("Just for fun. Every option off = the original game.");
+    recomp::silly::drawLuigiOptions();
+    recomp::silly::drawWorldOptions();  // ghosts, mansion, Luigi's voice, treasure (silly_world.cpp)
+}
+
 void enhancementsTab() {
     if (ImGui::BeginTabBar("enhancements")) {
         if (ImGui::BeginTabItem("General", nullptr, envTab("General"))) {
@@ -1834,6 +1843,10 @@ void enhancementsTab() {
         }
         if (ImGui::BeginTabItem("Gameplay", nullptr, envTab("Gameplay"))) {
             gameplayTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Silly", nullptr, envTab("Silly"))) {
+            sillyTab();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Unused content", nullptr, envTab("Unused content"))) {

@@ -156,6 +156,9 @@ bool isMarioCopy(u32 mdl) {
 
 }  // namespace
 
+// The Play-as-Mario copy of Luigi's .mdl (silly.cpp: Luigi's head/body options follow it).
+bool isMarioModel(u32 mdl) { return isMarioCopy(mdl); }
+
 // After fn_80061C94 filled a registry entry (and early_luigi.cpp may have swapped it).
 void marioModelLoaded(Ctx& c, u32 entry) {
     if (!marioOn() || entry < kModelRegistry || entry >= kModelRegistry + kEntrySize * kNumModels) return;

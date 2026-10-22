@@ -7,6 +7,7 @@
 #include "recomp/hle.h"
 #include "recomp/lightning_test.h"
 #include "recomp/runtime.h"
+#include "recomp/silly_world.h"
 #include "recomp/version.h"
 #include "recomp/widescreen.h"
 
@@ -166,7 +167,8 @@ HLE(fn_8006D1B8) {
 // for the duration of the call.
 static void roomUpdateAmbient(Ctx& c) {
     const float k = gameplay::ambientFactor();
-    if (k == 1.0f) return callOriginal(c, "fn_800168EC");
+    const bool disco = sillyworld::discoOn();  // disco mansion (F1 > Enhancements > Silly)
+    if (k == 1.0f && !disco) return callOriginal(c, "fn_800168EC");
     // Same record layout in both releases (European: read by the PAL-only fn_800179F8).
     const u32 roomNo = rd32(VA(0x803A3CA0) + 0xC) >> 24;
     const u32 rooms = rd32(VA(0x804D8178));
@@ -178,6 +180,7 @@ static void roomUpdateAmbient(Ctx& c) {
         const float v = float(saved[i]) * k;
         hostp(rec + 0x2C + i)[0] = u8(v > 255.0f ? 255.0f : v);
     }
+    if (disco) sillyworld::discoAmbient(hostp(rec + 0x2C));
     if (hm::palActive()) HM_FIRST("fn_800168EC room ambient x0.2");
     callOriginal(c, "fn_800168EC");
     for (int i = 0; i < 3; i++) hostp(rec + 0x2C + i)[0] = saved[i];

@@ -37,6 +37,7 @@
 #include "port/settings.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
+#include "recomp/silly_world.h"
 #include "recomp/version.h"
 
 #include <algorithm>
@@ -407,6 +408,7 @@ void update(Ctx& c) {
         // takes the element's colour instead (fire orange, water blue, ice cyan).
         if (const u32* ec = elementColor(element))
             for (int k = 0; k < 3; k++) rgb[k] = ec[k];
+        sillyworld::ghostGlowColor(a, rgb);  // ghost colour shuffle (F1 > Enhancements > Silly)
         toLinearNormalized(rgb, tr.color);
         float color[3] = {tr.color[0], tr.color[1], tr.color[2]};
         // Element hits tint the light with the element for a moment (fire spray on a water ghost...).
