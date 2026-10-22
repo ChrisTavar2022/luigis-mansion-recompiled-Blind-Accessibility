@@ -18,6 +18,7 @@
 #include "recomp/interp.h"
 #include "recomp/pacing.h"
 #include "recomp/skip.h"
+#include "recomp/ui_scale.h"
 #include "recomp/unused2.h"
 
 #include <aurora/aurora.h>
@@ -61,6 +62,9 @@ ImGuiTabItemFlags envTab(const char* name) {
 }
 bool sDirty = false;
 bool sQuit = false;  // "Quit game" confirmed
+// The menu window. The ID after ### is the old title, so imgui.ini keeps the window's saved size
+// and place.
+constexpr const char* kMenuWindow = "Luigi's Mansion Recompiled  (F1)###Luigi's Mansion PC  (F1)";
 std::string sOpenTab = sEnvTab ? "Enhancements" : "";  // tab to select once (LM_MENU / LM_MENU_TAB)
 
 // ---- Test aid LM_MENU_ID_CHECK=1: Dear ImGui ID-conflict sweep ----------------------------
@@ -144,7 +148,8 @@ void beforeWindow() {
     if (sDone) return;
     if (sPage >= 0) applyMouse();
     const ImVec2 ds = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowSize(ImVec2(680.0f, std::max(400.0f, ds.y - 16.0f)), ImGuiCond_Always);
+    const float s = recomp::ui::scale();  // (the default width at the current menu size)
+    ImGui::SetNextWindowSize(ImVec2(std::min(680.0f * s, ds.x - 16.0f), std::max(400.0f, ds.y - 16.0f)), ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImVec2(8.0f, 8.0f), ImGuiCond_Always);
 }
 
@@ -1218,8 +1223,68 @@ void frameRateControls(port::VideoSettings& v) {
     }
 }
 
+// Menu size (issue #20; ui_scale.cpp): Auto or a step. Dragging the slider only previews the
+// value in its label; the size changes when the slider is released (or at once with - / +), and
+// the menu is rescaled about the mouse so the control stays under it.
+void menuSizeControl() {
+    namespace ui = recomp::ui;
+    int& setting = port::settings().ui.menuScale;
+    int cur = 0;  // slider index: 0 Auto, else 1 + the nearest step
+    if (setting > 0) {
+        cur = 1;
+        for (int i = 1; i < ui::kStepCount; i++)
+            if (std::abs(ui::kSteps[i] - setting) < std::abs(ui::kSteps[cur - 1] - setting)) cur = i + 1;
+    }
+    static int sDrag = -1;  // index shown while the slider is held
+    int idx = sDrag >= 0 ? sDrag : cur;
+    char label[64];
+    if (idx == 0) std::snprintf(label, sizeof(label), "Auto (%d%%%%)", ui::autoPercent());
+    else std::snprintf(label, sizeof(label), "%d%%%%", ui::kSteps[idx - 1]);
+    const bool changed = recomp::menu::SliderInt("Menu size", &idx, 0, ui::kStepCount, label,
+                                                 ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_NoInput);
+    const bool active = ImGui::IsItemActive();
+    const ImVec2 itemCenter((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5f,
+                            (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5f);
+    bool commit = false;
+    if (active) {
+        if (changed || sDrag < 0) sDrag = idx;
+    } else if (sDrag >= 0) {
+        idx = sDrag;  // released
+        sDrag = -1;
+        commit = true;
+    } else if (changed) {
+        commit = true;  // - / + (or a click without a drag)
+    }
+    ImGui::SetItemTooltip("Size of this menu, its text and the game's other overlays (frame-rate counter,\n"
+                          "notices, shader preparation, debug windows). Auto picks it from the window\n"
+                          "height and the display's scaling setting: 100%% at 1080p, 200%% on a 4K screen,\n"
+                          "150%% on a Steam Deck. Text is drawn at the chosen size, so it stays sharp.\n"
+                          "Applies when the slider is released (or at once with - and +). A size too large\n"
+                          "for the window is limited to the largest that fits.");
+    if (commit) {
+        const int value = idx == 0 ? 0 : ui::kSteps[idx - 1];
+        if (value != setting) {
+            setting = value;
+            sDirty = true;
+            const ImGuiIO& io = ImGui::GetIO();
+            const bool mouse = ImGui::IsMousePosValid() && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+            recomp::ui::setAnchor(kMenuWindow, mouse ? io.MousePos : itemCenter);
+            if (value == 0) std::printf("[ui] menu size set to Auto\n");
+            else std::printf("[ui] menu size set to %d%%\n", value);
+            std::fflush(stdout);
+        }
+    }
+    if (cur > 0 && ui::percent() < ui::kSteps[cur - 1]) {
+        char note[96];
+        std::snprintf(note, sizeof(note), "%d%% is the largest that fits this window", ui::percent());
+        pending(note);
+    }
+}
+
 void visualsTab() {
     auto& v = port::settings().video;
+    ImGui::SeparatorText("Menu");
+    menuSizeControl();
     ImGui::SeparatorText("Frame rate and view");
     frameRateControls(v);
     static const char* kAspects[] = {"Original 4:3", "Match window", "16:9", "16:10", "21:9", "32:9"};
@@ -1641,6 +1706,7 @@ void fpsOverlay() {
 
 void init() {
     port::loadSettings();
+    recomp::ui::install(recomp::ui::Context::Game);
     applyWindowSettings();
     // LM_MENU=<tab> (testing/screenshots): start with the menu open on that tab.
     if (const char* tab = std::getenv("LM_MENU"); tab && *tab) {
@@ -1842,12 +1908,13 @@ void draw() {
     }
     updateToast();
     if (!sOpen) return;
-    ImGui::SetNextWindowSize(ImVec2(680, 400), ImGuiCond_FirstUseEver);
+    // Default 680 x 400 and at least 520 x 300 at 100%, scaled with the menu size and kept on the
+    // screen (ui_scale.cpp; after the first-use position, which would replace the one it sets).
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+    recomp::ui::beforeWindow(kMenuWindow, ImVec2(680, 400), ImVec2(520, 300));
     idcheck::beforeWindow();
     bool open = true;
-    // The ID after ### is the old title, so imgui.ini keeps the window's saved size and place.
-    if (ImGui::Begin("Luigi's Mansion Recompiled  (F1)###Luigi's Mansion PC  (F1)", &open, ImGuiWindowFlags_NoCollapse)) {
+    if (ImGui::Begin(kMenuWindow, &open, ImGuiWindowFlags_NoCollapse)) {
         ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.45f);
         if (ImGui::BeginTabBar("tabs")) {
             if (tab("Visuals")) {

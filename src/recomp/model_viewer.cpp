@@ -40,6 +40,7 @@
 #include "recomp/gx_bridge.h"
 #include "recomp/hle.h"
 #include "recomp/runtime.h"
+#include "recomp/ui_scale.h"
 #include "recomp/version.h"
 #include "port/install.h"
 
@@ -2415,7 +2416,8 @@ void window() {
 
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->Pos.x + 8, vp->Pos.y + 8), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(400, vp->Size.y * 0.85f), ImGuiCond_FirstUseEver);
+    recomp::ui::beforeWindow("Model viewer (F4)", ImVec2(400, vp->Size.y * 0.85f / std::max(recomp::ui::scale(), 0.01f)),
+                             ImVec2(300, 240));
     ImGui::SetNextWindowBgAlpha(0.75f);
     if (!ImGui::Begin("Model viewer (F4)", &sOpen)) {
         ImGui::End();
@@ -2514,12 +2516,12 @@ void window() {
         if (sGhostFx) {
             ImGui::ColorEdit4("Ghost colour", sGhostColor, ImGuiColorEditFlags_NoInputs);
             ImGui::SameLine();
-            ImGui::SetNextItemWidth(120);
+            ImGui::SetNextItemWidth(120 * recomp::ui::scale());
             recomp::menu::SliderFloat("Alpha", &sGhostAlpha, 0.0f, 1.0f, "%.2f");
         }
     }
     int wire = int(sWire);
-    ImGui::SetNextItemWidth(160);
+    ImGui::SetNextItemWidth(160 * recomp::ui::scale());
     ImGui::Combo("Wireframe", &wire, "Off\0Over model\0Only\0");
     sWire = Wire(wire);
     if (sWire != Wire::Off) {
@@ -2579,7 +2581,7 @@ void window() {
         ImGui::SameLine();
         ImGui::Checkbox("Loop", &sAnim.loop);
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(110);
+        ImGui::SetNextItemWidth(110 * recomp::ui::scale());
         recomp::menu::SliderFloat("Speed##anim", &sAnim.speed, 0.1f, 3.0f, "%.2fx");
         if (recomp::menu::SliderFloat("Frame", &sFrame, 0.0f, float(sNumFrames - 1), "%.0f")) sAnim.play = false;
         if (!sAnimInfo.empty()) ImGui::TextDisabled("%s", sAnimInfo.c_str());
