@@ -314,10 +314,17 @@ struct KeepWarm {
     u32 units = 0;
 } sWarm;
 
+void setWarmUnits(KeepWarm& w, u32 u) {
+    // (Logged when the filler starts and stops, so a report shows whether it ran.)
+    if ((w.units == 0) != (u == 0))
+        log("[pacing] GPU keep-warm %s (%u units, heavy %.1f ms)", u ? "started" : "stopped", u, w.heavy * 1e3);
+    aurora_set_gpu_keep_warm(w.units = u);
+}
+
 void keepWarm(double gpu, double period) {
     KeepWarm& w = sWarm;
-    if (!port::settings().rendering.gpuKeepWarm || gpu <= 0 || period <= 0) {
-        if (w.units) aurora_set_gpu_keep_warm(w.units = 0);
+    if (!keepWarmOn() || gpu <= 0 || period <= 0) {
+        if (w.units) setWarmUnits(w, 0);
         return;
     }
     // (Held while filling: a long menu must not lower the level the GPU is kept at; measured at
@@ -333,7 +340,7 @@ void keepWarm(double gpu, double period) {
     else if (gpu > period * 0.9 || gpu > want * 1.6) u = 0;  // the full scene is back (or too much)
     else if (gpu > want * 1.15) u = u * 7 / 8;
     else if (gpu < want * 0.75) u = u == 0 ? 2 : std::min<u32>(u + u / 5 + 1, 400);
-    if (u != w.units) aurora_set_gpu_keep_warm(w.units = u);
+    if (u != w.units) setWarmUnits(w, u);
 }
 
 // --- performance summary in the log (last_run.log), issue #18 ------------------------------------
@@ -618,6 +625,16 @@ bool gamescope() {
     return sOn;
 }
 
+bool keepWarmAvailable() {
+#ifdef _WIN32
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool keepWarmOn() { return keepWarmAvailable() && port::settings().rendering.gpuKeepWarm; }
+
 bool vsyncOn() {
     static const bool sKeep = [] { const char* e = std::getenv("LM_GAMESCOPE_VSYNC"); return e && *e == '0'; }();
     return port::settings().video.vsync || (gamescope() && !sKeep);
@@ -870,7 +887,7 @@ void beforeEnd() {
 }
 
 void afterFrame() {
-    if (!sPacing && !sLog && !port::settings().rendering.gpuKeepWarm) return;
+    if (!sPacing && !sLog && !keepWarmOn()) return;
     FrameRec r = sCur;
     r.frame = aurora_frame_counter();
     r.begun = sFrameTime;

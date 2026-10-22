@@ -233,6 +233,25 @@ stack; llvmpipe's worker threads block the signal and are listed as such; frame 
 `binary(+offset)`, resolved offline with `llvm-symbolizer --obj=<binary>`). `LM_GAMESCOPE=1` with
 VSync off gave FifoRelaxed on Windows (Vulkan, 90 fps presented) and in WSL.
 
+## NVIDIA: the picture froze about 20 s after start (issue #2)
+
+EndeavourOS, RTX 4060 Ti, NVIDIA 615.78 (open kernel module), Wayland, original 30 fps, either
+disc: about 20-25 s after the game started (title screen, intro map or foyer, whatever was on
+screen) the picture stopped while the music played on. Wayland: the render worker waited in
+GetCurrentTexture (the swap chain image never came back); X11 (`SDL_VIDEO_DRIVER=x11`):
+`CreateFence failed with VK_ERROR_OUT_OF_HOST_MEMORY` or `vkQueueSubmit failed with
+VK_ERROR_DEVICE_LOST`. No overlays/layers involved, no NVRM Xid lines, file descriptors flat
+(checked on the same package under llvmpipe: 45 fds over 900 frames). The player's test:
+`[rendering] gpu_keep_warm=0` fixed it on both discs.
+
+At 30 fps that setting is what runs the GPU keep-warm filler (Aurora 0215, a compute pass after
+the frame) and the per-frame GPU completion tracking (OnSubmittedWorkDone futures polled by the
+present-timing thread, Aurora 0197/0216); which of the two upset the driver is not known (no
+NVIDIA Linux machine here). Keep-warm is now Windows-only (`pacing::keepWarmAvailable`; the F1
+checkbox is greyed with a note on Linux), so on Linux the tracking runs only while interpolating,
+as on the Steam Deck. `[pacing] GPU keep-warm started/stopped` lines show when the filler runs.
+Open: whether interpolated frame rates on that driver (tracking on, no filler) also freeze.
+
 ## Known issues / not done
 
 - Real GPUs: only tested on Mesa's CPU Vulkan driver (WSLg). NVIDIA/AMD/Intel drivers on a

@@ -47,5 +47,11 @@ bool vsyncOn();
 // the refresh (VSync off, variable refresh, unknown refresh rate).
 float fixedRefreshFps(int fps);
 float presentedFps();
+// GPU keep-warm (F1 > Visuals > Rendering "Keep GPU clocks up in menus") can run on this system:
+// Windows only. On Linux with NVIDIA's driver it made the GPU stop completing work about 20 s into
+// the title screen (issue #2: a frozen picture on Wayland, a failed fence or device lost on X11).
+bool keepWarmAvailable();
+// The setting and the system allow it.
+bool keepWarmOn();
 
 }  // namespace recomp::pacing
