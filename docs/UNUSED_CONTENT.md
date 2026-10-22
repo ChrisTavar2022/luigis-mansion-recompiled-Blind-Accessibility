@@ -1108,12 +1108,57 @@ player switched to the track (the log said so) but it faded in from silence over
 nothing was heard (user report, October 2026). The game may still replace the music itself (room
 changes, events); the button then goes back from "Playing" to "Play".
 
-Test aids: `LM_JUKEBOX=<n>@<frame>` (request directly), `LM_JUKEBOX_UI=<n|stop>@<frame>,...`
+Tracks that stayed silent (user report "mario.com doesn't play", October 2026; a sweep of every
+track at the title screen, `LM_JUKEBOX_SWEEP`, WAV level per track):
+
+- **Mario.com (5/9)** was written for an older bank layout. A track's instrument is sequence
+  register 6 (bank << 8 | program: `a4 20 b` sets the bank, `a4 21 p` the program, `ac 06 bb pp`
+  both; child tracks inherit it, a root starts at 0x00F0). Mario.com never selects a bank: its
+  tracks use bank 0 (the sound-effect bank) programs 120-125, and bank 0 has only 124 of them, so
+  every note was dropped. Bank 1 is the only bank with all of 120-125. A hook on
+  `Jaq_SetSeqData_Limit` (where JAudio takes sequence data) recognises Mario.com by its first
+  bytes and moves its six `ac 06 00 pp` writes to bank 1 and track 1's opening `e7 00 00`
+  (SyncCPU 0, a no-op for music) to `a4 20 01`; each site is checked before it is changed. No
+  other music track uses bank 0; the game never plays Mario.com, so its music is unchanged.
+- **Room_Baby (31), Room_Space (32)** carry info flag 0x80000000, which the music player
+  (`fn_801889FC`) refuses: the game starts Room_Baby itself on the second music handle
+  (`fn_80189858`: `fn_8018D6C0(jai, id, &lbl_804D91A8, 0, 0, 4)`). The jukebox now reads the flags
+  (`getSoundInfoFromID`) and starts such tracks the same way. Room_Baby is quiet by nature (RMS
+  about 110 at the title on US and PAL, about -50 dBFS), Room_Space at normal level.
+- **Layers left running**: tracks with info flag 0x08000000 (Kinopio_Light 30, Light.com 78) play
+  on that second handle, but Stop (`fn_8018A570`) only stops the main one. The layer kept playing
+  through Stop and later picks, and the player refuses some starts while it runs (a room track
+  while Kinopio_Light is on). Stop and every pick now stop both handles; "Playing" follows both.
+- **Any track, after a streamed track started**: starting an .afc stream (`fn_8019480C`) calls
+  `DVDT_Pause`, and JAudio's DVD task thread then sleeps until the stream's end calls
+  `DVDT_UnPause`. A pick whose sequence data was not still in one of the two sequence buffers
+  was queued behind it (`DVDT_LoadtoDRAM` never called back, the sound stayed in state 1) and
+  nothing played. Seen at the title screen once a picked track had ended (the title then starts
+  its stream). The jukebox now calls `DVDT_UnPause` before a pick when `DVDT_PAUSE_FLAG` is set;
+  the HLE disc has no drive to share, and the stream's own UnPause later is a no-op.
+- **Not broken**: Total.com (17) is 32 bytes (tempo, one rest, end), listed as "empty (no
+  notes)". Tittle (33), Demo_FirstDoc (11), Change_Kabe (64), Demo_Sakasa (72) open with 4-6 s
+  of rest (Tittle's first bars run at tempo 21 under the title's thunder), so they sounded
+  silent in short tests.
+
+Verified after the fixes (USA title screen, every distinct track 1-88 for 8 s in a row): all 80
+tracks with notes audible (RMS 330-7000 over the window, onsets after the rests above), the DVD
+pause lifted 12 times on the way; Total.com silent. PAL (LuigisMansionRecomp with the European
+disc): Mario.com, Room_Baby, Room_Space, Kinopio_Light, PianistQuiz02/03, Mario02 play, including
+a pick behind a stream's pause. Foyer: Mario.com, Room tracks, Kinopio_Light start and load.
+
+Test aids: `LM_JUKEBOX=<n>@<frame>` (request directly), `LM_JUKEBOX_SWEEP=<frame>,<frames per
+track>[,<first>-<last> | <n>+<n>+...]` (plays the tracks in turn; each start is logged with its
+`LM_AUDIO_WAV_RAW` sample position, so levels per track can be read from the WAV; the title
+screen is the quiet place for it, apart from its thunder), `LM_SEQ_LOG=1` (every sequence JAudio
+takes: buffer, size, first bytes),
+`LM_JUKEBOX_UI=<n|stop>@<frame>,...`
 (activates the menu's own Play / Stop button through ImGui, so the menu path is covered; open the
 menu with `LM_MENU=Sound`). Check with `LM_AUDIO_WAV_RAW` levels, not only the
 `[jukebox] music now` log. Verified (USA, `LM_AUDIO_WAV_RAW` RMS per second): title screen
 GoodNight (18) and select.com (40) audible from the click, Stop silences the music; in the foyer
-Total.com (17) and Ochi01 (84) above the ambience, Stop back to the ambience alone.
+Ochi01 (84) above the ambience, Stop back to the ambience alone (Total.com, 17, reported there
+too, has no notes: what was heard was the ambience).
 
 ### Ending pictures (`gallery.cpp`)
 
