@@ -47,6 +47,15 @@ Field flag(const char* section, const char* key, bool& v) {
 Field str(const char* section, const char* key, std::string& v) {
     return {section, key, [&v] { return v; }, [&v](const std::string& s) { v = s; }};
 }
+// 0xRRGGBB as six hex digits.
+Field rgb(const char* section, const char* key, unsigned& v) {
+    return {section, key, [&v] { char b[8]; std::snprintf(b, sizeof b, "%06X", v & 0xFFFFFFu); return std::string(b); },
+            [&v](const std::string& s) {
+                char* end = nullptr;
+                const unsigned long x = std::strtoul(s.c_str(), &end, 16);
+                if (end && end != s.c_str()) v = unsigned(x & 0xFFFFFFu);
+            }};
+}
 template <typename E>
 Field enm(const char* section, const char* key, E& v) {
     return {section, key, [&v] { return std::to_string(int(v)); },
@@ -268,6 +277,21 @@ std::vector<Field> fields() {
         flag("silly_world", "moon_gravity", sSettings.sillyWorld.moonGravity),
         num("silly_world", "moon_gravity_scale", sSettings.sillyWorld.moonGravityScale),
         flag("silly_world", "confetti_coins", sSettings.sillyWorld.confettiCoins),
+        num("silly_luigi", "head_scale", sSettings.sillyLuigi.headScale),
+        num("silly_luigi", "body_scale", sSettings.sillyLuigi.bodyScale),
+        flag("silly_luigi", "wobble", sSettings.sillyLuigi.wobble),
+        num("silly_luigi", "wobble_strength", sSettings.sillyLuigi.wobbleStrength),
+        flag("silly_luigi", "paper", sSettings.sillyLuigi.paper),
+        flag("silly_luigi", "hat_color_on", sSettings.sillyLuigi.colorOn[kSillyHat]),
+        rgb("silly_luigi", "hat_color", sSettings.sillyLuigi.colorRgb[kSillyHat]),
+        flag("silly_luigi", "shirt_color_on", sSettings.sillyLuigi.colorOn[kSillyShirt]),
+        rgb("silly_luigi", "shirt_color", sSettings.sillyLuigi.colorRgb[kSillyShirt]),
+        flag("silly_luigi", "overalls_color_on", sSettings.sillyLuigi.colorOn[kSillyOveralls]),
+        rgb("silly_luigi", "overalls_color", sSettings.sillyLuigi.colorRgb[kSillyOveralls]),
+        flag("silly_luigi", "shoes_color_on", sSettings.sillyLuigi.colorOn[kSillyShoes]),
+        rgb("silly_luigi", "shoes_color", sSettings.sillyLuigi.colorRgb[kSillyShoes]),
+        flag("silly_luigi", "poltergust_color_on", sSettings.sillyLuigi.colorOn[kSillyPoltergust]),
+        rgb("silly_luigi", "poltergust_color", sSettings.sillyLuigi.colorRgb[kSillyPoltergust]),
         flag("updates", "check_at_startup", sSettings.updates.checkAtStartup),
         str("updates", "skip_version", sSettings.updates.skipVersion),
     };
@@ -379,6 +403,10 @@ void sanitize() {
     clampTo(sw.discoSpeed, 0.1f, 5.0f);
     clampTo(sw.luigiVoicePitch, 0.5f, 2.0f);
     clampTo(sw.moonGravityScale, 0.05f, 1.0f);
+    auto& sl = sSettings.sillyLuigi;
+    clampTo(sl.headScale, 0.25f, 3.0f);
+    clampTo(sl.bodyScale, 0.25f, 3.0f);
+    clampTo(sl.wobbleStrength, 0.25f, 3.0f);
 }
 
 }  // namespace

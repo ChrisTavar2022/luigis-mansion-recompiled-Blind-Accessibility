@@ -13,6 +13,7 @@ retail body instead of replacing it).
 | Widescreen / ultrawide | Works: Hor+ 3D, 4:3 or edge-anchored HUD, culling widened. Limitations below. |
 | Field of view | Works (F1 > Visuals > Field of view); culling follows. |
 | High frame rate (interpolation) | Works: 60 fps or display rate, game logic stays 30 Hz (section 3). |
+| Silly options (Luigi) | Head/body size, wobbly head, paper Luigi, clothes and Poltergust colours (section 5). |
 
 ## 1. Arbitrary resolution
 
@@ -539,3 +540,102 @@ The earlier "broken / can get stuck" state was not reproduced.
   number of frames a loading pause lasts can therefore differ from a watched run.
 - Music keeps playing at normal speed (muted) during a skip, so after a skip a track
   may be at a different position than after watching.
+
+## 5. Silly options: Luigi (F1 > Enhancements > Silly)
+
+Just for fun, visual only, every option off by default (with all of them at their defaults the
+frames are byte-identical to a build without them). Code: `src/recomp/silly.cpp`, settings
+`[silly_luigi]` (`port::SillyLuigiSettings`). The ghost/world options in the same sub-tab come
+from a separate module (branch silly-world).
+
+| Option | What it does |
+|--------|--------------|
+| Head size 0.25x-3x | Head, cap, face, nose and mustache scaled about the neck |
+| Body size 0.25x-3x | Whole model plus his equipment, about his feet; camera, collision and hit boxes unchanged |
+| Wobbly head (+ strength) | The head lags, tilts and stretches on a damped spring driven by the neck's acceleration |
+| Paper Luigi | Flattened to 6 % along his facing axis: normal from the front/back, a sheet from the side |
+| Cap / Shirt / Overalls / Shoes colour | Each piece separately, picker + presets, outfit row (Classic, Mario, Wario, Waluigi, Fire Luigi) |
+| Poltergust colour | The red tank (Gold, Chrome, green, ...); nozzle, hose and metal parts stay |
+
+### Sizes, wobble, paper: Luigi's joint matrices
+
+S3D models (`.mdl`) keep a world matrix per joint at S3DModel +0x14 (3x4, 0x30 bytes). Every
+path that animates one (calcJoints `fn_800589B0`, the actor loop `fn_800613C8`, `fn_800689BC`)
+then calls `fn_80058850`, which builds the skinning (envelope) matrices from them. Its hook
+(`us pal`) changes the joints first, so the skin, the rigid face parts (bound to the head
+joint), every pass's view and normal matrices (`fn_80059710`; the shadow maps too) and the
+interpolation tape all see the changed pose: blending stays smooth at 120 fps (nursery
+`LM_INTERP_TEST=3` run: the same snapped/unpaired matrix counts as without the options).
+
+- Luigi's models are recognised by his cap texture (content hash, below) and the
+  Play-as-Mario copy. The head is the joint subtree from the neck up; the neck is found per
+  model: the cap material's joints, their common ancestor, then up the chain to the first joint
+  clearly above its parent and well below the cap's top (thresholds relative to his height).
+  Gameplay/cutscene/ending rig (65 joints): joint 51 (8 head joints); opening rig (122): 88;
+  the file-select scene's smaller, seated Luigi (124): 92.
+- Body size and paper act on all joints about joint 0 (between his feet). The facing axis is
+  joint 0's +Z.
+- His equipment (Poltergust body `vbody`, nozzle `vhead`, flashlight `wplight`, Game Boy
+  Horror `gameboy`) are separate models placed at his joints by position and turn but at their
+  own size, so they are scaled (and flattened) about their own root (recognised by texture
+  hash). The hose follows its two ends.
+- The wobble spring is per model instance, stepped once per game frame
+  (`frame::guestFrames()`), reset on teleports (> 120 units in a frame).
+- A guard skips a second `fn_80058850` on joints that were not recomputed since (no double
+  apply). The model viewer is left original (nothing applies while it is open).
+
+Other modules change joints through the same handler: `recomp::silly::addJointScaler(fn)`
+(`src/recomp/silly.h`) registers a callback `(Ctx&, s3d, mdl, joints, numJoints)` that runs
+for every S3D model right before the skinning matrices are built (silly-world's ghost size).
+
+### Colours: Luigi's textures
+
+Luigi has no palette textures: his clothes are CMPR (DXT1) textures shared by every Luigi
+model on the disc (gameplay `luige`, cutscene `dluige01-03`, ending `db_luigi`, opening
+`entergate`/`opwf_luigi`, file select `select`): the cap (128x128, green with the white "L"),
+one texture for shirt and overalls (128x128; 128x256 in the opening and file-select models:
+the green shirt between the blue straps), the shoes (64x64). The Poltergust's red parts are in
+`vbody` (game archive and `/model/vbody.szp`) and the ending's `db_sojiki`. They are recognised
+by a 64-bit FNV-1a of their texels (identical on the USA and PAL discs) in the `GXInitTexObj`
+HLE (`silly::texOverride`), which hands Aurora a recoloured host copy instead of guest memory.
+Aurora caches textures by content, so a new colour is simply another texture.
+
+Per piece, a hue/saturation class picks the colours that belong to it (green = shirt or cap,
+blue = overalls, brown = shoes, red = Poltergust); white, grey and the yellow buttons are
+untouched. In each CMPR block both endpoint colours are recoloured on their own (the
+interpolated texels follow; endpoint order and indices are fixed up so the block mode stays):
+the new colour is the picked colour at the endpoint's brightness relative to the piece's mean
+brightness, so the shading is kept and the picked colour is the piece's average.
+
+### Test aids
+
+`LM_HEAD_SCALE=<f>`, `LM_BODY_SCALE=<f>`, `LM_WOBBLE=<strength>`, `LM_PAPER=1`,
+`LM_OUTFIT=classic|mario|wario|waluigi|fire`, `LM_HAT_COLOR` / `LM_SHIRT_COLOR` /
+`LM_OVERALLS_COLOR` / `LM_SHOES_COLOR` / `LM_POLTERGUST_COLOR=RRGGBB` (applied to the settings at
+start; `[silly] ...` log lines name the Luigi models found and the textures recoloured).
+
+### Limits
+
+- Head size above about 2.5x touches the ceiling lamps / clips into walls in small rooms;
+  below 0.4x the cap and face get hard to see. The neck stays the original width.
+- Body size scales the drawn model only: Luigi still collides, picks up and vacuums at his
+  original size.
+- Paper Luigi: the hose ring is not flattened (it follows the nozzle and the tank).
+- Play as Mario: his model copy is included for the sizes, wobble and paper (joint 51 as the
+  neck) and his own textures are not recoloured; not seen working yet, because Play as Mario
+  currently stops with malformed GX FIFO data in the nursery on main too (with the Silly options
+  off).
+
+### Verification (2026-10-22)
+
+- Defaults: `LM_FRAME_DUMP` of the nursery route (frames 2600-2700) byte-identical to a build
+  of main (two runs each).
+- Nursery, US, 30 fps: head 2.5x / 2x / 0.4x, body 0.6x (equipment follows) and 1.5x, paper,
+  wobble, outfits Mario, Wario, Waluigi, Fire Luigi, Poltergust gold/blue/green; Enhanced
+  lighting with lightning; 120 fps `LM_INTERP_TEST=3` (snapped/unpaired matrix counts equal to
+  the run without the options).
+- Opening cutscene (122-joint rig): head and colours; the European build
+  (`LM_DOL_VERSION=GLMP01`): head, body, colours. The file-select Luigi (124-joint rig) gets
+  neck joint 92 and its textures recoloured (log), but was not caught on screen.
+- Screenshots: `out/silly/` in the main checkout (not committed).
+

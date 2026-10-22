@@ -327,6 +327,19 @@ struct SillyWorldSettings {
     bool confettiCoins = false;    // money bursts throw confetti sparkles
 };
 
+// F1 > Enhancements > Silly: Luigi options (src/recomp/silly.cpp, docs/ENHANCEMENTS.md "Silly").
+// Visual only; the defaults are the retail look.
+enum SillyPiece { kSillyHat, kSillyShirt, kSillyOveralls, kSillyShoes, kSillyPoltergust, kSillyPieceCount };
+struct SillyLuigiSettings {
+    float headScale = 1.0f;       // Luigi's head (and hat, face) about the neck, 0.25..3
+    float bodyScale = 1.0f;       // whole model about his feet, 0.25..3 (camera/collision unchanged)
+    bool wobble = false;          // head on a spring driven by his movement
+    float wobbleStrength = 1.0f;  // 0.25..3
+    bool paper = false;           // flat along his facing axis (Paper Mario)
+    bool colorOn[kSillyPieceCount] = {};
+    unsigned colorRgb[kSillyPieceCount] = {0x3CA03C, 0x3CA03C, 0x2C3C8C, 0x6A3A1E, 0xD82020};  // 0xRRGGBB
+};
+
 // Self-updater (F1 > Game > Updates; src/port/update.cpp, docs/SETUP.md "Updates").
 struct UpdateSettings {
     bool checkAtStartup = true;  // look for a newer GitHub release in the background at startup
@@ -351,6 +364,7 @@ struct Settings {
     GameplaySettings gameplay;
     Unused2Settings unused2;
     SillyWorldSettings sillyWorld;
+    SillyLuigiSettings sillyLuigi;
     UpdateSettings updates;
 };
 

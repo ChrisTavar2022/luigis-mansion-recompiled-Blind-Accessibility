@@ -18,6 +18,7 @@
 #include "recomp/interp.h"
 #include "recomp/pacing.h"
 #include "recomp/silly_world.h"
+#include "recomp/silly.h"
 #include "recomp/skip.h"
 #include "recomp/ui_scale.h"
 #include "recomp/unused2.h"
@@ -1827,6 +1828,13 @@ void debugTab() {
     recomp::unused2::debugSection();
 }
 
+// Silly options (off by default): Luigi (silly.cpp), then ghosts, mansion, voice and treasure (silly_world.cpp).
+void sillyTab() {
+    ImGui::TextDisabled("Just for fun. Every option off = the original game.");
+    recomp::silly::drawLuigiOptions();
+    recomp::silly::drawWorldOptions();  // ghosts, mansion, Luigi's voice, treasure (silly_world.cpp)
+}
+
 void enhancementsTab() {
     if (ImGui::BeginTabBar("enhancements")) {
         if (ImGui::BeginTabItem("General", nullptr, envTab("General"))) {
@@ -1838,8 +1846,7 @@ void enhancementsTab() {
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Silly", nullptr, envTab("Silly"))) {
-            ImGui::TextDisabled("Just for fun. Every option off = the original game.");
-            recomp::silly::drawWorldOptions();
+            sillyTab();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Unused content", nullptr, envTab("Unused content"))) {
