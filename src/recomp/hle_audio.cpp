@@ -15,6 +15,7 @@
 #include "recomp/cpu_qos.h"
 #include "recomp/hle.h"
 #include "recomp/sched.h"
+#include "recomp/silly_world.h"
 
 #include <algorithm>
 #include <atomic>
@@ -372,7 +373,12 @@ void callWithInterruptsOff(Ctx& c, const char* name) {
     if (ee) c.poll();
 }
 }  // namespace
-HLE(fn_8019754C) { callWithInterruptsOff(c, "fn_8019754C"); }
+// (r4 = the JAISound** handle, r6 = the sound id: Luigi's voice pitch, silly_world.cpp)
+HLE(fn_8019754C) {
+    const u32 handle = c.r[4], id = c.r[6];
+    callWithInterruptsOff(c, "fn_8019754C");
+    sillyworld::onSeStarted(c, id, handle);
+}
 HLE(fn_80197810) { callWithInterruptsOff(c, "fn_80197810"); }
 HLE(fn_80197B30) { callWithInterruptsOff(c, "fn_80197B30"); }
 

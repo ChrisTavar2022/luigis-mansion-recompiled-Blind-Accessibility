@@ -313,6 +313,20 @@ struct Unused2Settings {
     bool extraSpeedySpirits = false;  // Speedy Spirits 16-20 at invented spots (NOT original placements)
 };
 
+// F1 > Enhancements > Silly: world options (src/recomp/silly_world.cpp; docs/ENHANCEMENTS.md
+// "Silly options: world"). Cosmetic fun; every default is the retail game.
+struct SillyWorldSettings {
+    float ghostHeadScale = 1.0f;   // Big Head Mode for ghosts: head joint scale, 0.5..3 (1 = off)
+    int ghostHeadTargets = 0;      // 0 all ghosts, 1 Boos only
+    bool ghostColorShuffle = false;  // every ghost gets its own random body/glow colour
+    bool disco = false;            // room lights cycle through colours
+    float discoSpeed = 1.0f;       // colour cycles per 10 s, 0.1..5
+    float luigiVoicePitch = 1.0f;  // Luigi's voice pitch, 0.5..2 (1 = off)
+    bool moonGravity = false;      // spilled treasure falls slowly, bounces higher
+    float moonGravityScale = 0.25f;  // gravity multiplier while on, 0.05..1
+    bool confettiCoins = false;    // money bursts throw confetti sparkles
+};
+
 // Self-updater (F1 > Game > Updates; src/port/update.cpp, docs/SETUP.md "Updates").
 struct UpdateSettings {
     bool checkAtStartup = true;  // look for a newer GitHub release in the background at startup
@@ -336,6 +350,7 @@ struct Settings {
     EnhancementSettings enhancements;
     GameplaySettings gameplay;
     Unused2Settings unused2;
+    SillyWorldSettings sillyWorld;
     UpdateSettings updates;
 };
 

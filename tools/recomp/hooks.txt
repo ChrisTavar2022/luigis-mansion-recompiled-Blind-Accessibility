@@ -335,3 +335,12 @@ draw__7J2DPaneFiiPC14J2DGrafContextb us pal
 free__10JKRExpHeapFPv us pal
 # Game heap allocations: failures logged loudly, LM_HEAP_LOG=1 logs all (src/recomp/tags.cpp).
 alloc__10JKRExpHeapFUli us pal
+# Silly options, world (src/recomp/silly_world.cpp, docs/ENHANCEMENTS.md "Silly options: world"):
+# moon gravity (coin / bill grain updates, treasure item fall state), confetti (coin / bill
+# bursts), Big Head Mode for ghosts (S3D envelope matrices).
+fn_80157030
+fn_8015066C
+fn_800CD1F4
+fn_801589A8
+fn_80151CC8
+fn_80058850
