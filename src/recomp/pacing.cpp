@@ -19,6 +19,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <string>
@@ -605,6 +606,79 @@ bool vrrActive() {
     return s == 1 || (s == 0 && sVrrSeen);
 }
 
+bool gamescope() {
+    // Gamescope sets GAMESCOPE_WAYLAND_DISPLAY for the programs it runs (Steam Deck game mode, or
+    // `gamescope -- <program>` on a desktop). LM_GAMESCOPE=0/1 (test aid) overrides the detection.
+    static const bool sOn = [] {
+        if (const char* e = std::getenv("LM_GAMESCOPE")) return *e == '1';
+        const char* d = std::getenv("GAMESCOPE_WAYLAND_DISPLAY");
+        const char* desk = std::getenv("XDG_CURRENT_DESKTOP");
+        return (d && *d) || (desk && std::strstr(desk, "gamescope"));
+    }();
+    return sOn;
+}
+
+bool vsyncOn() {
+    static const bool sKeep = [] { const char* e = std::getenv("LM_GAMESCOPE_VSYNC"); return e && *e == '0'; }();
+    return port::settings().video.vsync || (gamescope() && !sKeep);
+}
+
+namespace {
+// Fixed refresh: refreshes per frame for a target frame period (at most 4). LM_PACING_DIVISOR=n
+// (test aid): at least every n-th refresh.
+u32 minDivisor(double minPeriod, double refresh) {
+    static const u32 sMinDiv = [] { const char* e = std::getenv("LM_PACING_DIVISOR"); return e ? u32(std::max(1, std::atoi(e))) : 1u; }();
+    return std::min<u32>(std::max(u32(std::max(1.0, std::ceil(minPeriod / refresh - 0.02))), sMinDiv), 4);
+}
+}  // namespace
+
+float fixedRefreshFps(int fps) {
+    const float hz = frame::displayRefreshHz();
+    if (!vsyncOn() || hz <= 0 || vrrActive() || fps <= 0) return 0.0f;
+    return hz / float(minDivisor(1.0 / double(fps), 1.0 / double(hz)));
+}
+
+namespace {
+// The frame-ahead limit (aurora_wait_frame_done) needs the GPU completion of each frame (present
+// timing, Aurora 0197/0216). A backend or driver that does not report it would make every frame
+// wait for the full timeout; after a few in a row frames are paced by the timer alone until
+// completions are reported again (issue #11: never wait on a signal that does not come).
+struct FrameAhead {
+    u32 timeouts = 0;    // in a row
+    u32 recovered = 0;   // completions seen in a row while off
+    bool off = false;
+} sAhead;
+
+void waitFrameAhead(u64 frame) {
+    FrameAhead& a = sAhead;
+    if (a.off) {
+        // Probe without waiting; back on after a few frames whose completion arrived in time.
+        if (aurora_wait_frame_done(frame, 0)) {
+            if (++a.recovered >= 30) {
+                a.off = false;
+                a.timeouts = 0;
+                log("[pacing] GPU frame completions are reported again: frame-ahead limit back on");
+            }
+        } else {
+            a.recovered = 0;
+        }
+        return;
+    }
+    if (aurora_wait_frame_done(frame, 50'000'000)) {
+        a.timeouts = 0;
+        return;
+    }
+    if (++a.timeouts >= 8) {
+        a.off = true;
+        a.recovered = 0;
+        log("[pacing] %u frames in a row were not reported finished by the GPU within 50 ms (a slow GPU, or present "
+            "timing not working: %llu frames never reported): frames are paced by the timer alone, without the "
+            "frame-ahead limit",
+            a.timeouts, (unsigned long long)aurora_present_timing_timeouts());
+    }
+}
+}  // namespace
+
 void beforeFrame() {
     // The host thread waits for each frame's scheduled start (SDL_DelayPrecise); at normal priority
     // that wait overslept by ~10 ms about once in 5 minutes (the thread not scheduled back in time
@@ -641,7 +715,7 @@ void beforeFrame() {
         sNext = now;
         sStarts.push_back(now);
         while (sStarts.size() > 1 && sStarts.back() - sStarts.front() > std::chrono::seconds(1)) sStarts.pop_front();
-        std::snprintf(sStatus, sizeof(sStatus), "%.0f fps (unlimited%s)", presentedFps(), v.vsync ? ", VSync on" : "");
+        std::snprintf(sStatus, sizeof(sStatus), "%.0f fps (unlimited%s)", presentedFps(), vsyncOn() ? ", VSync on" : "");
         sCur.mode = 'U';
         sCur.target = 0;
         return;
@@ -651,7 +725,8 @@ void beforeFrame() {
     const double minPeriod = 1.0 / double(fps);
     Mode mode;
     double period, base;
-    if (!v.vsync || hz <= 0) {
+    const bool vsync = vsyncOn();
+    if (!vsync || hz <= 0) {
         mode = Mode::Grid;
         base = minPeriod;
         period = std::max(minPeriod, need);
@@ -665,9 +740,7 @@ void beforeFrame() {
     } else {
         // Fixed refresh: every n-th refresh, never an uneven rate.
         const double refresh = 1.0 / double(hz);
-        // LM_PACING_DIVISOR=n (test aid): at least every n-th refresh.
-        static const u32 sMinDiv = [] { const char* e = std::getenv("LM_PACING_DIVISOR"); return e ? u32(std::max(1, std::atoi(e))) : 1u; }();
-        const u32 n0 = std::min<u32>(std::max(u32(std::max(1.0, std::ceil(minPeriod / refresh - 0.02))), sMinDiv), 4);
+        const u32 n0 = minDivisor(minPeriod, refresh);
         u32 n = u32(std::max(1.0, std::ceil(std::max(minPeriod, need) / refresh - 0.02)));
         n = std::min<u32>(std::max(n, n0), 4);
         sDivisor = n;
@@ -723,7 +796,7 @@ void beforeFrame() {
     sMode = mode;
     // The GPU at most one frame behind: the time from a frame's start to its display stays constant.
     const u64 begun = aurora_frame_counter();
-    if (mode != Mode::Fifo && begun > 1) aurora_wait_frame_done(begun - 1, 50'000'000);
+    if (mode != Mode::Fifo && begun > 1) waitFrameAhead(begun - 1);
     sStarts.push_back(Clock::now());
     sCur.started = sStarts.back();
     while (sStarts.size() > 1 && sStarts.back() - sStarts.front() > std::chrono::seconds(1)) sStarts.pop_front();
@@ -744,7 +817,7 @@ void beforeFrame() {
         std::snprintf(sStatus, sizeof(sStatus), "%.0f fps (%.0f Hz)", shown, hz);
     else if (mode == Mode::Vblank)
         std::snprintf(sStatus, sizeof(sStatus), "%.0f fps = %.0f Hz / %u%s", shown, hz, sDivisor, why);
-    else if (vrr && v.vsync)
+    else if (vrr && vsync)
         std::snprintf(sStatus, sizeof(sStatus), "%.0f fps (variable refresh)%s", shown, why);
     else
         std::snprintf(sStatus, sizeof(sStatus), "%.0f fps%s", shown, why);

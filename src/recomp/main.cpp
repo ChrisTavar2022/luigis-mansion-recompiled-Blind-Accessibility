@@ -4,6 +4,7 @@
 #include <aurora/dvd.h>
 #include <aurora/event.h>
 #include <aurora/main.h>
+#include <aurora/present_timing.h>
 #include <dolphin/dvd.h>
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_messagebox.h>
@@ -33,6 +34,7 @@
 #include "setup/setup.h"
 #endif
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -156,12 +158,34 @@ std::string argValue(int argc, char** argv, const char* name) {
 }
 #endif
 
+// Hang reports (port/crash_handler.h): whether the game itself kept running and what Aurora's
+// threads are doing, so a log tells a stopped game from a stopped display (issue #11: on a Steam
+// Deck the game kept running at the file select while nothing was presented any more).
+std::atomic<u32> sFramesAtStall{0};
+std::atomic<bool> sStallOpen{false};
+void hangDetail(char* out, size_t size, bool stallBegins) {
+    const u32 frames = frame::guestFrames();
+    if (stallBegins) {
+        sFramesAtStall.store(frames, std::memory_order_relaxed);
+        sStallOpen.store(true, std::memory_order_relaxed);
+        return;
+    }
+    char act[400] = "";
+    aurora_describe_activity(act, sizeof(act), 1000);
+    char since[64] = "";
+    if (sStallOpen.load(std::memory_order_relaxed))
+        std::snprintf(since, sizeof(since), ", %u since the main thread stopped", frames - sFramesAtStall.load(std::memory_order_relaxed));
+    std::snprintf(out, size, "game frames %u%s (%s)%s%s", frames, since,
+                  frame::interpolating() ? "interpolated presentation" : "lockstep", act[0] ? "; aurora: " : "", act);
+}
+
 }  // namespace
 }  // namespace recomp
 
 int main(int argc, char* argv[]) {
     using namespace recomp;
     port::installCrashHandler();
+    port::setHangDetail(&hangDetail);
     port::startHangWatchdog();
     port::parseOptions(argc, argv);
     port::setLaunchArgs(argc, argv);
@@ -204,6 +228,17 @@ int main(int argc, char* argv[]) {
     }
     config.msaa = u32(port::settings().video.msaa);
     config.vsync = port::settings().video.vsync;
+    // Under Gamescope (Steam Deck game mode) the swap chain always waits for the refresh (FIFO).
+    // Gamescope composites every frame, so VSync off (Mailbox there) never tore and only lowered
+    // latency, and interpolated presentation with Mailbox stopped showing frames on a Steam Deck
+    // while the game ran on (issue #11). LM_GAMESCOPE_VSYNC=0 keeps the setting (test aid).
+    if (!config.vsync && pacing::gamescope()) {
+        const char* keep = std::getenv("LM_GAMESCOPE_VSYNC");
+        if (!(keep && *keep == '0')) {
+            config.vsync = true;
+            std::printf("[video] Gamescope: VSync on (FIFO presentation; the VSync setting is ignored under Gamescope)\n");
+        }
+    }
     // LM_BACKEND=d3d12|d3d11|vulkan (testing): graphics backend instead of Aurora's choice.
     if (const char* b = std::getenv("LM_BACKEND")) {
         const std::string s = b;
@@ -372,8 +407,19 @@ int main(int argc, char* argv[]) {
     }();
     const auto runStart = std::chrono::steady_clock::now();
     port::setPhase("game loop");
+    // Stalls the watchdog cannot see because this loop keeps running (port::reportStall): no frame
+    // presented (aurora_begin_frame failing), or with interpolation the game thread no longer
+    // finishing frames while the display replays its last one.
+    using SteadyClock = std::chrono::steady_clock;
+    auto lastPresented = SteadyClock::now();
+    auto lastGuestProgress = SteadyClock::now();
+    auto lastIteration = SteadyClock::now();
+    u32 lastGuestFrames = frame::guestFrames();
+    bool presentStallReported = false, guestStallReported = false;
     while (!exiting) {
         port::heartbeat();
+        sStallOpen.store(false, std::memory_order_relaxed);
+        if (!paused) port::setPhase("game loop: window events (aurora_update)");  // (paused: nullptr, a wait on purpose)
         if (quitAfter > 0 && std::chrono::duration<double>(std::chrono::steady_clock::now() - runStart).count() > quitAfter)
             break;
         for (const AuroraEvent* ev = aurora_update(); ev && ev->type != AURORA_NONE; ++ev) {
@@ -407,9 +453,37 @@ int main(int argc, char* argv[]) {
         }();
         const bool frozen = sFreezeAt && copyDispCount() >= sFreezeAt;
         frame::setHostPaused(paused || hold || frozen);
+        {
+            const auto now = SteadyClock::now();
+            // (A gap between iterations is a stall of this thread itself, which the watchdog reports.)
+            if (paused || now - lastIteration > std::chrono::seconds(1)) {
+                lastPresented = now;
+                lastGuestProgress = now;
+            }
+            lastIteration = now;
+            if (const u32 g = frame::guestFrames(); g != lastGuestFrames || paused || hold || frozen || !frame::interpolating()) {
+                lastGuestFrames = g;
+                lastGuestProgress = now;
+                if (guestStallReported) log("[hang] the game finishes frames again");
+                guestStallReported = false;
+            } else if (!guestStallReported && now - lastGuestProgress > std::chrono::seconds(15)) {
+                guestStallReported = true;
+                port::reportStall("the game has not finished a frame for 15 s while the display loop runs (interpolated "
+                                  "presentation replays its last frame)",
+                                  true);
+                sched::dumpThreads();
+            }
+            if (!presentStallReported && now - lastPresented > std::chrono::seconds(10)) {
+                presentStallReported = true;
+                port::reportStall("the main loop runs but no frame could be begun for 10 s (aurora_begin_frame fails)", true);
+            }
+        }
         if (exiting || paused) continue;
         if (hold) {
+            port::setPhase("game loop: shader preparation frame");
             if (!aurora_begin_frame()) continue;
+            lastPresented = SteadyClock::now();
+            presentStallReported = false;
             menu::draw();  // applies settings changes (they may change what is being compiled)
             precache::drawHold();
             precache::frame();
@@ -419,19 +493,30 @@ int main(int argc, char* argv[]) {
             if (menu::quitRequested()) break;
             continue;
         }
+        // (Phases name the step in a hang report: issue #11.)
+        port::setPhase("game loop: frame pacing wait");
         pacing::beforeFrame();
         interp::hostMark(0);
+        port::setPhase("game loop: aurora_begin_frame (frame slot, staging buffer)");
         if (!aurora_begin_frame()) continue;
+        lastPresented = SteadyClock::now();
+        if (presentStallReported) log("[hang] frames are presented again");
+        presentStallReported = false;
         pacing::afterBegin();
         interp::hostMark(1);
         ws::beginFrame();
+        port::setPhase(frame::interpolating() ? "game loop: replaying a game frame" : "game loop: running the game (lockstep)");
         const bool running = frame::hostFrame();
         pacing::afterReplay();
         interp::hostMark(2);
+        port::setPhase("game loop: F1 menu / overlays");
         menu::draw();
         precache::frame();
+        port::setPhase("game loop: present hold");
         pacing::beforeEnd();
+        port::setPhase("game loop: aurora_end_frame (GX FIFO drain, hand-off to the render worker)");
         aurora_end_frame();
+        port::setPhase("game loop");
         pacing::afterFrame();
         interp::hostMark(3);
         frame::pace();
