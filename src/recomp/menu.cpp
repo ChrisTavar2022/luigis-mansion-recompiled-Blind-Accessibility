@@ -1223,6 +1223,92 @@ void frameRateControls(port::VideoSettings& v) {
     }
 }
 
+// Test aid LM_MENU_SIZE_TEST=1 (with LM_MENU=Visuals): drives ImGui's mouse on the Menu size row
+// like a player: clicks "+" until 300%, "-" twice, then drags the slider from the left end to the
+// right end. Logs "[ui-test]" lines: after each click whether the mouse is still on the button it
+// clicked (the menu is rescaled about the mouse), during the drag that the size in effect does not
+// change, after the release the new size. Ends with "[ui-test] done".
+// (The SDL backend feeds the real cursor every frame, so the test's mouse position is applied at
+// the start of the menu window as in the ID check, and the button state set directly.)
+ImVec2 sSizeTestMouse(-1.0f, -1.0f);
+void menuSizeTestMouse() {
+    if (sSizeTestMouse.x < 0.0f) return;
+    ImGuiContext& g = *GImGui;
+    g.IO.MousePos = sSizeTestMouse;
+    ImGuiWindow* hovered = nullptr;
+    ImGuiWindow* under = nullptr;
+    ImGui::FindHoveredWindowEx(sSizeTestMouse, false, &hovered, &under);
+    g.HoveredWindow = hovered;
+    g.HoveredWindowUnderMovingWindow = under;
+}
+void menuSizeTest(ImVec2 sliderMin, ImVec2 sliderMax) {
+    static const bool sOn = std::getenv("LM_MENU_SIZE_TEST") != nullptr;
+    static int sFrame = 0, sStep = 0, sClicks = 0;
+    static ImVec2 sTarget;
+    if (!sOn) return;
+    if (sStep < 0) {
+        sSizeTestMouse = ImVec2(-1.0f, -1.0f);
+        return;
+    }
+    struct Io {
+        ImGuiIO& io;
+        void AddMousePosEvent(float x, float y) { sSizeTestMouse = ImVec2(x, y); }
+        void AddMouseButtonEvent(int b, bool down) { io.MouseDown[b] = down; }
+        ImVec2& MousePos = io.MousePos;
+    } io{ImGui::GetIO()};
+    const float h = ImGui::GetFrameHeight(), gap = ImGui::GetStyle().ItemInnerSpacing.x;
+    const ImVec2 plus(sliderMin.x - gap - h * 0.5f, (sliderMin.y + sliderMax.y) * 0.5f);
+    const ImVec2 minus(plus.x - gap - h, plus.y);
+    const auto inside = [&](ImVec2 c) {
+        return std::fabs(io.MousePos.x - c.x) <= h * 0.5f && std::fabs(io.MousePos.y - c.y) <= h * 0.5f;
+    };
+    const int f = ++sFrame;
+    if (sStep == 0) {  // settle
+        if (f >= 90) sStep = 1, sFrame = 0;
+        return;
+    }
+    if (sStep == 1) {  // one click: move (0), press (3), release (5), look (25)
+        static int sMinus = -1;  // "-" clicks so far (-1: still going up)
+        if (f == 1 && sMinus < 0 && (ui::percent() >= 300 || sClicks >= 10)) sMinus = 0;
+        if (f == 1) sTarget = sMinus >= 0 ? minus : plus;
+        if (f == 1) io.AddMousePosEvent(sTarget.x, sTarget.y);
+        if (f == 3) io.AddMouseButtonEvent(0, true);
+        if (f == 5) io.AddMouseButtonEvent(0, false);
+        if (f == 25) {
+            const bool onPlus = inside(plus), onMinus = inside(minus);
+            std::printf("[ui-test] click %d: size %d%%, mouse %.0f,%.0f on %s\n", sClicks + 1, ui::percent(), io.MousePos.x,
+                        io.MousePos.y, onPlus ? "+" : onMinus ? "-" : "neither button");
+            std::fflush(stdout);
+            sFrame = 0;
+            sClicks++;
+            if (sMinus >= 0 && ++sMinus >= 2) sStep = 2;
+        }
+        return;
+    }
+    if (sStep == 2) {  // drag from the left end to the right end
+        static int sBefore = 0;
+        if (f == 1) {
+            sBefore = ui::percent();
+            io.AddMousePosEvent(sliderMin.x + 2.0f, (sliderMin.y + sliderMax.y) * 0.5f);
+        }
+        if (f == 3) io.AddMouseButtonEvent(0, true);
+        if (f > 4 && f <= 24)
+            io.AddMousePosEvent(sliderMin.x + (sliderMax.x - sliderMin.x - 2.0f) * float(f - 4) / 20.0f,
+                                (sliderMin.y + sliderMax.y) * 0.5f);
+        if (f == 14 || f == 26) {
+            std::printf("[ui-test] dragging: size in effect %d%% (before %d%%), %s\n", ui::percent(), sBefore,
+                        ui::percent() == sBefore ? "unchanged" : "CHANGED DURING THE DRAG");
+            std::fflush(stdout);
+        }
+        if (f == 27) io.AddMouseButtonEvent(0, false);
+        if (f == 45) {
+            std::printf("[ui-test] released: size %d%%\n[ui-test] done\n", ui::percent());
+            std::fflush(stdout);
+            sStep = -1;
+        }
+    }
+}
+
 // Menu size (issue #20; ui_scale.cpp): Auto or a step. Dragging the slider only previews the
 // value in its label; the size changes when the slider is released (or at once with - / +), and
 // the menu is rescaled about the mouse so the control stays under it.
@@ -1274,6 +1360,7 @@ void menuSizeControl() {
             std::fflush(stdout);
         }
     }
+    menuSizeTest(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
     if (cur > 0 && ui::percent() < ui::kSteps[cur - 1]) {
         char note[96];
         std::snprintf(note, sizeof(note), "%d%% is the largest that fits this window", ui::percent());
@@ -1917,6 +2004,7 @@ void draw() {
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
     recomp::ui::beforeWindow(kMenuWindow, ImVec2(680, 400), ImVec2(520, 300));
     idcheck::beforeWindow();
+    menuSizeTestMouse();
     bool open = true;
     if (ImGui::Begin(kMenuWindow, &open, ImGuiWindowFlags_NoCollapse)) {
         ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.45f);
