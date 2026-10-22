@@ -228,6 +228,7 @@ void writeM(u32 a, const M34& r) {
 struct ModelInfo {
     u32 fp[5]{};
     bool luigi = false;
+    bool equipment = false;  // Poltergust body/nozzle, flashlight, Game Boy Horror
     u32 nj = 0;
     int pivot = -1;   // neck joint: root of the head subtree
     int hatRef = -1;  // a joint inside the hat (head axis for the wobble)
@@ -271,6 +272,28 @@ void analyze(u32 mdl, ModelInfo& mi) {
     const u32 mats = rd32(mdl + 0x68), samps = rd32(mdl + 0x6C), shapes = rd32(mdl + 0x70), draws = rd32(mdl + 0x74);
     if (nj == 0 || nj > 512 || !inGuest(nodes) || !inGuest(invBind) || !inGuest(texTable)) return;
     const bool mario = unused2::isMarioModel(mdl);
+    // Luigi's equipment (separate models placed at his back/hands every frame without his scale):
+    // recognised by one of their first two textures.
+    static constexpr u64 kEquipment[] = {
+        0xF72720A9044CFF17ull,  // vbody (Poltergust body, game archive)
+        0x234BB0F052809EBCull,  // vbody (E3 model, /model/vbody.szp)
+        0xA79FE99763FA2CAAull,  // vhead (nozzle)
+        0xCAB78D8155BD4C00ull,  // wplight (flashlight)
+        0x2FF2E4CE2C6D3ECAull,  // gameboy (Game Boy Horror)
+    };
+    for (u32 t = 0, n = std::min<u32>(2, rd16(mdl + 0x20)); t < n && !mario; t++) {
+        const u32 hdr = rd32(texTable + 4 * t);
+        if (!inGuest(hdr)) continue;
+        const u32 bytes = texBytes(rd8(hdr), rd16(hdr + 2), rd16(hdr + 4));
+        if (!bytes || bytes > 0x4000) continue;
+        const u64 h = fnv(static_cast<const u8*>(hostp(hdr + 0x20)), bytes);
+        for (u64 e : kEquipment)
+            if (h == e) {
+                mi.equipment = true;
+                mi.nj = nj;
+                return;
+            }
+    }
     int hatTex = -1;
     for (u32 t = 0, n = rd16(mdl + 0x20); t < n && hatTex < 0; t++)
         if (isHatTexture(rd32(texTable + 4 * t))) hatTex = int(t);
@@ -345,7 +368,10 @@ void analyze(u32 mdl, ModelInfo& mi) {
     // (luige: 51 at y 148 above 50 at 135.8, the shoulders' height; the opening's 122-joint rig: 88;
     // the file-select scene's smaller, seated 124-joint Luigi: 92). Relative to his height in the
     // bind pose, as the models differ in size.
-    const float lcaY = bindPos(invBind + 0x30 * u32(lca)).y;
+    // (The file-select Luigi's cap is bound to the neck joint itself, so "below the hat" is measured
+    // from the cap's highest joint.)
+    float lcaY = -1e30f;
+    for (int h : hat) lcaY = std::max(lcaY, bindPos(invBind + 0x30 * u32(h)).y);
     const float height = std::max(lcaY - bindPos(invBind).y, 1.0f);
     for (int j = lca; j >= 0 && parent[j] >= 0; j = parent[j]) {
         const float y = bindPos(invBind + 0x30 * u32(j)).y, py = bindPos(invBind + 0x30 * u32(parent[j])).y;
@@ -381,15 +407,36 @@ const ModelInfo& modelInfo(u32 mdl) {
     return mi;
 }
 
-// Per model instance (S3DModel): wobble spring and the guard against changing joints twice.
+// Per Luigi model instance (S3DModel): the wobble spring.
 struct ObjState {
     u32 mdl = 0;
     u32 frame = ~0u;
     bool init = false;
     V3 prev{}, prev2{}, off{}, vel{};
-    float stamp[24]{};  // joints 0 and pivot as last written
 };
 std::unordered_map<u32, ObjState> sObjs;
+
+V3 sFacing{0, 0, 1};  // the gameplay Luigi's facing axis (last frame)
+
+// Body size and paper flattening (along `facing`, unit) as a linear map.
+M34 bodyLinear(const V3* facing) {
+    const auto& s = cfg();
+    M34 lin = ident();
+    if (s.paper && facing) lin = scaleAlong(*facing, 0.06f);
+    if (s.bodyScale != 1.0f)
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; j < 3; j++) lin.m[i][j] *= s.bodyScale;
+    return lin;
+}
+
+// Equipment follows Luigi's joints by place and turn but keeps its own size: scaled (and flattened)
+// about its own root, the point where it is held.
+void scaleEquipment(u32 joints, u32 nj) {
+    const auto& s = cfg();
+    if (s.bodyScale == 1.0f && !s.paper) return;
+    const M34 b = about(bodyLinear(&sFacing), trans(readM(joints)));
+    for (u32 j = 0; j < nj; j++) writeM(joints + 0x30 * j, mul(b, readM(joints + 0x30 * j)));
+}
 
 bool jointModsActive() {
     const auto& s = cfg();
@@ -400,6 +447,10 @@ void modifyJoints(u32 obj) {
     const u32 mdl = rd32(obj + 4), joints = rd32(obj + 0x14);
     if (!inGuest(mdl) || !inGuest(joints)) return;
     const ModelInfo& mi = modelInfo(mdl);
+    if (mi.equipment) {
+        scaleEquipment(joints, mi.nj);
+        return;
+    }
     if (!mi.luigi) return;
     const auto& s = cfg();
     if (sObjs.size() > 256) sObjs.clear();
@@ -407,15 +458,6 @@ void modifyJoints(u32 obj) {
     if (st.mdl != mdl) st = ObjState{}, st.mdl = mdl;
     const u32 nj = mi.nj;
     const int pivot = mi.pivot;
-    // Joints not recomputed since we changed them (a second fn_80058850 without new animation):
-    // leave them, or the change would apply twice.
-    {
-        float now[24];
-        for (int i = 0; i < 12; i++) now[i] = gu::rdf(joints + 4 * i);
-        for (int i = 0; i < 12; i++) now[12 + i] = pivot >= 0 ? gu::rdf(joints + 0x30 * u32(pivot) + 4 * i) : 0.0f;
-        if (!std::memcmp(now, st.stamp, sizeof now)) return;
-    }
-
     std::vector<M34> m(nj);
     for (u32 j = 0; j < nj; j++) m[j] = readM(joints + 0x30 * j);
 
@@ -474,16 +516,13 @@ void modifyJoints(u32 obj) {
     M34 body = ident();
     bool bodyOn = false;
     if (s.bodyScale != 1.0f || s.paper) {
-        M34 lin = ident();
-        if (s.paper) {
-            V3 f{m[0].m[0][2], m[0].m[1][2], m[0].m[2][2]};
-            const float l = len(f);
-            if (l > 1e-4f) lin = scaleAlong(f * (1.0f / l), 0.06f);
+        V3 f{m[0].m[0][2], m[0].m[1][2], m[0].m[2][2]};
+        const float l = len(f);
+        if (l > 1e-4f) {
+            f = f * (1.0f / l);
+            if (nj == 65) sFacing = f;  // the gameplay Luigi: his equipment flattens along it
         }
-        if (s.bodyScale != 1.0f)
-            for (int i = 0; i < 3; i++)
-                for (int j = 0; j < 3; j++) lin.m[i][j] *= s.bodyScale;
-        body = about(lin, trans(m[0]));
+        body = about(bodyLinear(l > 1e-4f ? &f : nullptr), trans(m[0]));
         bodyOn = true;
     }
     if (!headOn && !bodyOn) return;
@@ -493,8 +532,6 @@ void modifyJoints(u32 obj) {
         if (!inHead && !bodyOn) continue;
         writeM(joints + 0x30 * j, mul(inHead ? bodyHead : body, m[j]));
     }
-    for (int i = 0; i < 12; i++) st.stamp[i] = gu::rdf(joints + 4 * i);
-    for (int i = 0; i < 12; i++) st.stamp[12 + i] = pivot >= 0 ? gu::rdf(joints + 0x30 * u32(pivot) + 4 * i) : 0.0f;
 }
 
 // ---- recolouring -------------------------------------------------------------------------------
@@ -633,8 +670,50 @@ bool colorsActive() {
 }  // namespace
 
 // Joints of Luigi's models, before the skinning matrices are built from them (see the top).
+namespace {
+// Registered at static init (any order: function-local), read on the guest thread only.
+std::vector<JointScaler>& scalers() {
+    static std::vector<JointScaler> sList;
+    return sList;
+}
+
+// Per model instance: joints 0 and last as we left them. Equal at the next fn_80058850 = the
+// joints were not recomputed since (a second skinning pass without new animation, e.g. the model
+// viewer's bind pose): changing them again would apply every change twice.
+struct Stamp {
+    u32 mdl = 0;
+    float m[24]{};
+};
+std::unordered_map<u32, Stamp> sStamps;
+void readStamp(u32 joints, u32 nj, float* out) {
+    for (int i = 0; i < 12; i++) out[i] = gu::rdf(joints + 4 * u32(i));
+    for (int i = 0; i < 12; i++) out[12 + i] = gu::rdf(joints + 0x30 * (nj - 1) + 4 * u32(i));
+}
+}  // namespace
+
+void addJointScaler(JointScaler fn) {
+    if (fn) scalers().push_back(fn);
+}
+
 HLE(fn_80058850) {
-    if (jointModsActive() && !viewer::isOpen()) modifyJoints(c.r[3]);
+    const bool luigiMods = jointModsActive();
+    if ((luigiMods || !scalers().empty()) && !viewer::isOpen()) {
+        const u32 obj = c.r[3];
+        const u32 mdl = inGuest(obj) ? rd32(obj + 4) : 0, joints = inGuest(obj) ? rd32(obj + 0x14) : 0;
+        const u32 nj = inGuest(mdl) ? rd16(mdl + 8) : 0;
+        if (inGuest(mdl) && inGuest(joints) && nj > 0 && nj <= 512) {
+            float now[24];
+            readStamp(joints, nj, now);
+            if (sStamps.size() > 1024) sStamps.clear();
+            Stamp& st = sStamps[obj];
+            if (st.mdl != mdl || std::memcmp(now, st.m, sizeof now)) {
+                if (luigiMods) modifyJoints(obj);
+                for (JointScaler fn : scalers()) fn(c, obj, mdl, joints, nj);
+                st.mdl = mdl;
+                readStamp(joints, nj, st.m);
+            }
+        }
+    }
     callOriginal(c, "fn_80058850");
 }
 
