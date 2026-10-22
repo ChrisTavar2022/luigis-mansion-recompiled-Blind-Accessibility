@@ -314,10 +314,28 @@ struct KeepWarm {
     u32 units = 0;
 } sWarm;
 
+void setWarmUnits(KeepWarm& w, u32 u) {
+    // (Logged so a report shows whether the filler ran: the first start, then at most every 60 s
+    // how often it started since; it can start and stop several times a second over a menu.)
+    if (w.units == 0 && u != 0) {
+        static u32 sStarts = 0;
+        static Clock::time_point sLogged{};
+        const auto now = Clock::now();
+        sStarts++;
+        if (sLogged == Clock::time_point{} || now - sLogged > std::chrono::seconds(60)) {
+            log("[pacing] GPU keep-warm running (%u starts since the last line; %u units, heavy %.1f ms)", sStarts, u,
+                w.heavy * 1e3);
+            sStarts = 0;
+            sLogged = now;
+        }
+    }
+    aurora_set_gpu_keep_warm(w.units = u);
+}
+
 void keepWarm(double gpu, double period) {
     KeepWarm& w = sWarm;
-    if (!port::settings().rendering.gpuKeepWarm || gpu <= 0 || period <= 0) {
-        if (w.units) aurora_set_gpu_keep_warm(w.units = 0);
+    if (!keepWarmOn() || gpu <= 0 || period <= 0) {
+        if (w.units) setWarmUnits(w, 0);
         return;
     }
     // (Held while filling: a long menu must not lower the level the GPU is kept at; measured at
@@ -333,7 +351,7 @@ void keepWarm(double gpu, double period) {
     else if (gpu > period * 0.9 || gpu > want * 1.6) u = 0;  // the full scene is back (or too much)
     else if (gpu > want * 1.15) u = u * 7 / 8;
     else if (gpu < want * 0.75) u = u == 0 ? 2 : std::min<u32>(u + u / 5 + 1, 400);
-    if (u != w.units) aurora_set_gpu_keep_warm(w.units = u);
+    if (u != w.units) setWarmUnits(w, u);
 }
 
 // --- performance summary in the log (last_run.log), issue #18 ------------------------------------
@@ -618,6 +636,23 @@ bool gamescope() {
     return sOn;
 }
 
+bool presentTimingAvailable() {
+    // LM_PRESENT_TIMING=0/1 (test aid): off / on on any system.
+    static const bool sOn = [] {
+        if (const char* e = std::getenv("LM_PRESENT_TIMING")) return *e == '1';
+#ifdef _WIN32
+        return true;
+#else
+        return false;
+#endif
+    }();
+    return sOn;
+}
+
+bool keepWarmAvailable() { return presentTimingAvailable(); }
+
+bool keepWarmOn() { return keepWarmAvailable() && port::settings().rendering.gpuKeepWarm; }
+
 bool vsyncOn() {
     static const bool sKeep = [] { const char* e = std::getenv("LM_GAMESCOPE_VSYNC"); return e && *e == '0'; }();
     return port::settings().video.vsync || (gamescope() && !sKeep);
@@ -870,7 +905,7 @@ void beforeEnd() {
 }
 
 void afterFrame() {
-    if (!sPacing && !sLog && !port::settings().rendering.gpuKeepWarm) return;
+    if (!sPacing && !sLog && !keepWarmOn()) return;
     FrameRec r = sCur;
     r.frame = aurora_frame_counter();
     r.begun = sFrameTime;
@@ -890,9 +925,9 @@ void afterFrame() {
     sFrames.push_back(r);
     while (sFrames.size() > 16) sFrames.pop_front();
     // Present timing records the GPU completion of every frame (one fence wait per frame on a
-    // helper thread, Aurora patch 0197).
+    // helper thread, Aurora patch 0197). Not on Linux (presentTimingAvailable).
     static bool enabled = false;
-    if (!enabled) aurora_present_timing_enable(enabled = true);
+    if (!enabled && presentTimingAvailable()) aurora_present_timing_enable(enabled = true);
 }
 
 // (Fifo: the swap chain's wait happens in aurora_begin_frame, after beforeFrame: the time the

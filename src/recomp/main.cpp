@@ -184,6 +184,8 @@ void hangDetail(char* out, size_t size, bool stallBegins) {
 
 int main(int argc, char* argv[]) {
     using namespace recomp;
+    // Windows: no console window for players; output to a terminal, a redirect or last_run.log.
+    port::recovery::setupConsole(argc, argv);
     port::installCrashHandler();
     port::setHangDetail(&hangDetail);
     port::startHangWatchdog();
