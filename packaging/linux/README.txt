@@ -88,6 +88,16 @@ Portable mode needs a game folder you can write to; otherwise it stays off (the 
 screen and F1 > Game say so). Updates keep a portable installation portable.
 
 
+STEAM DECK
+----------
+In game mode (Gamescope) VSync is always on, so the frame rate is the screen's refresh rate
+or an even fraction of it. A rate that does not divide it evenly is shown at the fraction
+below it: 60 fps on the 90 Hz Steam Deck OLED runs at 45 fps (the game says so once).
+For 60 fps set the refresh rate to 60 Hz in the Quick Access menu (Performance > Refresh
+rate), or pick 90 fps / "Match display refresh rate" in F1 > Visuals. The LCD Steam Deck
+refreshes at 60 Hz, so 30 and 60 fps work as they are.
+
+
 REPORTING PROBLEMS
 ------------------
 Every start through LuigisMansionRecompiled.sh writes a log:

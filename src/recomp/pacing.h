@@ -38,6 +38,13 @@ bool vrrActive();
 // Running under Gamescope (Steam Deck game mode): presentation always waits for the display's
 // refresh there (VSync on; main.cpp), issue #11.
 bool gamescope();
+// VSync as the swap chain uses it: the setting, or always under Gamescope (LM_GAMESCOPE_VSYNC=0 test
+// aid keeps the setting).
+bool vsyncOn();
+// With VSync at a fixed refresh rate, the rate a target of fps is shown at: the refresh rate or the
+// even fraction of it at or below the target (60 fps at 90 Hz -> 45). 0 when frames are not tied to
+// the refresh (VSync off, variable refresh, unknown refresh rate).
+float fixedRefreshFps(int fps);
 float presentedFps();
 
 }  // namespace recomp::pacing
