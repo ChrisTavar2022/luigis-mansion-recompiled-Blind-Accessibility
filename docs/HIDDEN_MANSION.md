@@ -69,7 +69,7 @@ are the US symbols; most game functions are still unnamed in the decomp.
 
 ### Mirror (the PAL hidden mansion is left/right mirrored)
 
-The same mirror is available in every mode as *Mirror world* (docs/ENHANCEMENTS.md section 5).
+The same mirror is available in every mode as *Mirrored Mansion* (docs/ENHANCEMENTS.md section 5).
 
 The 3D scene is mirrored, the HUD is not, and everything that ties the two together is patched:
 

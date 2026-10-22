@@ -26,7 +26,7 @@ Testing override (not saved): `LM_GAMEPLAY="dark=1,ambient=0.4,damage=2,health=2
 | Poltergust strength | `vacuum_strength` | 0.25–4 | HP the vacuum drains per drain tick |
 | Disable recovery hearts | `no_heart_drops` | on/off | Recovery hearts never spawn (item tables, every item spawn, map placements); safety net: a heart that still appears heals nothing |
 | Always ride the Poltergust | `always_ride` | on/off | Luigi's riding/gliding movement mode (the one PAL enables for Boolossus) everywhere |
-| Mirror world | `mirror_world` | on/off | The European Hidden Mansion's left/right mirror in every mode (`mirror=1`, `LM_MIRROR=1`; docs/ENHANCEMENTS.md section 5) |
+| Mirrored Mansion | `mirror_world` | on/off | The European Hidden Mansion's left/right mirror in every mode (`mirror=1`, `LM_MIRROR=1`; docs/ENHANCEMENTS.md section 5) |
 
 ## Details
 

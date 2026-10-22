@@ -14,7 +14,7 @@ retail body instead of replacing it).
 | Field of view | Works (F1 > Visuals > Field of view); culling follows. |
 | High frame rate (interpolation) | Works: 60 fps or display rate, game logic stays 30 Hz (section 3). |
 | Silly options (Luigi) | Head/body size, wobbly head, paper Luigi, clothes and Poltergust colours (section 5). |
-| Mirror world | Works: the European Hidden Mansion's left/right mirror in every mode (section 7). |
+| Mirrored Mansion | Works: the European Hidden Mansion's left/right mirror in every mode (section 7). |
 
 ## 1. Arbitrary resolution
 
@@ -687,9 +687,9 @@ played with the size/colour options; humming/whistling ids were not seen in the 
 `0x28xx` they keep their pitch); disco was not checked in every room type (rooms whose look comes
 from lamps rather than ambient change less without Enhanced lighting).
 
-## 7. Mirror world
+## 7. Mirrored Mansion
 
-F1 > Enhancements > Gameplay > World > *Mirror world* (setting `[gameplay] mirror_world`, off by
+F1 > Enhancements > Gameplay > World > *Mirrored Mansion* (setting `[gameplay] mirror_world`, off by
 default; test aid `LM_MIRROR=1/0`, or `LM_GAMEPLAY=mirror=1`). The whole game plays left/right
 mirrored, exactly the way the European release (GLMP01) mirrors its Hidden Mansion, in every
 mode: the normal mansion, the USA Hidden Mansion and the European one, on the USA or the European
@@ -705,7 +705,7 @@ The European game mirrors with code that reads the hidden-mansion flag (docs/HID
 "Mirror"). Nothing else is mirrored, so the option does exactly what that code does and nothing
 more. `hm::mirrorOn()` (`src/recomp/hidden_mansion.cpp`) is the single switch: the European
 Hidden Mansion (PAL rules and the flag; `LM_HM_MIRROR=0` turns that part off on the USA game) or
-Mirror world (while the game scene is current).
+Mirrored Mansion (while the game scene is current).
 
 - **European game**: its mirror functions run with the flag reading `mirrorOn()` for the call
   (`hm::callMirror`, the same bookkeeping as the "USA rules on the European game" flag hiding;
@@ -778,7 +778,7 @@ Scratch APPDATA/card, `LM_SHOT` render-resolution shots (`out/mirror_world/` in 
   lights, shadows and beam mirrored with the scene; the GBH camera picture unmirrored (above).
 - 2-player split (co-op improvements, 120 fps): both halves mirrored in place, HUD halves right;
   found and fixed: player 2's stick was not flipped (its pad is an HLE allocation above MEM1).
-- European game: Mirror world in the normal mansion (stick, GBH map, split screen); the European
+- European game: Mirrored Mansion in the normal mansion (stick, GBH map, split screen); the European
   Hidden Mansion still mirrored with the option off; the USA Hidden Mansion on the European game
   unmirrored with the option off and mirrored with it on. USA game: European Hidden Mansion still
   mirrored with the option off.

@@ -1,5 +1,5 @@
 #pragma once
-// The left/right mirror of the European (PAL) Hidden Mansion, and "Mirror world" (F1 >
+// The left/right mirror of the European (PAL) Hidden Mansion, and "Mirrored Mansion" (F1 >
 // Enhancements > Gameplay), which applies it in every mode. The switch itself is
 // hm::mirrorOn() (hidden_mansion.h); docs/ENHANCEMENTS.md "Mirror world" and
 // docs/HIDDEN_MANSION.md "Mirror" list where the game mirrors and where it does not.

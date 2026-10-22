@@ -1,7 +1,7 @@
 // The European Hidden Mansion's mirror outside the screen copy: the Game Boy Horror map and the
 // stereo-swap flag, plus the 2-player screen copy (mirror_world.h). The screen copy, the stick
 // and the projected HUD positions are in hidden_mansion_hooks.cpp. All of it follows
-// hm::mirrorOn(): the European Hidden Mansion, or "Mirror world" (docs/ENHANCEMENTS.md).
+// hm::mirrorOn(): the European Hidden Mansion, or "Mirrored Mansion" (docs/ENHANCEMENTS.md).
 #include "recomp/mirror_world.h"
 
 #include "recomp/coop.h"

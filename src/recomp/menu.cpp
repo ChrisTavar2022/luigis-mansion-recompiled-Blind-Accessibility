@@ -1625,7 +1625,7 @@ void gameplaySection() {
     sDirty |= recomp::menu::Checkbox("Always ride the Poltergust", &g.alwaysRide);
     ImGui::SetItemTooltip("Luigi glides with momentum everywhere (the European Boolossus-fight movement).");
     ImGui::SeparatorText("World");
-    sDirty |= recomp::menu::Checkbox("Mirror world", &g.mirrorWorld);
+    sDirty |= recomp::menu::Checkbox("Mirrored Mansion", &g.mirrorWorld);
     ImGui::SetItemTooltip("The whole game left/right mirrored, the way the European release mirrors its Hidden\n"
                           "Mansion: the 3D picture, the Game Boy Horror map and the speakers are flipped, the\n"
                           "stick is flipped with them (push right to go right on screen), and the HUD, text and\n"

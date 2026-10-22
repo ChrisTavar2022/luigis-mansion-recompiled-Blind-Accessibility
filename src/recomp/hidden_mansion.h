@@ -80,7 +80,7 @@ s32 overlayRead(s32 entry, void* dst, s32 length, s32 offset);
 void syncConstants();
 
 // ---- Mirror (PAL draws the hidden mansion left/right mirrored) -----------------------------
-// Mirror world (F1 > Enhancements > Gameplay, docs/ENHANCEMENTS.md "Mirror world"): the same
+// Mirrored Mansion (F1 > Enhancements > Gameplay, docs/ENHANCEMENTS.md "Mirror world"): the same
 // mirror in every mode (normal mansion, either Hidden Mansion, either game). On while the
 // option is on (setting gameplay.mirror_world, LM_MIRROR=1, LM_GAMEPLAY=mirror=1) and the main
 // game scene is current (title / file select / Options never run the mirror code anyway).
