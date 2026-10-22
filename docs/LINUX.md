@@ -246,11 +246,21 @@ VK_ERROR_DEVICE_LOST`. No overlays/layers involved, no NVRM Xid lines, file desc
 
 At 30 fps that setting is what runs the GPU keep-warm filler (Aurora 0215, a compute pass after
 the frame) and the per-frame GPU completion tracking (OnSubmittedWorkDone futures polled by the
-present-timing thread, Aurora 0197/0216); which of the two upset the driver is not known (no
-NVIDIA Linux machine here). Keep-warm is now Windows-only (`pacing::keepWarmAvailable`; the F1
-checkbox is greyed with a note on Linux), so on Linux the tracking runs only while interpolating,
-as on the Steam Deck. `[pacing] GPU keep-warm started/stopped` lines show when the filler runs.
-Open: whether interpolated frame rates on that driver (tracking on, no filler) also freeze.
+present-timing thread, Aurora 0197/0216). The player's next test settled which: with
+`gpu_keep_warm=0` any frame rate above 30 (even 35; VSync on or off) froze again, and above 30 the
+tracking runs for frame pacing without any filler. So the completion tracking is the trigger: a
+helper thread polling `WaitAny(OnSubmittedWorkDone future, 0)` every 0.25 ms while the render
+worker submits and presents (likely an unsynchronized fence/queue access in Dawn's Vulkan backend
+that D3D12 tolerates). The Steam Deck freeze above 30 fps (issue #11) fits the same cause.
+
+Now the tracking is Windows-only (`pacing::presentTimingAvailable`; `LM_PRESENT_TIMING=0/1`
+overrides on any system), and keep-warm with it (it is sized from the tracked GPU cost; the F1
+checkbox is greyed with a note on Linux). Without it frames are paced exactly as before by the
+timer and the governor (start intervals); what is missing is the frame-ahead limit (the GPU at
+most one frame behind: with VSync the swap chain limits it instead) and GPU ms in the `[perf]`
+lines. Checked on Windows with `LM_PRESENT_TIMING=0` at a 120 fps target (VRR window capped at
+57): 57.0 fps presented, game 30.0, the same as with the tracking. `[pacing] GPU keep-warm running`
+lines (at most one a minute) show when the filler runs where it is available.
 
 ## Known issues / not done
 
