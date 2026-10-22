@@ -631,7 +631,7 @@ Scratch APPDATA/card, `LM_SHOT` render-resolution shots (`out/mirror_world/` in 
 - Pause screen, GBH search view (X: look around, search) and the ending with the option on: the
   same as the European Hidden Mansion (the USA game's PAL rules and the European game's own code
   give identical pictures). The pause screen's sepia still is the mirrored scene, its menu is not;
-  in the search view the picture is not mirrored and pushing right turns the view right; the
+  in the search view pushing right turns the view right (objects move left on screen); the
   ending (`LM_TEST_ENDING=8@2620`: text, new house) is not mirrored (its scene draws no scene copy).
 
 Not verified: the earlier ending parts (mansion collapse, portrait gallery); the European game's
