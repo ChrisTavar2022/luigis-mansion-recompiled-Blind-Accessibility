@@ -2,6 +2,7 @@
 
 #include "port/recovery.h"
 #include "port/settings.h"
+#include "recomp/cpu_qos.h"
 #include "recomp/gx_bridge.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
@@ -73,6 +74,7 @@ bool interpolationWanted() {
 
 void start(Entry boot) {
     sBoot = std::thread([boot] {
+        cpu::setCurrent(cpu::Role::Guest);
         {
             std::unique_lock lk(sM);
             sCv.wait(lk, [] { return sTurn == Turn::Guest || sStopping; });
@@ -163,6 +165,7 @@ int targetFps() {
 }
 
 bool interpolating() { return sHostDecoupled; }
+unsigned guestFrames() { return sPresents.load(std::memory_order_relaxed); }
 
 void pace() {
     // Interpolated presentation is paced by pacing::beforeFrame (pacing.cpp); lockstep frames are
@@ -197,6 +200,7 @@ void setHostPaused(bool paused) { sPauseGuest = paused && sHostDecoupled; }
 bool gamePaused() { return sPauseGuest.load(std::memory_order_relaxed); }
 
 void present(Ctx& c, u32, bool) {
+    cpu::tick();
     verifyLowMemory();
     gx::endFrame();
     hm::onFrame();
