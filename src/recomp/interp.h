@@ -304,6 +304,8 @@ void drawEnd(u32 end);
 void noteDraw(u64 id);
 // The draw just noted reads indexed positions whose bounding box has centre `c` (model space).
 void noteDrawCentre(const float c[3]);
+// The same per position matrix slot (`mask`: the slots its vertices use by a direct PNMTXIDX).
+void noteDrawSlotCentres(const float c[10][3], u16 mask);
 // (unused since tagged interpolation; kept for interp_vtx.cpp)
 inline void noteDrawAlt(u64) {}
 // Immediate-mode vertices with direct f32 XYZ positions: `count` vertices of `stride`
@@ -326,6 +328,9 @@ void drawLog(const char* fmt, ...);  // LM_INTERP_DRAWS
 u8* captureBytes();  // the capture buffer (tape offsets index it)
 // This tape's texture/TLUT copies (kept alive by the tape) and the bytes newly copied.
 void texEndTape(std::vector<std::shared_ptr<const std::vector<u8>>>& keep, u64& copiedBytes);
+// Path check (LM_TRACK_LOG, game side: tags.cpp): world places of the player (0-2), the Poltergust
+// (3-5) and its nozzle (6-8) at the end of the game frame; false when there is no player.
+bool trackPoints(float out[9]);
 }  // namespace detail
 
 // LM_INTERP_DRAWS: whether this draw is being logged, and its guest call chain.

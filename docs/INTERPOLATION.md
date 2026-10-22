@@ -121,7 +121,9 @@ A value of game frame b pairs with the value of frame a that has the same key an
   axes (that axis turning by less than 35 degrees, the part scaled alike across it) takes the twist
   from b at once and blends only the rest (`untwist`). The Poltergust hose's envelope matrices are
   rebuilt from the hose direction every frame and their roll changes by up to ~150 degrees between
-  game frames: blending spun the ribs around the tube.
+  game frames: blending spun the ribs around the tube. (Off since the screw blend, "The hose nozzle"
+  below: the twist was taken about the matrix origin, far from the hose, and threw its rings off
+  their place; `LM_SCREW_BLEND=0` restores it.)
 - Model instances are handled as one (	agGroup: an S3D model, fn_80059C54 / fn_80059F6C /
   fn_8005A280's instance; a J3D model, its shape packets' matrix buffer at packet +0x14). Skinned
   parts are drawn with weighted sums of the model's joints (sheared, nearly flat where two joints
@@ -810,6 +812,149 @@ The new code runs only while tapes are captured.
 Remaining: the 98-matrix J3D instance at about (0, 600, 50) in the foyer (src 8136BEC0-8136C1F0) has erratic
 members that switch (590 "jump" lines in 10 minutes, the same with the old rule). It is not part of
 the hose or the water; it was left alone.
+
+### The hose nozzle (October 2026, branch hose-jump)
+
+Owner's report after 1.1.3: "The Poltergust hose nozzle STILL jumps from time to time ... it's the
+only interpolation issue left", to be tested under heavy movement. The judder detector could not
+see it: its ideal used the same blending rules as the replay (a rule that moves a part the wrong
+way is also its ideal), and switches by policy are counted as correct.
+
+**Detector: the path check** (`LM_TRACK_LOG=<file>[,<radius>[,<px>]]`, with `LM_JUDDER_LOG` for
+the draw probe and `LM_JUDDER_EVERY=1`; `trackJudge` in interp.cpp). Independent of every policy:
+each drawn vertex (the first vertex of every primitive the FIFO draws in an in-between, Aurora 0218's
+probe) within `radius` (300) of Luigi is taken back to world space through the ideal in-between
+camera and compared with the straight line between its two game-frame places (the matrices its
+PNMTX slot held at capture in a and b). A rigid turn moves a vertex along an arc, so the allowance
+is 1 unit + (0.45 x min(1, 4 alpha (1 - alpha)) + 0.03) x its game-frame step: small near the game
+frames, up to the arc of a ~150 degree turn mid-interval. Off by more than that and `px` (3, of a
+2160-line picture) is a jump: shown at b early, held at a, or swinging off the path. H lines per
+vertex (error, step, how far along the step it is shown, the member's turn and origin step, its
+model instance, matrix source, whether it is within 60 units of the nozzle), HR per replay, HC for
+presents shown without blending (camera cuts, gaps), HT per game frame (Luigi's, the Poltergust
+nozzle actor's (+0x7A4) and +0x7A8's places), HG/HV (every 60 / 600 tapes) a census of the model
+instances near Luigi and all their vertices (what each instance is, by its shape). A `[track]`
+summary goes to the game log every 5 s. `tools/interp/hose_check.py <log>` summarizes a run: jump
+events (game frames with a jump) near the nozzle and near Luigi, classes, policies, instances, the
+worst events, whole-picture presents and game-side jumps of the nozzle actor.
+
+**Heavy-movement suite** (`tools/interp/hose_suite.py <out> [--scenario ...] [--fps ...] [--secs S]
+[--user-settings] [--radius R] [--env K=V]`): one game at a time, off screen, muted, below-normal
+priority, scratch APPDATA / card, LM_INPUT_CLOCK=frames, the input script from a file
+(`--input @file`, new: long scripts exceed the command line). The mix repeats from game frame 2600:
+running in circles both ways (4 frames per eighth of a turn), sharp left/right and up/down
+reversals, strafing with the vacuum on, vacuum taps while circling, C-stick sweeps with and without
+R, running with R and the C stick against the run, the flashlight off and on, an idle spell (idle
+and scared animations) and a fast start. Scenarios: `run` (nursery), `foyer` (plus long runs up
+the stairs and through the doors), `fire` / `water` / `ice` (L bursts and taps), `hit`
+(LM_TEST_HIT every 150 game frames), `ghosts` (gold ghosts room, LM_GHOST_HUNT stuns and vacuums
+them: Luigi dragged around), `boss` (Boolossus, one check).
+
+**What it found.** Model instances near Luigi (census): his S3D model with the Poltergust (93
+matrices), the hose (a J3D model of ~32 joint matrices, 10 at a time, loaded with
+`J3DSys::loadPosMtxIndx`), the nozzle's small S3D models (4 and 9 matrices) and the suction swirl (a
+J3D model of 49 matrices drawn while R is held). In the `run` scenario at 120 (2 minutes): 525 game
+frames with jumps near Luigi, 308 of them at the nozzle (old rules). Classes:
+1. *Blending about the matrix origin.* A joint matrix of a skinned or articulated model carries
+   the model's origin (its vertices are stored in model space), often 50-1200 units from the
+   vertices it moves. The rigid blend (rotation slerped, translation linear) turned the part about
+   that origin: a hose segment or the nozzle turning 30-90 degrees in a game frame swung its
+   origin by 50-200 units, and the straight origin path pulled the vertices off their own path by
+   0.5-1.5 times their step for the interval (the hose and nozzle "jumping" mid-interval, in a
+   different direction for each joint). All three of Luigi's instances, 90% of the events.
+2. *Untwist about the origin.* The fast-twist rule (above: "Fast twists") turned a's matrix about
+   its local axis through the ORIGIN by the twist, at once. For the hose's joint matrices that axis
+   is 20-160 units from the hose: the nozzle ring and hose rings were thrown 15-145 units off
+   their place for a whole interval at every fast roll (77-87 degrees), while the game frames moved
+   them 4-20 units.
+3. *Place jumps measured at the origin.* "A jump over half its distance from the camera" and the
+   erratic-member test measured the origin's step: the suction swirl's joints (spinning 60-150
+   degrees per game frame about the nozzle) moved their origins 300-1200 units while the swirl
+   moved 50-350, and members were switched one by one (the swirl torn for an interval, at the
+   nozzle).
+4. *Members switched on their own.* A member of an instance that is not switched as a whole but
+   cannot be blended rigidly (a mirror flip of a rigid joint, a half turn) was shown as b while
+   its neighbours blended.
+
+**What it does now** (all switchable back with `LM_SCREW_BLEND=0`, for A/B):
+- *Screw blend* (`screwTranslation`, used by `blendRigid` for 3x4 matrices): the motion from a to
+  b is a rotation by theta about an axis through some point plus a slide along it; the in-between
+  turns by t x theta about that same axis and slides t of the way. Every point moves along an arc
+  about the part's real pivot, whatever origin the matrix has; the 3x3 part is the same slerp as
+  before, and alpha 0 / 1 give a / b exactly. Nearly no turn (< 0.6 degrees) or a half turn (> 177
+  degrees) keep the linear origin.
+- No untwist (the twist is a turn about the part's own axis, which the screw blend follows).
+- Place steps, the camera distance and the erratic test use where the geometry is: the centre of
+  the vertices of the draw that use the matrix's slot (`SlotCentres`: per draw, the bounding box
+  of the indexed positions per direct PNMTXIDX slot, interp_vtx.cpp), else the draw's centre, else
+  the origin (`placeStep`, `drawCentre`, `viewDist`).
+- The outlier test (a member far from its instance's median place) uses the same geometry
+  centres: by origins, the swirl's members were outliers (no say) whenever it spun.
+- A steady member (not erratic, its instance not switched) is not switched for its place alone.
+  A member that cannot be blended rigidly (a mirror flip, a turn over ~150 degrees without spin
+  evidence, a half turn over ~170 degrees also when erratic, a place jump its instance did not
+  vote for, or an envelope matrix whose axes change length by more than 30% in a game frame: its
+  joints' weights moved, e.g. a hose envelope from 0.94 to 0.43 along two axes, no rigid motion at
+  all) makes its whole instance blend entrywise (each vertex in a straight line) for that interval
+  instead of tearing.
+- The judder detector's ideal follows the same rules. (A polar decomposition instead of
+  Gram-Schmidt for sheared envelope matrices was tried: no measurable change, not kept.)
+
+- Event scenes (own camera, merged with "Event scenes: models far from their origin"): the
+  per-draw pivot of that fix is not applied on top of the screw blend (the screw already turns
+  each matrix about its own motion's axis, the same axis for neighbouring pieces; moving each
+  piece's centre in a straight line on top opened the seams of Luigi's glove in the opening map
+  scene; `LM_OWNCAM_PIVOT=1` brings it back), its switch test ("moves more than a tenth of its
+  distance") measures at the geometry, not at the origin 4000-5600 units away, and its pivot uses
+  the slot's vertex centre when it is on. Skinned own-camera instances still blend entrywise.
+
+**Results** (path check, 180 s of the heavy mix per run from game frame 2600, 120 fps target
+unless noted, off-screen 1280x720, default settings; the machine was shared with other agents'
+game instances, so presented rates were 55-80 fps; "events" = game frames with at least one
+jumping vertex; old = the same build with `LM_SCREW_BLEND=0`):
+
+| scenario | vertices judged | events near the nozzle old / new | events near Luigi old / new | flagged vertices old / new |
+|---|---|---|---|---|
+| run (nursery) | 24.6M | 297 / **0** | 577 / **0** | 8685 / **0** |
+| foyer (stairs, doors) | 25.7M | (old run went astray: 1.2M judged, 4) / **0** | 21 / **0** | 81 / **0** |
+| fire | 24.0M | 395 / **0** | 659 / **0** | 8474 / **0** |
+| water | 18.5M | 450 / **0** | 1115 / **0** | 74615 / **0** (drops judged by spray_check, not here) |
+| ice | 24.2M | 394 / **0** | 702 / **0** | 9395 / **0** |
+| hit | 24.4M | 397 / **0** | 695 / **0** | 8422 / **0** |
+| ghosts (dragged by ghosts) | 14.0-17.3M | 456 / **0-3** | 1011 / **3-12** | 12406 / **6-45** |
+| boss (Boolossus) | 14.1-17.8M | 280 / **0** | 810 / **12-16** (an arena particle, not Luigi) | 10924 / **15-16** |
+| run 60 / 144 | 24.5M | - / **0** / **0** | - / **0** / **0** | **0** / **0** |
+| ghosts 60 / 144 | 17.0M | - / 3 / 3 | - / 12 / 13 | 46 / 53 |
+| run, user's settings (Enhanced lighting Ultra etc., 2560x1440) | 10.0M | - / **0** | - / 1 | 3 (5 units) |
+| ghosts, user's settings | 7.9M | - / 1 | - / 9 | 20 |
+
+What is left: in the ghost fights (Luigi pulled about by a ghost) 3 game frames in 3 minutes
+where a few vertices of Luigi's body or hose leave their path by 3-12 units mid-interval (no
+switch; matrices turning 40-80 degrees while their weights change by less than the 30% rule); in
+the boss arena one particle renderer's particles (`fn_80162898`) switch for a place jump. Old
+first-build numbers of the run scenario before each step (2 minutes, nursery): origin blend 525
+events (308 at the nozzle) -> screw blend 74 (13) -> no untwist, centres, steady members 22 (5)
+-> slot centres 7 (2) -> outliers by centre, half turns, rescales 0.
+
+Whole scene (`--radius 1e9`: every object vertex in view, foyer, 120 s): old 39,321 flagged
+vertices, new 48; the judder detector (1.5 px) 0 blend defects in both, policy jumps 35-408 per
+5 s old, 0 new. Event scenes (own camera, `--radius 1e9`, about 8 s each): the opening map scene
+old (`LM_SCREW_BLEND=0 LM_OWNCAM_INSTANCES=0`) 3300 flagged vertices in 51 game frames, new 118
+in 14 (all in frames 1569-1600, models placed anew by >1000 units, shown at the game frame by
+design; none in the map frames 1395-1500); the lab's walk-up demo old 7255, new 0-59.
+
+Original 30 is byte-identical: 71 frames (2690-2760) of the run mix at a 30 target, main's
+executable (8b7a97f) vs this branch, 0 differ. The new code runs only while tapes are captured,
+and the path check only with `LM_TRACK_LOG`.
+
+Rerun: `python tools/interp/hose_suite.py <out> --scenario run --scenario foyer --scenario fire
+--scenario water --scenario ice --scenario hit --scenario ghosts --scenario boss --fps 120 --secs
+180` (add `--env LM_SCREW_BLEND=0` for the old rules, `--fps 60 --fps 144`, `--user-settings
+--window 2560x1440`, `--radius 1e9` for the whole scene, `--scenario opening` / `event --secs 8`
+for the event scenes); each run prints `hose_check.py`'s summary and a table at the end. The runs
+never open a physical controller (SDL joystick backends off in their environment).
+Frame strips (LM_PRESENT_DUMP, 60 fps, frames 3102-3105 of the run mix, old vs new):
+`out/hose_jump/` in the main checkout (not in the repository).
 
 ### Results (first build, October 2026)
 
