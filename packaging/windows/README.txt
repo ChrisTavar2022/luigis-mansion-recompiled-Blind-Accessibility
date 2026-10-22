@@ -1,4 +1,4 @@
-Luigi's Mansion Recompiled 1.1.1 - Windows x64
+Luigi's Mansion Recompiled 1.1.2 - Windows x64
 ============================================
 
 A native PC port of Luigi's Mansion (GameCube). No game data is included: the game is
