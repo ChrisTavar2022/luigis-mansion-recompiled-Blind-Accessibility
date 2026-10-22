@@ -366,8 +366,10 @@ namespace {
 // Guest objects the host makes (boot thread, interrupt stack, card/DVD scratch, unused-content
 // data) live in the host window above MEM1 (ctx.h kHostMemSize), so the whole of MEM1 below the
 // FST is the game's arena as on the console (hle_os.cpp OSInit). The model viewer keeps
-// 0x81810000-0x81812000 and early Luigi's model copies start at 0x81F00000.
-constexpr u32 kHleHeapStart = 0x81820000, kHleHeapEnd = 0x81F00000;
+// 0x81810000-0x81812000 and early Luigi's model copies start at 0x81F00000. 1.5 MiB: the rest up to
+// 0x81F00000 is unused2's extraAlloc (both started at 0x81820000 from 1.1.1 to 1.1.3, so the Mario
+// model and other unused content were built over the boot thread, card/DVD scratch and FIFO object).
+constexpr u32 kHleHeapStart = 0x81820000, kHleHeapEnd = 0x819A0000;
 u32 sHleHeap = kHleHeapStart;
 std::mutex sHleHeapM;
 }  // namespace

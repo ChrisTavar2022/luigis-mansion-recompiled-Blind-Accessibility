@@ -452,7 +452,8 @@ Differences the runtime handles for the European game:
 | (0x81800000 - FST max length) & ~31 .. 0x81800000 | the FST's place on the console (US 0x817FAE80, PAL 0x817FAA80): arena high as the apploader sets it (0x80000034/38/3C) |
 | 0x81800000-0x81804000 | locked cache (0xE0000000) |
 | 0x81810000-0x81812000 | model viewer scratch |
-| 0x81820000-0x81F00000 | host-made guest objects (`hleAlloc`: boot thread, interrupt stack, card/DVD scratch, unused-content data) |
+| 0x81820000-0x819A0000 | host-made guest objects (`hleAlloc`: boot thread, interrupt stack, card/DVD scratch, GX FIFO object, unused models) |
+| 0x819A0000-0x81F00000 | unused content's host-built data (`unused2::extraAlloc`: the Mario model, ghost placements, pictures, strings). From 1.1.1 to 1.1.3 both allocators started at 0x81820000 and overlapped: Play as Mario's model was built over hleAlloc's objects (malformed FIFO data in the nursery). |
 | 0x81F00000-0x84000000 | early Luigi's model copies, the model viewer's heap |
 
 Up to 1.1 the arena ended at 0x81700000 (the top MiB of MEM1 held `hleAlloc`), so the game
