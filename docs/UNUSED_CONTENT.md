@@ -951,7 +951,7 @@ existing map-setup / end-of-frame hooks (`dev_tools.cpp`) and the model setup ho
 Debug, Sound > Jukebox), and owns a disc overlay (`hle_dvd.cpp`, virtual FST entries
 `0x50000000+`) that serves rebuilt files while an option needs them (keyed by the options, so a
 change applies the next time the game opens the file). Host-built guest data (model copies,
-textures, strings) lives in `unused2::extraAlloc` memory (0x81820000-0x81F00000, host-backed,
+textures, strings) lives in `unused2::extraAlloc` memory (0x819A0000-0x81F00000, host-backed,
 above MEM1). Every option runs on both releases (October 2026: European patch lines for patches
 50/51, hooks tagged `us pal`, the fear table through its pointer `lbl_804D2428`; checked on the
 European dev build, evidence in `build/pal_parity2/`, and docs/PAL_PARITY.md). Evidence images: `build/unused2/` (not committed).

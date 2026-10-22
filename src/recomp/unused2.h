@@ -14,7 +14,7 @@
 namespace recomp::unused2 {
 
 // Guest memory for host-built data (model copies, textures, strings): host-backed, above the 24
-// MiB of MEM1 the game uses (0x81820000-0x81F00000; early_luigi.cpp uses 0x81F00000+, the model
+// MiB of MEM1 the game uses (0x819A0000-0x81F00000; hleAlloc has 0x81820000-0x819A0000, early_luigi.cpp uses 0x81F00000+, the model
 // viewer 0x81810000-0x81812000 and 0x82000000+). Bump allocator, never freed.
 u32 extraAlloc(u32 size, u32 align = 32);
 
