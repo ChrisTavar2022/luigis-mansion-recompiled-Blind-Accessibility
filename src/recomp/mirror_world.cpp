@@ -8,6 +8,7 @@
 #include "recomp/guest_util.h"
 #include "recomp/hidden_mansion.h"
 #include "recomp/hle.h"
+#include "recomp/runtime.h"
 #include "recomp/skip.h"
 #include "recomp/version.h"
 
@@ -37,18 +38,18 @@ bool usGame() { return !ver::pal(); }
 //                              passed (scaled) to the floor lookup fn_80017ADC
 //   fn_8002A74C                map camera reset: x = 0.1 * [lbl_803CCD38 + 0x400] * sign
 //   fn_8002AE74                Luigi's map effect (fn_80164F5C, id 0x62) at (sign * x, y, z)
+//                              (USA game: instruction patch 60 + the fn_80164F58 stub hook)
 // On the USA game the sign is hm::mirrorActive() at the time of use (the European one is fixed
 // when the map is set up; both agree except right after mirror world is switched).
 constexpr u32 kMapView = 0x803A3820 + 0x18C;   // the map's view matrix (Mtx 3x4)
 constexpr u32 kCullMirror = 0x804D8230;        // byte: fn_8001D894 takes the mirrored cull row
 constexpr u32 kMapIcon = 0x804D833C;           // -> the icon object Luigi's map focus follows
+constexpr u32 kPatchMapEffect = 60;           // hooks.txt patch: bl fn_80164F58 at 0x8002B034
 constexpr u32 kMapCameraX = 0x803CCD38 + 0x400;  // f32 read by the camera reset in fn_8002A74C
-constexpr u32 kEffectMapLuigi = 0x62;
 
 bool sMapDraw = false;       // inside fn_80029DD4 / fn_8002A01C, mirrored
 bool sMatrixPending = false; // fn_80015BDC got the mirrored matrix: mirrored culling after it
 bool sMapCull = false;       // European 0x804C5901: fn_8001D894 takes its mirrored row
-bool sMapMarkers = false;    // inside fn_8002AE74, mirrored
 u32 sScratch = 0;            // guest memory for the mirrored matrix / effect position
 
 u32 scratch() {
@@ -137,6 +138,8 @@ void beforeViewHud(Ctx& c, u32 view) {
 bool swapSplitHalves() { return coop::fixes() && hm::mirrorOn(); }
 
 void onFrame() {
+    // USA game: Luigi's map effect call goes to the fn_80164F58 hook while mirrored.
+    if (!ver::pal()) setPatch(kPatchMapEffect, hm::mirrorActive());
     static bool sLast = false;
     const bool on = hm::mirrorOn();
     if (on == sLast) return;
@@ -184,24 +187,21 @@ HLE(fn_8002A74C) {
     if (!mirror::usGame() || !hm::mirrorActive()) return callOriginal(c, "fn_8002A74C");
     mirror::callNegated(c, "fn_8002A74C", mirror::kMapCameraX);
 }
-HLE(fn_8002AE74) {
-    if (!mirror::usGame() || !hm::mirrorActive()) return callOriginal(c, "fn_8002AE74");
-    mirror::sMapMarkers = true;
-    callOriginal(c, "fn_8002AE74");
-    mirror::sMapMarkers = false;
-}
-// fn_80164F5C(effect id, position, ...): spawns a particle effect (copies the position).
-HLE(fn_80164F5C) {
-    if (mirror::sMapMarkers && c.r[3] == mirror::kEffectMapLuigi && gu::inMem1(c.r[4])) {
-        if (const u32 dst = mirror::scratch()) {
-            const u32 src = c.r[4];
-            wr32(dst + 0x30, rd32(src) ^ 0x80000000u);
-            wr32(dst + 0x34, rd32(src + 4));
-            wr32(dst + 0x38, rd32(src + 8));
-            c.r[4] = dst + 0x30;
-        }
+// Luigi's map effect: fn_80164F5C(0x62, icon position, r5) at 0x8002B034 in fn_8002AE74. While
+// mirrored (patch 60, mirror::onFrame) that call goes to the empty stub fn_80164F58 instead, and
+// this hook spawns the effect at (-x, y, z), like the European code. Any other call of the stub
+// returns at once, as the stub does. (A hook on fn_80164F5C itself, even passing straight
+// through, changed the vacuum dust with the mirror off.)
+HLE(fn_80164F58) {
+    if (c.lr != 0x8002B038u || mirror::usGame() == false) return;
+    if (const u32 dst = mirror::scratch(); dst && gu::inMem1(c.r[4])) {
+        const u32 src = c.r[4];
+        wr32(dst + 0x30, rd32(src) ^ 0x80000000u);
+        wr32(dst + 0x34, rd32(src + 4));
+        wr32(dst + 0x38, rd32(src + 8));
+        c.r[4] = dst + 0x30;
     }
-    callOriginal(c, "fn_80164F5C");
+    c.call(0x80164F5Cu);
 }
 
 }  // namespace recomp
