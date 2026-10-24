@@ -74,9 +74,17 @@ constexpr double kServerTimeout = 3.0;
 
 // ---- Settings ([controls.dsu]) --------------------------------------------------------
 
+// What the server's controllers are: decides how the DS4-shaped DSU buttons become the
+// virtual pad's buttons and which default bindings its profile gets.
+enum class Layout : int {
+    GameCube,     // a GameCube controller behind the server (NSO GC Driver: A/B/X/Y = cross/
+                  // circle/square/triangle, Z = R3, L/R = analog L2/R2 with L1/R1 at the click)
+    PlayStation,  // a DS4-shaped pad (DS4Windows, BetterJoy, phone apps): buttons by position
+};
 struct Config {
     bool enabled = false;
     std::string servers = kDefaultServers;  // "host:port" entries separated by ';' or ','
+    Layout layout = Layout::GameCube;
     bool operator==(const Config&) const = default;
 };
 std::mutex sCfgM;
@@ -93,13 +101,15 @@ void loadKey(const std::string& section, const std::string& key, const std::stri
     std::lock_guard lk(sCfgM);
     if (key == "enabled") sCfg.enabled = value == "true" || value == "1";
     else if (key == "servers") sCfg.servers = value;
+    else if (key == "layout") sCfg.layout = value == "playstation" ? Layout::PlayStation : Layout::GameCube;
     sCfgGen++;
 }
 void saveConfig(std::ostream& out) {
     std::lock_guard lk(sCfgM);
     out << "[controls.dsu]\n"
         << "enabled=" << (sCfg.enabled ? "true" : "false") << '\n'
-        << "servers=" << sCfg.servers << '\n';
+        << "servers=" << sCfg.servers << '\n'
+        << "layout=" << (sCfg.layout == Layout::PlayStation ? "playstation" : "gamecube") << '\n';
 }
 const bool sRegistered = [] {
     port::addSettingsExtension({&resetConfig, &loadKey, &saveConfig});
@@ -346,7 +356,8 @@ void netThread() {
 struct Virtual {
     SDL_JoystickID id = 0;
     SDL_Joystick* joy = nullptr;
-    std::string key;  // "<server>#<slot>"
+    std::string key;  // pad name
+    Layout layout = Layout::GameCube;
 };
 std::vector<Virtual> sVirtual;
 
@@ -357,12 +368,16 @@ std::string padName(int server, int slot, size_t servers) {
     return n;
 }
 
-Virtual attach(const std::string& name, const std::string& key) {
+Virtual attach(const std::string& name, const std::string& key, Layout layout) {
     SDL_VirtualJoystickDesc desc;
     SDL_INIT_INTERFACE(&desc);
     desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
-    desc.vendor_id = 0x054C;   // Sony
-    desc.product_id = 0x09CC;  // DualShock 4 (the layout DSU reports): PlayStation defaults
+    // The ids decide SDL's gamepad type, so the profile gets that type's defaults (and its own
+    // GUID per layout): Nintendo's GameCube adapter (GameCube defaults: labels, Z, L/R clicks on
+    // MISC3/MISC4, no extra dead zone), or a DualShock 4 (PlayStation defaults).
+    const bool gc = layout == Layout::GameCube;
+    desc.vendor_id = gc ? 0x057E : 0x054C;
+    desc.product_id = gc ? 0x0337 : 0x09CC;
     desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
     desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
     desc.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
@@ -370,6 +385,7 @@ Virtual attach(const std::string& name, const std::string& key) {
     desc.name = name.c_str();
     Virtual v;
     v.key = key;
+    v.layout = layout;
     v.id = SDL_AttachVirtualJoystick(&desc);
     v.joy = v.id ? SDL_OpenJoystick(v.id) : nullptr;
     if (v.joy)
@@ -394,8 +410,23 @@ Sint16 stickAxis(uint8_t v, bool flipY) {
 // DSU trigger byte (0..255) to a virtual trigger axis (-32768 released .. 32767 pulled).
 Sint16 triggerAxis(uint8_t v) { return Sint16(-32768 + int(v) * 257); }
 
-void apply(SDL_Joystick* j, const PadData& d) {
+void apply(SDL_Joystick* j, const PadData& d, Layout layout) {
     const uint8_t b1 = d.buttons1, b2 = d.buttons2;
+    if (layout == Layout::GameCube) {
+        // SDL's GameCube buttons: A south, B west, X east, Y north, Z right shoulder, L/R clicks
+        // MISC3/MISC4. The server sends B as circle, X as square, Z as R3 and the clicks as L1/R1.
+        const std::pair<int, bool> buttons[] = {
+            {SDL_GAMEPAD_BUTTON_SOUTH, (b2 & 0x20) != 0},          {SDL_GAMEPAD_BUTTON_WEST, (b2 & 0x40) != 0},
+            {SDL_GAMEPAD_BUTTON_EAST, (b2 & 0x10) != 0},           {SDL_GAMEPAD_BUTTON_NORTH, (b2 & 0x80) != 0},
+            {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, (b1 & 0x04) != 0}, {SDL_GAMEPAD_BUTTON_MISC3, (b2 & 0x05) != 0},
+            {SDL_GAMEPAD_BUTTON_MISC4, (b2 & 0x0A) != 0},          {SDL_GAMEPAD_BUTTON_START, (b1 & 0x08) != 0},
+            {SDL_GAMEPAD_BUTTON_BACK, (b1 & 0x01) != 0},           {SDL_GAMEPAD_BUTTON_LEFT_STICK, (b1 & 0x02) != 0},
+            {SDL_GAMEPAD_BUTTON_DPAD_UP, (b1 & 0x10) != 0},        {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, (b1 & 0x20) != 0},
+            {SDL_GAMEPAD_BUTTON_DPAD_DOWN, (b1 & 0x40) != 0},      {SDL_GAMEPAD_BUTTON_DPAD_LEFT, (b1 & 0x80) != 0},
+            {SDL_GAMEPAD_BUTTON_GUIDE, d.home != 0},
+        };
+        for (const auto& [b, down] : buttons) SDL_SetJoystickVirtualButton(j, b, down);
+    } else {
     const std::pair<int, bool> buttons[] = {
         {SDL_GAMEPAD_BUTTON_BACK, (b1 & 0x01) != 0},          {SDL_GAMEPAD_BUTTON_LEFT_STICK, (b1 & 0x02) != 0},
         {SDL_GAMEPAD_BUTTON_RIGHT_STICK, (b1 & 0x04) != 0},   {SDL_GAMEPAD_BUTTON_START, (b1 & 0x08) != 0},
@@ -407,6 +438,7 @@ void apply(SDL_Joystick* j, const PadData& d) {
         {SDL_GAMEPAD_BUTTON_GUIDE, d.home != 0},              {SDL_GAMEPAD_BUTTON_TOUCHPAD, d.touch != 0},
     };
     for (const auto& [b, down] : buttons) SDL_SetJoystickVirtualButton(j, b, down);
+    }
     SDL_SetJoystickVirtualAxis(j, SDL_GAMEPAD_AXIS_LEFTX, stickAxis(d.lx, false));
     SDL_SetJoystickVirtualAxis(j, SDL_GAMEPAD_AXIS_LEFTY, stickAxis(d.ly, true));
     SDL_SetJoystickVirtualAxis(j, SDL_GAMEPAD_AXIS_RIGHTX, stickAxis(d.rx, false));
@@ -447,9 +479,11 @@ std::string batteryName(uint8_t b) {
 
 void update() {
     bool enabled;
+    Layout layout;
     {
         std::lock_guard lk(sCfgM);
         enabled = sCfg.enabled;
+        layout = sCfg.layout;
     }
     if (enabled && !sThreadStarted.exchange(true)) std::thread(netThread).detach();
     std::lock_guard lk(sM);
@@ -462,11 +496,16 @@ void update() {
             const std::string key = padName(int(s), slot, sServers.size());
             live.push_back(key);
             auto it = std::find_if(sVirtual.begin(), sVirtual.end(), [&](const Virtual& v) { return v.key == key; });
+            if (it != sVirtual.end() && it->layout != layout) {  // layout changed: plug in again as the other type
+                detach(*it);
+                sVirtual.erase(it);
+                it = sVirtual.end();
+            }
             if (it == sVirtual.end()) {
-                sVirtual.push_back(attach(key, key));
+                sVirtual.push_back(attach(key, key, layout));
                 it = sVirtual.end() - 1;
             }
-            if (it->joy) apply(it->joy, d);
+            if (it->joy) apply(it->joy, d, layout);
         }
     for (auto it = sVirtual.begin(); it != sVirtual.end();) {
         if (std::find(live.begin(), live.end(), it->key) == live.end()) {
@@ -515,6 +554,19 @@ bool drawTab() {
     if (recomp::menu::Button("Default")) {
         cfg.servers = kDefaultServers;
         changed = true;
+    }
+    {
+        int l = int(cfg.layout);
+        ImGui::SetNextItemWidth(320.0f * ImGui::GetFontSize() / 13.0f);
+        if (ImGui::Combo("Controller layout", &l, "GameCube controller\0PlayStation (DS4) or other pad\0")) {
+            cfg.layout = Layout(l);
+            changed = true;
+        }
+        ImGui::SetItemTooltip("What the DSU server's controllers are. GameCube controller: a GameCube pad behind the\n"
+                              "server (e.g. NSO GC Driver: A/B/X/Y as cross/circle/square/triangle, Z as R3, L/R as\n"
+                              "the analog triggers with L1/R1 at the click); the pad gets the GameCube layout.\n"
+                              "PlayStation: DS4Windows, BetterJoy, phone apps; buttons by position.\n"
+                              "Each layout has its own binding profile.");
     }
     ImGui::EndDisabled();
     if (changed) {
