@@ -28,7 +28,7 @@ jobs:
             preset: linux-clang
             artifact: linux-x86_64
           - name: macOS arm64
-            os: macos-15
+            os: macos-26
             preset: macos-clang
             artifact: macos-arm64
     steps:
@@ -48,7 +48,11 @@ jobs:
 
       - name: Dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install ninja llvm lld sdl3
+        # Aurora needs std::jthread: the newest Xcode on the image (libc++ of Xcode 26).
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          clang --version | head -1
+          brew install ninja llvm lld sdl3
 
       - name: Dependencies (Windows)
         if: runner.os == 'Windows'
