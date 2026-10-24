@@ -26,9 +26,15 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <execinfo.h>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <pthread.h>
+#include <sys/ucontext.h>
+#else
 #include <sys/syscall.h>
 #include <ucontext.h>
-#include <unistd.h>
+#endif
 #endif
 
 namespace port {
@@ -152,7 +158,19 @@ void onSignal(int sig, siginfo_t* info, void* uctx) {
     recovery::onCrash(strsignal(sig));
     const void* pc = nullptr;
     const void* sp = nullptr;
-#if defined(__x86_64__)
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (uctx) {
+        const auto* uc = static_cast<const ucontext_t*>(uctx);
+        pc = reinterpret_cast<const void*>(uc->uc_mcontext->__ss.__pc);
+        sp = reinterpret_cast<const void*>(uc->uc_mcontext->__ss.__sp);
+    }
+#elif defined(__APPLE__) && defined(__x86_64__)
+    if (uctx) {
+        const auto* uc = static_cast<const ucontext_t*>(uctx);
+        pc = reinterpret_cast<const void*>(uc->uc_mcontext->__ss.__rip);
+        sp = reinterpret_cast<const void*>(uc->uc_mcontext->__ss.__rsp);
+    }
+#elif defined(__x86_64__)
     if (uctx) {
         const auto* uc = static_cast<const ucontext_t*>(uctx);
         pc = reinterpret_cast<const void*>(uc->uc_mcontext.gregs[REG_RIP]);
@@ -269,6 +287,46 @@ void onDumpSignal(int) {
     sDumpAck.store(1, std::memory_order_release);
 }
 
+#ifdef __APPLE__
+// macOS has no /proc or tgkill: the threads come from the Mach task, the signal goes through
+// pthread_kill (SIGUSR2: no real-time signals; nothing else here uses it).
+void dumpAllThreads(const char* reason) {
+    const int sig = SIGUSR2;
+    static const bool sInstalled = [sig] {
+        struct sigaction sa{};
+        sa.sa_handler = &onDumpSignal;
+        sa.sa_flags = SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        return sigaction(sig, &sa, nullptr) == 0;
+    }();
+    if (!sInstalled) return;
+    std::fprintf(stderr, "\n=== %s: all thread stacks ===\n", reason);
+    std::fflush(stderr);
+    thread_act_array_t threads = nullptr;
+    mach_msg_type_number_t count = 0;
+    if (task_threads(mach_task_self(), &threads, &count) != KERN_SUCCESS) return;
+    const pthread_t self = pthread_self();
+    for (mach_msg_type_number_t i = 0; i < count; i++) {
+        const pthread_t th = pthread_from_mach_thread_np(threads[i]);
+        if (th && th != self) {
+            char name[64] = "?";
+            pthread_getname_np(th, name, sizeof(name));
+            std::fprintf(stderr, "--- thread %u (%s) ---\n", unsigned(threads[i]), name);
+            std::fflush(stderr);
+            sDumpAck.store(0, std::memory_order_relaxed);
+            if (pthread_kill(th, sig) == 0) {
+                for (int k = 0; k < 300 && !sDumpAck.load(std::memory_order_acquire); k++)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                if (!sDumpAck.load(std::memory_order_acquire)) std::fprintf(stderr, "  (no answer: signal blocked)\n");
+            }
+        }
+        mach_port_deallocate(mach_task_self(), threads[i]);
+    }
+    vm_deallocate(mach_task_self(), vm_address_t(threads), vm_size_t(count * sizeof(thread_act_t)));
+    std::fprintf(stderr, "=== end of thread stacks ===\n");
+    std::fflush(stderr);
+}
+#else
 void dumpAllThreads(const char* reason) {
     const int sig = SIGRTMIN + 7;
     static const bool sInstalled = [sig] {
@@ -306,6 +364,7 @@ void dumpAllThreads(const char* reason) {
     std::fprintf(stderr, "=== end of thread stacks ===\n");
     std::fflush(stderr);
 }
+#endif
 #endif
 
 std::atomic<HangDetailFn> sHangDetail{nullptr};

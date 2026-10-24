@@ -53,6 +53,28 @@ constexpr const char* kModuleFile = "module.dll";
 constexpr const char* kObjExt = ".obj";
 constexpr const char* kExeSuffix = ".exe";
 constexpr const char* kLinkerName = "lld-link";
+#elif defined(__APPLE__)
+// macOS (docs/MACOS.md): a Mach-O dylib for the host architecture, linked by ld64.lld without
+// the SDK (the module needs nothing from libSystem). Same visibility rules as Linux: only
+// lm_module_init is exported. -ffp-contract=off: arm64 compilers fuse a*b+c into one fma by
+// default, which rounds differently from the PowerPC's separate fmul/fadd (fmadd is emitted
+// as fma_ explicitly); x86-64 builds without -mfma never fuse.
+#if defined(__aarch64__)
+#define LM_MODULE_ARCH "arm64"
+#else
+#define LM_MODULE_ARCH "x86_64"
+#endif
+const std::vector<std::string> kCompileFlags = {
+    "--target=" LM_MODULE_ARCH "-apple-macos13.0", "-std=c++20", "-O2", "-fPIC", "-fvisibility=hidden",
+    "-ffreestanding", "-nostdinc", "-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics", "-fno-math-errno",
+    "-fno-stack-protector", "-ffp-contract=off", "-funwind-tables", "-Wno-unused-label", "-Wno-unused-variable"};
+const std::vector<std::string> kLinkFlags = {"-dylib", "-arch", LM_MODULE_ARCH, "-platform_version", "macos", "13.0",
+                                             "13.0", "-install_name", "@rpath/lm_game_module.dylib",
+                                             "-undefined", "error", "-dead_strip", "-O1"};
+constexpr const char* kModuleFile = "module.dylib";
+constexpr const char* kObjExt = ".o";
+constexpr const char* kExeSuffix = "";
+constexpr const char* kLinkerName = "ld64.lld";
 #else
 // Linux: a position-independent shared object. Everything is hidden and bound locally
 // (-fvisibility=hidden, -Bsymbolic) except lm_module_init, so the module's g_mem, memcpy, ...
@@ -162,7 +184,7 @@ std::filesystem::path exeDir() {
     const DWORD n = GetModuleFileNameW(nullptr, buf, DWORD(std::size(buf)));
     return std::filesystem::path(std::wstring(buf, n)).parent_path();
 #else
-    return std::filesystem::read_symlink("/proc/self/exe").parent_path();
+    return port::selfExePath().parent_path();
 #endif
 }
 
@@ -251,6 +273,9 @@ bool findToolchain(std::filesystem::path& clang, std::filesystem::path& lld, std
 #ifdef LM_DEV_LLVM_DIR
     dirs.emplace_back(LM_DEV_LLVM_DIR);
 #endif
+#ifdef LM_DEV_LLD_DIR
+    dirs.emplace_back(LM_DEV_LLD_DIR);
+#endif
     if (const char* path = std::getenv("PATH")) {
         std::string p = path;
 #ifdef _WIN32
@@ -274,11 +299,23 @@ bool findToolchain(std::filesystem::path& clang, std::filesystem::path& lld, std
             return true;
         }
     }
+#ifdef __APPLE__
+    // Homebrew keeps clang (llvm) and ld64.lld (lld) in separate folders: the first of each.
+    clang.clear();
+    lld.clear();
+    for (const auto& d : dirs) {
+        std::error_code ec;
+        if (clang.empty() && std::filesystem::exists(d / "clang", ec)) clang = d / "clang";
+        if (lld.empty() && std::filesystem::exists(d / kLinkerName, ec)) lld = d / kLinkerName;
+    }
+    if (!clang.empty() && !lld.empty()) return true;
+#endif
 #ifdef _WIN32
     error = "The bundled compiler (llvm\\bin\\clang.exe and lld-link.exe next to the game) is missing. "
             "Reinstall the game, or set LM_LLVM_DIR to an LLVM bin directory.";
 #else
-    error = "The bundled compiler (llvm/bin/clang and llvm/bin/ld.lld next to the game) is missing. "
+    error = std::string("The bundled compiler (llvm/bin/clang and llvm/bin/") + kLinkerName +
+            " next to the game) is missing. "
             "Reinstall the game, or set LM_LLVM_DIR to an LLVM bin directory.";
 #endif
     return false;
