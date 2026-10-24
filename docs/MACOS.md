@@ -15,13 +15,18 @@ the title screen, the PAL disc, the `lmrecomp` dev build, packaging.
 Xcode (Apple clang builds the program) and Homebrew:
 
 ```
-brew install cmake ninja llvm lld sdl3
+brew install cmake ninja llvm lld
 cmake --preset macos-clang          # build/macos-clang
 cmake --build build/macos-clang --target LuigisMansionRecomp
 ```
 
-Aurora fetches Dawn (`dawn-darwin-arm64`) and nod (`macos-arm64`) as prebuilt static
-libraries; SDL3 is the system (Homebrew) one. Apple's clang has no lld, so the game module
+The program links only macOS's own libraries (system zlib, sqlite3, libc++ and frameworks), so
+it runs on a Mac without Homebrew. Aurora fetches Dawn (`dawn-darwin-arm64`) and nod
+(`macos-arm64`) as prebuilt static libraries and builds SDL3, abseil, fmt, xxhash, libpng,
+freetype and zstd from source: the preset sets `AURORA_SDL3_PROVIDER=vendor`,
+`CMAKE_IGNORE_PREFIX_PATH=/opt/homebrew;/usr/local` (no Homebrew packages through
+`find_package`) and `CMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON` (no pkg-config fallback; an
+environment variable in the preset would not survive the re-configure `cmake --build` runs). Apple's clang has no lld, so the game module
 is built with Homebrew's `clang` (llvm) and `ld64.lld` (lld): CMake finds them
 (`LM_DEV_CLANG`, `LM_DEV_LD64_LLD`) and passes both folders to the program
 (`LM_DEV_LLVM_DIR`, `LM_DEV_LLD_DIR`); `findToolchain` takes clang and ld64.lld from
@@ -60,12 +65,31 @@ Every guest call is a host frame. `std::thread` gets 512 KiB on macOS (Windows: 
 8 MiB), so the threads that run guest code (guest threads, boot thread, interrupt timer) are
 started by `sched::startHostThread` with 8 MiB stacks on POSIX.
 
+## Packages
+
+`tools/package_macos.sh <LLVM bin dir> [out dir]` builds, installs (`cmake --install
+--strip`; the ad-hoc signature survives) and packs `LuigisMansionRecompiled-macos-arm64`
+(.tar.gz/.zip): `LuigisMansionRecomp`, `pipelines.bin`, `README.txt`
+(`packaging/macos/README.txt`), `NOTICE.md` and `llvm/bin/clang` + `llvm/bin/ld64.lld` from the
+official LLVM release for macOS arm64 (`LLVM-<ver>-macOS-ARM64`; Homebrew's clang needs
+`libLLVM`/`libclang-cpp` next to it). The script fails when any binary links a library outside
+`/System/Library` or `/usr/lib` or has an invalid signature, and it builds a test game module
+with the bundled clang/ld64.lld the way setup does and loads it.
+
+GitHub Actions (`.github/workflows/build.yml`) builds the three platforms on every push and
+uploads `LuigisMansionRecompiled-<version>-<platform>` packages as artifacts (Windows: the
+runner's LLVM; Linux and macOS: LLVM 23.1.4, cached).
+
+The packages are not notarized. Setup clears Gatekeeper's quarantine flag on the bundled
+clang/ld64.lld before starting them (`removexattr` in `buildModule`); the program itself has to
+be allowed once (right-click > Open, or `xattr -dr com.apple.quarantine <folder>`), as the
+README says.
+
 ## Open
 
 - Setup's module build took 352 s on 12 cores (Windows: about 20 s). Not profiled yet.
 - Shader preparation on Metal: about 180 s at a start where most pipelines came from the Dawn
   cache (`[precache]` lines: roughly 60 per second loaded), against 0.4-0.6 s warm on Windows.
-- Packaging: no `.app` bundle, no bundled clang/ld64.lld (Homebrew's link `libLLVM`/
-  `libclang-cpp` dynamically; an official LLVM release or copying those libraries would be
-  needed), no release script, not notarized.
+- Packaging: a plain folder, no `.app` bundle, not notarized; release script / GitHub release
+  upload not wired (CI artifacts only).
 - Intel Macs: the code has the x86_64 branches but was not built.

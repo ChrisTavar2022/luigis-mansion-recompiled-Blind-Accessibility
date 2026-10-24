@@ -37,7 +37,7 @@
     },
     {
       "name": "macos-clang",
-      "displayName": "macOS arm64 (Apple clang, Ninja; docs/MACOS.md)",
+      "displayName": "macOS arm64 (Apple clang, Ninja; self-contained, no Homebrew libraries; docs/MACOS.md)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
@@ -45,7 +45,10 @@
         "CMAKE_C_COMPILER": "/usr/bin/clang",
         "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
-        "CMAKE_OSX_DEPLOYMENT_TARGET": "13.0"
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "13.0",
+        "CMAKE_IGNORE_PREFIX_PATH": "/opt/homebrew;/usr/local",
+        "AURORA_SDL3_PROVIDER": "vendor",
+        "CMAKE_DISABLE_FIND_PACKAGE_PkgConfig": "ON"
       },
       "condition": {
         "type": "equals",

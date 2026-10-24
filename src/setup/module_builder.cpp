@@ -30,6 +30,9 @@
 #include <unistd.h>
 extern char** environ;
 #endif
+#ifdef __APPLE__
+#include <sys/xattr.h>
+#endif
 
 namespace setup {
 namespace {
@@ -328,6 +331,11 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
     auto cancelled = [&] { return progress.cancel && progress.cancel->load(); };
     std::filesystem::path clang, lld;
     if (!findToolchain(clang, lld, error)) return false;
+#ifdef __APPLE__
+    // A package downloaded with a browser carries Gatekeeper's quarantine flag, which stops the
+    // bundled tools when they are started (the player already allowed this program to run).
+    for (const auto* t : {&clang, &lld}) removexattr(t->c_str(), "com.apple.quarantine", 0);
+#endif
 #ifdef _WIN32
     if (!toolAtShortPath(clang, error) || !toolAtShortPath(lld, error)) return false;
 #endif

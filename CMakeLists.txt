@@ -245,8 +245,13 @@ else ()
     # ld.lld -> lld); copy the real binaries under the names the setup looks for (lld picks
     # its flavour from its name). Use a self-contained LLVM (the official release tarball),
     # not a distribution's clang that needs libLLVM/libclang-cpp next to it.
+    if (APPLE)
+        set(_lm_linker_name ld64.lld)  # macOS: Mach-O lld (docs/MACOS.md)
+    else ()
+        set(_lm_linker_name ld.lld)
+    endif ()
     install(CODE "
-        foreach (_pair \"clang;clang\" \"ld.lld;ld.lld\")
+        foreach (_pair \"clang;clang\" \"${_lm_linker_name};${_lm_linker_name}\")
             list(GET _pair 0 _src)
             list(GET _pair 1 _dst)
             set(_from \"${LM_LLVM_DIR}/\${_src}\")
@@ -261,6 +266,9 @@ else ()
                  GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
             message(STATUS \"Bundled \${_real} as llvm/bin/\${_dst}\")
         endforeach ()")
+endif ()
+if (APPLE)
+    install(FILES packaging/macos/README.txt DESTINATION .)
 endif ()
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # The official LLVM lld needs libxml2.so.2 (only for lld-link manifests): ship a stub
