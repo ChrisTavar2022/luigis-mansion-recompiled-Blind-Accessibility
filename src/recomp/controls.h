@@ -11,7 +11,7 @@ namespace recomp::controls {
 
 // F1 menu tab (host thread). Returns true when a setting changed (the menu saves on close).
 bool drawTab();
-void selectSubTab(const char* name);  // "Ports", "Bindings" or "Analog": selected on the next drawTab() (test aids)
+void selectSubTab(const char* name);  // "Ports", "Bindings", "Analog" or "DSU": selected on the next drawTab() (test aids)
 // Host event loop, before the menu's own hotkeys. True: the event belongs to a "press a
 // button to bind" capture and must not reach F1/Esc or other hotkeys.
 bool handleEvent(const SDL_Event& ev);

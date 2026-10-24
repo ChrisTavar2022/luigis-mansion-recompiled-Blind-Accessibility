@@ -79,9 +79,16 @@ constexpr const char* kExeName = "LuigisMansionRecomp.exe";
 const char* const kExpected[] = {"LuigisMansionRecomp.exe", "pipelines.bin", "llvm/bin/clang.exe",
                                  "llvm/bin/lld-link.exe"};
 #else
+#ifdef __APPLE__
+// macOS (docs/MACOS.md): same layout as Linux, the module linker is ld64.lld.
+constexpr const char* kAssetSuffix = "-macos-arm64.tar.gz";
+constexpr const char* kLinkerFile = "llvm/bin/ld64.lld";
+#else
 constexpr const char* kAssetSuffix = "-linux-x86_64.tar.gz";
+constexpr const char* kLinkerFile = "llvm/bin/ld.lld";
+#endif
 constexpr const char* kExeName = "LuigisMansionRecomp";
-const char* const kExpected[] = {"LuigisMansionRecomp", "pipelines.bin", "llvm/bin/clang", "llvm/bin/ld.lld"};
+const char* const kExpected[] = {"LuigisMansionRecomp", "pipelines.bin", "llvm/bin/clang", kLinkerFile};
 constexpr const char* kLauncher = "LuigisMansionRecompiled.sh";
 constexpr const char* kOldLauncher = "LuigisMansionPC.sh";  // 1.0 / 1.0.1 (same file in both)
 constexpr const char* kOldLauncherSha = "efbcb131f2018dcbeb49fc937a5fafa1ec425e55bc159cf4ced3445a7b12dc36";
@@ -625,7 +632,11 @@ const CurlApi* curl() {
     static CurlApi api;
     static std::once_flag once;
     std::call_once(once, [] {
+#ifdef __APPLE__
+        for (const char* name : {"/usr/lib/libcurl.4.dylib", "libcurl.4.dylib", "libcurl.dylib"}) {
+#else
         for (const char* name : {"libcurl.so.4", "libcurl-gnutls.so.4", "libcurl-nss.so.4", "libcurl.so"}) {
+#endif
             api.lib = dlopen(name, RTLD_NOW | RTLD_LOCAL);
             if (api.lib) {
                 ulog("using %s", name);
@@ -952,8 +963,7 @@ fs::path sExePath = [] {
     const DWORD n = GetModuleFileNameW(nullptr, buf, DWORD(std::size(buf)));
     return port::plainPath(fs::path(std::wstring(buf, n)));  // \\?\... when started by that name
 #else
-    std::error_code ec;
-    return fs::read_symlink("/proc/self/exe", ec);
+    return port::selfExePath();
 #endif
 }();
 // Extended-length (port::longPath): every file operation of the updater works past MAX_PATH, also
@@ -1443,7 +1453,7 @@ void forwardOldLauncher(const fs::path& dir) {
 bool sameOrInside(const fs::path& p, const fs::path& dir) {
     const fs::path a = p.lexically_normal(), b = dir.lexically_normal();
     auto it = a.begin();
-    for (auto& part : b) {
+    for (const auto& part : b) {
         if (part.empty()) continue;  // trailing separator of dir
         if (it == a.end()) return false;
 #ifdef _WIN32
@@ -1658,7 +1668,7 @@ void installAndRestart() {
     }
 #ifndef _WIN32
     // Keep the executable bits (tar keeps them; a repacked archive might not).
-    for (const char* f : {"LuigisMansionRecomp", kLauncher, "llvm/bin/clang", "llvm/bin/ld.lld"}) {
+    for (const char* f : {"LuigisMansionRecomp", kLauncher, "llvm/bin/clang", kLinkerFile}) {
         const fs::path p = dir / f;
         if (fs::exists(p, ec))
             fs::permissions(p, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |

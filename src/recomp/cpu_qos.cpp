@@ -24,6 +24,11 @@
 #define LM_CPU_X86 1
 #endif
 #endif
+#ifdef __APPLE__
+#include <pthread.h>
+#include <pthread/qos.h>
+#include <cerrno>
+#endif
 
 namespace recomp::cpu {
 namespace {
@@ -188,6 +193,17 @@ void setCurrent(Role role) {
         log("[cpu] %s thread: priority %s%s, power throttling %s%s", kRoleName[int(role)],
             prio == THREAD_PRIORITY_HIGHEST ? "highest" : "above normal", prioOk ? "" : " (failed)", qosOk ? "off" : "unchanged",
             sets ? (setOk ? (sSets == 2 ? ", efficiency cores" : ", performance cores") : ", CPU set failed") : "");
+#elif defined(__APPLE__)
+    // macOS (docs/MACOS.md): no priorities or CPU sets; the QoS class decides the core type on
+    // Apple silicon. User-interactive keeps these threads on the performance cores.
+    if (!sEnabled) return;
+    const int err = pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    static std::atomic<unsigned> sLogged{0};
+    if (!(sLogged.fetch_or(1u << unsigned(role)) & (1u << unsigned(role))))
+        log("[cpu] %s thread: %s", kRoleName[int(role)],
+            err == 0 ? "QoS user-interactive"
+            : err == EPERM ? "SDL thread priority (no QoS class after a pthread priority)"
+                           : "QoS user-interactive failed");
 #endif
 }
 

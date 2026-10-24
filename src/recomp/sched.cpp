@@ -8,7 +8,9 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <memory>
 #include <string>
+#include <system_error>
 #include <cstdio>
 #include <condition_variable>
 #include <deque>
@@ -22,6 +24,8 @@
 #include <windows.h>
 #include <timeapi.h>
 #pragma comment(lib, "winmm.lib")
+#else
+#include <pthread.h>
 #endif
 
 namespace recomp {
@@ -44,7 +48,6 @@ struct GuestThread {
     bool detached = false;
     u32 entry = 0, arg = 0;
     std::condition_variable cv;
-    std::thread host;
 };
 
 }  // namespace recomp
@@ -253,8 +256,7 @@ bool create(u32 guest, u32 entry, u32 arg, u32 stackTop, u32 stackSize, s32 prio
         sThreads.push_back(t);
         ++sLive;
     }
-    t->host = std::thread(threadMain, t);
-    t->host.detach();
+    startHostThread([t] { threadMain(t); });
     return true;
 }
 
@@ -483,7 +485,6 @@ struct TimedIrq {
 std::mutex sTimerM;
 std::condition_variable sTimerCv;
 std::multimap<std::chrono::steady_clock::time_point, std::function<void(Ctx&)>> sTimed;
-std::thread sTimerThread;
 
 void timerMain() {
     cpu::setCurrent(cpu::Role::Timer);
@@ -519,6 +520,32 @@ void timerMain() {
 }
 }  // namespace
 
+void startHostThread(std::function<void()> fn) {
+#ifdef _WIN32
+    std::thread(std::move(fn)).detach();
+#else
+    auto* heap = new std::function<void()>(std::move(fn));
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 8u << 20);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_t th;
+    const int err = pthread_create(
+        &th, &attr,
+        [](void* p) -> void* {
+            std::unique_ptr<std::function<void()>> f(static_cast<std::function<void()>*>(p));
+            (*f)();
+            return nullptr;
+        },
+        heap);
+    pthread_attr_destroy(&attr);
+    if (err != 0) {
+        delete heap;
+        throw std::system_error(err, std::generic_category(), "pthread_create");
+    }
+#endif
+}
+
 void postIrqAfter(double seconds, std::function<void(Ctx&)> fn) {
     const auto when = std::chrono::steady_clock::now() +
                       std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds));
@@ -529,8 +556,7 @@ void postIrqAfter(double seconds, std::function<void(Ctx&)> fn) {
     static bool sStarted = false;
     if (!sStarted) {
         sStarted = true;
-        sTimerThread = std::thread(timerMain);
-        sTimerThread.detach();
+        startHostThread(timerMain);
     }
     sTimed.emplace(when, std::move(fn));
     sTimerCv.notify_one();
