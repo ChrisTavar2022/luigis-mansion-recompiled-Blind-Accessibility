@@ -87,7 +87,10 @@ README says.
 
 ## Open
 
-- Setup's module build took 352 s on 12 cores (Windows: about 20 s). Not profiled yet.
+- Setup's module build: 28.5 s with the package's bundled clang (official LLVM 23.1.4,
+  measured from the CI package on an M3 Pro); 352 s with Homebrew's clang in a dev build (slower
+  clang, plus setup's nice 10 keeps it on the efficiency cores). Package tested end to end from
+  the CI artifact: quarantined tools cleared, module built, game ran.
 - Shader preparation on Metal: about 180 s at a start where most pipelines came from the Dawn
   cache (`[precache]` lines: roughly 60 per second loaded), against 0.4-0.6 s warm on Windows.
 - Packaging: a plain folder, no `.app` bundle, not notarized; release script / GitHub release
