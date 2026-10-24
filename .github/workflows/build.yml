@@ -83,7 +83,8 @@ jobs:
           n=LLVM-$LLVM_VERSION-Linux-X64
           curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$n.tar.zst" -o llvm.tar.zst
           mkdir -p llvm-bundle
-          tar --zstd -xf llvm.tar.zst -C llvm-bundle --strip-components=1 --wildcards "$n/bin/clang*" "$n/bin/lld" "$n/bin/ld.lld"
+          # LLVM's archives use a long zstd window (--long=31).
+          zstd -dc --long=31 llvm.tar.zst | tar -x -C llvm-bundle --strip-components=1 --wildcards "$n/bin/clang*" "$n/bin/lld" "$n/bin/ld.lld"
           rm llvm.tar.zst
           ls -la llvm-bundle/bin
       - name: Build and package
@@ -126,7 +127,7 @@ jobs:
           n=LLVM-$LLVM_VERSION-macOS-ARM64
           curl -fsSL "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$n.tar.zst" -o llvm.tar.zst
           mkdir -p llvm-bundle
-          zstd -dc llvm.tar.zst | tar -x -C llvm-bundle --strip-components=1 --include "$n/bin/clang*" --include "$n/bin/lld" --include "$n/bin/ld64.lld"
+          zstd -dc --long=31 llvm.tar.zst | tar -x -C llvm-bundle --strip-components=1 --include "$n/bin/clang*" --include "$n/bin/lld" --include "$n/bin/ld64.lld"
           rm llvm.tar.zst
           ls -la llvm-bundle/bin
       - name: Build and package
