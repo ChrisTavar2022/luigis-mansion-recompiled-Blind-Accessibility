@@ -236,9 +236,7 @@ fs::path computeExeDir() {
     buf.resize(n);
     return fs::path(buf).parent_path();
 #else
-    const fs::path p = selfExePath();
-    std::error_code ec;
-    return p.empty() ? fs::current_path(ec) : p.parent_path();
+    return selfExeDir();
 #endif
 }
 
@@ -870,6 +868,14 @@ fs::path selfExePath() {
     return ec ? fs::path() : p;
 #endif
 }
+
+fs::path selfExeDir() {
+    const fs::path p = selfExePath();
+    if (!p.empty()) return p.parent_path();
+    std::error_code ec;
+    fs::path cwd = fs::current_path(ec);  // what the program was started from (the old fallback)
+    return ec ? fs::path(".") : cwd;
+}
 #endif
 
 void relaunch(bool setup, const std::filesystem::path& exePath) {
@@ -914,7 +920,12 @@ void relaunch(bool setup, const std::filesystem::path& exePath) {
         execv(exePath.c_str(), argv.data());
         return;  // exec failed: the caller reports it
     }
-    if (fork() == 0) execv(selfExePath().c_str(), argv.data());
+#ifdef __APPLE__
+    const fs::path self = selfExePath();
+    if (!self.empty() && fork() == 0) execv(self.c_str(), argv.data());
+#else
+    if (fork() == 0) execv("/proc/self/exe", argv.data());  // works even when readlink failed
+#endif
 #endif
     std::_Exit(0);
 }

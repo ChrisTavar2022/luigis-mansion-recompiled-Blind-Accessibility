@@ -977,6 +977,7 @@ fs::path under(const fs::path& dir, const std::string& rel) {
 
 bool isPackaged() {
     std::error_code ec;
+    if (sExePath.empty()) return false;  // program path unknown: never update an unknown folder
     const fs::path d = installDir();
 #ifdef _WIN32
     return fs::exists(d / "llvm" / "bin" / "clang.exe", ec) && fs::exists(d / "pipelines.bin", ec);

@@ -134,6 +134,9 @@ void relaunch(bool setup = false, const std::filesystem::path& exe = {});
 // The running program's file (Linux: /proc/self/exe, macOS: _NSGetExecutablePath, links resolved);
 // empty when it cannot be found.
 std::filesystem::path selfExePath();
+// Its folder; never empty: the current directory when selfExePath() is empty (the behaviour
+// before selfExePath existed), so callers never join paths onto an empty relative path.
+std::filesystem::path selfExeDir();
 #endif
 void setLaunchArgs(int argc, char** argv);
 

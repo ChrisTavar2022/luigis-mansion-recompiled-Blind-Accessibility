@@ -36,7 +36,7 @@ std::filesystem::path exeDir() {
     const DWORD n = GetModuleFileNameW(nullptr, buf, DWORD(std::size(buf)));
     return std::filesystem::path(std::wstring(buf, n)).parent_path();
 #else
-    return port::selfExePath().parent_path();
+    return port::selfExeDir();
 #endif
 }
 
