@@ -370,17 +370,24 @@ void netThread() {
                 std::lock_guard lk(sCfgM);
                 cfg = sCfg;
             }
-            std::lock_guard lk(sM);
-            for (auto& s : sServers) closeSocket(s.sock);
-            sServers.clear();
+            // Resolved and opened without sM: getaddrinfo can block for seconds on a host name,
+            // and update() takes sM before every PADRead (the game would stall). Only this
+            // thread changes sServers, so the new list is swapped in under the lock afterwards.
+            std::vector<Server> fresh;
             if (cfg.enabled)
                 for (const auto& a : splitServers(cfg.servers)) {
                     Server s;
                     s.address = a;
                     if (openServer(s)) log("[dsu] client for %s (%s port %s)", a.c_str(), s.host.c_str(), s.port.c_str());
                     else log("[dsu] %s", s.error.c_str());
-                    sServers.push_back(std::move(s));
+                    fresh.push_back(std::move(s));
                 }
+            {
+                std::lock_guard lk(sM);
+                sServers.swap(fresh);
+            }
+            for (auto& s : fresh) closeSocket(s.sock);  // the old list
+            continue;  // the configuration may have changed again meanwhile
         }
         fd_set fds;
         FD_ZERO(&fds);
