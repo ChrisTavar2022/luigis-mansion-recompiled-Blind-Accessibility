@@ -132,13 +132,26 @@ LM_COMPAT uint32_t arc4random_uniform(uint32_t bound) {
     }
 }
 
-/* hypotf: glibc 2.35 added a new symbol version (hypotf@GLIBC_2.35, a faster implementation),
- * which std::hypot(float, float) binds to when built on a newer glibc. Route it to the
- * original x86_64 version (GLIBC_2.2.5), which every glibc still exports. */
-#if defined(__x86_64__)
-float lm_hypotf_compat(float x, float y);
-__asm__(".symver lm_hypotf_compat, hypotf@GLIBC_2.2.5");
-LM_COMPAT float hypotf(float x, float y) { return lm_hypotf_compat(x, y); }
-#endif
+/* hypotf: glibc 2.35 added a new symbol version (hypotf@GLIBC_2.35), which std::hypot(float,
+ * float) binds to when built on a newer glibc. Defined here in full, hidden: calls inside the
+ * executable bind to it at link time and nothing is imported from libm.
+ *
+ * Up to 1.1.4 this was a default-visibility wrapper calling hypotf@GLIBC_2.2.5 through the PLT.
+ * The executable then exported an unversioned hypotf, and the dynamic loader lets an unversioned
+ * definition satisfy a versioned reference, searching the executable first: the PLT entry bound
+ * to the wrapper itself, so the first std::hypot(float, float) call was an endless jump loop
+ * (issues #2 / #11: the frame interpolation's 2D layout blend calls it when a 2D picture slides,
+ * e.g. the title screen after START or the pause screen, and the picture froze on every
+ * distribution). Never re-export a libc/libm name from the executable that calls the original
+ * (docs/LINUX.md "Portable executable"); tools/package_linux.sh checks it.
+ *
+ * Same arithmetic as glibc 2.35's hypotf: the squares and their sum are exact or correctly
+ * rounded in double, so the float result is correctly rounded. */
+__attribute__((visibility("hidden"), used)) float hypotf(float x, float y) {
+    if (__builtin_isinf(x) || __builtin_isinf(y)) return __builtin_inff();
+    if (__builtin_isnan(x) || __builtin_isnan(y)) return x + y;
+    const double dx = x, dy = y;
+    return (float)__builtin_sqrt(dx * dx + dy * dy);
+}
 
 #endif
