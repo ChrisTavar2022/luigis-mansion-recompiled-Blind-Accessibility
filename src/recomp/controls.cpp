@@ -15,6 +15,7 @@
 // [controls.pad.<guid>]) through port::addSettingsExtension.
 #include "recomp/menu.h"
 #include "recomp/controls.h"
+#include "recomp/dsu.h"
 #include "recomp/ui_scale.h"
 
 #include "port/settings.h"
@@ -1420,6 +1421,7 @@ void selectSubTab(const char* name) { sEnvSubTab = name; }
 
 bool drawTab() {
     std::lock_guard lk(sMutex);
+    dsu::update();
     assign();  // hot-plug status even while the game is not reading the pads
     if (sCap.active && sCap.timeout &&
         std::chrono::duration<float>(Clock::now() - sCap.start).count() > kCaptureSeconds)
@@ -1463,6 +1465,10 @@ bool drawTab() {
             local |= analogTab();
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("DSU", nullptr, subTabFlags("DSU"))) {
+            local |= dsu::drawTab();
+            ImGui::EndTabItem();
+        }
         ImGui::EndTabBar();
     }
     sEnvSubTab = nullptr;
@@ -1484,6 +1490,7 @@ bool handleEvent(const SDL_Event& ev) {
 void beforeRead() {
     std::lock_guard lk(sMutex);
     runVirtualScript();
+    dsu::update();
     assign();
     for (u32 port = 0; port < PAD_MAX_CONTROLLERS; port++) {
         const auto& st = sPorts[port];

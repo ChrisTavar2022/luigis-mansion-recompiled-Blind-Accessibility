@@ -65,6 +65,11 @@ bool interruptsEnabled();
 
 // Ends every guest thread: each one leaves at its next scheduling point (throws ThreadExit).
 void shutdown();
+
+// Starts a detached host thread that runs guest code (guest threads, the boot thread, the
+// interrupt timer). Every guest call is a host frame, so these get 8 MiB stacks on POSIX:
+// macOS gives std::thread only 512 KiB (Windows: the executable's 1 MiB; Linux: 8 MiB).
+void startHostThread(std::function<void()> fn);
 // After shutdown(): waits until the created guest threads (not the boot thread) have unwound,
 // at most `seconds`; false on timeout.
 bool waitForThreads(double seconds);

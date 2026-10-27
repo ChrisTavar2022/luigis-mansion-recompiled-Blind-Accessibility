@@ -146,6 +146,11 @@ function(lm_runtime_target tgt)
             add_custom_command(TARGET ${tgt} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_dawn_extra_dlls} $<TARGET_FILE_DIR:${tgt}>)
         endif ()
+    elseif (APPLE)
+        # macOS (docs/MACOS.md): same reason as the game module's -ffp-contract=off
+        # (src/setup/module_builder.cpp): no fused multiply-adds the PowerPC would not do, in
+        # the HLE math (PSMTX/PSVEC) and in lmrecomp's generated code.
+        target_compile_options(${tgt} PRIVATE -ffp-contract=off)
     elseif (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # Portable Linux binary (docs/LINUX.md): SDL3, Dawn and nod are linked statically by
         # Aurora; the C++ runtime is too, and src/port/glibc_compat.c covers the few symbols
@@ -196,12 +201,29 @@ target_sources(LuigisMansionRecomp PRIVATE ${CMAKE_BINARY_DIR}/embedded_data.cpp
 # The module linker is lld-link on Windows, ld.lld on Linux (src/setup/module_builder.cpp).
 if (WIN32)
     set(LM_MODULE_LINKER lld-link)
+elseif (APPLE)
+    set(LM_MODULE_LINKER ld64.lld)
 else ()
     set(LM_MODULE_LINKER ld.lld)
 endif ()
 get_filename_component(_cxx_dir ${CMAKE_CXX_COMPILER} DIRECTORY)
 if (EXISTS ${_cxx_dir}/clang${CMAKE_EXECUTABLE_SUFFIX} AND EXISTS ${_cxx_dir}/${LM_MODULE_LINKER}${CMAKE_EXECUTABLE_SUFFIX})
     target_compile_definitions(LuigisMansionRecomp PRIVATE "LM_DEV_LLVM_DIR=\"${_cxx_dir}\"")
+elseif (APPLE)
+    # macOS: Apple's clang comes without lld. Homebrew's llvm and lld (separate kegs) build the
+    # module in dev builds; findToolchain takes clang and ld64.lld from different folders here.
+    find_program(LM_DEV_CLANG clang HINTS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin NO_DEFAULT_PATH)
+    find_program(LM_DEV_LD64_LLD ld64.lld HINTS /opt/homebrew/opt/lld/bin /opt/homebrew/opt/llvm/bin
+        /usr/local/opt/lld/bin /usr/local/opt/llvm/bin)
+    if (LM_DEV_CLANG AND LM_DEV_LD64_LLD)
+        get_filename_component(_dev_clang_dir ${LM_DEV_CLANG} DIRECTORY)
+        get_filename_component(_dev_lld_dir ${LM_DEV_LD64_LLD} DIRECTORY)
+        target_compile_definitions(LuigisMansionRecomp PRIVATE "LM_DEV_LLVM_DIR=\"${_dev_clang_dir}\""
+            "LM_DEV_LLD_DIR=\"${_dev_lld_dir}\"")
+        set(_cxx_dir ${_dev_clang_dir})
+    else ()
+        message(WARNING "No clang + ld64.lld found (brew install llvm lld): the game module cannot be built")
+    endif ()
 endif ()
 
 # Packaging: `cmake --install build/<preset> --prefix <dir>` lays out a release folder.
@@ -223,8 +245,13 @@ else ()
     # ld.lld -> lld); copy the real binaries under the names the setup looks for (lld picks
     # its flavour from its name). Use a self-contained LLVM (the official release tarball),
     # not a distribution's clang that needs libLLVM/libclang-cpp next to it.
+    if (APPLE)
+        set(_lm_linker_name ld64.lld)  # macOS: Mach-O lld (docs/MACOS.md)
+    else ()
+        set(_lm_linker_name ld.lld)
+    endif ()
     install(CODE "
-        foreach (_pair \"clang;clang\" \"ld.lld;ld.lld\")
+        foreach (_pair \"clang;clang\" \"${_lm_linker_name};${_lm_linker_name}\")
             list(GET _pair 0 _src)
             list(GET _pair 1 _dst)
             set(_from \"${LM_LLVM_DIR}/\${_src}\")
@@ -239,6 +266,11 @@ else ()
                  GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
             message(STATUS \"Bundled \${_real} as llvm/bin/\${_dst}\")
         endforeach ()")
+endif ()
+if (APPLE)
+    install(FILES packaging/macos/README.txt DESTINATION .)
+endif ()
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # The official LLVM lld needs libxml2.so.2 (only for lld-link manifests): ship a stub
     # in llvm/lib, found through lld's RUNPATH $ORIGIN/../lib (packaging/linux/libxml2_stub.c).
     add_library(lm_libxml2_stub SHARED packaging/linux/libxml2_stub.c)
