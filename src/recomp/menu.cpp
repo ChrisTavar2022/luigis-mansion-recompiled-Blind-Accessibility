@@ -87,7 +87,7 @@ struct Page {
 constexpr Page kPages[] = {
     {"Visuals", "General"},       {"Visuals", "Rendering"},        {"Visuals", "Enhanced lighting"},
     {"Sound", nullptr},           {"Controls", "Ports"},           {"Controls", "Bindings"},
-    {"Controls", "Analog"},       {"Enhancements", "General"},     {"Enhancements", "Gameplay"},
+    {"Controls", "Analog"},       {"Controls", "DSU"},             {"Enhancements", "General"},     {"Enhancements", "Gameplay"},
     {"Enhancements", "Silly"},          {"Enhancements", "Unused content"}, {"Enhancements", "Debug"}, {"Game", nullptr},
 };
 constexpr int kPageCount = int(sizeof(kPages) / sizeof(kPages[0]));
@@ -563,6 +563,41 @@ void updateToast() {
         ImGui::Text("Update available: %s", st.info.tag.c_str());
         ImGui::TextDisabled("F1 > Game to see what's new");
     }
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
+
+// "Press F1" hint (F1 > Visuals > General, setting [interface] start_hint): top-left for the first
+// 8 s once the game shows frames (not during setup or "Preparing shaders"), never again in a session
+// after the menu was opened. Takes no input.
+void startHint() {
+    static double sShownAt = -1.0;
+    static bool sDone = false;
+    if (sOpen) sDone = true;
+    if (sDone || !port::settings().ui.startHint || recomp::frame::guestFrames() == 0) return;
+    const double now = ImGui::GetTime();
+    if (sShownAt < 0.0) {
+        sShownAt = now;
+        std::printf("[ui] \"Press F1\" hint shown\n");
+        std::fflush(stdout);
+    }
+    const double age = now - sShownAt;
+    constexpr double kShow = 8.0;
+    if (age > kShow) {
+        sDone = true;
+        return;
+    }
+    const float alpha = age > kShow - 1.0 ? float(kShow - age) : age < 0.3 ? float(age / 0.3) : 1.0f;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + 16.0f * recomp::ui::scale(), vp->WorkPos.y + 16.0f * recomp::ui::scale()),
+                            ImGuiCond_Always, ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.7f);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                        ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                                        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings |
+                                        ImGuiWindowFlags_NoMove;
+    if (ImGui::Begin("##start_hint", nullptr, kFlags)) ImGui::TextUnformatted("Press F1 to open Settings");
     ImGui::End();
     ImGui::PopStyleVar();
 }
@@ -1453,6 +1488,9 @@ void visualsTab() {
     auto& v = port::settings().video;
     ImGui::SeparatorText("Menu");
     menuSizeControl();
+    sDirty |= recomp::menu::Checkbox("Show \"Press F1\" hint at start", &port::settings().ui.startHint);
+    ImGui::SetItemTooltip("A small notice in the top-left corner for the first seconds of play saying that F1\n"
+                          "opens this menu. It is not shown again in a session once the menu has been opened.");
     ImGui::SeparatorText("Frame rate and view");
     frameRateControls(v);
     static const char* kAspects[] = {"Original 4:3", "Match window", "16:9", "16:10", "21:9", "32:9"};
@@ -2098,6 +2136,7 @@ void draw() {
     }
     updateToast();
     refreshRateToast();
+    startHint();
     if (!sOpen) return;
     // Default 680 x 400 and at least 520 x 300 at 100%, scaled with the menu size and kept on the
     // screen (ui_scale.cpp; after the first-use position, which would replace the one it sets).

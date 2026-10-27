@@ -130,6 +130,14 @@ void saveInstall();
 // the running one's file (the updater: on Linux /proc/self/exe names the replaced file); on Linux
 // it is exec'd in place of this process (same PID, so a launcher script keeps waiting for it).
 void relaunch(bool setup = false, const std::filesystem::path& exe = {});
+#ifndef _WIN32
+// The running program's file (Linux: /proc/self/exe, macOS: _NSGetExecutablePath, links resolved);
+// empty when it cannot be found.
+std::filesystem::path selfExePath();
+// Its folder; never empty: the current directory when selfExePath() is empty (the behaviour
+// before selfExePath existed), so callers never join paths onto an empty relative path.
+std::filesystem::path selfExeDir();
+#endif
 void setLaunchArgs(int argc, char** argv);
 
 }  // namespace port

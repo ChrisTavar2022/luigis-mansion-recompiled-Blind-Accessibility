@@ -1731,6 +1731,58 @@ crashed at startup. `main.cpp` passed the ANSI code page string of `%APPDATA%` a
 and user path, which Aurora reads as UTF-8 (`std::filesystem::path` threw in the crash journal
 check); both are UTF-8 now (`port::envPath` for `LM_CARD_DIR`/`LM_CACHE_DIR`).
 
+### Hold frames below the refresh rate (issue #33)
+
+**User report (public issue #33, i9-12900K, RTX 3070 Ti, Windows 11):** "Preparing shaders" crawls
+on every start, warm cache too (under 10% after a minute); alt-tabbing away for a second and back,
+it is done at once; started with `start "" /high` (HIGH priority class) it takes ~25 s. The owner
+(also a 12900K) could not reproduce it.
+
+**Cause.** The hold's frame loop (`main.cpp`, `precache::holdGame`) drew a frame, then slept 8 ms:
+about 115 frames a second. On a display under ~115 Hz (the reporter's; 60 Hz is typical) that is
+faster than the swap chain, so every frame the render worker waited in Dawn's `GetCurrentTexture`
+for a free image until the next vertical blank. Dawn holds its **device lock** through that wait
+(implicit device synchronization, Aurora 0175), and every pipeline creation takes it several times
+(the three `PushErrorScope`/`PopErrorScope` pairs of `guarded_create`, the shader module, the
+pipeline). The creation threads queued behind the acquire, frame after frame. A display at 120 Hz
+or more (the owner's, this PC's) never filled the swap chain at 115 frames a second: no wait, no
+slowdown. Alt-tab: the window lost the focus, Aurora paused (`SDL_WaitEvent`), no frames, so no
+acquire, and the creation threads finished the batch in a second. The HIGH priority class only
+shortened the lock hand-offs. Not the #18 thread policy: the same with `LM_CPU_QOS=0`.
+
+**Measured** (this PC, 120 Hz; `LM_HOLD_FPS=0` lets the hold run at the refresh rate, which
+reproduces the reporter's case; temporary timing in the render worker and `guarded_create`):
+
+| | acquire (`GetCurrentTexture`) per frame | `PushErrorScope` x3 per pipeline | creation per pipeline | warm Ultra hold (10076) |
+|---|---|---|---|---|
+| hold at the refresh rate (`LM_HOLD_FPS=0`) | 6.0-6.5 ms | 3.2 ms | 11.9 ms | 8.1-8.7 s |
+| hold below the refresh rate (115 fps here, 20 fps new) | 0.03 ms | | 1.7 ms | 1.7-2.2 s |
+
+Warm starts, hold seconds, two runs each, other agents' game instances running (`LM_HOLD_FPS=old`
+= the previous 8 ms sleep, not vsync-bound at 120 Hz):
+
+| Settings | old (120 Hz) | at the refresh rate (= old on a 60 Hz display) | new | at the refresh rate, `LM_CPU_QOS=0` | new, `LM_CPU_QOS=0` |
+|---|---|---|---|---|---|
+| Default (3055) | 0.47-0.62 | 2.28-2.37 | 0.47-0.53 | | |
+| Enhanced lighting Ultra (10076) | 1.67-2.14 | 8.14-8.20 | 1.81-1.93 | 8.10-8.33 | 1.96-2.14 |
+| Ultra, visible window | | 8.68 | 2.23 | | |
+
+Cold (fresh Dawn cache, driver cache warm) the lock matters little next to the compiles: default
+42.8 s at the refresh rate, 40.0 s new.
+
+**Fix** (`precache::holdFramePause`, after every hold frame and on the setup screens while the
+game is prepared or its shaders compile): hold frames at most every 50 ms and never faster than half
+the display's refresh rate (SDL's display mode; a wrong or unknown rate still gets the 50 ms), so a
+swap chain image is always free and the acquire never waits. 20 frames a second are plenty for a
+progress bar; a settings-change hold with the F1 menu open also runs at 20 while it lasts. Gameplay
+frames are unchanged (frame pacing, #18). `LM_PIPELINE_LOG=1` logs `[precache] hold frames: N in 1 s
+(every X ms, display Y Hz), aurora_begin_frame A ms avg`: a few ms every frame means the hold
+frames run into the swap chain again. Test aid `LM_HOLD_FPS=<n>` (`0` unlimited = the refresh rate,
+`old` = the 8 ms sleep).
+
+Rule: any thread that needs Dawn while the render worker presents waits for the acquire too (FIFO
+processor, pipeline workers); keep loops that present without a game frame below the refresh rate.
+
 ## Enhanced lighting
 
 Optional effects layered on top of the accurate GX rendering: F1 > Visuals > Enhanced lighting

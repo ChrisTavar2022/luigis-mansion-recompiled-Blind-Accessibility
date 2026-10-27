@@ -21,6 +21,10 @@
 #include <signal.h>
 #include <unistd.h>
 #endif
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#include <sys/sysctl.h>
+#endif
 
 namespace port {
 namespace {
@@ -177,10 +181,16 @@ fs::path sysDir(Kind, bool create) {
     return dir;
 }
 #else
-// XDG base directory: $<var> if set to an absolute path, else $HOME/<fallback>.
+// XDG base directory: $<var> if set to an absolute path, else $HOME/<fallback>. macOS
+// (docs/MACOS.md): ~/Library/Application Support (config and data) and ~/Library/Caches; the
+// XDG variables still override them (scratch folders for test runs).
 fs::path sysDir(Kind kind, bool create) {
     const char* var = kind == Kind::Config ? "XDG_CONFIG_HOME" : kind == Kind::Data ? "XDG_DATA_HOME" : "XDG_CACHE_HOME";
+#ifdef __APPLE__
+    const char* fallback = kind == Kind::Cache ? "Library/Caches" : "Library/Application Support";
+#else
     const char* fallback = kind == Kind::Config ? ".config" : kind == Kind::Data ? ".local/share" : ".cache";
+#endif
     fs::path base;
     if (const char* v = std::getenv(var); v && v[0] == '/') base = v;
     else if (const char* home = std::getenv("HOME"); home && home[0]) base = fs::path(home) / fallback;
@@ -226,9 +236,7 @@ fs::path computeExeDir() {
     buf.resize(n);
     return fs::path(buf).parent_path();
 #else
-    std::error_code ec;
-    const fs::path p = fs::read_symlink("/proc/self/exe", ec);
-    return ec ? fs::current_path(ec) : p.parent_path();
+    return selfExeDir();
 #endif
 }
 
@@ -311,6 +319,14 @@ void waitForProcess(unsigned long pid) {
 #else
     for (int i = 0; i < 150; i++) {
         if (kill(pid_t(pid), 0) != 0) return;
+#ifdef __APPLE__
+        int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, int(pid)};
+        kinfo_proc kp{};
+        size_t len = sizeof(kp);
+        if (sysctl(mib, 4, &kp, &len, nullptr, 0) == 0 && len && kp.kp_proc.p_stat == SZOMB) return;  // exited
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        continue;
+#endif
         std::ifstream st("/proc/" + std::to_string(pid) + "/stat");
         std::string s;
         std::getline(st, s);
@@ -836,6 +852,32 @@ void saveInstall() {
 
 void setLaunchArgs(int argc, char** argv) { sArgs.assign(argv, argv + argc); }
 
+#ifndef _WIN32
+fs::path selfExePath() {
+    std::error_code ec;
+#ifdef __APPLE__
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::string buf(size, '\0');
+    if (_NSGetExecutablePath(buf.data(), &size) != 0) return {};
+    buf.resize(std::strlen(buf.c_str()));
+    const fs::path p = fs::canonical(buf, ec);
+    return ec ? fs::path(buf) : p;
+#else
+    const fs::path p = fs::read_symlink("/proc/self/exe", ec);
+    return ec ? fs::path() : p;
+#endif
+}
+
+fs::path selfExeDir() {
+    const fs::path p = selfExePath();
+    if (!p.empty()) return p.parent_path();
+    std::error_code ec;
+    fs::path cwd = fs::current_path(ec);  // what the program was started from (the old fallback)
+    return ec ? fs::path(".") : cwd;
+}
+#endif
+
 void relaunch(bool setup, const std::filesystem::path& exePath) {
 #ifdef _WIN32
     wchar_t exe[MAX_PATH * 4];
@@ -878,7 +920,12 @@ void relaunch(bool setup, const std::filesystem::path& exePath) {
         execv(exePath.c_str(), argv.data());
         return;  // exec failed: the caller reports it
     }
-    if (fork() == 0) execv("/proc/self/exe", argv.data());
+#ifdef __APPLE__
+    const fs::path self = selfExePath();
+    if (!self.empty() && fork() == 0) execv(self.c_str(), argv.data());
+#else
+    if (fork() == 0) execv("/proc/self/exe", argv.data());  // works even when readlink failed
+#endif
 #endif
     std::_Exit(0);
 }

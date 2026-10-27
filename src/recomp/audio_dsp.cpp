@@ -11,6 +11,7 @@
 // microcode addresses.
 #include "port/settings.h"
 #include "recomp/audio.h"
+#include "recomp/guest_util.h"
 #include "recomp/hle.h"
 
 #include <algorithm>
@@ -141,6 +142,8 @@ struct Voice {
     s16 delay[256]{};
     bool loggedFx = false;  // LM_AUDIO_LOG: filters/delays reported once per start
     u32 stopSubframes = 0, stopVolume = 0;  // LM_AUDIO_LOG: force-stop fade length
+    VoiceKind kind = VoiceKind::Unknown;  // music or effect (volume sliders), since the voice started
+    u32 kindKey = 0;  // LM_AUDIO_KIND_LOG: what was last reported for the voice
 };
 
 struct FxLine {
@@ -509,10 +512,33 @@ void mixVoice(u32 i) {
         if (fm & 0x20) iirFilter(v, blk, buf);
     }
 
-    // User volume per category (Sound tab): streamed music plays through ring voices.
+    // User volume per category (Sound tab). Streamed music (.afc streams, the movie) plays
+    // through ring voices; sequenced music and sound effects are both notes from ARAM, told
+    // apart by the sequence that plays them (audio::voiceKind, docs/AUDIO.md "Volume sliders").
     {
         const auto& a = port::settings().audio;
-        const float g = (type == kSrcRamRing || type == kSrcRam) ? a.musicVolume : a.sfxVolume;
+        bool music = type == kSrcRamRing || type == kSrcRam;
+        if (!music) {
+            // Once the note's sequence has ended its track is released (data 0) while the
+            // voice may still be fading out: keep what the voice was since its start.
+            VoiceKind k = voiceKind(i);
+            if (k == VoiceKind::Unknown) k = v.kind;
+            v.kind = k;
+            music = k == VoiceKind::Music;
+            static const bool sKindLog = std::getenv("LM_AUDIO_KIND_LOG") != nullptr;
+            if (sKindLog) {
+                const int bank = voiceBank(i);
+                const u32 seq = voiceSequence(i);
+                const u32 key = rd32(blk + kAramAddr) ^ u32(bank) << 8 ^ seq ^ u32(k);
+                if (v.kindKey != key) {
+                    v.kindKey = key;
+                    log("[audio] voice %u (aram %06X, bank %d program %d, track %08X data %08X): %s", i, rd32(blk + kAramAddr),
+                        bank >> 8, bank & 0xFF, seq, gu::inMem1(seq) ? rd32(seq) : 0,
+                        k == VoiceKind::Music ? "music" : k == VoiceKind::Effect ? "sound effect" : "unknown (effect volume)");
+                }
+            }
+        }
+        const float g = music ? a.musicVolume : a.sfxVolume;
         if (g < 0.999f) {
             const s32 q = s32(std::clamp(g, 0.0f, 1.0f) * 32768.0f);
             for (u32 n = 0; n < kSubframe; n++) buf[n] = s16((s32(buf[n]) * q) >> 15);

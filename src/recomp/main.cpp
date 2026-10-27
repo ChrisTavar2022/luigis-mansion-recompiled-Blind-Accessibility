@@ -46,6 +46,9 @@
 
 namespace recomp {
 u32 copyDispCount();  // hle_gx.cpp
+#ifdef __APPLE__
+void hideWindowMacos(SDL_Window* w);  // macos_window.cpp
+#endif
 #ifdef LM_STATIC_MODULE
 extern const GameModule kGameModule;  // generated func_table.cpp, linked in (lmrecomp)
 #endif
@@ -301,7 +304,15 @@ int main(int argc, char* argv[]) {
     // outside every display, so it renders and presents as usual but is never seen (a hidden window
     // pauses the game; Start-Process -WindowStyle Hidden does not hide SDL's window).
     if (std::getenv("LM_OFFSCREEN"))
-        if (SDL_Window* w = aurora_get_window()) SDL_SetWindowPosition(w, -32000, -32000);
+        if (SDL_Window* w = aurora_get_window()) {
+#ifdef __APPLE__
+            // macOS keeps windows on a display whatever position is asked for: fully transparent
+            // and click-through instead (it still renders and presents; docs/MACOS.md).
+            hideWindowMacos(w);
+#else
+            SDL_SetWindowPosition(w, -32000, -32000);
+#endif
+        }
     // LM_MAXIMIZE=1 (testing): open the window maximized, as players often run it.
     if (std::getenv("LM_MAXIMIZE"))
         if (SDL_Window* w = aurora_get_window()) SDL_MaximizeWindow(w);
@@ -485,15 +496,19 @@ int main(int argc, char* argv[]) {
         if (exiting || paused) continue;
         if (hold) {
             port::setPhase("game loop: shader preparation frame");
+            const auto beginAt = SteadyClock::now();
             if (!aurora_begin_frame()) continue;
+            const double beginMs = std::chrono::duration<double, std::milli>(SteadyClock::now() - beginAt).count();
             lastPresented = SteadyClock::now();
             presentStallReported = false;
             menu::draw();  // applies settings changes (they may change what is being compiled)
             precache::drawHold();
             precache::frame();
             aurora_end_frame();
-            // Leave the CPU to the compile threads (no VSync pacing without a game frame).
-            std::this_thread::sleep_for(std::chrono::milliseconds(8));
+            // Hold frames well below the display's refresh rate (issue #33): a swap chain image is
+            // then always free, so the render worker never waits for one inside Dawn, where the wait
+            // holds the device lock every pipeline creation needs.
+            precache::holdFramePause(beginMs);
             if (menu::quitRequested()) break;
             continue;
         }

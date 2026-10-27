@@ -7,6 +7,8 @@
 #include "recomp/hle.h"
 #include "recomp/ui_scale.h"
 
+#include <SDL3/SDL_video.h>
+#include <aurora/aurora.h>
 #include <aurora/pipeline_cache.h>
 #include <imgui.h>
 
@@ -36,7 +38,7 @@ std::filesystem::path exeDir() {
     const DWORD n = GetModuleFileNameW(nullptr, buf, DWORD(std::size(buf)));
     return std::filesystem::path(std::wstring(buf, n)).parent_path();
 #else
-    return std::filesystem::read_symlink("/proc/self/exe").parent_path();
+    return port::selfExeDir();
 #endif
 }
 
@@ -346,6 +348,59 @@ void drawHold() {
     }
     if (large) ImGui::PopFont();
     ImGui::End();
+}
+
+void holdFramePause(double beginMs) {
+    // LM_HOLD_FPS=<n> (test aid): hold frames at n per second; 0 = no wait at all (the display's
+    // refresh rate through VSync: reproduces issue #33 on any display); "old" = the 8 ms sleep of
+    // 1.1-1.1.4 (vsync-bound on a display under ~115 Hz).
+    static const double sFixed = [] {
+        const char* v = std::getenv("LM_HOLD_FPS");
+        if (!v) return -1.0;                 // default: refresh-aware
+        if (*v == 'o') return -2.0;          // old
+        const double fps = std::atof(v);
+        return fps > 0 ? 1.0 / fps : 0.0;
+    }();
+    constexpr double kMinPeriod = 0.050;  // 20 hold frames a second: enough for a progress bar
+    static Clock::time_point sNext{};
+    const auto now = Clock::now();
+    double period = kMinPeriod;
+    float hz = 0.0f;
+    if (sFixed == -2.0) {
+        sNext = now + std::chrono::milliseconds(8);
+    } else {
+        if (sFixed >= 0.0) {
+            period = sFixed;
+        } else if (SDL_Window* w = aurora_get_window()) {
+            // Never faster than every second refresh: the swap chain always has a free image, so
+            // acquiring one never waits for a vertical blank (a 24-30 Hz TV gets 12-15 frames).
+            if (const SDL_DisplayMode* m = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(w)); m && m->refresh_rate > 0.0f) {
+                hz = m->refresh_rate;
+                period = std::max(period, 2.0 / double(hz));
+            }
+        }
+        // (A late frame does not make the next ones faster: no catching up.)
+        const auto step = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(period));
+        sNext = (sNext == Clock::time_point{} || now - sNext > step) ? now + step : sNext + step;
+    }
+    // LM_PIPELINE_LOG: once a second, how long the hold frames waited in aurora_begin_frame (a few
+    // milliseconds every frame = the frames run at the refresh rate and the swap chain makes them wait).
+    if (sLog) {
+        static Clock::time_point sWindow = now;
+        static double sBegin = 0, sMax = 0;
+        static int sFrames = 0;
+        sBegin += beginMs, sMax = std::max(sMax, beginMs), sFrames++;
+        if (now - sWindow >= std::chrono::seconds(1)) {
+            log("[precache] hold frames: %d in %.1f s (every %.0f ms, display %.0f Hz), aurora_begin_frame %.2f ms avg, "
+                "%.1f max",
+                sFrames, std::chrono::duration<double>(now - sWindow).count(), period * 1e3, double(hz), sBegin / sFrames,
+                sMax);
+            sWindow = now;
+            sBegin = sMax = 0;
+            sFrames = 0;
+        }
+    }
+    std::this_thread::sleep_until(sNext);
 }
 
 Progress progress() {

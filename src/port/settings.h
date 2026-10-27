@@ -350,6 +350,7 @@ struct UpdateSettings {
 // Size of the F1 menu and the port's other overlays (src/recomp/ui_scale.cpp; issue #20).
 struct InterfaceSettings {
     int menuScale = 0;  // percent (75..300, ui::kSteps); 0 = Auto (window height / display scaling)
+    bool startHint = true;  // "Press F1 for options" notice for the first seconds of play (menu.cpp)
 };
 
 struct Settings {

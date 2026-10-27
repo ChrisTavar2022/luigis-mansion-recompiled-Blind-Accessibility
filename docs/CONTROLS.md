@@ -159,6 +159,69 @@ lets a module own its own sections of `settings.ini`.
   `controls::handleEvent` hiding captured keys from `menu::handleEvent`'s F1/Esc and the
   debug hotkeys. While the menu is open, the game still gets neutral input (`hle_pad.cpp`).
 
+## DSU controllers
+
+**DSU** (F1 > Controls, `src/recomp/dsu.cpp`): a client for the DSU ("cemuhook") protocol,
+the one Dolphin's DSU client reads, so a pad served by DS4Windows, BetterJoy, a Steam Deck
+or phone app, or a macOS driver such as NSO GC Driver can play. Off by default.
+
+- *Enable DSU client* and *Servers* (`host:port`, separated by `;`, up to 4; default
+  `127.0.0.1:26760`). The status lists each server (connected / waiting / error) and its
+  connected slots with connection, model, battery and packet rate.
+- *Controller layout*: what the server's controllers are. DSU always reports a DS4's
+  buttons, but servers for other pads fill them differently.
+  - *GameCube controller* (default): a GameCube pad behind the server. NSO GC Driver sends
+    A/B/X/Y as cross/circle/square/triangle, Z as R3, L/R as the analog L2/R2 with L1/R1 at
+    the click (measured from the driver). The L/R click is L1/R1 only; the L2/R2 digital bits
+    count (as click and full pull) only from a server that sends no analog trigger value, since
+    servers with analog triggers may set them as soon as the trigger moves (then a half pull
+    clicked). The virtual pad gets the GameCube adapter's ids
+    (057e:0337), so its profile has the GameCube defaults (labels, Z on the right shoulder,
+    L/R clicks on MISC3/MISC4, no extra dead zone), and the buttons are translated to match.
+  - *PlayStation (DS4) or other pad*: DS4Windows, BetterJoy, phone apps. DualShock 4 ids
+    (054c:09cc), PlayStation defaults, buttons by position.
+  Each layout has its own binding profile; changing it plugs the pads in again as the other
+  type.
+- Each connected slot is an SDL virtual gamepad named `DSU slot <n>` (`DSU <server> slot
+  <n>` with several servers), so it is assigned on the Ports tab (Auto picks it like a
+  plugged-in pad), gets its own binding profile, and shows in the input test. It disappears
+  2 s after the server stops reporting the slot. The pads differ only in the GUID's name CRC,
+  and SDL falls back to a mapping that matches without the CRC, so each pad gets a gamepad
+  mapping of its exact GUID and name when it is attached (otherwise slot 2 was called
+  "DSU slot 1" by SDL, Aurora's log and the Ports tab).
+- Security: the UDP socket is `connect()`ed to the resolved server address, so the system
+  drops datagrams from anyone else (they could otherwise inject input by sending `DSUS`
+  packets to the client's port); received datagrams' sources are compared again, and a
+  loopback server's socket is bound to loopback. Server names are resolved outside the lock
+  `update()` takes before every PADRead (a slow DNS lookup stalled the game).
+- Protocol 1001: the client sends the port-info request (0x100001, slots 0-3) and the
+  pad-data subscription for every slot (0x100002, flags 0) every second; replies are checked
+  (magic `DSUS`, version, length, CRC32). Buttons, sticks (DSU Y up = SDL negative) and the
+  analog L2/R2 bytes are used; touch, motion and the analog face buttons are not (the game has
+  nothing for them), and DSU has no rumble.
+- The network thread only stores the latest packet per slot; `dsu::update()` attaches,
+  updates and detaches the virtual pads under controls' lock, before every PADRead and while
+  the Controls tab is drawn.
+
+```ini
+[controls.dsu]
+enabled=false
+servers=127.0.0.1:26760
+layout=gamecube               ; gamecube | playstation
+```
+
+Log lines: `[dsu] client for ...`, `[dsu] DSU slot 1 connected (virtual gamepad <id>)`,
+`... disconnected`. Test aid `LM_DSU_LOG=1`: rejected datagrams (magic/version/length/CRC),
+datagrams from other senders, every change of a slot's buttons (raw DSU bytes, sticks, L2/R2)
+and each slot's packet rate once a second, plus each pad's own mapping. Tested against NSO GC
+Driver on macOS (one slot, Bluetooth, ~33 packets/s): in the game's pad log A, B, X, Z, START,
+L/R (analog + click) and both sticks arrive correctly; Y and the D-pad were not pressed in that
+run. Windows (Winsock) checked with a local two-slot test server: both slots attach as
+`DSU slot 1` / `DSU slot 2` (GameCube ids) on ports 1 and 2, ~33 packets/s each, and forged
+pad data sent to the client's port from another socket never arrives (`other senders 0`; an
+unconnected socket receives it). Automated runs keep SDL's background joystick events off, so
+the pads' input itself was not seen by the game there.
+
 ## Rumble
 
 The whole path, game to controller (issue #12, "no vibration with an Xbox Series X

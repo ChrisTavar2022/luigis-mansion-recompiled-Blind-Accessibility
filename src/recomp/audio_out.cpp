@@ -373,6 +373,20 @@ void outPushGuestBlock(u32 addr, u32 bytes) {
         outRate = devRate;
     }
     sWasSinc = as.sincResampler;
+    // Peak limiter. The DSP output is saturated 16-bit, so the stream itself never exceeds
+    // full scale, but the windowed-sinc filter rings above it (Gibbs overshoot) on the loudest,
+    // already saturated peaks (Bogmire's fight: up to 0.5 dB over), and the device would clip
+    // those hard. Above -1 dB the level bends smoothly towards full scale (tanh knee, slope 1
+    // at the threshold), so nothing below it changes. docs/AUDIO.md "Peaks".
+    {
+        constexpr float kKnee = 0.891f;  // -1 dBFS
+        float* p = as.sincResampler ? res.data() : buf.data();
+        const size_t n = outFrames * size_t(ch);
+        for (size_t k = 0; k < n; k++) {
+            const float a = std::fabs(p[k]);
+            if (a > kKnee) p[k] = std::copysign(kKnee + (1.0f - kKnee) * std::tanh((a - kKnee) / (1.0f - kKnee)), p[k]);
+        }
+    }
     if (sStream) {
         if (ch != sInChannels || outRate != sInRate) {
             sInChannels = ch;
