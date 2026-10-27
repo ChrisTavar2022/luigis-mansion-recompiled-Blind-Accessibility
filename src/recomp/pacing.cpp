@@ -1,4 +1,5 @@
 #include "recomp/pacing.h"
+#include "recomp/mem_report.h"
 
 #include "port/settings.h"
 #include "recomp/cpu_qos.h"
@@ -723,6 +724,7 @@ void beforeFrame() {
     cpu::report();
     pollTimings();
     perfReport();
+    mem::report();
     vblankFollowWindow();
     const auto now = Clock::now();
     const Clock::time_point prevFrameTime = sFrameTime;

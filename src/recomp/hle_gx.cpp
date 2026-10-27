@@ -69,19 +69,83 @@ struct Mtx {
 constexpr u32 kTexTag = 0x41555458;   // 'AUTX'
 constexpr u32 kTlutTag = 0x4155544C;  // 'AUTL'
 
+//
+// Objects nothing refers to any more are reused (issue #34): J3D's loadTexNo initializes a
+// GXTexObj on the stack for every material texture it loads, the stack is overwritten before the
+// next call, and every call took a new entry (~30 per game frame, 64 + 4 bytes each: ~12 MB a
+// minute, 1 GB over a long session). When the free list is empty and kCollectEvery objects have
+// been initialized since the last collection, guest memory (the pages ever written) is scanned for
+// the tag: an entry is live while any guest word pair (tag, index) names it (the object itself or
+// a copy anywhere), every other one goes on the free list. The table so stays near
+// kCollectEvery + the live objects (a scan of ~25 MB, 2-7 ms, every ~18 s of play). Host code
+// never keeps a pointer to an entry past the GX call that looked it up. Test aid
+// LM_OBJ_TABLE_LOG=1 logs each collection.
 template <typename T>
 struct ObjTable {
+    static constexpr u32 kCollectEvery = 16384;
     std::deque<T> objs;
     std::deque<u32> owners;
+    std::vector<u32> freeList;
+    u32 initsSinceCollect = 0, liveAfterCollect = 0, collections = 0;
 
     T* forInit(u32 guest, u32 tag) {
         const u32 idx = rd32(guest + 4);
         if (rd32(guest) == tag && idx < objs.size() && owners[idx] == guest) return &objs[idx];
-        objs.emplace_back();
-        owners.push_back(guest);
+        if (freeList.empty() && initsSinceCollect >= kCollectEvery) collect(tag);
+        initsSinceCollect++;
+        u32 slot;
+        if (!freeList.empty()) {
+            slot = freeList.back();
+            freeList.pop_back();
+            objs[slot] = T{};
+            owners[slot] = guest;
+        } else {
+            objs.emplace_back();
+            owners.push_back(guest);
+            slot = u32(objs.size() - 1);
+        }
         wr32(guest, tag);
-        wr32(guest + 4, u32(objs.size() - 1));
-        return &objs.back();
+        wr32(guest + 4, slot);
+        statSize.store(u32(objs.size()), std::memory_order_relaxed);
+        statFree.store(u32(freeList.size()), std::memory_order_relaxed);
+        return &objs[slot];
+    }
+    std::atomic<u32> statSize{0}, statFree{0};  // for the [mem] report (host thread)
+    void collect(u32 tag) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const u32 n = u32(objs.size());
+        std::vector<u8> live(n, 0);
+        const u32 want = bswap32(tag);  // as the host reads the big-endian word
+        guestWrittenRanges([&](u32 off, u32 len) {
+            const u32* w = reinterpret_cast<const u32*>(g_mem + off);
+            const u32 words = len / 4;
+            const auto check = [&](u32 i) {
+                if (w[i] == want) {
+                    const u32 idx = bswap32(w[i + 1]);
+                    if (idx < n) live[idx] = 1;
+                }
+            };
+            u32 i = 0;
+            // Blocks of 64 words without a match are skipped (a vectorizable test).
+            for (; i + 64 < words; i += 64) {
+                bool any = false;
+                for (u32 k = 0; k < 64; k++) any |= w[i + k] == want;
+                if (any)
+                    for (u32 k = 0; k < 64; k++) check(i + k);
+            }
+            for (; i + 1 < words; i++) check(i);
+        });
+        freeList.clear();
+        for (u32 i = n; i-- > 0;)
+            if (!live[i]) freeList.push_back(i);  // lowest index last: reused first
+        liveAfterCollect = n - u32(freeList.size());
+        initsSinceCollect = 0;
+        collections++;
+        static const bool sLog = std::getenv("LM_OBJ_TABLE_LOG") != nullptr;
+        if (sLog)
+            log("[gx] object table %08X collection %u: %u entries, %u live, %u free (%.2f ms)", tag, collections, n,
+                liveAfterCollect, u32(freeList.size()),
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
     }
     T* get(u32 guest, u32 tag) {
         const u32 idx = rd32(guest + 4);
@@ -1702,6 +1766,14 @@ GXHLE(GXCopyTex) {
     interp::efbCopied(c.r[3], GXGetTexBufferSize(u16(sCopyDiag.dw), u16(sCopyDiag.dh), sCopyDiag.fmt, GX_FALSE, 0));
     efbcopy::guestCopy(c.r[3], sCopyDiag.dw, sCopyDiag.dh, sCopyDiag.fmt);
     GXCopyTex(hostp(c.r[3]), GXBool(c.r[4]));
+}
+
+// For the [mem] report (mem_report.cpp): host texture / TLUT object table sizes.
+void gxObjectTables(u32& tex, u32& texFree, u32& tlut, u32& tlutFree) {
+    tex = sTex.statSize.load(std::memory_order_relaxed);
+    texFree = sTex.statFree.load(std::memory_order_relaxed);
+    tlut = sTlut.statSize.load(std::memory_order_relaxed);
+    tlutFree = sTlut.statFree.load(std::memory_order_relaxed);
 }
 
 }  // namespace recomp
