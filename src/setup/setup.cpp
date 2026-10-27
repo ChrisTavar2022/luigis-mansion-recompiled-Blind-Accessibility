@@ -400,6 +400,9 @@ bool run(const Options& opts, LaunchInfo& launch) {
         ImGui::End();
         aurora_end_frame();
         framesDrawn++;
+        // While the game is prepared and the shaders compile (from the first frame on): frames below
+        // the refresh rate, as in the game's shader hold (issue #33; precache.h holdFramePause).
+        if (screen != Screen::Pick) recomp::precache::holdFramePause(0.0);
     }
     job.reset();
 
