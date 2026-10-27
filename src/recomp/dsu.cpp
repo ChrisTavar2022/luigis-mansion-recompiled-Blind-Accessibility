@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <ostream>
@@ -186,6 +187,7 @@ struct Server {
     Clock::time_point lastValid{}, lastRequest{};
     uint32_t serverId = 0;
     uint16_t version = 0;
+    unsigned droppedSenders = 0, rejected = 0;  // datagrams from other addresses / failing the checks
     std::array<PadData, kSlots> pads{};
 };
 
@@ -203,7 +205,54 @@ void closeSocket(SocketHandle& s) {
     s = kNoSocket;
 }
 
-// Resolves "host[:port]" and opens a non-connected UDP socket for it.
+// LM_DSU_LOG=1 (test aid, docs/CONTROLS.md "DSU controllers"): rejected datagrams and every
+// change of a slot's buttons, plus each slot's packet rate once a second.
+const bool sLog = [] {
+    const char* v = std::getenv("LM_DSU_LOG");
+    return v && *v && *v != '0';
+}();
+
+std::string addressText(const sockaddr_storage& a) {
+    char host[64] = "?";
+    unsigned port = 0;
+    if (a.ss_family == AF_INET) {
+        const auto& x = reinterpret_cast<const sockaddr_in&>(a);
+        inet_ntop(AF_INET, &x.sin_addr, host, sizeof(host));
+        port = ntohs(x.sin_port);
+    } else if (a.ss_family == AF_INET6) {
+        const auto& x = reinterpret_cast<const sockaddr_in6&>(a);
+        inet_ntop(AF_INET6, &x.sin6_addr, host, sizeof(host));
+        port = ntohs(x.sin6_port);
+    }
+    return std::string(host) + ":" + std::to_string(port);
+}
+
+// A datagram from an address other than the server's (sM held).
+void dropped(Server& s, const sockaddr_storage& from) {
+    s.droppedSenders++;
+    if (sLog) log("[dsu] %s: dropped a datagram from %s (not the server)", s.address.c_str(), addressText(from).c_str());
+}
+
+// Same address and port (IPv4 / IPv6).
+bool sameAddress(const sockaddr_storage& a, const sockaddr_storage& b) {
+    if (a.ss_family != b.ss_family) return false;
+    if (a.ss_family == AF_INET) {
+        const auto& x = reinterpret_cast<const sockaddr_in&>(a);
+        const auto& y = reinterpret_cast<const sockaddr_in&>(b);
+        return x.sin_port == y.sin_port && std::memcmp(&x.sin_addr, &y.sin_addr, sizeof(x.sin_addr)) == 0;
+    }
+    if (a.ss_family == AF_INET6) {
+        const auto& x = reinterpret_cast<const sockaddr_in6&>(a);
+        const auto& y = reinterpret_cast<const sockaddr_in6&>(b);
+        return x.sin6_port == y.sin6_port && std::memcmp(&x.sin6_addr, &y.sin6_addr, sizeof(x.sin6_addr)) == 0;
+    }
+    return false;
+}
+
+// Resolves "host[:port]" and opens a UDP socket connected to it. connect() makes the system
+// drop datagrams from any other address (anyone on the network could otherwise inject pad
+// input by sending DSUS packets to our port), and for a loopback server the socket is bound to
+// the loopback interface, so nothing outside this computer can reach it at all.
 bool openServer(Server& s) {
     const std::string& a = s.address;
     const auto colon = a.rfind(':');
@@ -222,8 +271,23 @@ bool openServer(Server& s) {
     s.addrLen = socklen_t(res->ai_addrlen);
     s.sock = socket(res->ai_family, SOCK_DGRAM, IPPROTO_UDP);
     freeaddrinfo(res);
+    if (s.sock != kNoSocket) {
+#ifdef _WIN32
+        // A connected UDP socket reports an ICMP "port unreachable" (no server running yet) as
+        // WSAECONNRESET on the next receive; that is not an error here.
+        BOOL off = FALSE;
+        DWORD ret = 0;
+        WSAIoctl(s.sock, _WSAIOW(IOC_VENDOR, 12) /* SIO_UDP_CONNRESET */, &off, sizeof(off), nullptr, 0, &ret,
+                 nullptr, nullptr);
+#endif
+    }
     if (s.sock == kNoSocket) {
         s.error = "cannot open a UDP socket";
+        return false;
+    }
+    if (connect(s.sock, reinterpret_cast<const sockaddr*>(&s.addr), s.addrLen) != 0) {
+        s.error = "cannot connect a UDP socket to " + s.address;
+        closeSocket(s.sock);
         return false;
     }
     s.error.clear();
@@ -234,20 +298,23 @@ void sendRequests(Server& s, uint32_t clientId) {
     const std::vector<uint8_t> ports = makePacket(clientId, kMsgPorts, {kSlots, 0, 0, 0, 0, 1, 2, 3});
     // Registration flags 0: every slot (slot and MAC are ignored).
     const std::vector<uint8_t> data = makePacket(clientId, kMsgPadData, {0, 0, 0, 0, 0, 0, 0, 0});
-    for (const auto* p : {&ports, &data})
-        sendto(s.sock, reinterpret_cast<const char*>(p->data()), int(p->size()), 0,
-               reinterpret_cast<const sockaddr*>(&s.addr), s.addrLen);
+    for (const auto* p : {&ports, &data})  // connected socket: send(), not sendto() (EISCONN on macOS)
+        send(s.sock, reinterpret_cast<const char*>(p->data()), int(p->size()), 0);
 }
 
 // One received datagram from server s (sM held).
 void handlePacket(Server& s, const uint8_t* p, size_t n) {
-    if (n < 20 || std::memcmp(p, "DSUS", 4) != 0) return;
+    auto reject = [&](const char* why) {
+        s.rejected++;
+        if (sLog) log("[dsu] %s: rejected a %zu-byte datagram (%s)", s.address.c_str(), n, why);
+    };
+    if (n < 20 || std::memcmp(p, "DSUS", 4) != 0) return reject("not DSUS");
     const uint16_t version = get16(p + 4), len = get16(p + 6);
-    if (version > kProtocol || size_t(len) + 16 > n) return;
+    if (version > kProtocol || size_t(len) + 16 > n) return reject("version or length");
     n = size_t(len) + 16;
     std::vector<uint8_t> copy(p, p + n);
     put32(&copy[8], 0);
-    if (crc32(copy.data(), n) != get32(p + 8)) return;
+    if (crc32(copy.data(), n) != get32(p + 8)) return reject("CRC");
     s.version = version;
     s.serverId = get32(p + 12);
     s.lastValid = Clock::now();
@@ -260,6 +327,9 @@ void handlePacket(Server& s, const uint8_t* p, size_t n) {
         d.valid = false;
         return;
     }
+    if (sLog && (!d.valid || d.buttons1 != p[36] || d.buttons2 != p[37] || d.home != p[38]))
+        log("[dsu] %s slot %d: buttons %02X %02X home %u, sticks %u,%u %u,%u, L2 %u R2 %u", s.address.c_str(), slot + 1,
+            p[36], p[37], p[38], p[40], p[41], p[42], p[43], p[55], p[54]);
     d.valid = true;
     d.when = now;
     d.model = p[22];
@@ -272,6 +342,9 @@ void handlePacket(Server& s, const uint8_t* p, size_t n) {
     d.lx = p[40], d.ly = p[41], d.rx = p[42], d.ry = p[43];
     d.l2 = p[55], d.r2 = p[54];
     if (std::chrono::duration<double>(now - d.secondStart).count() >= 1.0) {
+        if (sLog)
+            log("[dsu] %s slot %d: %u packets/s (rejected %u, other senders %u)", s.address.c_str(), slot + 1,
+                d.packetsThisSecond, s.rejected, s.droppedSenders);
         d.packetsLastSecond = d.packetsThisSecond;
         d.packetsThisSecond = 0;
         d.secondStart = now;
@@ -340,7 +413,10 @@ void netThread() {
                 const auto n = recvfrom(s.sock, reinterpret_cast<char*>(buf.data()), int(buf.size()), 0,
                                         reinterpret_cast<sockaddr*>(&from), &fromLen);
                 if (n <= 0) break;
-                handlePacket(s, buf.data(), size_t(n));
+                // The connected socket only delivers the server's datagrams; checked again in
+                // case a system does not filter (never take input from another sender).
+                if (sameAddress(from, s.addr)) handlePacket(s, buf.data(), size_t(n));
+                else dropped(s, from);
                 fd_set more;
                 FD_ZERO(&more);
                 FD_SET(s.sock, &more);
