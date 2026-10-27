@@ -162,7 +162,7 @@ try {
     }
     if ($wantMac) {
         Step "Checking that $sha is on GitHub (GitHub Actions builds the macOS package from it)"
-        if (git status --porcelain --untracked-files=no) {
+        if (git status --porcelain --untracked-files=no --ignore-submodules=dirty) {
             Write-Host "Warning: uncommitted changes; the Windows and Linux packages include them, the macOS package does not." -ForegroundColor Yellow
         }
         Tool git fetch origin $branch | Out-Host
