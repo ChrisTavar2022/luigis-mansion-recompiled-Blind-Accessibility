@@ -20,6 +20,18 @@ void initWatch();
 void watchRange(u32 addr, u32 len, const char* what);  // HLE bulk writes
 void verifyLowMemory();  // hle_os.cpp: boot values in low memory intact (restored and logged if not)
 u64 timeBase();
+// The guest memory window (kHostMemSize bytes, zeroed). On Windows the pages are write-watched so
+// guestWrittenRanges can skip pages nothing ever wrote (a scan then does not touch them).
+u8* allocGuestMemory();
+// Calls fn(host offset, length) for every range of the window that may hold data (written pages
+// on Windows, the whole window elsewhere), in ascending order.
+template <typename F>
+void guestWrittenRanges(F&& fn);
+void guestWrittenRangesImpl(void (*fn)(u32 offset, u32 len, void* user), void* user);
+template <typename F>
+void guestWrittenRanges(F&& fn) {
+    guestWrittenRangesImpl([](u32 o, u32 l, void* u) { (*static_cast<F*>(u))(o, l); }, &fn);
+}
 
 namespace hw {
 u32 viRead(u32 addr, int size);        // hle_vi.cpp

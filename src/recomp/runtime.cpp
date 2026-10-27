@@ -32,6 +32,46 @@ const GameModule* g_module = nullptr;
 u8* g_mem = nullptr;
 bool g_traceOn = false;
 
+#ifdef _WIN32
+static bool sWriteWatch = false;
+#endif
+
+u8* allocGuestMemory() {
+#ifdef _WIN32
+    if (void* p = VirtualAlloc(nullptr, kHostMemSize, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE)) {
+        sWriteWatch = true;
+        return static_cast<u8*>(p);
+    }
+#endif
+    return static_cast<u8*>(std::calloc(1, kHostMemSize));
+}
+
+void guestWrittenRangesImpl(void (*fn)(u32 offset, u32 len, void* user), void* user) {
+#ifdef _WIN32
+    if (sWriteWatch) {
+        static std::vector<void*> sPages(kHostMemSize / 4096);
+        ULONG_PTR count = sPages.size();
+        ULONG granularity = 0;
+        if (GetWriteWatch(0, g_mem, kHostMemSize, sPages.data(), &count, &granularity) == 0 && granularity) {
+            u32 start = 0, end = 0;
+            for (ULONG_PTR i = 0; i < count; i++) {
+                const u32 off = u32(static_cast<u8*>(sPages[i]) - g_mem);
+                if (end != 0 && off == end) {
+                    end += granularity;
+                    continue;
+                }
+                if (end != 0) fn(start, end - start, user);
+                start = off;
+                end = off + granularity;
+            }
+            if (end != 0) fn(start, end - start, user);
+            return;
+        }
+    }
+#endif
+    fn(0, kHostMemSize, user);
+}
+
 // Instruction patch switches (hooks.txt "patch <id> ..."); see setPatch().
 u8 g_patchStore[kMaxPatches];
 u8* g_patches = g_patchStore;

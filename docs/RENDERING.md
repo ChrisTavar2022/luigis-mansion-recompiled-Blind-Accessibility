@@ -3267,3 +3267,123 @@ and no malformed command was reported. The race exists, but it was not caught ca
 - **Hidden Mansion overlay**: only read in the Hidden Mansion, after the file select.
 - **Not reproduced**: boot to the foyer, the file select, 14 map warps, 5 to 7 minute sessions at
   120 fps, lockstep runs at 30 fps.
+
+## Memory use over time (issue #34, branch `memory-leak`, Aurora 0250)
+
+Report: memory grew from 1100 MB to 1900 MB in about 45 minutes, about 10 MB more when a room was
+opened, enough to crash a low-RAM system. Three things grew: one leak in the port's GX HLE (the
+gradual growth, on every setting), one per map change in Aurora (GPU memory), and one per shader
+compiled (the biggest, a few GB after a cold start).
+
+### Measuring
+
+- **`[mem]` lines** in the log (last_run.log) every 60 s (`LM_MEM_LOG=<s>`, 0 = off;
+  `src/recomp/mem_report.cpp`): the process's private bytes, the bytes allocated in the C/C++ heaps
+  (Windows `HeapSummary`; the rest of private is guest memory, thread stacks and the graphics
+  driver's own allocations), working set and peak, the GPU memory the process uses (DXGI per-process
+  local / non-local usage); then Aurora's cache sizes (`aurora_mem_stats`, 0250: live textures with
+  bytes, texture object / content / TLUT caches, EFB copy textures and the copy-texture cache with
+  bytes, bind groups, samplers, pipelines, shader modules, EFB copy-to-RAM entries and byte buffers)
+  and the port's texture/TLUT object tables. A line that plateaus is a warm cache; one that keeps
+  climbing is a leak. Linux: RSS / anonymous RSS from /proc; macOS: footprint.
+- **`LM_MEM_TRACK=1`** (Windows, test aid, `src/recomp/mem_track.cpp`): every operator new of the
+  runtime, Aurora and the static libraries is recorded with its call stack (global operator new and
+  delete; one branch when off); each `[mem]` report lists the call sites whose live bytes grew most
+  since the first report, symbolized from the PDB. **`LM_MEM_TRACK=2`**: every module's
+  `HeapAlloc`/`HeapFree` imports are redirected instead (the C runtime's malloc, Dawn, the shader
+  compiler, the graphics driver), also summed per module (the first caller outside ntdll, kernel32,
+  the C runtime). Slow; for finding which module holds memory.
+- Routes (scratch APPDATA with warm shader caches copied in, `LM_OFFSCREEN=1`, `LM_START_MAP=2
+  LM_START_APPEAR=1 LM_TEST_STATE=poltergust LM_SKIP_CUTSCENES=1 LM_SKIP_AUTO=30
+  LM_INPUT_CLOCK=frames`, A every 90 frames): **rooms** - `LM_SKIP_TEST` teleports every 150 frames
+  through 8 mansion positions (`1800,0,-1400`, `-1600,0,-985`, `-2050,0,-900`, `3380,0,-220`,
+  `-2210,0,-4150`, `0,550,-3300`, `-1648.7,550,-4889`, `-450,0,-5650`; the room number changes in
+  `LM_DEV_STATUS_LOG`; avoid `-430,0,-10` and the roof `2402,2300,-2566`, where the game slowed to a
+  crawl);
+  **maps** - `LM_DEV_WARPS` every 450 frames through mansion appear points 0/6/2/1/4/8, the lab
+  (map 1) and the training room (map 3); **idle** - no teleport (the control).
+
+### 1. Host texture objects (the gradual growth)
+
+The guest GXTexObj is smaller than Aurora's, so the HLE keeps the host objects in a table and the
+guest object holds a tag and an index (`hle_gx.cpp` `ObjTable`). A new entry was made whenever the
+guest object did not already hold a valid tag/index of its own address. J3D's `loadTexNo` (every
+material texture of every model drawn, also `fn_8012B314`, `fn_80058C30`, the particle and 2D code)
+initializes a GXTexObj on the stack, loads it and returns; the stack is overwritten before the next
+call, so every call took a new entry: ~830 a second (game frames: the same at any frame rate),
+64 + 4 bytes each plus deque growth, ~12 MB a minute, never freed (`LM_MEM_TRACK=1`: 256 000
+entries, +16 MB at that one site in 5 minutes). That is the user's curve (800 MB in 45 minutes), and it
+was the same idle as with teleports: the "room" in the report is only when it was noticed.
+
+Fix: entries nothing refers to are reused. When the free list is empty and 16384 objects were
+initialized since the last collection, guest memory is scanned for the tag: an entry is live while
+any guest word pair (tag, index) names it (the object or a copy of it anywhere), every other one
+goes on the free list. The scan covers only pages ever written (the guest memory is now allocated
+with `MEM_WRITE_WATCH` on Windows, `runtime.cpp` `allocGuestMemory` / `guestWrittenRanges`; ~25 MB:
+1.7-4 ms, every ~18 s of play; the whole 64 MiB window elsewhere). Host code never keeps a pointer
+to an entry past the GX call that looked it up, and Aurora gets the object's values, not its
+address (`GX_AURORA_LOAD_TEXOBJ`). The table now stays at ~16 600 entries (230-570 live).
+`LM_OBJ_TABLE_LOG=1` logs each collection.
+
+### 2. EFB copy textures of dead destinations (GPU memory per map change)
+
+Aurora keeps a GPU texture per EFB copy destination (`copyTextures`) and a reuse cache of them per
+(destination, size, format, replay generation) (`copyTextureCache`), at render resolution. Both were
+dropped only when a texture later read that memory and found it overwritten. After a map change the
+game's copy buffers (the shadow map, the GBH screens) land elsewhere in the heap and nothing reads
+the old addresses again: at 120 fps + Enhanced lighting the copy cache went from 43 entries / 98 MB
+to 75 / 248 MB and the process's GPU memory from 604 to 770 MB in 10 minutes of map warps, still
+climbing (at 4K each 640x480 copy is ~11 MB per generation). With frame interpolation the lazy check
+never ran at all (replays do not drop copies for CPU writes).
+
+Fix (0250): every 64 frames, with the FIFO drained (`gx::texture::end_frame`), `efb_ram::sweep`
+checks the tracked copies against memory as a texture read would (also during replays: the game is
+ahead of them, and a copy it still uses is not written by the CPU); an overwritten one is dropped
+and its copy textures evicted, also from the replay state slots (`sCopySlots`, `g_entrySlots`; the
+next replay would have restored it). Copy-texture cache entries not copied into for 1800 frames go
+(the texture a destination shows stays alive through `copyTextures`), beyond 128 destinations the
+least recently copied are evicted (the bound with EFB copies to RAM off), and byte buffers no copy
+uses are released. After: 14 minutes of map warps at 120 fps + Enhanced lighting, copy cache 13-22
+entries (47-71 MB), 6-8 destinations, GPU local 550-580 MB, flat.
+
+### 3. Shader modules compiled on a cache miss (GBs after a cold start)
+
+0227 kept every GX shader module of the session for reuse. Dawn keeps a module's parsed shader
+program (Tint, ~1 MB for a GX shader) while anything outside Dawn references the module, and only
+builds it when it has to compile the shader (a module whose pipelines come from the Dawn cache
+never parses it). So every shader compiled on a cache miss stayed in memory for good: after a cold
+start with default settings Dawn held 2183 MB (`LM_MEM_TRACK=2`; warm start: 88 MB), private 4.4 GB
+instead of 2.0; with Enhanced lighting at 120 fps private was 11.1 GB (peak working set 10.6 GB),
+which a low-RAM system cannot survive, the compile took 254 s, and the exit afterwards 127 s
+(Dawn freeing them: the "exit after a cold Enhanced-lighting compile takes 15-90 s" note). Each
+pipeline compiled during play (a cache miss: new room, new effect) added its module too.
+
+Fix (0250): the module cache keeps the latest 384 modules (a shader's variants are queued
+together; reuse 1895 of 10076 pipelines instead of ~2500) and is released whenever no pipeline is
+left to build (`begin_pipeline_frame`). After, cold start: default settings private 2.16 GB (Dawn
+90 MB); Enhanced lighting at 120 fps private 2.9 GB, peak working set 2.5 GB, compile 105 s,
+exit immediate. Warm starts are unchanged or faster (default 0.32 s; Enhanced lighting 1.0 s for
+10082 pipelines, 1.75 s before).
+
+### What plateaus (not leaks)
+
+The pipelines themselves (3055 default, 10082 Enhanced lighting: the driver's ~150-450 MB), the
+interpolation vertex-snapshot arena (3 generations of 1 MB chunks, grows to the peak need), the
+display-list parse cache (cleared at 50 000 entries), Aurora's texture object cache (600 frames
+idle, 15-130k entries at ~60 B), the texture content cache (128 MB budget), nod's disc cache.
+
+### Before / after (default settings, 30 fps, rooms route, warm caches)
+
+| Minutes | 1 | 5 | 10 | 13.5 | 29 |
+|---|---|---|---|---|---|
+| Before: private MB | 1924 | 1991 | 2037 | 2062 | (+12 MB/min) |
+| After: private MB | 1915 | 1933 | 1932 | 1931 | 1938 |
+
+After: heaps 476-488 MB, GPU local 430-434 MB, texture object table 16 623 entries over the 29
+minutes (~350 room changes). Idle control before: 1929 -> 2037 MB in 9.5 minutes (the same slope as
+with teleports). Enhanced lighting at 120 fps, maps route, 14 minutes after: private 2878-2991 MB
+(per-module heap use flat, `LM_MEM_TRACK=2`). Frame dumps
+at Original 30 (key-door route of "Original 30", `LM_DVD_SPEED=1`, frames 2950-4400 every 50th):
+all 30 byte-identical between the build before and after. (A second run of the old build differs
+from the first in 13 frames of that route, late in it: the route is not fully deterministic, so a
+single identical pair is the stronger result.)
