@@ -483,15 +483,19 @@ int main(int argc, char* argv[]) {
         if (exiting || paused) continue;
         if (hold) {
             port::setPhase("game loop: shader preparation frame");
+            const auto beginAt = SteadyClock::now();
             if (!aurora_begin_frame()) continue;
+            const double beginMs = std::chrono::duration<double, std::milli>(SteadyClock::now() - beginAt).count();
             lastPresented = SteadyClock::now();
             presentStallReported = false;
             menu::draw();  // applies settings changes (they may change what is being compiled)
             precache::drawHold();
             precache::frame();
             aurora_end_frame();
-            // Leave the CPU to the compile threads (no VSync pacing without a game frame).
-            std::this_thread::sleep_for(std::chrono::milliseconds(8));
+            // Hold frames well below the display's refresh rate (issue #33): a swap chain image is
+            // then always free, so the render worker never waits for one inside Dawn, where the wait
+            // holds the device lock every pipeline creation needs.
+            precache::holdFramePause(beginMs);
             if (menu::quitRequested()) break;
             continue;
         }
