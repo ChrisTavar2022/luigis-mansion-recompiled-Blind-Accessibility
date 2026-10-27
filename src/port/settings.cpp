@@ -73,6 +73,7 @@ std::vector<Field> fields() {
     auto& u = sSettings.unused2;
     return {
         num("interface", "menu_scale", sSettings.ui.menuScale),
+        flag("interface", "start_hint", sSettings.ui.startHint),
         num("video", "target_fps", v.targetFps),
         flag("video", "unlimited_fps", v.unlimitedFps),
         flag("video", "match_display_refresh", v.matchDisplay),
