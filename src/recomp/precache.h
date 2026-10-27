@@ -31,4 +31,11 @@ Progress progress();
 // compile in the background as before), LM_PIPELINE_BOOST=0 (no extra threads while held).
 bool holdGame();
 void drawHold();  // inside the ImGui frame while holdGame(): "Loading..." / "Compiling shaders... n / m"
+// After each hold frame (aurora_end_frame): waits until the next one is due. Hold frames run at most
+// every 50 ms and at most at half the display's refresh rate (issue #33, docs/RENDERING.md "Hold
+// frames below the refresh rate"): a hold presenting at the refresh rate made the render worker wait
+// for a swap chain image inside Dawn while holding the device lock, and every pipeline creation
+// waited with it (4x slower here, minutes on a 60 Hz display). beginMs: how long aurora_begin_frame
+// took (logged with LM_PIPELINE_LOG). Test aid LM_HOLD_FPS=<n> (0: unlimited; old: the 8 ms sleep).
+void holdFramePause(double beginMs);
 }  // namespace recomp::precache
