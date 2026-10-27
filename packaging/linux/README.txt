@@ -1,4 +1,4 @@
-Luigi's Mansion Recompiled 1.1.4 - Linux x86_64
+Luigi's Mansion Recompiled 1.1.5 - Linux x86_64
 =============================================
 
 A native PC port of Luigi's Mansion (GameCube). No game data is included: the game is
