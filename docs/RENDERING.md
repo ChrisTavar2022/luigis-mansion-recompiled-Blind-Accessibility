@@ -3310,7 +3310,8 @@ Fix (0250): the module cache keeps the latest 384 modules (a shader's variants a
 together; reuse 1895 of 10076 pipelines instead of ~2500) and is released whenever no pipeline is
 left to build (`begin_pipeline_frame`). After, cold start: default settings private 2.16 GB (Dawn
 90 MB); Enhanced lighting at 120 fps private 2.9 GB, peak working set 2.5 GB, compile 105 s,
-exit immediate. Warm starts are unchanged (1.75 s with Enhanced lighting, 10082 pipelines).
+exit immediate. Warm starts are unchanged or faster (default 0.32 s; Enhanced lighting 1.0 s for
+10082 pipelines, 1.75 s before).
 
 ### What plateaus (not leaks)
 
@@ -3321,12 +3322,15 @@ idle, 15-130k entries at ~60 B), the texture content cache (128 MB budget), nod'
 
 ### Before / after (default settings, 30 fps, rooms route, warm caches)
 
-| Minutes | 1 | 5 | 10 | 13.5 | 30 |
+| Minutes | 1 | 5 | 10 | 13.5 | 29 |
 |---|---|---|---|---|---|
 | Before: private MB | 1924 | 1991 | 2037 | 2062 | (+12 MB/min) |
-| After: private MB | 1915 | AFTER5 | AFTER10 | AFTER13 | AFTER30 |
+| After: private MB | 1915 | 1933 | 1932 | 1931 | 1938 |
 
-Idle control before: 1929 -> 2037 MB in 9.5 minutes (the same slope as with teleports). Frame dumps
+After: heaps 476-488 MB, GPU local 430-434 MB, texture object table 16 623 entries over the 29
+minutes (~350 room changes). Idle control before: 1929 -> 2037 MB in 9.5 minutes (the same slope as
+with teleports). Enhanced lighting at 120 fps, maps route, 14 minutes after: private 2878-2991 MB
+(per-module heap use flat, `LM_MEM_TRACK=2`). Frame dumps
 at Original 30 (key-door route of "Original 30", `LM_DVD_SPEED=1`, frames 2950-4400 every 50th):
 all 30 byte-identical between the build before and after. (A second run of the old build differs
 from the first in 13 frames of that route, late in it: the route is not fully deterministic, so a
