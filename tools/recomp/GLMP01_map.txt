@@ -3216,6 +3216,10 @@
 8018DBF8 fn_8018A70C hook
 80057744 fn_8005582C hook
 800577E0 fn_800558C8 hook
+801A4460 AllocDSPchannel__FUlUl hook
+801ADFE0 Play_1shot__FP4jcs_8SOUNDID_Ul hook
+801AE260 Play_1shot_Perc__FP4jcs_8SOUNDID_Ul hook
+801A4980 BreakLowerActiveDSPchannel__FUc hook
 8019AB08 fn_8019754C hook
 8019ADCC fn_80197810 hook
 8019B0EC fn_80197B30 hook

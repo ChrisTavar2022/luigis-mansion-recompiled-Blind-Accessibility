@@ -23,6 +23,12 @@ Jac_imixcopy__FPsPsPsl us pal
 fn_8018A70C us pal
 fn_8005582C us pal
 fn_800558C8 us pal
+# Music / sound-effect split of the volume sliders: the physical channel table and each note's instrument (docs/AUDIO.md "Volume sliders").
+AllocDSPchannel__FUlUl us pal
+Play_1shot__FP4jcs_8SOUNDID_Ul us pal
+Play_1shot_Perc__FP4jcs_8SOUNDID_Ul us pal
+# JAudio's DSP overload check no longer stops voices (host timing artifact; docs/AUDIO.md "The DSP overload check").
+BreakLowerActiveDSPchannel__FUc us pal
 # JAI SE frame update: LM_JAI_CHECK=1 reports an SE list that loops (diagnostic, src/recomp/hle_audio.cpp).
 fn_80191A1C
 # JAI SE starts run with interrupts off: a start from the scene-loading thread interrupted

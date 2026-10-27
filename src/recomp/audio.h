@@ -70,6 +70,21 @@ int outDeviceChannels();
 // What the output is doing now, for the menu ("Stereo, 48000 Hz, windowed-sinc", ...).
 const char* outStatus();
 
+// ---- Music / sound-effect split for the volume sliders (hle_audio.cpp) ----
+// Everything JAudio plays from ARAM is a note of some sequence: the music sequences and the
+// sound-effect sequence (LuigiSe.bms) alike, so the DSP source type does not tell them apart.
+// voiceKind follows DSP voice -> its dspch_ -> the owning logical channel (jc_) -> its channel
+// manager (jcs_, inside the sequence track at +0xD8) -> the track's sequence data, and compares
+// that with the sound-effect sequence's data. docs/AUDIO.md "Volume sliders".
+enum class VoiceKind { Unknown, Music, Effect };
+VoiceKind voiceKind(u32 voice);
+// Diagnostics (LM_AUDIO_KIND_LOG): the instrument (bank << 8 | program, -1 unknown) of the note on
+// a voice, and the sequence track (seqp_) that plays it (0 unknown).
+int voiceBank(u32 voice);
+u32 voiceSequence(u32 voice);
+// Jaq_SetSeqData_Limit (direct data): a sequence starts from `data` (`size` bytes).
+void noteSequenceData(u32 data, u32 size);
+
 // ---- Game sound mode (hle_audio.cpp) ----
 // The game's sound mode as last applied through fn_8018A70C (0 mono, 1 stereo,
 // 2 surround, as in its options); -1 before the game set one.

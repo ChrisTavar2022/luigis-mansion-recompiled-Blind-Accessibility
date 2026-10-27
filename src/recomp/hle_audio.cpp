@@ -13,17 +13,23 @@
 #include "port/settings.h"
 #include "recomp/audio.h"
 #include "recomp/cpu_qos.h"
+#include "recomp/guest_util.h"
 #include "recomp/hle.h"
 #include "recomp/sched.h"
 #include "recomp/silly_world.h"
+#include "recomp/unused2.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <utility>
 #include <string>
+#include <mutex>
 #include <thread>
+#include <unordered_map>
 
 namespace recomp {
 namespace {
@@ -108,6 +114,69 @@ struct PacingStats {
     }
 } sPacing;
 
+// Device underruns (issue #25, docs/AUDIO.md "Underruns"). When the game's mix comes late (the
+// guest CPU held by another guest thread, a host stall) the device queue runs dry and the
+// device plays silence: a click, or a crackle when it repeats. Each underrun raises the queue
+// target by one block, up to kMaxExtraBlocks (about 100 ms more latency), so a scene that
+// stalls now and then stops crackling after the first click; after kRelaxSeconds without one the
+// target steps back down. Always on; every minute with an underrun gives one line in the log
+// (last_run.log), so user reports show it.
+struct Underruns {
+    using clock = std::chrono::steady_clock;
+    static constexpr int kMaxExtraBlocks = 6;
+    static constexpr double kRelaxSeconds = 30;
+    int extraBlocks = 0;
+    u64 pushes = 0;
+    u32 count = 0, total = 0;  // since the last log line, since start
+    double maxWait = 0, maxGap = 0;
+    clock::time_point lastPush{}, lastDry = clock::now(), lastLine = clock::now();
+
+    static int forcedExtra() {
+        static const int v = [] {
+            const char* e = std::getenv("LM_AUDIO_EXTRA_BLOCKS");  // test aid: fixed extra blocks
+            return e && *e ? std::atoi(e) : -1;
+        }();
+        return v;
+    }
+    double extraSeconds(double block) const {
+        const int f = forcedExtra();
+        return (f >= 0 ? f : extraBlocks) * block;
+    }
+    void reset() {  // a new start (host pause, no DMA): the empty queue is not an underrun
+        pushes = 0;
+        lastPush = {};
+    }
+    // Called just before a block is pushed, with the device queue at that moment.
+    void push(double queued, double block, double waited) {
+        const auto now = clock::now();
+        const double gap = pushes ? std::chrono::duration<double>(now - lastPush).count() : 0;
+        lastPush = now;
+        if (++pushes > 20 && queued <= 0.0005) {  // the first blocks fill an empty queue
+            count++;
+            total++;
+            maxWait = std::max(maxWait, waited);
+            maxGap = std::max(maxGap, gap);
+            lastDry = now;
+            if (extraBlocks < kMaxExtraBlocks) extraBlocks++;
+            if (total == 1)
+                log("[audio] device queue ran dry (waited %.1f ms for the game's mix, %.1f ms since the last block); "
+                    "queue target now %.0f ms", waited * 1e3, gap * 1e3, (std::max(3 * block, 0.040) + extraSeconds(block)) * 1e3);
+        } else if (extraBlocks > 0 && now - lastDry > std::chrono::duration<double>(kRelaxSeconds)) {
+            extraBlocks--;
+            lastDry = now;
+        }
+        if (now - lastLine >= std::chrono::seconds(60)) {
+            if (count)
+                log("[audio] last 60 s: device queue ran dry %u times (%u since start; longest wait for the game's mix "
+                    "%.1f ms, longest gap between blocks %.1f ms); queue target %.0f ms",
+                    count, total, maxWait * 1e3, maxGap * 1e3, (std::max(3 * block, 0.040) + extraSeconds(block)) * 1e3);
+            count = 0;
+            maxWait = maxGap = 0;
+            lastLine = now;
+        }
+    }
+} sUnderruns;
+
 void dmaThread() {
     cpu::setCurrent(cpu::Role::Audio);
     using clock = std::chrono::steady_clock;
@@ -117,6 +186,7 @@ void dmaThread() {
         if (audio::outPaused()) {  // game paused by the host: no audio interrupts
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             next = clock::now();
+            sUnderruns.reset();
             continue;
         }
         const u32 len = sDmaLength.load();
@@ -128,7 +198,7 @@ void dmaThread() {
             // level to follow the device clock. (Pushing whenever the queue dropped below the
             // target raised two interrupts back to back now and then: the device drains its
             // queue in whole periods of ~10 ms.)
-            const double target = std::max(3 * secs, 0.040);
+            const double target = std::max(3 * secs, 0.040) + sUnderruns.extraSeconds(secs);  // + after underruns
             const double queued = audio::outQueuedSeconds();
             smoothed = smoothed < 0 ? queued : smoothed + (queued - smoothed) * 0.05;
             double scale = std::clamp(1.0 + (smoothed - target) * 2.0, 0.95, 1.05);
@@ -145,6 +215,7 @@ void dmaThread() {
         const u32 cb = sDmaCallback.load();
         if (!sDmaRunning.load()) {
             if (audio::outHasDevice()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            sUnderruns.reset();
             continue;
         }
         const auto waitStart = clock::now();
@@ -162,9 +233,12 @@ void dmaThread() {
                 log("[audio] AI interrupt without the game's mix (waited %.1f ms, %.1f ms queued)", maxWait * 1e3,
                     audio::outQueuedSeconds() * 1e3);
         }
-        if (audio::g_log && audio::outHasDevice())
-            sPacing.block(secs, audio::outQueuedSeconds(),
-                          std::chrono::duration<double>(clock::now() - waitStart).count(), !mixed);
+        if (audio::outHasDevice()) {
+            const double queued = audio::outQueuedSeconds();
+            const double waited = std::chrono::duration<double>(clock::now() - waitStart).count();
+            sUnderruns.push(queued, secs, waited);
+            if (audio::g_log) sPacing.block(secs, queued, waited, !mixed);
+        }
         // The block programmed by the last AIInitDMA starts playing now (the AI repeats
         // the previous block if the game did not supply a new one in time).
         if (const u32 addr = sDmaAddr.load(); addr && len) audio::outPushGuestBlock(addr, len);
@@ -320,10 +394,141 @@ HLE(fn_8018A70C) {
 // buffer pair into the next AI block. The output keeps that buffer's side data (centre /
 // surround buses) for when the block plays (discrete 5.1 / 7.1).
 HLE(Jac_imixcopy__FPsPsPsl) {
+    // Test aid LM_TEST_MIX_STALL=<ms>,<period s>: the game's mix comes <ms> late every <period>
+    // seconds, as when the guest CPU is held elsewhere (underrun handling, docs/AUDIO.md "Underruns").
+    static const std::pair<int, double> sStall = [] {
+        const char* e = std::getenv("LM_TEST_MIX_STALL");
+        if (!e) return std::pair<int, double>{0, 0};
+        const char* comma = std::strchr(e, ',');
+        return std::pair<int, double>{std::atoi(e), comma ? std::atof(comma + 1) : 5.0};
+    }();
+    if (sStall.first > 0) {
+        static auto sNext = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        if (std::chrono::steady_clock::now() >= sNext) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(sStall.first));
+            sNext = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                                           std::chrono::duration<double>(sStall.second));
+        }
+    }
     const u32 bufL = c.r[4], dac = c.r[5], frames = c.r[6];
     callOriginal(c, "Jac_imixcopy__FPsPsPsl");
     audio::outTagBlock(dac, bufL, frames);
     audio::noteGuestMixed();  // the game has mixed for the last AI interrupt (waitForGuestMix)
+}
+
+// ---- Music / sound-effect split (F1 > Sound volume sliders; docs/AUDIO.md "Volume sliders") ----
+// JAudio keeps 64 physical channels (dspch_, 16 bytes: +0 DSP voice number, +8 owner) in one
+// array. AllocDSPchannel returns an entry of it, which gives the array's address on either
+// release. The owner is the logical channel (jc_) the note plays on; jc_ +4 is its channel
+// manager (jcs_), which lives at +0xD8 of a sequence track (seqp_, NoteON passes the track's or
+// its parent's); seqp_ +0 is the sequence data every track of one sequence shares
+// (Init_Track). Notes of the sound-effect sequence are effects, notes of any other sequence are
+// music. Same JAudio code and struct layout on GLME01 and GLMP01.
+namespace {
+std::atomic<u32> sDspchBase{0};
+std::atomic<u32> sSeData{0};  // data of the sound-effect sequence (LuigiSe.bms)
+}  // namespace
+
+HLE(AllocDSPchannel__FUlUl) {
+    callOriginal(c, "AllocDSPchannel__FUlUl");
+    const u32 ch = c.r[3];
+    if (!gu::inMem1(ch)) return;
+    const u32 idx = rd8(ch);
+    if (idx < 64 && !sDspchBase.load(std::memory_order_relaxed)) {
+        sDspchBase = ch - idx * 16;
+        if (audio::g_log) log("[audio] physical channel table at %08X", ch - idx * 16);
+    }
+}
+
+// Play_1shot / Play_1shot_Perc (jcs_*, SOUNDID* {bank, program/key, key, velocity}, ...) start
+// a note on a logical channel they return: remember its instrument bank.
+namespace {
+std::mutex sBankM;
+std::unordered_map<u32, u16> sJcBank;  // jc_ -> bank << 8 | program
+void notePlay(Ctx& c, const char* name) {
+    const u32 id = c.r[4];
+    const u16 bp = gu::inMem1(id) ? u16(rd8(id) << 8 | rd8(id + 1)) : 0xFFFF;
+    callOriginal(c, name);
+    if (c.r[3] && bp != 0xFFFF) {
+        std::lock_guard lk(sBankM);
+        sJcBank[c.r[3]] = bp;
+    }
+}
+}  // namespace
+HLE(Play_1shot__FP4jcs_8SOUNDID_Ul) { notePlay(c, "Play_1shot__FP4jcs_8SOUNDID_Ul"); }
+HLE(Play_1shot_Perc__FP4jcs_8SOUNDID_Ul) { notePlay(c, "Play_1shot_Perc__FP4jcs_8SOUNDID_Ul"); }
+
+int audio::voiceBank(u32 voice) {
+    const u32 base = sDspchBase.load(std::memory_order_relaxed);
+    if (!base || voice >= 64) return -1;
+    u32 e = base + voice * 16;
+    if (rd8(e) != voice) return -1;
+    const u32 jc = rd32(e + 8);
+    std::lock_guard lk(sBankM);
+    const auto it = sJcBank.find(jc);
+    return it == sJcBank.end() ? -1 : it->second;
+}
+
+u32 audio::voiceSequence(u32 voice) {
+    const u32 base = sDspchBase.load(std::memory_order_relaxed);
+    if (!base || voice >= 64) return 0;
+    const u32 e = base + voice * 16;
+    if (rd8(e) != voice) return 0;
+    const u32 jc = rd32(e + 8);
+    if (!gu::inMem1(jc)) return 0;
+    const u32 jcs = rd32(jc + 4);
+    return gu::inMem1(jcs) ? jcs - 0xD8 : 0;
+}
+
+void audio::noteSequenceData(u32 data, u32 size) {
+    static const u32 seSize = unused2::seSequenceSize();
+    if (seSize && size == seSize && gu::inMem1(data)) {
+        sSeData = data;
+        if (g_log) log("[audio] sound-effect sequence at %08X (%X bytes)", data, size);
+    }
+}
+
+audio::VoiceKind audio::voiceKind(u32 voice) {
+    const u32 base = sDspchBase.load(std::memory_order_relaxed), se = sSeData.load(std::memory_order_relaxed);
+    if (!base || !se || voice >= 64) return VoiceKind::Unknown;
+    u32 e = base + voice * 16;
+    if (rd8(e) != voice) {  // entries not in voice order: find it
+        e = 0;
+        for (u32 k = 0; k < 64 && !e; k++)
+            if (rd8(base + k * 16) == voice) e = base + k * 16;
+        if (!e) return VoiceKind::Unknown;
+    }
+    const u32 jc = rd32(e + 8);
+    if (!gu::inMem1(jc)) return VoiceKind::Unknown;
+    const u32 jcs = rd32(jc + 4);
+    if (!gu::inMem1(jcs) || !gu::inMem1(jcs - 0xD8)) return VoiceKind::Unknown;
+    const u32 data = rd32(jcs - 0xD8);
+    if (!gu::inMem1(data)) return VoiceKind::Unknown;
+    return data == se ? VoiceKind::Effect : VoiceKind::Music;
+}
+
+// JAudio's DSP overload check (UpdateDSPchannelAll, the only caller): every DSP subframe update
+// takes OSGetTime; when the time since the previous one exceeds 1/1.1 of the gap before the
+// frame's first update, it decides the DSP cannot keep up and force-stops the lowest active
+// voice, whatever its priority, through BreakLowerActiveDSPchannel(0xFF). Our DSP stand-in
+// mixes a subframe in microseconds and never falls behind; the check fires only when the guest
+// audio thread itself was held up between two subframes (another guest thread holding the guest
+// CPU through a long host call, a host stall, the AFC streamer's start-up work): at the title the
+// stream's right channel was cut in every run, and in busy scenes sounds and music voices were cut
+// short (issue #25, docs/AUDIO.md "The DSP overload check"). The stop is skipped; logged (the first
+// 5, then every 50th). A/B: LM_DSP_OVERLOAD_CHECK=1 lets it stop voices as before.
+HLE(BreakLowerActiveDSPchannel__FUc) {
+    static const bool sOn = [] {
+        const char* e = std::getenv("LM_DSP_OVERLOAD_CHECK");
+        return e && *e == '1';
+    }();
+    static u32 sCount = 0;
+    const u32 prio = c.r[3];
+    if (++sCount <= 5 || sCount % 50 == 0)
+        log("[audio] JAudio's DSP overload check %s a voice (priority limit %u, %u since start)", sOn ? "stopped" : "would stop",
+            prio, sCount);
+    if (sOn) callOriginal(c, "BreakLowerActiveDSPchannel__FUc");
+    else c.r[3] = 0;
 }
 
 // JAudio DSP driver hooks (tools/recomp/hooks.txt).
