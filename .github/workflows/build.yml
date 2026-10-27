@@ -7,7 +7,7 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    branches: [main, mac-port]  # TEMPORARY: CI run for the PR #31 integration (workflow_dispatch needs the file on main)
     tags: ['v*']
   pull_request:
   workflow_dispatch:  # other branches: gh workflow run build.yml --ref <branch>
