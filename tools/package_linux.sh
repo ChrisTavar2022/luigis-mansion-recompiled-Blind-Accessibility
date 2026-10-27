@@ -40,6 +40,15 @@ for b in "$OUT/$NAME/LuigisMansionRecomp" "$OUT/$NAME/llvm/bin/clang" "$OUT/$NAM
         exit 1
     fi
 done
+# A name the executable both exports and imports (a glibc shim that calls the original through
+# the PLT) binds to itself at run time: the loader lets the executable's unversioned definition
+# satisfy the versioned import, so the first call loops forever (hypotf, issues #2/#11). Shims
+# must be hidden (src/port/glibc_compat.c).
+selfbound=$(objdump -T "$OUT/$NAME/LuigisMansionRecomp" | awk '/^[0-9a-f]+ / { if (/\*UND\*/) u[$NF] = 1; else d[$NF] = 1 } END { for (n in u) if (n in d) print n }')
+if [ -n "$selfbound" ]; then
+    echo "LuigisMansionRecomp exports names it also imports (they would call themselves): $selfbound" >&2
+    exit 1
+fi
 
 cd "$OUT"
 rm -f "$NAME.tar.gz" "$NAME.zip"

@@ -89,8 +89,9 @@ Dawn and nod statically; on top of that the runtime targets (`lm_runtime_target`
 - add `src/port/glibc_compat.c`, which defines the few functions a new glibc would
   otherwise be required for: the C23 `__isoc23_strtol`/`sscanf` family (2.38; the headers
   redirect to them, also inside the prebuilt Dawn), `strlcpy`/`strlcat`/`wcslcpy`/`wcslcat`
-  (2.38, used by SDL), `arc4random*` (2.36, libstdc++'s `random_device`), `hypotf` (bound to its
-  original version instead of the 2.35 one) and
+  (2.38, used by SDL), `arc4random*` (2.36, libstdc++'s `random_device`), `hypotf` (a full, hidden implementation instead of
+  the 2.35 version; a shim must never call the libc name it defines through the PLT, see
+  "Black screen above 30 fps" below) and
   `pidfd_spawnp`/`pidfd_getpid` (2.39, weak references in Rust's std inside nod).
 
 Result: `NEEDED` is only `libc`, `libm`, `libz`, `libgcc_s`, `ld-linux-x86-64`, and the
@@ -177,6 +178,9 @@ Size: about 450 MB unpacked, 150 MB compressed (clang and lld are 250 MB and 190
 
 ## Steam Deck: the picture stopped above 30 fps (issue #11)
 
+**Root cause found later** (it was not Gamescope or the swap chain): the `hypotf` shim looping
+on itself, see "Black screen above 30 fps after START" below. The changes listed here stay.
+
 **Report** (1.1.1, SteamOS game mode: Gamescope, Vulkan on RADV VANGOGH, Dawn compatibility
 feature level, 89.89 Hz panel, VSync off = present mode Mailbox): any frame rate above 30 "locks as
 soon as you press START" at the title; switching from 30 in game "locks within a minute". Windows
@@ -261,6 +265,45 @@ most one frame behind: with VSync the swap chain limits it instead) and GPU ms i
 lines. Checked on Windows with `LM_PRESENT_TIMING=0` at a 120 fps target (VRR window capped at
 57): 57.0 fps presented, game 30.0, the same as with the tracking. `[pacing] GPU keep-warm running`
 lines (at most one a minute) show when the filler runs where it is available.
+
+## Black screen above 30 fps after START / after the pause screen (issues #2, #11; fixed after 1.1.4)
+
+**Report** (1.1.x up to 1.1.4, every Linux system that tried: Steam Deck/RADV, Bazzite and
+CachyOS on AMD, EndeavourOS on NVIDIA 615): with the frame rate above 30 (even 31-36) the picture
+froze and went black after START on the title screen while the music played on (CachyOS offered
+"wait / force quit"); switched to >30 in the mansion, it froze when the pause screen closed.
+`LM_INTERP_2D_LAYOUT=0` avoided it completely. Windows was fine.
+
+**Cause: the `hypotf` shim in `src/port/glibc_compat.c` called itself.** It was a
+default-visibility `hypotf` that forwarded to `hypotf@GLIBC_2.2.5` through the PLT (so the
+executable would not need glibc 2.35's new `hypotf` version). The executable therefore exported an
+unversioned `hypotf` *and* imported `hypotf@GLIBC_2.2.5`. The dynamic loader searches the
+executable first and accepts an unversioned definition for a versioned reference, so the PLT slot
+bound to the shim itself: `hypotf: jmp hypotf@plt` -> `hypotf`, an endless jump loop on the first
+call, on any distribution and driver. Nothing called `std::hypot(float, float)` on the usual paths
+except the frame interpolation's 2D layout blend (`blend2DLayout`, `interp.cpp`): a 2D picture that
+moves without changing size (a panel sliding in on the file select after START, the pause screen
+closing) asks whether it moved the same way the game frame before, with `std::hypot` of the two
+steps. Below 31 fps there is no interpolation, and `LM_INTERP_2D_LAYOUT=0` returns before that
+line. The main thread (replay) spun there forever while the game thread, the audio and the retrace
+timer ran on: exactly the logs' picture (`[frame] N presents` stopped advancing with the display,
+music changes kept coming, the `[interp]` statistics stopped, the abort stack of a force quit
+ended in `hypotf+0x0` called from `blend2DLayout`, `interp.cpp:2227`, and once at the PLT entry
+itself). A minimal C++ program linked with the old shim hangs on `std::hypot(3.f, 4.f)`.
+
+**Fix:** `hypotf` is now a complete, hidden implementation (the same double-precision arithmetic as
+glibc 2.35's `hypotf`, infinities and NaNs as C requires), so calls inside the executable bind to
+it at link time, nothing is imported from libm for it, and the executable no longer exports the
+name (so a driver's own `hypotf` calls go to libm too). `tools/package_linux.sh` now fails when the
+executable exports a name it also imports (the 1.1.4 binary: exactly `hypotf`).
+
+**Verified** in WSL (Vulkan on llvmpipe under Xvfb, US disc, 1.1.4 build vs the same build
+relinked with only the new shim): 1.1.4 at 60 and 120 fps hung right after START on the title
+(`[hang] ... main thread has not returned to its loop (game loop: replaying a game frame)`, main
+thread stack `hypotf+0x0` <- `blend2DLayout` <- `replayPair`, identical to the players' logs);
+the fixed build went title -> file select -> opening -> foyer at 60 and 120 fps and opened and
+closed the pause screen twice in the foyer at 120 fps, then quit normally. Windows does not compile
+the shim (unchanged).
 
 ## Known issues / not done
 
