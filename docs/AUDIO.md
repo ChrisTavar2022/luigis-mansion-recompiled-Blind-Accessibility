@@ -111,7 +111,8 @@ voice was stopped: in the menus several times a second. The interrupt is now
 raised only after the game has mixed for the previous one (`Jac_imixcopy`) and
 the DSP frame that started is done (`audio::dspFrameBusy`, plus 2 ms), and guest
 threads no longer hold interrupts off during host waits (docs/RECOMPILER.md,
-runtime lessons). `LM_TRACE=801A13C0` (US) logs every such voice stop.
+runtime lessons). `LM_TRACE=801A13C0` (US) logs every such voice stop. Since
+1.1.5 the stop itself is skipped (see "Underruns, the DSP overload check, peaks").
 
 **Backport from the SMS port (2026-10, SMS docs/BACKPORT.md rows 74-76).**
 Taken: the host waits that release the guest CPU (the lockstep handoff in
@@ -182,8 +183,63 @@ goes to SDL at 32028 Hz and SDL resamples.
 **Layouts.** The block is turned into the output layout first (see Surround):
 stereo, mono (L = R = average), or discrete 5.1 / 7.1. "Swap left/right"
 (F1 > Sound) and the PAL Hidden Mansion's mirror mode swap the left and right
-channels of every pair (fronts, surrounds) on top. The volume sliders apply
-after that.
+channels of every pair (fronts, surrounds) on top. The master volume applies
+after that; the music and sound-effect sliders apply per voice in the DSP
+stand-in (see Volume sliders).
+
+## Volume sliders
+
+F1 > Sound has master, music and sound-effect volumes. Master scales the output
+(`audio_out.cpp`); music and sound effects scale each DSP voice before it is
+mixed into the buses (`mixVoice`), so its reverb sends follow too, and a change
+applies from the next subframe (2.5 ms).
+
+Until 1.1.4 only ring voices (AFC streams: the title's `TMansion.afc` /
+`TMOpen.afc`, the Pikmin movie) counted as music, and every ARAM voice used the
+sound-effect slider (issue #29: music at 0 still played). But in JAudio
+everything from ARAM is a note of a sequence: the 88 music sequences
+(`/AudioRes/JaiInit.aaf` BARC entries 1-88: the exploration tune
+LuigiSings.com, Fishing_Zako when a ghost appears, room tracks such as
+Babyroom.com and the second-handle layers Room_Baby / Light.com, boss music,
+event jingles) and the sound-effect sequence LuigiSe.bms (entry 0, which also
+plays the ambience) alike. The source type cannot tell them apart; the sequence
+can:
+
+- JAudio's 64 physical channels (`dspch_`, 16 bytes: +0 the DSP voice number,
+  +8 the owner) form one array; `AllocDSPchannel` returns an entry of it, which
+  gives the array's address on either release (US `0x804513E0`, PAL
+  `0x8043E9A0`).
+- The owner is the logical channel (`jc_`) of the note; `jc_` +4 is its channel
+  manager (`jcs_`), which lives at +0xD8 of a sequence track (`seqp_`; NoteON
+  uses the track's or its parent's); `seqp_` +0 is the sequence data, shared by
+  every track of one sequence (`Init_Track`).
+- `Jaq_SetSeqData_Limit` (hooked for the jukebox) reports every sequence start;
+  the one whose size is BARC entry 0's (0xEF00 on US, 0xEEC0 on PAL) is the
+  sound-effect sequence.
+
+A voice whose note belongs to the sound-effect sequence uses the sound-effect
+slider, a note of any other sequence and every ring voice the music slider
+(`audio::voiceKind`, `hle_audio.cpp`). After a sequence ends its track is
+released (data 0) while the last notes still fade: a voice keeps what it was
+since its start. Voices whose owner cannot be followed (none seen) use the
+sound-effect slider. The instruments agree with the split: music sequences play
+banks 2 and 5 (Mario.com, moved to bank 1 by the jukebox, aside), the
+sound-effect sequence banks 0, 3 and 4. Same code and layout on GLME01 and
+GLMP01. The boot jingle is mixed by the CPU (`Jac_RegisterMixcallback`) and
+follows only the master volume.
+
+Test aid `LM_AUDIO_KIND_LOG=1`: logs each voice's sample, instrument (bank and
+program, from hooks on `Play_1shot` / `Play_1shot_Perc`), track, sequence data
+and class when they change. Verified with `LM_AUDIO_WAV_RAW` (RMS per 10 s,
+`LM_SETTINGS_AT=0:audio.music_volume=0` or `sfx_volume=0`), US and PAL:
+
+| Scene | normal | music 0 | sound effects 0 |
+|---|---|---|---|
+| Title (Tittle.com, then the TMansion stream), 30-100 s | 440-2540 | digital silence | - |
+| Bogmire's fight (map 13, BlueBattle.com), 40-90 s, US | 5400-6750 | 1740-2650 (effects) | 4800-6200 |
+| Bogmire's fight, PAL | 5440-6510 | 1540-2840 | - |
+| Nursery (Room_Baby on the second handle), US | - | effects only, silence once they stop | - |
+| Foyer, first visit (no music sequence after the entrance demo) | - | ambience and effects | digital silence |
 
 ## Voice parameter block (0x180 bytes, big-endian)
 
@@ -457,6 +513,59 @@ the player stops. Since the scene shows the picture for the audio position, a
 run whose audio is on time ends at ~122.5 s: e.g. 3513 changes in 122.51 s
 (the game draws at ~30 Hz, so a few of the 3669 pictures are never shown; a
 host under heavy load shows fewer, ~3300, in the same 122.5 s).
+
+## Underruns, the DSP overload check, peaks (issue #25)
+
+Issue #25: "strong sound crackling" in random scenes, e.g. the second boss fight
+(cutscene and fight), PAL game at 4K with 8x MSAA on an RTX 4090 / i9-14900K.
+The user's `last_run.log` had no audio lines past the start (nothing was logged
+about underruns or voice stops then), the scene was GPU-bound (GPU 16.7 ms per
+frame at 60 fps). Not reproduced here (Bogmire's fight on US and PAL at up to
+4K / MSAA 8x / Enhanced lighting Ultra, through SDL's `disk` audio driver, which
+paces like a device and records what it plays: no gap, no click). What a busy
+scene can do to the sound, and what changed:
+
+**The DSP overload check.** `UpdateDSPchannelAll`, at every DSP subframe,
+stores the time since the previous subframe update (`OSGetTime`); when one
+inside a frame exceeds 1/1.1 of the gap before the frame's first update it
+decides the DSP cannot keep up and calls `BreakLowerActiveDSPchannel(0xFF)`,
+which force-stops the lowest active voice, whatever its priority (its only
+caller). The stand-in mixes a subframe in microseconds, so the check fires only
+when JAudio's audio thread itself was held up between two subframes: another
+guest thread holding the guest CPU through a long host call (`LM_IRQ_STALL=1`
+shows 10-30 ms holds in heavy scenes, e.g. the frame end with interpolation),
+a host stall, the AFC streamer's start-up work. Seen at the title: the stream's
+right channel was cut (and stayed off) in three of four runs with
+`LM_AUDIO_LOG=1`, also on the 1.1.4 build; in busy scenes music and effect
+voices were cut short (each cut is a 37 ms fade). The stop is now skipped and
+the check logged: `[audio] JAudio's DSP overload check would stop a voice
+(priority limit 255, n since start)` (first 5, then every 50th). A/B:
+`LM_DSP_OVERLOAD_CHECK=1` stops voices as before. The pacing measures above
+(evenly spaced AI interrupts) stay: they keep the DSP frames where JAudio
+expects them.
+
+**Underruns.** When the game's mix comes later than the device queue lasts
+(about 52 ms: three AI blocks), the device plays silence: a click, and a crackle
+when it repeats. Each underrun now raises the queue target by one block (17.5
+ms), up to six (about 157 ms in all); after 30 s without one it steps back down
+a block at a time. The first underrun and every minute with one are logged in
+`last_run.log` (`[audio] device queue ran dry ...`, with the longest wait for
+the game's mix and the target). Test aids: `LM_TEST_MIX_STALL=<ms>,<period s>`
+(the game's mix comes late every period), `LM_AUDIO_EXTRA_BLOCKS=<n>` (fixed
+extra blocks; 0 = the old queue). Measured with `SDL_AUDIO_DRIVER=disk` at the
+title, `LM_TEST_MIX_STALL=70,3`, 70 s: fixed queue 26 underruns, 7 audible gaps of
+~31 ms inside sound; adaptive 3 underruns (the first stalls, target 87 ms), no
+gap.
+
+**Peaks.** The DSP output is saturated 16-bit, but the windowed-sinc resampler
+rings above full scale on the loudest, already saturated peaks (Bogmire's fight:
+up to 0.5 dB over, ~20 samples in 150 s), which the device clipped hard. A soft
+limiter above -1 dBFS (tanh knee, slope 1 at the threshold, nothing below it
+changes) keeps them under full scale (same scene: peak 31986).
+
+`SDL_AUDIO_DRIVER=disk SDL_AUDIO_DISK_OUTPUT_FILE=<file> LM_AUDIO=1` is the way
+to test the live output path without speakers (raw float32 at the device rate,
+44100 Hz here).
 
 ## DVD audio streaming
 

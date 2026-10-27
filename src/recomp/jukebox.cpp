@@ -318,6 +318,13 @@ void soundSection() {
     }
 }
 
+// Size of sequence 0 (LuigiSe.bms, the sound-effect sequence) in the BARC list, for the
+// music / sound-effect split of the volume sliders (hle_audio.cpp, audio::voiceKind).
+u32 seSequenceSize() {
+    std::call_once(sLoad, load);
+    return sTracks.empty() ? 0 : sTracks[0].size;
+}
+
 }  // namespace recomp::unused2
 
 namespace recomp {
@@ -367,7 +374,10 @@ HLE(Jaq_SetSeqData_Limit) {
     if (sLog)
         log("[seq] Jaq_SetSeqData_Limit track %08X data %08X r5 %08X mode %u first %08X", c.r[3], c.r[4], c.r[5], c.r[6],
             gu::inMem1(c.r[4]) ? rd32(c.r[4]) : 0);
-    if (c.r[6] == 0) fixSequence(c.r[4]);
+    if (c.r[6] == 0) {
+        fixSequence(c.r[4]);
+        audio::noteSequenceData(c.r[4], c.r[5]);
+    }
     callOriginal(c, "Jaq_SetSeqData_Limit");
 }
 

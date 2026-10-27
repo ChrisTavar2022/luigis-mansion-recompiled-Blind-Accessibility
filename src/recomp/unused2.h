@@ -33,6 +33,7 @@ void statesMapSetup(Ctx& c);
 bool playerHeld();  // player 1's pad is neutralised (poisoned); any thread
 // jukebox.cpp
 void jukeboxFrame(Ctx& c);
+u32 seSequenceSize();  // BARC size of sequence 0 (the sound-effect sequence LuigiSe.bms)
 // spawn.cpp
 void spawnFrame(Ctx& c);
 void spawnSection(bool inGame);     // host
