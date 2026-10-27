@@ -38,7 +38,7 @@ std::filesystem::path exeDir() {
     const DWORD n = GetModuleFileNameW(nullptr, buf, DWORD(std::size(buf)));
     return std::filesystem::path(std::wstring(buf, n)).parent_path();
 #else
-    return std::filesystem::read_symlink("/proc/self/exe").parent_path();
+    return port::selfExeDir();
 #endif
 }
 

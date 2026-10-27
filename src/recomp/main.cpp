@@ -45,6 +45,9 @@
 
 namespace recomp {
 u32 copyDispCount();  // hle_gx.cpp
+#ifdef __APPLE__
+void hideWindowMacos(SDL_Window* w);  // macos_window.cpp
+#endif
 #ifdef LM_STATIC_MODULE
 extern const GameModule kGameModule;  // generated func_table.cpp, linked in (lmrecomp)
 #endif
@@ -299,7 +302,15 @@ int main(int argc, char* argv[]) {
     // outside every display, so it renders and presents as usual but is never seen (a hidden window
     // pauses the game; Start-Process -WindowStyle Hidden does not hide SDL's window).
     if (std::getenv("LM_OFFSCREEN"))
-        if (SDL_Window* w = aurora_get_window()) SDL_SetWindowPosition(w, -32000, -32000);
+        if (SDL_Window* w = aurora_get_window()) {
+#ifdef __APPLE__
+            // macOS keeps windows on a display whatever position is asked for: fully transparent
+            // and click-through instead (it still renders and presents; docs/MACOS.md).
+            hideWindowMacos(w);
+#else
+            SDL_SetWindowPosition(w, -32000, -32000);
+#endif
+        }
     // LM_MAXIMIZE=1 (testing): open the window maximized, as players often run it.
     if (std::getenv("LM_MAXIMIZE"))
         if (SDL_Window* w = aurora_get_window()) SDL_MaximizeWindow(w);

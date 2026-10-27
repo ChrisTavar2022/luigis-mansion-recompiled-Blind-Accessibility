@@ -47,7 +47,6 @@ bool sStopping = false;
 // (gxWaitForGuestTurn), since the host is using the Aurora frame.
 std::atomic<bool> sHostOwnsFrame{false};
 std::atomic<bool> sGxBusy{false};  // gxBlockingWait(): a guest thread waits for GX work (e.g. GXDrawDone)
-std::thread sBoot;
 
 // Interpolated presentation (interp.h). The guest is "decoupled": it no longer
 // waits for the host in present() but captures each frame into a tape, while the
@@ -76,7 +75,7 @@ bool interpolationWanted() {
 }  // namespace
 
 void start(Entry boot) {
-    sBoot = std::thread([boot] {
+    sched::startHostThread([boot] {
         cpu::setCurrent(cpu::Role::Guest);
         {
             std::unique_lock lk(sM);
@@ -193,7 +192,6 @@ void stop() {
     }
     const double left = std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count();
     if (!sched::waitForThreads(std::max(left, 0.0))) log("[frame] guest threads still running at exit");
-    if (sBoot.joinable()) sBoot.detach();
 }
 
 // While the host is paused (window minimized or unfocused) a decoupled guest
