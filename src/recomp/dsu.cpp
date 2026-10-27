@@ -451,6 +451,35 @@ std::string padName(int server, int slot, size_t servers) {
     return n;
 }
 
+// Gives a virtual pad a gamepad mapping of its own GUID. The pads differ only in the GUID's name
+// CRC, and SDL looks a mapping up by the exact GUID first, then ignoring the CRC: the second pad
+// found the automatic mapping SDL had made for the first one, so SDL (and Aurora's log, the
+// Ports tab, ...) called it by the first pad's name ("DSU slot 1" for slot 2). Its own mapping
+// (same buttons, its name, exact GUID) is found first. Done before Aurora opens the gamepad
+// (it does that when it handles the attach event, after update()).
+void ownMapping(SDL_JoystickID id, const std::string& name) {
+    char* m = SDL_GetGamepadMappingForID(id);
+    if (!m) return;
+    const std::string map = m;
+    SDL_free(m);
+    const size_t c1 = map.find(','), c2 = c1 == std::string::npos ? c1 : map.find(',', c1 + 1);
+    if (c2 == std::string::npos) return;
+    std::string body = map.substr(c2);  // ",a:b0,..."
+    // A crc: field would set the GUID's CRC to the other pad's again.
+    if (const size_t crc = body.find(",crc:"); crc != std::string::npos) {
+        const size_t end = body.find(',', crc + 1);
+        body.erase(crc, end == std::string::npos ? std::string::npos : end - crc);
+    }
+    char guid[33] = {};
+    SDL_GUIDToString(SDL_GetJoystickGUIDForID(id), guid, sizeof(guid));
+    std::string safe = name;
+    std::replace(safe.begin(), safe.end(), ',', ' ');
+    const std::string own = std::string(guid) + "," + safe + body;
+    if (own == map) return;  // already its own (the first pad)
+    if (SDL_AddGamepadMapping(own.c_str()) < 0) log("[dsu] %s: no own gamepad mapping (%s)", name.c_str(), SDL_GetError());
+    else if (sLog) log("[dsu] %s: mapping %s", name.c_str(), own.c_str());
+}
+
 Virtual attach(const std::string& name, const std::string& key, Layout layout) {
     SDL_VirtualJoystickDesc desc;
     SDL_INIT_INTERFACE(&desc);
@@ -470,6 +499,7 @@ Virtual attach(const std::string& name, const std::string& key, Layout layout) {
     v.key = key;
     v.layout = layout;
     v.id = SDL_AttachVirtualJoystick(&desc);
+    if (v.id) ownMapping(v.id, name);
     v.joy = v.id ? SDL_OpenJoystick(v.id) : nullptr;
     if (v.joy)
         for (int t : {SDL_GAMEPAD_AXIS_LEFT_TRIGGER, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER})
@@ -495,14 +525,20 @@ Sint16 triggerAxis(uint8_t v) { return Sint16(-32768 + int(v) * 257); }
 
 void apply(SDL_Joystick* j, const PadData& d, Layout layout) {
     const uint8_t b1 = d.buttons1, b2 = d.buttons2;
+    // The L2/R2 digital bits (0x01/0x02) of a server that sends no analog trigger value: then the
+    // bit is the whole press (full pull below, and the GameCube click). A server with analog
+    // triggers may set the bit as soon as the trigger moves (DS4 semantics), so there it is ignored.
+    const bool l2Digital = (b2 & 0x01) && d.l2 == 0, r2Digital = (b2 & 0x02) && d.r2 == 0;
     if (layout == Layout::GameCube) {
         // SDL's GameCube buttons: A south, B west, X east, Y north, Z right shoulder, L/R clicks
-        // MISC3/MISC4. The server sends B as circle, X as square, Z as R3 and the clicks as L1/R1.
+        // MISC3/MISC4. The server sends B as circle, X as square, Z as R3 and the clicks as L1/R1
+        // (NSO GC Driver); the L2/R2 bit only counts as the click for a digital-only server, so a
+        // half pull on a server that sets that bit with the analog value does not click.
         const std::pair<int, bool> buttons[] = {
             {SDL_GAMEPAD_BUTTON_SOUTH, (b2 & 0x20) != 0},          {SDL_GAMEPAD_BUTTON_WEST, (b2 & 0x40) != 0},
             {SDL_GAMEPAD_BUTTON_EAST, (b2 & 0x10) != 0},           {SDL_GAMEPAD_BUTTON_NORTH, (b2 & 0x80) != 0},
-            {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, (b1 & 0x04) != 0}, {SDL_GAMEPAD_BUTTON_MISC3, (b2 & 0x05) != 0},
-            {SDL_GAMEPAD_BUTTON_MISC4, (b2 & 0x0A) != 0},          {SDL_GAMEPAD_BUTTON_START, (b1 & 0x08) != 0},
+            {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, (b1 & 0x04) != 0}, {SDL_GAMEPAD_BUTTON_MISC3, (b2 & 0x04) || l2Digital},
+            {SDL_GAMEPAD_BUTTON_MISC4, (b2 & 0x08) || r2Digital},  {SDL_GAMEPAD_BUTTON_START, (b1 & 0x08) != 0},
             {SDL_GAMEPAD_BUTTON_BACK, (b1 & 0x01) != 0},           {SDL_GAMEPAD_BUTTON_LEFT_STICK, (b1 & 0x02) != 0},
             {SDL_GAMEPAD_BUTTON_DPAD_UP, (b1 & 0x10) != 0},        {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, (b1 & 0x20) != 0},
             {SDL_GAMEPAD_BUTTON_DPAD_DOWN, (b1 & 0x40) != 0},      {SDL_GAMEPAD_BUTTON_DPAD_LEFT, (b1 & 0x80) != 0},
@@ -526,9 +562,10 @@ void apply(SDL_Joystick* j, const PadData& d, Layout layout) {
     SDL_SetJoystickVirtualAxis(j, SDL_GAMEPAD_AXIS_LEFTY, stickAxis(d.ly, true));
     SDL_SetJoystickVirtualAxis(j, SDL_GAMEPAD_AXIS_RIGHTX, stickAxis(d.rx, false));
     SDL_SetJoystickVirtualAxis(j, SDL_GAMEPAD_AXIS_RIGHTY, stickAxis(d.ry, true));
-    // A server that only sets the L2/R2 bits still gives a full pull.
-    SDL_SetJoystickVirtualAxis(j, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, triggerAxis((b2 & 0x01) ? std::max<uint8_t>(d.l2, 255) : d.l2));
-    SDL_SetJoystickVirtualAxis(j, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, triggerAxis((b2 & 0x02) ? std::max<uint8_t>(d.r2, 255) : d.r2));
+    // A server that only sets the L2/R2 bits still gives a full pull; one with analog values keeps
+    // them (before, any set bit forced 255, so such a server's half pulls became full ones).
+    SDL_SetJoystickVirtualAxis(j, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, triggerAxis(l2Digital ? 255 : d.l2));
+    SDL_SetJoystickVirtualAxis(j, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, triggerAxis(r2Digital ? 255 : d.r2));
 }
 
 const char* modelName(uint8_t m) {
