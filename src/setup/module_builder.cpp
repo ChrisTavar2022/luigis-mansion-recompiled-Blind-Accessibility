@@ -334,7 +334,17 @@ bool buildModule(const Disc& disc, const Progress& progress, std::string& error)
 #ifdef __APPLE__
     // A package downloaded with a browser carries Gatekeeper's quarantine flag, which stops the
     // bundled tools when they are started (the player already allowed this program to run).
-    for (const auto* t : {&clang, &lld}) removexattr(t->c_str(), "com.apple.quarantine", 0);
+    // Only the package's own llvm/bin: a toolchain found through LM_LLVM_DIR, Homebrew or PATH
+    // is the user's, and its flags are left alone.
+    {
+        std::error_code ec;
+        const std::filesystem::path bundled = std::filesystem::weakly_canonical(exeDir() / "llvm" / "bin", ec);
+        for (const auto* t : {&clang, &lld}) {
+            std::error_code ec2;
+            const std::filesystem::path dir = std::filesystem::weakly_canonical(*t, ec2).parent_path();
+            if (!ec && !ec2 && dir == bundled) removexattr(t->c_str(), "com.apple.quarantine", 0);
+        }
+    }
 #endif
 #ifdef _WIN32
     if (!toolAtShortPath(clang, error) || !toolAtShortPath(lld, error)) return false;
