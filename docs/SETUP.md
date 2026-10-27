@@ -223,7 +223,8 @@ clicks: nothing is downloaded or replaced on its own.
    `[updates] skip_version=<tag>`: no notice for that tag; *Check for updates* still shows it) and
    *Later* (hidden until the next start).
 4. **Download.** The asset for this platform: `LuigisMansionRecompiled-<ver>-windows-x64.zip` /
-   `LuigisMansionRecompiled-<ver>-linux-x86_64.tar.gz` (v1.0 and v1.0.1 used the prefix
+   `LuigisMansionRecompiled-<ver>-linux-x86_64.tar.gz` / `LuigisMansionRecompiled-<ver>-macos-arm64.tar.gz`
+   (macOS: built by GitHub Actions, docs/MACOS.md "Releases"; v1.0 and v1.0.1 used the prefix
    `LuigisMansionPC-`, still accepted). Its URL must be the repository's release download
    (`https://github.com/rob646464/luigis-mansion-recompiled/releases/download/<tag>/<name>`, or the
    old repository name); redirects are followed by hand, at most 6, HTTPS only, to `github.com`,

@@ -6,9 +6,15 @@ audio and file dialogs. The game module that setup compiles from the user's disc
 `.dylib` built with clang + ld64.lld. macOS shares the POSIX code paths of the Linux port
 (docs/LINUX.md); the differences are `#ifdef __APPLE__` and the `macos-clang` preset.
 
-Status (2026-10-24, M3 Pro, macOS 27): `LuigisMansionRecomp` builds, setup recompiles the USA
-disc into `module.dylib`, the game boots to the title screen. Not yet checked: gameplay beyond
-the title screen, the PAL disc, the `lmrecomp` dev build, packaging.
+Status (2026-10-24, M3 Pro, macOS 27, tested by the PR author, NitrosGits; merged from PR #31
+on 2026-10-26): `LuigisMansionRecomp` builds, setup recompiles the USA disc into
+`module.dylib`, the game boots to the title screen; the CI package installs and builds the
+module with its bundled clang. Not yet checked: gameplay beyond the title screen, the PAL disc,
+the `lmrecomp` dev build.
+
+**We (the project) never build or run macOS ourselves.** The macOS package is built and packaged
+by GitHub Actions only, from the same commit as the Windows/Linux release, and attached to the
+release by `tools/release_windows.ps1` ("Releases" below). It is unsigned and not notarized.
 
 ## Building
 
@@ -44,7 +50,7 @@ different folders on macOS. `LM_LLVM_DIR` overrides at run time. The `clang` fir
 | Crash reports | pc from `gregs[REG_RIP]` | pc/sp from `uc_mcontext->__ss` |
 | Thread dumps (`[hang]`, `LM_HANG_DUMP`) | `/proc/self/task` + `tgkill` | `task_threads` + `pthread_kill(SIGUSR2)` |
 | Thread policy (`[cpu]`) | none | guest threads QoS user-interactive (performance cores); Aurora's threads keep SDL's pthread priority (macOS allows no QoS class after one: logged as such) |
-| Updater | libcurl.so, `-linux-x86_64.tar.gz` | `/usr/lib/libcurl.4.dylib`, `-macos-arm64.tar.gz` (no macOS release exists yet) |
+| Updater | libcurl.so, `-linux-x86_64.tar.gz` | `/usr/lib/libcurl.4.dylib`, `-macos-arm64.tar.gz` (attached to releases from CI from the first release after the merge) |
 | `LM_OFFSCREEN=1` | window moved off every display | window made transparent and click-through (macOS clamps positions onto a display) |
 
 The XDG variables still override the macOS folders, so test runs use scratch folders the same
@@ -76,14 +82,50 @@ official LLVM release for macOS arm64 (`LLVM-<ver>-macOS-ARM64`; Homebrew's clan
 `/System/Library` or `/usr/lib` or has an invalid signature, and it builds a test game module
 with the bundled clang/ld64.lld the way setup does and loads it.
 
-GitHub Actions (`.github/workflows/build.yml`) builds the three platforms on every push and
-uploads `LuigisMansionRecompiled-<version>-<platform>` packages as artifacts (Windows: the
-runner's LLVM; Linux and macOS: LLVM 23.1.4, cached).
+GitHub Actions (`.github/workflows/build.yml`) builds the three platforms on pushes to `main`,
+on `v*` tags, on pull requests and on demand (`gh workflow run build.yml --ref <branch>`; other
+branch pushes do not run it), and uploads one artifact per package, named like the file:
+`LuigisMansionRecompiled-<version>-windows-x64.zip`, `-linux-x86_64.tar.gz`,
+`-macos-arm64.tar.gz` (the updater's asset suffix). Windows uses the runner's LLVM; Linux and
+macOS the official LLVM 23.1.4 archives, checked against their sha256 (GitHub's digests of the
+release assets, `LLVM_SHA256_*` in the workflow; update them with `LLVM_VERSION`) and cached.
+The workflow's token is read-only (`permissions: contents: read`), third-party actions are
+pinned to a commit (`ilammy/msvc-dev-cmd`), `ninja` to a version.
 
-The packages are not notarized. Setup clears Gatekeeper's quarantine flag on the bundled
-clang/ld64.lld before starting them (`removexattr` in `buildModule`); the program itself has to
-be allowed once (right-click > Open, or `xattr -dr com.apple.quarantine <folder>`), as the
-README says.
+The packages are **not signed and not notarized** (no Apple developer account). Gatekeeper
+stops a downloaded copy until the player allows it once: right-click `LuigisMansionRecomp` >
+Open > Open, or `xattr -dr com.apple.quarantine <folder>` (packaging/macos/README.txt, and the
+release notes say so). Setup then clears the quarantine flag of the bundled clang/ld64.lld before
+starting them (`removexattr` in `buildModule`, only for tools in the package's own `llvm/bin`;
+a toolchain from `LM_LLVM_DIR`, Homebrew or `PATH` is left alone).
+
+## Releases
+
+The owner releases from Windows with `tools/release_windows.ps1`; nobody has to build on a Mac:
+
+1. The release commit has to be on GitHub: the script compares `origin/<branch>` with `HEAD` and
+   offers to push (a push to `main` starts the build workflow, which then runs while Windows
+   and Linux build locally).
+2. Windows zip (local build), Linux tar.gz (WSL, `tools/release_linux.sh`), as before.
+3. macOS: the script finds the `build.yml` run of that commit (`gh run list --workflow build.yml
+   --commit <sha>`; none: starts one with `gh workflow run`), waits for it (one status line per
+   minute), and requires the `macOS arm64` job to have succeeded and the run to have built
+   exactly that commit. It downloads the artifact `LuigisMansionRecompiled-<ver>-macos-arm64.tar.gz`
+   (`gh run download`) and checks it: one file of that name, 20 MB - 1 GB, a readable .tar.gz
+   whose entries all sit in `LuigisMansionRecompiled-macos-arm64/` and include
+   `LuigisMansionRecomp`, `pipelines.bin`, `llvm/bin/clang`, `llvm/bin/ld64.lld`, `README.txt`
+   and `NOTICE.md`. Its sha256 is printed, written to `out/<package>.sha256` and goes into the
+   release's download table (row "macOS 13+, Apple silicon (M1 or newer), Metal; unsigned").
+4. If the run failed, the artifact is missing or a check fails, the script says why and asks
+   whether to publish without macOS (the notes then say "macOS: no <ver> package").
+5. `gh release create` tags the built commit (`--target <sha>`) and uploads all packages.
+
+The release notes template gets the macOS note through `{{MAC_NOTE}}` where it has one, else
+right after `{{LINUX_NOTE}}` (older templates): with a package, that it is unsigned/not
+notarized and how to allow it; without, that there is no macOS package for this version.
+`-SkipMac` leaves macOS out; `-MacCheckOnly` only fetches and checks the macOS package of `HEAD`
+(nothing built or published; a dry run, also for a branch: push it, then the script starts the
+workflow there).
 
 ## Open
 
@@ -93,6 +135,6 @@ README says.
   the CI artifact: quarantined tools cleared, module built, game ran.
 - Shader preparation on Metal: about 180 s at a start where most pipelines came from the Dawn
   cache (`[precache]` lines: roughly 60 per second loaded), against 0.4-0.6 s warm on Windows.
-- Packaging: a plain folder, no `.app` bundle, not notarized; release script / GitHub release
-  upload not wired (CI artifacts only).
+- Packaging: a plain folder, no `.app` bundle, not signed/notarized. Release upload is wired
+  (`tools/release_windows.ps1`, "Releases"); the in-game updater on macOS has not been run.
 - Intel Macs: the code has the x86_64 branches but was not built.

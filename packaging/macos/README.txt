@@ -28,6 +28,14 @@ HOW TO RUN
 Press F1 in the game for every option (graphics, controls, DSU controllers, enhancements).
 
 
+ABOUT THIS BUILD
+----------------
+The macOS version is built and packaged automatically (GitHub Actions) from the same source as
+the Windows and Linux releases. It is not signed or notarized by Apple, which is why step 2 is
+needed, and the developers do not test it on a Mac themselves: please report problems on the
+project's GitHub issues page. Updates: F1 > Game > Updates, as on the other systems.
+
+
 WHERE FILES GO
 --------------
 Settings:           ~/Library/Application Support/Luigi's Mansion Recompiled
