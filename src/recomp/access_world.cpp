@@ -31,6 +31,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -150,6 +151,7 @@ struct Channel {
 };
 Channel sItem, sDoor, sGhost, sBanana, sToad;
 u32 sPlayed = 0;
+std::atomic<bool> sSwallowPress{false};
 
 constexpr int kToneRate = 48000;
 
@@ -246,6 +248,8 @@ void pressA(u16& button, u32 id) {
 
 }  // namespace
 
+void swallowPadPress() { sSwallowPress = true; }
+
 void playCue(Cue cue) { playTone(sItem, Kind(int(cue)), 0.0f, 1.0f); }
 
 void noteMoney(float x, float y, float z) {
@@ -256,7 +260,15 @@ void noteMoney(float x, float y, float z) {
 
 void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY) {
     const auto& set = port::settings().accessibility;
-    if (!active() || port::usCodeFeature() != port::Avail::Yes) return;
+    if (!active()) return;
+    if (sSwallowPress) {
+        if (button & (PAD_BUTTON_A | PAD_BUTTON_B)) {
+            button &= u16(~(PAD_BUTTON_A | PAD_BUTTON_B));
+            if (std::getenv("LM_ACCESS_WORLD_LOG")) std::printf("[world] held press kept from the game\n");
+        }
+        else sSwallowPress = false;
+    }
+    if (port::usCodeFeature() != port::Avail::Yes) return;
     const u32 luigi = rd32(kActorSlots);
     if (!gu::inMem1(luigi)) return;
     if (rd32(kEvent + kEventCursor) != 0 || rd32(kMenuOff) != 0 || gamePaused()) {  // Luigi is not free to move

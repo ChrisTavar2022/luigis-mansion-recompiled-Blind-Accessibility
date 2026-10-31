@@ -12,6 +12,8 @@ Spoken menus. The port's own setup screen and options menu speak and work with a
 
 ## Milestone
 
+2026-10-30: the user, a totally blind player, cleared all of section one independently. They call the mod a complete success at this point. They recommend the Sidestep control style for blind players: the left stick then moves and aims.
+
 2026-10-30: the user, a totally blind player, cleared the first few rooms completely independently with NVDA, the object sounds and an Xbox controller.
 
 User feedback from that session: the game's own ghost sounds showed a ghost was close, but were not accurate enough to always aim well. Ghost sounds were built for this; the user has not played with them yet. If aim is still hard, add a distinct cue for when Luigi is facing the ghost.
@@ -41,6 +43,11 @@ User feedback from that session: the game's own ghost sounds showed a ghost was 
 - Spilled money now counts only inside Luigi's room.
 - Locked doors announced from `fn_8011496C`, by hand or through the Go to menu.
 - Accessibility tab in the options menu, with the settings moved there and an audio cue glossary.
+- Save, erase and copy screens spoken, including the saved and erased confirmations. File screen says how to copy and erase.
+- Every menu says its position: "Save, 1 of 2". Port menus count automatically, tabs in their own bar; game menus use `positioned()`.
+- The press that closes a menu no longer reaches the game (`swallowPadPress`).
+- Options and Go to menus stop the game for screen reader players, through the shader hold path in `main.cpp`.
+- README section for players.
 - Auto interact, off by default, in the options menu's Accessibility tab: presses A at chests and keys, and at doors Luigi walks towards. At most 3 presses per object per room visit.
 - Health, coins, bills, gold bars and gems spoken when they change.
 - Stress test with chests, keys, hearts, gold, coins and hits together: no memory corruption, no crash.
@@ -67,8 +74,8 @@ First real launch on the user's profile succeeded: game module built, game runni
 
 1. The user tests ghost sounds and banana peel warnings on real ghosts, and says whether ghost aim is accurate enough.
 2. Confirm auto interact and the Go to menu open a real chest, and that routes work in larger rooms, stairs and rooms with moved furniture.
-3. Map the file screen with saves: whether a file is empty, and the screens behind a saved file.
-4. Speak the save prompt, game over screen and area-clear screens.
+3. Read each file's progress and money on the file screen.
+4. Speak the game over and area-clear screens.
 5. Status on demand, then spoken navigation.
 6. Cutscene audio descriptions (below).
 
@@ -82,7 +89,8 @@ The user asked for these, as in the Persona 4 accessibility mod. They are possib
 - Disabled options and plain notes in the menu are not read.
 - The game's own text is USA only: the addresses are not in the version map yet, so the European game stays silent there.
 - Dialogue does not say who is speaking: the name is not in the text.
-- The file screen says "File 1" but not yet whether it is empty, and screens behind a saved file are silent.
+- The file screen says "File 1" but not yet its progress and money, or whether it is empty.
+- The copy target has no position: the game only offers free files, and their count is not read yet.
 - Game choice menus move with the control stick, not the D-pad.
 - Object sounds are generated tones, not the game's sounds. Starting game sounds from the port crashed the game when coins were bouncing: it drains JAudio's fixed sound lists (`docs/accessibility/game-api.md`). Never call `fn_80189F78` or `fn_8018D6C0` for this.
 - Spoken object cues do not name the object; each kind has its own tone.

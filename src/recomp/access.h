@@ -32,6 +32,10 @@ int sliderKeys();
 void pollGame();
 bool gamePaused();  // the game's pause screen is running
 
+// A menu closed on A or B: the game ignores those until they are released, or the press that closed
+// the menu would also act in the game, such as opening the door Luigi stands at.
+void swallowPadPress();
+
 // The audio cues, in the order of the glossary in the options menu.
 enum class Cue { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad };
 void playCue(Cue cue);

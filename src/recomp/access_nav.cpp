@@ -470,6 +470,7 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
 void toggleMenu() {
     sOpen = !sOpen;
     sFocus = sOpen;
+    if (!sOpen) swallowPadPress();
     if (sOpen) {
         std::lock_guard lk(sM);
         sWalk.on = false;
@@ -539,11 +540,12 @@ void drawMenu() {
                 if (o.category != category) continue;
                 n++;
                 char label[96];
-                std::snprintf(label, sizeof(label), "%s %d of %d, %s##%d", singleName(category), n, countOf(category), describe(o).c_str(), n);
+                std::snprintf(label, sizeof(label), "%s, %s##%d", singleName(category), describe(o).c_str(), n);
                 if (ImGui::Selectable(label)) {
                     std::lock_guard lk(sM);
                     startWalk(o);
                     sOpen = false;
+                    swallowPadPress();
                 }
             }
         }

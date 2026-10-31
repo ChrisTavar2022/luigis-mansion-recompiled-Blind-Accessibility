@@ -14,3 +14,50 @@
 
 ## Known issues
 - The 2-player mode (Unused content) is unfinished. The plan is to finish it soon, but for now it's mostly in the state it was left in in the original code.
+
+## Blind accessibility (this fork)
+
+This fork makes the game playable by blind players with a screen reader and a controller. It is a beta, and the game text below is for the USA version of the game. A totally blind player has cleared all of section one independently with it.
+
+Screen reader support turns on by itself when NVDA or another supported screen reader is running.
+
+**Recommended:** play with the Sidestep control style. Luigi then moves and aims with the left stick alone, so you only have one stick to think about. Choose it when E. Gadd asks, or in the pause menu.
+
+### Controls
+
+- **Left stick press:** open or close the Go to menu.
+- **Both sticks pressed in:** open or close the options menu.
+- **Right stick press:** repeat the last announcement.
+
+In the menus, the D-pad or left stick moves, A selects, and B goes back or closes. Opening the Go to menu or the options menu pauses the game.
+
+### Go to menu (pathfinding)
+
+The Go to menu lists what is in the room you are in: doors, coins and money, hearts, keys, chests, treasure and Toads.
+
+1. Press the left stick in, then release it.
+2. Use left and right to change category, and up and down to choose an object.
+3. Press A. Luigi walks there by himself, around furniture, and collects it. He presses A for you at doors, chests and Toads.
+
+Moving the stick yourself stops the walk at any time. NVDA tells you how it ended, and says so if a door is locked.
+
+### Accessibility tab
+
+The options menu opens on the Accessibility tab.
+
+- **Screen reader support:** Auto, On or Off.
+- **Object sounds:** chests, keys, hearts, treasure, money, doors and Toads repeat a tone, and banana peels repeat a warning tone.
+- **Ghost sounds:** the nearest ghost that is showing repeats a falling tone.
+- **Auto interact:** off by default. Presses A for you at chests and keys, and at doors you walk towards. It never acts on furniture.
+- **Audio cue glossary:** press an entry to hear that sound.
+
+Every sound gets faster as you get closer and pans left and right with the object, so keeping it centred walks you straight at it. An object behind you sounds lower.
+
+### What NVDA reads
+
+- Dialogue and choices.
+- The title, file, game options, pause, control style, save, erase and copy screens.
+- Every menu item with its position, such as "Save, 1 of 2".
+- Health, coins, bills, gold bars and gems when they change.
+
+On the file screen, Y copies a saved file, and B on an Xbox controller erases it.

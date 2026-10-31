@@ -43,7 +43,16 @@ constexpr u32 kSound_ = 5;         // 0 Mono, 1 Stereo, 2 Surround
 constexpr u32 kRumble = 6;
 constexpr u32 kControls = 7;  // 0 Standard, 1 Sidestep
 constexpr u32 kMenuScreen = 8;
+constexpr u32 kCopyCursor = 3;   // 1 File 2, 2 File 3: only files that are free
+constexpr u32 kEraseCursor = 2;  // 0 Yes, 1 No
 constexpr u32 kScreenFiles = 0, kScreenOptions = 0x14;
+constexpr u32 kScreenCopyTo = 3, kScreenCopySaving = 6, kScreenCopied = 4;
+constexpr u32 kScreenErase = 7, kScreenEraseSaving = 0x0A, kScreenErased = 8;
+
+// Menu object of the save screen (bytes).
+constexpr u32 kSaveState = 1;   // 0 the question, 0x0B saving, 0x0C saved, waits for A
+constexpr u32 kSaveDone = 0x0C;
+constexpr u32 kSaveCursor = 2;  // 0 Save, 1 Never mind
 
 // Menu object of the pause screen.
 constexpr u32 kPauseCursor = 0x11A;  // byte: 1 Continue, 2 Quit, 3 No, 4 Yes
@@ -54,6 +63,11 @@ constexpr u32 kActorSlots = 0x803D48A0;  // slot 0 is Luigi
 constexpr u32 kHealth = 0xFC, kCounters = 0x12F4, kCounterCount = 10;
 
 using clock = std::chrono::steady_clock;
+
+// Every game menu says its items the same way: "Save, 1 of 2". index counts from 0.
+std::string positioned(const std::string& text, u32 index, u32 count) {
+    return text + ", " + std::to_string(index + 1) + " of " + std::to_string(count);
+}
 
 // The text without the game's control codes: ESC, two letters and an optional [argument], such as
 // the colour codes ESC CC[ffffffff]. Line breaks are only layout.
@@ -105,7 +119,7 @@ void pollChoices() {
         return;
     }
     if (selected >= count) return;
-    const std::string item = choices[selected] + ", " + std::to_string(selected + 1) + " of " + std::to_string(count);
+    const std::string item = positioned(choices[selected], selected, count);
     if (item == sLast) return;
     const bool first = sLast.empty();
     sLast = item;
@@ -126,8 +140,8 @@ struct ScreenRun {
         return clock::now() - last < std::chrono::milliseconds(300);
     }
 };
-ScreenRun sTitle, sFileMenu, sPause, sStyle;
-std::atomic<u32> sFileMenuAddr{0}, sPauseAddr{0}, sStyleAddr{0};
+ScreenRun sTitle, sFileMenu, sPause, sStyle, sSave;
+std::atomic<u32> sFileMenuAddr{0}, sPauseAddr{0}, sStyleAddr{0}, sSaveAddr{0};
 
 void pollTitle() {
     static bool sSaid = false;
@@ -138,13 +152,14 @@ void pollTitle() {
 
 std::string optionsRow(u32 menu) {
     static const char* const kSound[] = {"Mono", "Stereo", "Surround"};
-    switch (rd8(menu + kOptionsCursor)) {
-    case 0: return std::string("Sound: ") + kSound[std::min<u32>(rd8(menu + kSound_), 2)];
-    case 1: return std::string("Rumble: ") + (rd8(menu + kRumble) ? "On" : "Off");
-    case 2: return std::string("Controls: ") + (rd8(menu + kControls) ? "Sidestep" : "Standard");
-    case 3: return "Brightness";
-    case 4: return "OK";
-    default: return "View a Pikmin Movie";
+    const u32 row = rd8(menu + kOptionsCursor);
+    switch (row) {
+    case 0: return positioned(std::string("Sound: ") + kSound[std::min<u32>(rd8(menu + kSound_), 2)], row, 6);
+    case 1: return positioned(std::string("Rumble: ") + (rd8(menu + kRumble) ? "On" : "Off"), row, 6);
+    case 2: return positioned(std::string("Controls: ") + (rd8(menu + kControls) ? "Sidestep" : "Standard"), row, 6);
+    case 3: return positioned("Brightness", row, 6);
+    case 4: return positioned("OK", row, 6);
+    default: return positioned("View a Pikmin Movie", 5, 6);
     }
 }
 
@@ -160,21 +175,76 @@ void pollFileMenu() {
         return;
     }
     const u32 screen = rd8(menu + kMenuScreen);
-    std::string item;
-    if (screen == kScreenFiles) {
+    std::string heading, item;
+    switch (screen) {
+    case kScreenFiles: {
         const u32 cursor = rd8(menu + kFileCursor);
-        item = cursor < 3 ? "File " + std::to_string(cursor + 1) : std::string("Options");
-    } else if (screen == kScreenOptions) {
+        heading = "Which file would you like to load? On a saved file, Y copies, and B on an Xbox controller erases.";
+        item = positioned(cursor < 3 ? "File " + std::to_string(cursor + 1) : std::string("Options"), cursor, 4);
+        break;
+    }
+    case kScreenOptions:
+        heading = "Options";
         item = optionsRow(menu);
-    } else {
+        break;
+    case kScreenCopyTo:
+        heading = "Which file would you like to copy to?";
+        item = "File " + std::to_string(rd8(menu + kCopyCursor) + 1);
+        break;
+    case kScreenErase:
+        heading = "Do you really want to erase this file?";
+        item = positioned(rd8(menu + kEraseCursor) == 0 ? "Yes" : "No", rd8(menu + kEraseCursor), 2);
+        break;
+    case kScreenCopySaving:
+    case kScreenEraseSaving:
+        heading = "Saving. Do not turn off the game.";
+        break;
+    case kScreenCopied:
+        heading = "The file has been copied.";
+        break;
+    case kScreenErased:
+        heading = "The file has been erased.";
+        break;
+    default:
         return;  // a screen not mapped yet
     }
     if (screen != sLastScreen) {
         sLastScreen = screen;
-        say(screen == kScreenFiles ? "Which file would you like to load?" : "Options");
+        say(heading);
         sLast.clear();
     }
+    if (item.empty() || item == sLast) return;
+    const bool first = sLast.empty();
+    sLast = item;
+    say(item, !first);
+}
+
+// The save screen (fn_80054508), also pictures.
+void pollSave() {
+    static std::string sLast;
+    static bool sSaving = false, sSaved = false;
+    const u32 menu = sSaveAddr;
+    if (!sSave.running() || !menu) {
+        sSaving = sSaved = false;
+        sLast.clear();
+        return;
+    }
+    if (rd8(menu + kSaveState) == kSaveDone) {
+        if (!sSaved) say("The game was saved. Press A to continue.");
+        sSaved = true;
+        return;
+    }
+    if (rd8(menu + kSaveState) != 0) {
+        if (sLast.rfind("Save", 0) == 0 && !sSaving) {
+            sSaving = true;
+            say("Saving. Do not turn off the game.");
+        }
+        return;
+    }
+    const u32 cursor = rd8(menu + kSaveCursor);
+    const std::string item = positioned(cursor == 0 ? "Save" : "Never mind", cursor, 2);
     if (item == sLast) return;
+    if (sLast.empty()) say("Would you like to save up to this point?");
     const bool first = sLast.empty();
     sLast = item;
     say(item, !first);
@@ -193,13 +263,13 @@ void pollPause() {
     const std::string style = rd32(menu + kPauseStyle) == 2 ? "Sidestep" : "Standard";
     if (cursor < 1 || cursor > 4) return;
     static const char* const kItems[] = {"Continue", "Quit", "No", "Yes"};
-    const std::string item = kItems[cursor - 1];
+    const std::string item = cursor <= 2 ? positioned(kItems[cursor - 1], cursor - 1, 2) : positioned(kItems[cursor - 1], cursor - 3, 2);
     if (sLast.empty()) say("Paused. Control style " + style + ".");
     else if (style != sLastStyle) say("Control style " + style);
     sLastStyle = style;
     if (item == sLast) return;
     const bool first = sLast.empty();
-    const bool quitAsked = cursor == 3 && sLast == "Quit";
+    const bool quitAsked = cursor == 3 && sLast.rfind("Quit", 0) == 0;
     sLast = item;
     if (quitAsked) say("Do you want to quit?");
     say(item, !first && !quitAsked);
@@ -259,7 +329,8 @@ void pollControlStyle() {
         sLast.clear();
         return;
     }
-    const std::string style = rd32(menu + kStyleValue) == 2 ? "Sidestep" : "Standard";
+    const bool sidestep = rd32(menu + kStyleValue) == 2;
+    const std::string style = positioned(sidestep ? "Sidestep" : "Standard", sidestep ? 1 : 0, 2);
     if (style == sLast) return;
     if (sLast.empty()) say("Choose your control style. Left and right change it, A confirms.", false);
     sLast = style;
@@ -295,10 +366,20 @@ bool gamePaused() { return sPause.running(); }
 void pollGame() {
     if (port::usCodeFeature() != port::Avail::Yes) return;
     watchMemory();
+    // Test aid LM_ACCESS_POKE=<frame>:<address>:<value>: one guest word, to open a screen.
+    if (const char* v = std::getenv("LM_ACCESS_POKE")) {
+        unsigned frame = 0, addr = 0, value = 0;
+        static bool sDone = false;
+        if (!sDone && std::sscanf(v, "%u:%x:%x", &frame, &addr, &value) == 3 && copyDispCount() >= frame) {
+            sDone = true;
+            wr32(addr, value);
+        }
+    }
     if (!active()) return;
     pollTitle();
     pollFileMenu();
     pollPause();
+    pollSave();
     pollControlStyle();
     pollStatus();
     pollMessages();
@@ -330,6 +411,13 @@ HLE(fn_8011496C) {
         access::nav::doorLocked();
     }
     callOriginal(c, "fn_8011496C");
+}
+
+// Save screen update: r3 is its menu object.
+HLE(fn_80054508) {
+    access::sSaveAddr = c.r[3];
+    access::sSave.calls++;
+    callOriginal(c, "fn_80054508");
 }
 
 // Pause screen update: r3 is its menu object.

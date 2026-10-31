@@ -2024,6 +2024,7 @@ void handleEvent(const SDL_Event& ev) {
     if (sOpen != wasOpen) {
         sFocusMenu = sOpen;
         recomp::access::say(sOpen ? "Options menu" : "Options menu closed");
+        if (!sOpen) recomp::access::swallowPadPress();
     }
     if (!sOpen && sDirty) {
         port::saveSettings();

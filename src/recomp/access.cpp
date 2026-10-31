@@ -161,6 +161,8 @@ struct FrameScan {
     std::string label;                 // from the item's info hook; combo boxes have none
     bool hasInfo = false;
     bool selectedTab = false;
+    int items = 0, position = 0;  // items that can take focus in the focused window; the focused one
+    int tabs = 0, tabPosition = 0;
     ImGuiID id = 0;
     int tipStart = -1, tipEnd = -1;
 };
@@ -178,6 +180,21 @@ std::string trimmed(const std::string& s) {
 void onItemAdd(ImGuiContext* ctx, ImGuiID id) {
     ImGuiContext& g = *ctx;
     const int pos = g.LogBuffer.size();
+    // Position in the menu: tabs count in their own bar, everything else in the window.
+    if (id != 0 && g.CurrentWindow == g.NavWindow && id != g.CurrentWindow->ID && g.CurrentWindow->DC.NavLayerCurrent == ImGuiNavLayer_Main &&
+        !(g.LastItemData.ItemFlags & (ImGuiItemFlags_NoNav | ImGuiItemFlags_Disabled))) {
+        ImGuiTabBar* bar = g.CurrentTabBar;
+        ImGuiTabItem* tab = bar ? ImGui::TabBarFindTabByID(bar, id) : nullptr;
+        if (!tab) sScan.items++;
+        if (id == g.NavId) {
+            if (tab) {
+                sScan.tabPosition = ImGui::TabBarGetTabOrder(bar, tab) + 1;
+                sScan.tabs = bar->Tabs.Size;
+            } else {
+                sScan.position = sScan.items;
+            }
+        }
+    }
     if (sScan.tipStart >= 0 && sScan.tipEnd < 0) sScan.tipEnd = pos;
     if (sScan.itemStart >= 0 && sScan.itemEnd < 0) sScan.itemEnd = pos;
     if (id == g.NavId && g.NavWindow == g.CurrentWindow) {
@@ -265,7 +282,9 @@ void onEndFrame(ImGuiContext* ctx, ImGuiContextHook*) {
     const auto piece = [&](int a, int b) { return text.substr(size_t(a), size_t((b < 0 ? int(text.size()) : b) - a)); };
     if (sScan.itemStart < 0) sLastItem.clear();  // nothing focused: the next focus is new, even on the same item
     if (sScan.itemStart >= 0 && g.ActiveId != sScan.id && !sSkipItem) {
-        const std::string item = describe(piece(sScan.itemStart, sScan.itemEnd));
+        std::string item = describe(piece(sScan.itemStart, sScan.itemEnd));
+        const int position = sScan.tabs ? sScan.tabPosition : sScan.position, total = sScan.tabs ? sScan.tabs : sScan.items;
+        if (position > 0 && total > 1) item += ", " + std::to_string(position) + " of " + std::to_string(total);
         if (item != sLastItem && !item.empty()) {
             sLastItem = item;
             sLastTip.clear();

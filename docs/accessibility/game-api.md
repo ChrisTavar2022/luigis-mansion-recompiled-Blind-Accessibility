@@ -62,7 +62,11 @@ These screens are pictures, so the words are written in `access_game.cpp`. The h
 - Object +1: file cursor: 0 to 2 files, 3 Options.
 - Object +4: Options cursor: Sound, Rumble, Controls, Brightness, OK, View a Pikmin Movie.
 - Object +5: Sound: 0 Mono, 1 Stereo, 2 Surround. +6: Rumble. +7: Controls: 0 Standard, 1 Sidestep.
-- Object +8: screen: 0 files, 0x14 Options. Other values are not mapped.
+- Object +8: screen: 0 files, 0x14 Options, 3 copy to, 6 copying, 4 copied, 7 erase question, 0x0A erasing, 8 erased. 0x0C, 0x0D, 0x0E and 0x11 are not mapped.
+- Object +2: erase cursor: 0 Yes, 1 No, No is the default. Object +3: copy target: 1 File 2, 2 File 3. Only free files can be chosen, so there is no overwrite prompt.
+- File screen buttons: game Y copies, game X erases. On an Xbox controller game X is B by default.
+- Save screen: `fn_80054508`, r3 = menu object. +1 state: 0 question, 0x0B saving, 0x0C saved and waiting for A. +2 cursor: 0 Save, 1 Never mind. `0x804D80C4` (r13+0x164) = 5 requests it, and `LM_ACCESS_POKE=<frame>:804D80C4:5` opens it for tests.
+- The arrays at `0x803CF9DC` on the file screen are pointers, not progress data.
 - Pause: `fn_80038744`, r3 = menu object.
 - Object +0x11A (byte): 1 Continue, 2 Quit, 3 No, 4 Yes. +0x124 (word): 1 Standard, 2 Sidestep.
 - Sound 0x3801 is cursor move, 0x3802 confirm, 0x3803 cancel. Calls to `fn_8018A2A0` with these find a menu's cursor code quickly.

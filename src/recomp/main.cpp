@@ -19,6 +19,7 @@
 #include "port/update.h"
 #include "recomp/access.h"
 #include "recomp/audio.h"
+#include "recomp/controls.h"
 #include "recomp/cpu_qos.h"
 #include "recomp/mem_report.h"
 #include "recomp/frame.h"
@@ -457,7 +458,11 @@ int main(int argc, char* argv[]) {
         }
         // Shaders first (precache.h holdGame): at startup the game does not start, and after a
         // settings change that needs other shader variants it waits, until they are compiled.
-        const bool hold = !exiting && precache::holdGame();
+        const bool shaderHold = !exiting && precache::holdGame();
+        // A screen reader player's menus stop the game, so a heart cannot run out while they read.
+        const bool menuHold = !exiting && !shaderHold && recomp::access::active() && menu::isOpen();
+        if (menuHold && std::getenv("LM_VIRTUAL_PAD")) controls::beforeRead();  // test pad, timed in reads
+        const bool hold = shaderHold || menuHold;
         static bool sHoldAudio = false;
         if (hold != sHoldAudio) {
             sHoldAudio = hold;
@@ -507,7 +512,7 @@ int main(int argc, char* argv[]) {
             lastPresented = SteadyClock::now();
             presentStallReported = false;
             menu::draw();  // applies settings changes (they may change what is being compiled)
-            precache::drawHold();
+            if (shaderHold) precache::drawHold();
             precache::frame();
             aurora_end_frame();
             // Hold frames well below the display's refresh rate (issue #33): a swap chain image is
