@@ -67,6 +67,10 @@ These screens are pictures, so the words are written in `access_game.cpp`. The h
 - File screen buttons: game Y copies, game X erases. On an Xbox controller game X is B by default.
 - Save screen: `fn_80054508`, r3 = menu object. +1 state: 0 question, 0x0B saving, 0x0C saved and waiting for A. +2 cursor: 0 Save, 1 Never mind. `0x804D80C4` (r13+0x164) = 5 requests it, and `LM_ACCESS_POKE=<frame>:804D80C4:5` opens it for tests.
 - The arrays at `0x803CF9DC` on the file screen are pointers, not progress data.
+- Save records: `fn_801859E0(file)` = `0x803ED36C` + file * 0x3B0. u16 +0 bit 1: saved. +0x338: flag bytes; +0x1B bit 0x10 gives progress text 3, +0x1A bit 0x20 text 2, +8 bit 1 text 1, else 0. Text pointers at `0x8033455C`. +0x368: 48 bits, counted, shown when +0x0B has bit 8. +0x3A7: rank byte, 0 none. +0x3A8: money. `fn_80049818` draws all this for the file under the cursor.
+- Area-clear screens: `fn_800501EC`, r3 = account object, +1 state: 0, 3, 4, 5, 6, 7 in order. +0x7AC: 23 rows of 6 bytes, a nonzero first byte counts as caught. Route: `LM_START_MAP=4`, `LM_SKIP_TEST=2300:flag:66`, A every 90 frames.
+- Game over: `LM_TEST_HIT=<frame>,<period>,<damage>,0` lets health reach 0. Luigi's actor holds junk during a map load: filter health and counters by range.
+- Test saves live in `<LM_CARD_DIR>/USA/Card A/`.
 - Pause: `fn_80038744`, r3 = menu object.
 - Object +0x11A (byte): 1 Continue, 2 Quit, 3 No, 4 Yes. +0x124 (word): 1 Standard, 2 Sidestep.
 - Sound 0x3801 is cursor move, 0x3802 confirm, 0x3803 cancel. Calls to `fn_8018A2A0` with these find a menu's cursor code quickly.
@@ -80,11 +84,20 @@ The Start button skips cutscenes, which shortens test routes. In `--input` scrip
 - Character slots: `0x803D48A0`, 128 words, slot 0 is Luigi. Fields: +0x3C type, +0x44 position, +0xB4 room (top byte).
 - Parked actors sit at about -32000: skip them.
 - Ghosts: type table `0x8033B590`, 0x1C per type, +0x08 u16 flag 8. A ghost shows when actor +0x40 has none of 0x6100 and alpha +0xE3 is not 0.
+- Room table record, first word: room number, floor, unknown, name index (Nursery `1A 01 01 18`). Hallways have an index with no card.
+- Room names: `Luigi+0x80C+0x20` (low byte, a copy of that word) indexes the card table at `0x80305F20`, 72 entries, null for hallways. `kRoomNames` in `access_game.cpp` holds the words read off the cards. These are the mansion's, map 2.
 - Toads: types 42 and 43. Types: 122 and 373 to 377 chests, 86 to 91 keys, 205 and 206 hearts, 194 to 203 treasure (pearls, sapphire, emerald, ruby, diamonds, gold), 168 banana peel. A peel on the floor sits about 10 units above Luigi's height.
 - Doors: map table `0x802FF218[0x804D80C8]` + 0x18 gives a table of 0x1C byte records, ending at first byte 0. +8, +0xC, +0x10 are s32 x, y, z, and +0x1A, +0x1B are the two rooms.
 - Spilled coins and bills are "grains", not actors: hooks `fn_80157030` and `fn_8015066C`, r5 = grain, +0x20 position, +0x74 state. State 3 is idle at a stale position.
 - Luigi health: +0xFC s16. Counters from +0x12F4: coins, bills, gold bars, then gems. A hit can reduce them.
 - Control style screen: `fn_80051380`, r3 object, +4 word: 1 Standard, 2 Sidestep.
+- Captures: Luigi message 21 (`fn_800AEEA8`), also sent for keys, hearts and other items, so check the type's ghost flag. Data +0x68 is the type, added to the list at Luigi +0x11F0 (count +0x11EC, up to 64). Type name: type table +0x18, class +0x14 (1 small, 2 normal, 3 portrait, 4 boss).
+- Portrait names: `/Kawano/ENGLISH/res_acnt.szp` or a sibling, `timg/e_ad_ghostname_NN.bti`, I4, 160x22. Regular ghosts have no name pictures there.
+- Stairs: flat steps about 30 units high in `col.mp`. Test aid `LM_ACCESS_GOTO=x,y,z`: any Go to pick walks there. Foyer landing: 0,550,-600.
+- Training room is map 3: an event script runs throughout, with `kMenuOff` set, while Luigi is free. `LM_START_MAP=3`.
+- Luigi's facing: +0xF48 (float x, y, z). While vacuuming, the nozzle direction is at the pointer `Luigi+0x80C+0x700`.
+- Pad reads, so beacon beats, run 30 times a second. A tone longer than its beat must retry, or it drops.
+- Ghost fight route: `LM_START_MAP=2`, `LM_TELEPORT=0,550,-3300,100`, `LM_GHOST_HUNT=9`, `LM_GHOST_HUNT_BEAM=89`, `LM_GHOST_HUNT_DMAX=300`, `LM_GHOST_HUNT_R=0`, input `600:START*10,1000:A*6`, at least 135 seconds. Gold ghosts rush from about 700 units to 100 in 2.5 seconds and hover near 100. `LM_ACCESS_WORLD_LOG=1` logs distance, aim and tones.
 - Luigi stops about 113 units from a chest's centre and 95 from a door's: they are solid.
 - Room table: pointer at `0x804D8170`, 0x30 per room, int min x, y, z at +8, max at +0x14. The box stops short of the walls.
 - Door scenes: `fn_8011496C`, r3 is 1 for a locked door. Luigi's reported position does not change meaningfully during the scene, and his position jumps to a fixed spot, so do not read that as being stuck. An opening door takes about 13 seconds.
@@ -125,8 +138,9 @@ Test aids: `LM_ACCESS_WORLD_LOG=1` logs targets and tones. `LM_SPAWN=<type>@<fra
 ## Not yet analysed
 
 - Camera heading in every room and cutscene
-- File screen with saves: empty or saved file, and the screens behind a saved file (object +8 values)
-- Save prompt, game over and area-clear screens
+- File screen: object +8 values 0x0C, 0x0D, 0x0E and 0x11
+- Memory card error screens (`fn_80047798`, `fn_80054324`)
+- Game over screen's own object, if it has one
 - Map and Game Boy Horror screens
 - Health, money and ghost-count addresses
 - Room layout data: walls, doors, furniture

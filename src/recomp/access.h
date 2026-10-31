@@ -20,7 +20,7 @@ void say(const std::string& text, bool interrupt = true);
 // Right stick press repeats the last announcement, left stick press opens the Go to menu (on release:
 // it may be the start of pressing both). True when both sticks were pressed in: the control that
 // opens and closes the options menu.
-bool handleEvent(const SDL_Event& ev);
+bool handleEvent(const SDL_Event& ev, bool goToAllowed = true);
 
 // What to say for the item just drawn, instead of its label.
 void itemSpeech(const std::string& text);
@@ -31,13 +31,16 @@ int sliderKeys();
 // Speaks the game's own text. Call once per frame while the game runs.
 void pollGame();
 bool gamePaused();  // the game's pause screen is running
+void luigiDown(std::uint32_t actor);  // his health was just set to 0
+void ghostCaught(std::uint32_t message);  // Luigi's capture message, its data
+std::string doorName(std::uint32_t room);  // "Foyer door", from the room behind it; empty off the mansion
 
 // A menu closed on A or B: the game ignores those until they are released, or the press that closed
 // the menu would also act in the game, such as opening the door Luigi stands at.
 void swallowPadPress();
 
 // The audio cues, in the order of the glossary in the options menu.
-enum class Cue { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad };
+enum class Cue { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad, GhostAimed };
 void playCue(Cue cue);
 
 // Object sounds, auto interact and walking. Call from PADRead: button and the stick may change.

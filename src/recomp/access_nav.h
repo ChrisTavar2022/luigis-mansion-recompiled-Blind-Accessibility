@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace recomp::access::nav {
@@ -13,6 +14,7 @@ struct Object {
     float x, y, z;
     std::uint32_t id;  // actor or door id, 0 for spilled money
     float reach;       // above 0: Luigi stops this far away and presses A
+    std::string name;  // empty: the category's word
 };
 
 // From access_world.cpp each input read, while Luigi is free to move.

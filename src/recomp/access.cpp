@@ -367,13 +367,13 @@ void say(const std::string& text, bool interrupt) {
     q.cv.notify_all();
 }
 
-bool handleEvent(const SDL_Event& ev) {
+bool handleEvent(const SDL_Event& ev, bool goToAllowed) {
     if (!sActive) return false;
     static bool sLeftAlone = false;  // the left stick is down and the right has not joined it
     if (ev.type == SDL_EVENT_GAMEPAD_BUTTON_UP && SDL_GamepadButton(ev.gbutton.button) == SDL_GAMEPAD_BUTTON_LEFT_STICK) {
         if (sLeftAlone) {
             sLeftAlone = false;
-            nav::toggleMenu();
+            if (goToAllowed) nav::toggleMenu();
         }
         return false;
     }
@@ -387,7 +387,7 @@ bool handleEvent(const SDL_Event& ev) {
     SDL_Gamepad* pad = SDL_GetGamepadFromID(ev.gbutton.which);
     if (pad && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_STICK) && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK)) {
         sLeftAlone = false;
-        return true;
+        return !nav::menuOpen();
     }
     if (button == SDL_GAMEPAD_BUTTON_LEFT_STICK) {
         sLeftAlone = true;

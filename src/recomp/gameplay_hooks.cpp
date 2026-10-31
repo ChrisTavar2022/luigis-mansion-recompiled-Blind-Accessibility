@@ -2,6 +2,7 @@
 // docs/GAMEPLAY_OPTIONS.md). Every hook calls the original unchanged when its option is at the
 // neutral default, so the original game is untouched unless the player changes something.
 #include "recomp/gameplay.h"
+#include "recomp/access.h"
 #include "recomp/ghost_lights.h"
 
 #include "recomp/coop.h"
@@ -144,7 +145,10 @@ HLE(fn_800B9488) {
         }
     }
     if (coop::fixes()) coop::onLuigiHealth(c);  // 2-player co-op: a downed player is revived by the partner
+    const u32 actor = c.r[3];
+    const bool wasUp = rds16(actor + 0xFC) > 0;
     callOriginal(c, "fn_800B9488");
+    if (wasUp && rds16(actor + 0xFC) == 0) access::luigiDown(actor);
 }
 
 // ---- Luigi's health ---------------------------------------------------------------------
@@ -230,6 +234,7 @@ void callLuigiMessage(Ctx& c) {
         wr16(luigi + 0xFC, u32(scaleDown(hpOrig, k)) & 0xFFFF);
     }
     callOriginal(c, "fn_800AEEA8");
+    if (id == 21) access::ghostCaught(data);
     if (rank) wr16(luigi + 0xFC, u32(hpOrig) & 0xFFFF);
     if (field) wr32(field, fieldOrig);
     // 59: leaving the map, health and maximum were copied into the record: store them in

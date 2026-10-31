@@ -76,15 +76,15 @@ void testStateFrame(Ctx& c) {
         return true;
     }();
     (void)sPatchesDone;
-    // LM_TEST_HIT=<frame>[,<period>[,<damage>]] (testing): from that frame on (LM_FRAME_DUMP
+    // LM_TEST_HIT=<frame>[,<period>[,<damage>[,<lowest health, 1 by default>]]] (testing): from that frame on (LM_FRAME_DUMP
     // numbering), every <period> frames (0: once), Luigi takes <damage> (default 5) through the
     // game's own health setter fn_800B9488, the call every damage source makes, so the hurt
     // reaction and the damage blink play (frame interpolation tests of the blink).
-    static u32 sHitAt = 0, sHitPeriod = 0, sHitDamage = 5;
+    static u32 sHitAt = 0, sHitPeriod = 0, sHitDamage = 5, sHitFloor = 1;
     static const bool sHitOn = [] {
         const char* e = std::getenv("LM_TEST_HIT");
         if (!e) return false;
-        std::sscanf(e, "%u,%u,%u", &sHitAt, &sHitPeriod, &sHitDamage);
+        std::sscanf(e, "%u,%u,%u,%u", &sHitAt, &sHitPeriod, &sHitDamage, &sHitFloor);
         return true;
     }();
     // LM_HEALTH_LOG=1 (testing): log Luigi's health whenever it changes, with the frame number.
@@ -108,7 +108,7 @@ void testStateFrame(Ctx& c) {
             const s32 hp = s16(rd16(l + 0xFC));
             log("[test] LM_TEST_HIT: frame %u, Luigi health %d -> %d", f, hp, hp - s32(sHitDamage));
             static const u32 sSetHealth = guestSymbol("fn_800B9488");
-            guestCall(c, sSetHealth, l, u32(std::max(1, hp - s32(sHitDamage))) & 0xFFFF);
+            guestCall(c, sSetHealth, l, u32(std::max(s32(sHitFloor), hp - s32(sHitDamage))) & 0xFFFF);
             sHitAt = sHitPeriod ? f + sHitPeriod : ~0u;
         }
     }

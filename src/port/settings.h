@@ -359,6 +359,7 @@ struct AccessibilitySettings {
     bool objectSounds = true;   // repeating tones lead Luigi to objects
     bool ghostSounds = true;    // the same for ghosts that show
     bool autoInteract = false;  // A is pressed for chests, keys and doors Luigi walks at
+    bool announceRooms = true;  // the room and floor Luigi enters are spoken
 };
 
 struct Settings {

@@ -283,7 +283,7 @@ bool run(const Options& opts, LaunchInfo& launch) {
         recomp::access::sync();
         for (const AuroraEvent* ev = aurora_update(); ev && ev->type != AURORA_NONE; ++ev) {
             if (ev->type == AURORA_EXIT) return false;
-            if (ev->type == AURORA_SDL_EVENT) recomp::access::handleEvent(ev->sdl);
+            if (ev->type == AURORA_SDL_EVENT) recomp::access::handleEvent(ev->sdl, false);  // no game yet, so no Go to menu
             if (ev->type == AURORA_PAUSED) port::setPhase(nullptr);  // waits for the window: not a hang
             if (ev->type == AURORA_UNPAUSED) port::setPhase("setup");
         }

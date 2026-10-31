@@ -775,6 +775,10 @@ void accessibilityTab() {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
         ImGui::SetTooltip("The nearest ghost that is showing repeats a falling tone. It gets faster as the ghost gets "
                           "closer, and lower when the ghost is behind you.");
+    sDirty |= ImGui::Checkbox("Announce rooms", &a.announceRooms);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Says the name of each room as you enter it, using the names on the map, and the floor when "
+                          "it changes.");
     sDirty |= ImGui::Checkbox("Auto interact", &a.autoInteract);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
         ImGui::SetTooltip("Presses A for you at chests and keys, and at doors you walk towards. It never acts on "
@@ -792,7 +796,8 @@ void accessibilityTab() {
         {"Treasure: one high note", Cue::Treasure},
         {"Coins and bills: one short note", Cue::Money},
         {"Door: one low note", Cue::Door},
-        {"Ghost: a slow falling tone", Cue::Ghost},
+        {"Ghost: a low falling tone", Cue::Ghost},
+        {"Ghost in your flashlight: a bright rising tone", Cue::GhostAimed},
         {"Banana peel, a hazard: a sharp clashing tone", Cue::Banana},
         {"Toad: two bright rising notes", Cue::Toad},
     };
@@ -800,7 +805,7 @@ void accessibilityTab() {
         if (ImGui::Selectable(c.label)) recomp::access::playCue(c.cue);
     ImGui::Separator();
     ImGui::TextUnformatted("Every cue repeats faster as you get closer, and pans left and right with the object.");
-    ImGui::TextUnformatted("An object behind you sounds lower.");
+    ImGui::TextUnformatted("Pitch gives the direction: normal when it is straight left or right, higher when it is up or up to a side, lower when it is down or down to a side.");
     if (!updateFirst) updatesSection();
 }
 
@@ -2043,8 +2048,9 @@ void handleEvent(const SDL_Event& ev) {
     if (recomp::controls::handleEvent(ev)) return;  // binding capture owns the key
     if (recomp::dev::handleKey(ev)) return;
     // Screen reader players work the menu with the controller (access.h). B closes an open list first.
-    const bool padToggle = recomp::access::handleEvent(ev);
-    const bool padBack = sOpen && recomp::access::active() && ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+    const bool goToWasOpen = recomp::access::nav::menuOpen();  // its B must not close this menu too
+    const bool padToggle = recomp::access::handleEvent(ev, !sOpen);
+    const bool padBack = sOpen && !goToWasOpen && recomp::access::active() && ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
                          ev.gbutton.button == SDL_GAMEPAD_BUTTON_EAST &&
                          !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
     if (!padToggle && !padBack && (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat)) return;

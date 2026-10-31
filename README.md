@@ -33,13 +33,13 @@ In the menus, the D-pad or left stick moves, A selects, and B goes back or close
 
 ### Go to menu (pathfinding)
 
-The Go to menu lists what is in the room you are in: doors, coins and money, hearts, keys, chests, treasure and Toads.
+The Go to menu lists what is in the room you are in: doors, coins and money, hearts, keys, chests, treasure and Toads. Doors are named after the room behind them, such as "Foyer door". A door to a hallway is "Hallway door".
 
 1. Press the left stick in, then release it.
 2. Use left and right to change category, and up and down to choose an object.
 3. Press A. Luigi walks there by himself, around furniture, and collects it. He presses A for you at doors, chests and Toads.
 
-Moving the stick yourself stops the walk at any time. NVDA tells you how it ended, and says so if a door is locked.
+Luigi takes the stairs when what you picked is on another level of the room. Moving the stick yourself stops the walk at any time. NVDA tells you how it ended. When a door is locked, it names the room behind it, such as "Anteroom is locked".
 
 ### Accessibility tab
 
@@ -47,11 +47,12 @@ The options menu opens on the Accessibility tab.
 
 - **Screen reader support:** Auto, On or Off.
 - **Object sounds:** chests, keys, hearts, treasure, money, doors and Toads repeat a tone, and banana peels repeat a warning tone.
-- **Ghost sounds:** the nearest ghost that is showing repeats a falling tone.
+- **Ghost sounds:** the nearest ghost that is showing repeats a low falling tone. It changes to a bright rising tone when Luigi is facing the ghost and close enough for the flashlight. NVDA says what you caught, such as "Neville caught" or "3 Shy Guy caught".
+- **Announce rooms:** says each room as you enter it, using the game's own room names, and the floor when it changes.
 - **Auto interact:** off by default. Presses A for you at chests and keys, and at doors you walk towards. It never acts on furniture.
 - **Audio cue glossary:** press an entry to hear that sound.
 
-Every sound gets faster as you get closer and pans left and right with the object, so keeping it centred walks you straight at it. An object behind you sounds lower.
+Every sound gets faster as you get closer and pans left and right with the object, so keeping it centred walks you straight at it. Pitch gives the direction: normal when the object is straight left or right, higher when it is up or up to a side, and lower when it is down or down to a side.
 
 ### What NVDA reads
 
@@ -60,7 +61,7 @@ Every sound gets faster as you get closer and pans left and right with the objec
 - Every menu item with its position, such as "Save, 1 of 2".
 - Health, coins, bills, gold bars and gems when they change.
 
-On the file screen, Y copies a saved file, and B on an Xbox controller erases it.
+On the file screen, NVDA says whether each file is empty, and for a saved file how far it has reached and its money. Y copies a saved file, and B on an Xbox controller erases it. The results after an area, and game over, are spoken too.
 
 ### Credits
 

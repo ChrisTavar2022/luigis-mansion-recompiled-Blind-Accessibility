@@ -10,7 +10,7 @@ Final silent tests for the Go to menu build: walks to a heart, a Toad, a locked 
 
 ## Current milestone
 
-Spoken menus. The port's own setup screen and options menu speak and work with a controller. The game's own screens do not speak yet.
+Closing the small gaps: rooms, door names, save files, results and game over. Work after release 0.2.0 is not released yet.
 
 ## Milestone
 
@@ -18,7 +18,7 @@ Spoken menus. The port's own setup screen and options menu speak and work with a
 
 2026-10-30: the user, a totally blind player, cleared the first few rooms completely independently with NVDA, the object sounds and an Xbox controller.
 
-User feedback from that session: the game's own ghost sounds showed a ghost was close, but were not accurate enough to always aim well. Ghost sounds were built for this; the user has not played with them yet. If aim is still hard, add a distinct cue for when Luigi is facing the ghost.
+User feedback from that session: the game's own ghost sounds showed a ghost was close, but were not accurate enough to always aim well. Ghost sounds and the aim cue were built for this.
 
 ## Done
 
@@ -37,19 +37,34 @@ User feedback from that session: the game's own ghost sounds showed a ghost was 
 - Automatic rebuilds after an update now announce their progress.
 - Control style choice in E. Gadd's first talk spoken (`fn_80051380`). Reading "Standard" is tested; changing it to Sidestep there is not.
 - Object sounds (`src/recomp/access_world.cpp`), on by default: chests, keys, hearts, treasure, spilled money and doors in Luigi's room, as tones on their own audio streams. Faster when closer, panned left and right, lower when behind.
-- Ghost sounds, on by default, with their own setting: the nearest showing ghost in Luigi's room repeats a falling tone on a third channel, faster than object sounds. Tested with spawned, stationary portrait ghosts plus coins and hits: no corruption, no crash. Not yet tested on moving ghosts, or on ghosts fading out or hiding.
+- Ghost sounds, on by default, with their own setting: the nearest showing ghost in Luigi's room repeats a low falling tone on a third channel, faster than object sounds. Tested with spawned, stationary portrait ghosts plus coins and hits: no corruption, no crash. Not yet tested on moving ghosts, or on ghosts fading out or hiding.
 - Banana peel warning, under the object sounds setting: peels on the floor in Luigi's room repeat a clashing tone on a fourth channel, however close he gets. Tested with a spawned peel, not yet one thrown by a ghost or by the user.
 - Sapphires, emeralds and rubies added to the treasure sounds.
 - Toad beacon on a fifth channel, under the object sounds setting, with a Go to menu category.
 - Go to menu and pathfinding (`src/recomp/access_nav.cpp`): left stick press, categories, routes from `col.mp` inside Luigi's room, A at doors, chests and Toads. Tested with a simulated controller: walked to a heart and collected it, walked to a locked door and an unlocked one.
 - Spilled money now counts only inside Luigi's room.
-- Locked doors announced from `fn_8011496C`, by hand or through the Go to menu.
+- Locked doors announced from `fn_8011496C`, by hand or through the Go to menu, with the name of the room behind them: "Anteroom is locked". A hallway behind the door gives "This door is locked". Tested: "Telephone Room is locked".
+- Go to menu names doors after the room behind them: "Hallway door, ahead, far, 1 of 2", then "Going to Hallway door". Names exist only in the mansion, map 2; elsewhere it stays "door".
+- File screen says each file: "File 2, Up to Area 1, money 0, 2 of 4", or "File 1, empty, 1 of 4". The Boo count and rank code paths exist, gated as the game gates them, but no save tested them yet: the user's save has neither. The rank letter assumes the ending's scale, 1 H to 8 A.
+- Copy target has a position among the free files: "File 3, 2 of 2".
+- Area-clear results spoken from `fn_800501EC`: ghosts caught, total, treasure and "Press A to continue". Tested with nothing caught, so a real count is not verified. It does not list the ghosts by name, and the per-item treasure list is read from Luigi's counters, not the screen's nine rows.
+- "Game over" from the health setter `fn_800B9488` when Luigi's health goes to 0, replacing "Health 0". The test reached the title screen again; whether the game shows a further screen that its A presses skipped is not confirmed.
+- Fixed: junk health, money and room names spoken during a map load, such as "Health 7382" and "Coins 64853". The actor keeps its address and is filled in stages, so values outside sane limits are ignored and the first 3 seconds of a map are only a baseline.
+- Repository sweep, 2026-10-30: a code review of everything since upstream, plus checks for tracked game data, secrets, tool parsing, doc links and update targets. Fixed from it: a Go to walk cut short by an event now says "Walk interrupted" and the list empties during events; "Through the door" no longer cuts off the room name; a stick press during setup cannot leave Go to open; B closes only Go to when it is over the options menu, and Go to cannot open over options; a slightly diagonal stick no longer changes category; collision loads while the menu still holds the game. `core.filemode` is false in this checkout, so the Linux and macOS scripts keep their exec bits in commits.
+- Beacon fixes after the user found ghosts hard to catch ("a bit farther away than the ghost is itself"): input reads run 30 times a second, so the 210 ms ghost tone overran its 6 read beat and every other tone was dropped within 150 units, halving the rate when closest. A busy channel now retries on the next read, the ghost tone is 110 ms with a 3 read beat, and a beat shortens at once when the target closes in. Measured in a gold ghost fight, not yet played by the user.
+- Three beacon pitches, the user's design, on every beacon: level for straight left or right, higher for up and its diagonals, lower for down and its diagonals. Read as stick directions on screen, not height. The bands are 22.5 degrees.
+- Ghost aim cue: a bright rising tone when Luigi faces the nearest ghost within about 20 degrees and 400 units (MaxLightBindRange), with a glossary entry. Seen in the same fight. The nozzle direction, which the C stick turns ahead of Luigi's body while vacuuming, is not read yet.
+- Training room beacons: map 3 is one long event script with Luigi free through it, and the "not free" gate silenced everything. The gate now skips that map. Tested: the beacon sounds on the training ghost.
+- Go to climbs stairs. Stairs are flat steps about 30 units high, walls to the flat grid. A target over 200 units from Luigi's height is routed over `col.mp` floors, a node per floor over each cell, joined within a 45 unit step; a same-level target that the flat route cannot reach tries this too. A target on no reachable floor now says "I can't find a way there" instead of walking at a wall. Tested: from the Foyer floor up to the landing at height 550. Only that one staircase is tested.
+- Capture speech, from Luigi's message 21: "Neville caught", or "3 Shy Guy caught" for several within a second. The user's play showed that keys and hearts send the same message, so only types with the ghost flag speak; items keep the game's own text. Portrait names come from the game's plaques. Regular ghost names are from memory, and types not known for certain (`mapoo`, `mopoo`, `topoo`, `putcher`, `skul`, `poo`) say "Ghost caught". Fat, girl and denwa were matched to Miss Petunia, Sue Pea and Uncle Grimmly by elimination, and `yapoo` plus the small ghosts are unconfirmed.
+- Left as is: route search still runs on the guest thread, a small hitch on starting and replanning. `lockedDoorText` and `scan` both walk the door table.
 - Accessibility tab in the options menu, with the settings moved there and an audio cue glossary.
 - Save, erase and copy screens spoken, including the saved and erased confirmations. File screen says how to copy and erase.
 - Every menu says its position: "Save, 1 of 2". Port menus count automatically, tabs in their own bar; game menus use `positioned()`.
 - The press that closes a menu no longer reaches the game (`swallowPadPress`).
 - Options and Go to menus stop the game for screen reader players, through the shader hold path in `main.cpp`.
 - README section for players.
+- Announce rooms setting, on by default: the room name on entering, from the game's own name cards, and the floor when it changes. Sub-room zones are not built: the user's wish for zones is read as floors for now.
 - Auto interact, off by default, in the options menu's Accessibility tab: presses A at chests and keys, and at doors Luigi walks towards. At most 3 presses per object per room visit.
 - Health, coins, bills, gold bars and gems spoken when they change.
 - Stress test with chests, keys, hearts, gold, coins and hits together: no memory corruption, no crash.
@@ -76,10 +91,9 @@ First real launch on the user's profile succeeded: game module built, game runni
 
 1. The user tests ghost sounds and banana peel warnings on real ghosts, and says whether ghost aim is accurate enough.
 2. Confirm auto interact and the Go to menu open a real chest, and that routes work in larger rooms, stairs and rooms with moved furniture.
-3. Read each file's progress and money on the file screen.
-4. Speak the game over and area-clear screens.
-5. Status on demand, then spoken navigation.
-6. Cutscene audio descriptions (below).
+3. Check the area-clear count and game over screens in real play.
+4. Status on demand, then spoken navigation.
+5. Cutscene audio descriptions (below).
 
 ## Planned: cutscene audio descriptions
 
@@ -91,12 +105,9 @@ The user asked for these, as in the Persona 4 accessibility mod. They are possib
 - Disabled options and plain notes in the menu are not read.
 - The game's own text is USA only: the addresses are not in the version map yet, so the European game stays silent there.
 - Dialogue does not say who is speaking: the name is not in the text.
-- The file screen says "File 1" but not yet its progress and money, or whether it is empty.
-- The copy target has no position: the game only offers free files, and their count is not read yet.
 - Game choice menus move with the control stick, not the D-pad.
 - Object sounds are generated tones, not the game's sounds. Starting game sounds from the port crashed the game when coins were bouncing: it drains JAudio's fixed sound lists (`docs/accessibility/game-api.md`). Never call `fn_80189F78` or `fn_8018D6C0` for this.
 - Spoken object cues do not name the object; each kind has its own tone.
 - A locked door gets auto interact presses too; the game's locked animation plays and NVDA says it is locked.
-- Routes use one floor height: an object up or down stairs may be unreachable.
 - The Go to menu lists only what is scanned now, in Luigi's room.
 - Stick-press controls do not exist on a GameCube controller.

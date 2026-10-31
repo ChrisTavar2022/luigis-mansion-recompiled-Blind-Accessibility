@@ -12,15 +12,21 @@
 #include "recomp/access_nav.h"
 
 #include "port/install.h"
+#include "port/settings.h"
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <iterator>
+#include <mutex>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace recomp {
 u32 copyDispCount();  // hle_gx.cpp
@@ -49,6 +55,18 @@ constexpr u32 kScreenFiles = 0, kScreenOptions = 0x14;
 constexpr u32 kScreenCopyTo = 3, kScreenCopySaving = 6, kScreenCopied = 4;
 constexpr u32 kScreenErase = 7, kScreenEraseSaving = 0x0A, kScreenErased = 8;
 
+// Save records in memory, one per file (fn_801859E0). fn_80049818 shows them on the file screen.
+constexpr u32 kFileRecords = 0x803ED36C, kFileRecordSize = 0x3B0, kFileCount = 3;
+constexpr u32 kFileSavedBit = 1;      // u16 at +0
+constexpr u32 kFileShowsBoos = 0x0B;  // byte, bit 8
+constexpr u32 kFileFlags = 0x338, kFileBoos = 0x368, kFileBooBits = 48;
+constexpr u32 kFileRank = 0x3A7, kFileMoney = 0x3A8;
+constexpr u32 kAreaNames = 0x8033455C;  // pointers, indexed by areaReached()
+
+// Account object of the area-clear screens (bytes). States run 0, 3, 4, 5, 6, 7.
+constexpr u32 kAccountState = 1, kAccountCaught = 3, kAccountTotal = 5, kAccountMoney = 6, kAccountDone = 7;
+constexpr u32 kAccountRow = 0x7AC, kAccountRowSize = 6, kAccountRows = 23;
+
 // Menu object of the save screen (bytes).
 constexpr u32 kSaveState = 1;   // 0 the question, 0x0B saving, 0x0C saved, waits for A
 constexpr u32 kSaveDone = 0x0C;
@@ -61,6 +79,16 @@ constexpr u32 kStyleValue = 4;       // control style screen, word: 1 Standard, 
 
 constexpr u32 kActorSlots = 0x803D48A0;  // slot 0 is Luigi
 constexpr u32 kHealth = 0xFC, kCounters = 0x12F4, kCounterCount = 10;
+constexpr u32 kCaughtType = 0x68;  // in Luigi's capture message, the type the game adds to his list (+0x11F0)
+constexpr u32 kGhostTypes = 0x8033B590, kGhostTypeSize = 0x1C, kGhostTypeName = 0x18, kGhostTypeCount = 0x29C8 / 0x1C;
+constexpr u32 kGhostTypeFlags = 0x08, kGhostTypeFlag = 8;
+constexpr s32 kCounterMax = 99999, kHealthMax = 999;
+constexpr auto kMapSettle = std::chrono::seconds(3);  // a new map's actor fills in stages
+constexpr u32 kActPos = 0x44, kActRoom = 0xB4;
+constexpr u32 kRoomTable = 0x804D8170, kRoomSize = 0x30, kRoomCount = 74;
+constexpr u32 kMapTable = 0x802FF218, kMapDoors = 0x18;
+constexpr u32 kRoomInfo = 0x80C, kRoomNameIndex = 0x20;  // Luigi +0x80C (fn_800B1B34), read by fn_800458D0
+constexpr u32 kCurMap = 0x804D80C8, kMansionMap = 2;
 
 using clock = std::chrono::steady_clock;
 
@@ -126,6 +154,66 @@ void pollChoices() {
     say(item, !first);  // the first one follows the question
 }
 
+// The words for a capture, by the start of the game's type name. Portrait ghosts carry the names on
+// the game's own plaques (e_ad_ghostname_NN.bti). Types left out are not known for certain.
+const char* ghostName(const std::string& type) {
+    static const struct {
+        const char* type;
+        const char* name;
+    } kNames[] = {
+        {"father", "Neville"},
+        {"mother", "Lydia"},
+        {"baby", "Chauncey"},
+        {"bbaby", "Chauncey"},
+        {"eater", "Mr. Luggs"},
+        {"dancer", "The Floating Whirlindas"},
+        {"pianist", "Melody Pianissima"},
+        {"situji", "Shivers"},
+        {"uranai", "Madame Clairvoya"},
+        {"dog01", "Spooky"},
+        {"bfire", "Bogmire"},
+        {"builder", "Biff Atlas"},
+        {"obaasan", "Nana"},
+        {"fat", "Miss Petunia"},
+        {"hustler", "Slim Bankshot"},
+        {"boy", "Henry and Orville"},
+        {"denwa", "Uncle Grimmly"},
+        {"btelesa", "Boolossus"},
+        {"tubone", "Jarvis"},
+        {"htubone", "Jarvis"},
+        {"gaka", "Vincent Van Gore"},
+        {"girl", "Sue Pea"},
+        {"doll", "Clockwork Soldier"},
+        {"snowman", "Sir Weston"},
+        {"mgyapoo", "Gold Ghost"},
+        {"yapoo", "Gold Ghost"},
+        {"iyapoo", "Speedy Spirit"},
+        {"heypo", "Shy Guy"},
+        {"tenjyo", "Ceiling Surprise"},
+        {"banaoba", "Banana Ghost"},
+        {"waiter", "Waiter Ghost"},
+        {"telesa", "Boo"},
+        {"goldrat", "Gold Mouse"},
+        {"rat", "Mouse"},
+        {"bat", "Bat"},
+    };
+    for (const auto& n : kNames)
+        if (type.rfind(n.type, 0) == 0) return n.name;
+    return "Ghost";
+}
+
+// Captures, gathered so several at once are one announcement. Filled on the guest thread.
+std::mutex sCaughtM;
+std::vector<std::pair<std::string, u32>> sCaught;
+clock::time_point sCaughtAt{};
+
+void pollCaught() {
+    std::lock_guard lk(sCaughtM);
+    if (sCaught.empty() || clock::now() - sCaughtAt < std::chrono::seconds(1)) return;
+    for (const auto& [name, count] : sCaught) say((count > 1 ? std::to_string(count) + " " : std::string()) + name + " caught", false);
+    sCaught.clear();
+}
+
 // A screen's update function ran within the last moments. Hooks count calls on the guest thread.
 struct ScreenRun {
     std::atomic<u32> calls{0};
@@ -140,8 +228,8 @@ struct ScreenRun {
         return clock::now() - last < std::chrono::milliseconds(300);
     }
 };
-ScreenRun sTitle, sFileMenu, sPause, sStyle, sSave;
-std::atomic<u32> sFileMenuAddr{0}, sPauseAddr{0}, sStyleAddr{0}, sSaveAddr{0};
+ScreenRun sTitle, sFileMenu, sPause, sStyle, sSave, sAccount;
+std::atomic<u32> sFileMenuAddr{0}, sPauseAddr{0}, sStyleAddr{0}, sSaveAddr{0}, sAccountAddr{0};
 
 void pollTitle() {
     static bool sSaid = false;
@@ -163,6 +251,34 @@ std::string optionsRow(u32 menu) {
     }
 }
 
+bool fileSaved(u32 file) { return rd16(kFileRecords + file * kFileRecordSize) & kFileSavedBit; }
+
+// The same flags fn_80049818 tests to choose the file's progress text.
+u32 areaReached(u32 record) {
+    const u32 flags = record + kFileFlags;
+    if (rd8(flags + 0x1B) & 0x10) return 3;
+    if (rd8(flags + 0x1A) & 0x20) return 2;
+    return rd8(flags + 8) & 1;
+}
+
+// What the file screen shows for a file, as pictures and digits.
+std::string fileSummary(u32 file) {
+    std::string out = "File " + std::to_string(file + 1);
+    if (!fileSaved(file)) return out + ", empty";
+    const u32 record = kFileRecords + file * kFileRecordSize;
+    const std::string area = gameText(rd32(kAreaNames + areaReached(record) * 4), 32);
+    if (!area.empty()) out += ", " + area;
+    out += ", money " + std::to_string(rd32(record + kFileMoney));
+    if (rd8(record + kFileShowsBoos) & 8) {
+        u32 boos = 0;
+        for (u32 i = 0; i < kFileBooBits; i++) boos += (rd8(record + kFileBoos + i / 8) >> (i % 8)) & 1;
+        out += ", Boos " + std::to_string(boos);
+    }
+    const u32 rank = rd8(record + kFileRank);  // 1 H, the worst, to 8 A
+    if (rank >= 1 && rank <= 8) out += std::string(", rank ") + "HGFEDCBA"[rank - 1];
+    return out;
+}
+
 // The file screen and its Options screen (fn_8004A004). Text there is pictures, so the words come
 // from here.
 void pollFileMenu() {
@@ -180,17 +296,25 @@ void pollFileMenu() {
     case kScreenFiles: {
         const u32 cursor = rd8(menu + kFileCursor);
         heading = "Which file would you like to load? On a saved file, Y copies, and B on an Xbox controller erases.";
-        item = positioned(cursor < 3 ? "File " + std::to_string(cursor + 1) : std::string("Options"), cursor, 4);
+        item = positioned(cursor < kFileCount ? fileSummary(cursor) : std::string("Options"), cursor, 4);
         break;
     }
     case kScreenOptions:
         heading = "Options";
         item = optionsRow(menu);
         break;
-    case kScreenCopyTo:
+    case kScreenCopyTo: {
         heading = "Which file would you like to copy to?";
-        item = "File " + std::to_string(rd8(menu + kCopyCursor) + 1);
+        const u32 target = rd8(menu + kCopyCursor);
+        u32 index = 0, count = 0;  // only free files can be chosen
+        for (u32 file = 0; file < kFileCount; file++) {
+            if (fileSaved(file)) continue;
+            if (file < target) index++;
+            count++;
+        }
+        item = positioned("File " + std::to_string(target + 1), index, count);
         break;
+    }
     case kScreenErase:
         heading = "Do you really want to erase this file?";
         item = positioned(rd8(menu + kEraseCursor) == 0 ? "Yes" : "No", rd8(menu + kEraseCursor), 2);
@@ -217,6 +341,43 @@ void pollFileMenu() {
     const bool first = sLast.empty();
     sLast = item;
     say(item, !first);
+}
+
+// The area-clear result screens (fn_800501EC), pictures too. Account object +1 is the state.
+void pollAccount() {
+    static u32 sLast = ~0u;
+    const u32 account = sAccountAddr;
+    if (!sAccount.running() || !account) {
+        sLast = ~0u;
+        return;
+    }
+    const u32 state = rd8(account + kAccountState);
+    if (state == sLast) return;
+    sLast = state;
+    switch (state) {
+    case kAccountCaught: {
+        u32 caught = 0;  // the game's own count
+        for (u32 i = 0; i < kAccountRows; i++) caught += rd8(account + kAccountRow + i * kAccountRowSize) != 0;
+        say("Results. Now you've caught " + std::to_string(caught) + (caught == 1 ? " ghost." : " ghosts."));
+        break;
+    }
+    case kAccountTotal: say("Your total catch. Press A to continue."); break;
+    case kAccountMoney: say("Now the treasure you've found. Press A until the total."); break;
+    case kAccountDone: {
+        std::string text;
+        const u32 luigi = rd32(kActorSlots);
+        if (gu::inMem1(luigi)) {
+            s32 gems = 0;
+            for (u32 i = 3; i < kCounterCount; i++) gems += s32(rd32(luigi + kCounters + 4 * i));
+            const s32 coins = s32(rd32(luigi + kCounters)), bills = s32(rd32(luigi + kCounters + 4)), bars = s32(rd32(luigi + kCounters + 8));
+            if (coins >= 0 && bills >= 0 && bars >= 0 && gems >= 0)
+                text = "Coins " + std::to_string(coins) + ". Bills " + std::to_string(bills) + ". Gold bars " + std::to_string(bars) + ". Gems " + std::to_string(gems) + ". ";
+        }
+        say(text + "Press A to continue.");
+        break;
+    }
+    default: break;
+    }
 }
 
 // The save screen (fn_80054508), also pictures.
@@ -275,26 +436,137 @@ void pollPause() {
     say(item, !first && !quitAsked);
 }
 
-// Luigi's health and money, spoken when they change. Actor +0xFC is health, +0x12F4 onwards the
-// treasure counters.
+// Room names, the words on the game's name cards (the pictures in kawano/roomname, table at
+// 0x80305F20 in the same order). Empty: a room with no card, which is a hallway.
+constexpr const char* kRoomNames[] = {
+    "Butler's Room", "Hidden Room", "Foyer", "Fortune-teller's Room", "Mirror Room", "Laundry Room", "", "",
+    "Kitchen", "Dining Room", "Ball Room", "Boneyard", "Billiards Room", "Projection Room", "Storage Room", "",
+    "Graveyard", "Washroom", "", "", "Bathroom", "Conservatory", "Rec Room", "Courtyard",
+    "Nursery", "The Twins' Room", "", "Sitting Room", "Guest Room", "", "", "",
+    "", "Master Bedroom", "Study", "Parlor", "Sealed Room", "", "Wardrobe Room", "Anteroom",
+    "Astral Hall", "Observatory", "Washroom", "", "", "Bathroom", "Nana's Room", "Tea Room",
+    "Armory", "", "Telephone Room", "", "Safari Room", "", "", "Ceramics Studio",
+    "Clockwork Room", "The Artist's Studio", "", "Balcony", "", "Cold Storage", "", "Cellar",
+    "", "", "Pipe Room", "Breaker Room", "", "Bottom of the Well", "Secret Altar", "",
+};
+
+const char* floorName(u32 floor) {
+    switch (floor) {
+    case 0: return "First floor";
+    case 1: return "Second floor";
+    case 2: return "Third floor";
+    case 3: return "Roof";
+    default: return "Basement";
+    }
+}
+
+// A room's name by its room number (door records use those): the table's first word holds the
+// number, the floor and the name index. Empty for a hallway.
+const char* roomName(u32 number) {
+    const u32 rooms = rd32(kRoomTable);
+    if (rd32(kCurMap) != kMansionMap || number >= kRoomCount || !gu::inMem1(rooms)) return "";
+    const u32 index = rd8(rooms + number * kRoomSize + 3);
+    return index < std::size(kRoomNames) ? kRoomNames[index] : "";
+}
+
+}  // namespace
+
+std::string doorName(u32 room) {
+    if (rd32(kCurMap) != kMansionMap || room >= kRoomCount) return "";
+    const char* name = roomName(room);
+    return std::string(*name ? name : "Hallway") + " door";
+}
+
+namespace {
+
+// What a locked door leads to: the nearest door of Luigi's room, the room on its other side.
+std::string lockedDoorText() {
+    const u32 luigi = rd32(kActorSlots);
+    const u32 map = rd32(kMapTable + 4 * rd32(kCurMap));
+    const u32 doors = gu::inMem1(map) ? rd32(map + kMapDoors) : 0;
+    if (!gu::inMem1(luigi) || !gu::inMem1(doors) || rd32(kCurMap) != kMansionMap) return "This door is locked";
+    const u32 room = rd32(luigi + kActRoom) >> 24;
+    const float x = gu::rdf(luigi + kActPos), z = gu::rdf(luigi + kActPos + 8);
+    float best = 1e30f;
+    u32 other = ~0u;
+    for (u32 i = 0; i < 128; i++) {
+        const u32 d = doors + i * 0x1C;
+        if (rd8(d) == 0) break;
+        const u32 a = rd8(d + 0x1A), b = rd8(d + 0x1B);
+        if (a != room && b != room) continue;
+        const float dist = std::hypot(float(s32(rd32(d + 8))) - x, float(s32(rd32(d + 0x10))) - z);
+        if (dist < best) {
+            best = dist;
+            other = a == room ? b : a;
+        }
+    }
+    const char* name = other == ~0u ? "" : roomName(other);
+    return *name ? std::string(name) + " is locked" : std::string("This door is locked");
+}
+
+// The room Luigi walks into, then the floor when that changed too. Only the mansion has these names.
+void pollRoom(u32 luigi) {
+    static u32 sRoom = ~0u, sFloor = ~0u;
+    if (!port::settings().accessibility.announceRooms || rd32(kCurMap) != kMansionMap) {
+        sRoom = sFloor = ~0u;
+        return;
+    }
+    const u32 room = rd32(luigi + kRoomInfo + kRoomNameIndex) & 0xFF;
+    if (room == sRoom) return;
+    const bool first = sRoom == ~0u;
+    sRoom = room;
+    const char* name = room < std::size(kRoomNames) ? kRoomNames[room] : "";
+    say(*name ? name : "Hallway", false);
+    // The room table's own floor, once Luigi's room number is known.
+    const u32 rooms = rd32(kRoomTable);
+    if (!gu::inMem1(rooms)) return;
+    const u32 floor = rd8(rooms + (rd32(luigi + kActRoom) >> 24) * kRoomSize + 1);
+    if (floor != sFloor && !first) say(floorName(floor), false);
+    sFloor = floor;
+}
+
+// Luigi's health and money, spoken when they change.
+// Actor +0xFC is health, +0x12F4 onwards the treasure counters.
 void pollStatus() {
     const u32 luigi = rd32(kActorSlots);
     if (!gu::inMem1(luigi)) return;
     static s32 sHealth = -1;
+    static u32 sHealthMap = ~0u;
+    static clock::time_point sMapStart{};
     const s32 health = s16(rd16(luigi + kHealth));
-    if (health != sHealth) {
-        if (sHealth >= 0 && health >= 0) say("Health " + std::to_string(health), false);
+    // The actor holds junk during a map load, and a new map's first value is no change.
+    const bool sound = health >= 0 && health <= kHealthMax;
+    if (rd32(kCurMap) != sHealthMap) sMapStart = clock::now();
+    if (!sound || rd32(kCurMap) != sHealthMap) {
+        sHealth = -1;
+        sHealthMap = rd32(kCurMap);
+    }
+    const bool settled = clock::now() - sMapStart > kMapSettle;
+    if (sound && health != sHealth) {
+        if (sHealth > 0 && health > 0 && settled) say("Health " + std::to_string(health), false);  // 0: luigiDown
         sHealth = health;
     }
+    if (sound && health > 0) pollRoom(luigi);
     // Money. A burst of coins gives one total: speak once the counters have been still briefly.
     // Coins, bills, gold bars; the rest are gems. They are reloaded when Luigi's actor changes, and
     // that is not a pickup.
-    static u32 sActor = 0;
+    static u32 sActor = 0, sMap = ~0u;
     static s32 sCounters[kCounterCount] = {}, sSpoken[kCounterCount] = {};
     static clock::time_point sChanged{};
     static bool sPending = false;
-    const bool fresh = luigi != sActor;
+    // A map load keeps the actor's address and fills it in stages, with junk between: start over
+    // from the first sound values.
+    for (u32 i = 0; i < kCounterCount; i++) {
+        const s32 v = s32(rd32(luigi + kCounters + 4 * i));
+        if (v < 0 || v > kCounterMax) {
+            sActor = 0;
+            sPending = false;
+            return;
+        }
+    }
+    const bool fresh = luigi != sActor || rd32(kCurMap) != sMap || !settled;
     sActor = luigi;
+    sMap = rd32(kCurMap);
     for (u32 i = 0; i < kCounterCount; i++) {
         const s32 v = s32(rd32(luigi + kCounters + 4 * i));
         if (fresh) sCounters[i] = sSpoken[i] = v;
@@ -363,6 +635,26 @@ void watchMemory() {
 
 bool gamePaused() { return sPause.running(); }
 
+void luigiDown(u32 actor) {
+    if (port::usCodeFeature() == port::Avail::Yes && actor == rd32(kActorSlots)) say("Game over", false);
+}
+
+void ghostCaught(u32 data) {
+    if (port::usCodeFeature() != port::Avail::Yes || !gu::inMem1(data)) return;
+    // Keys, hearts and other items come through the same message: the game's own text covers those.
+    const u32 type = rd32(data + kCaughtType);
+    if (type >= kGhostTypeCount || !(rd16(kGhostTypes + type * kGhostTypeSize + kGhostTypeFlags) & kGhostTypeFlag)) return;
+    const std::string name = gameText(rd32(kGhostTypes + type * kGhostTypeSize + kGhostTypeName), 16);
+    std::lock_guard lk(sCaughtM);
+    sCaughtAt = clock::now();
+    for (auto& [caught, count] : sCaught)
+        if (caught == ghostName(name)) {
+            count++;
+            return;
+        }
+    sCaught.push_back({ghostName(name), 1});
+}
+
 void pollGame() {
     if (port::usCodeFeature() != port::Avail::Yes) return;
     watchMemory();
@@ -380,8 +672,10 @@ void pollGame() {
     pollFileMenu();
     pollPause();
     pollSave();
+    pollAccount();
     pollControlStyle();
     pollStatus();
+    pollCaught();
     pollMessages();
     pollChoices();
 }
@@ -407,7 +701,7 @@ HLE(fn_80051380) {
 // by the Go to menu.
 HLE(fn_8011496C) {
     if (c.r[3] == 1) {
-        access::say("This door is locked");
+        access::say(access::lockedDoorText());
         access::nav::doorLocked();
     }
     callOriginal(c, "fn_8011496C");
@@ -425,6 +719,13 @@ HLE(fn_80038744) {
     access::sPauseAddr = c.r[3];
     access::sPause.calls++;
     callOriginal(c, "fn_80038744");
+}
+
+// Area-clear result screens update: r3 is the account object.
+HLE(fn_800501EC) {
+    access::sAccountAddr = c.r[3];
+    access::sAccount.calls++;
+    callOriginal(c, "fn_800501EC");
 }
 
 // File screen and Options update: r3 is its menu object.

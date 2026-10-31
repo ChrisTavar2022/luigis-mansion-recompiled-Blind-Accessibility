@@ -44,6 +44,9 @@ namespace recomp::access {
 namespace {
 
 constexpr u32 kActorSlots = 0x803D48A0, kActorSlotCount = 128;
+constexpr u32 kFacing = 0xF48;  // Luigi's facing: float x, y, z
+constexpr float kLevelBand = 0.38f, kPitchUp = 1.33f, kPitchDown = 0.75f;  // 22.5 degrees: eight directions, a fourth apart
+constexpr float kAimCosine = 0.94f, kAimReach = 400.0f;  // about 20 degrees either side; MaxLightBindRange
 constexpr u32 kActType = 0x3C, kActFlags = 0x40, kActPos = 0x44, kActRoom = 0xB4, kActAlpha = 0xE3;
 constexpr u32 kActHidden = 0x6100;  // +0x40 bits the game's ghost draw pass skips
 constexpr u32 kTypeBanana = 168;
@@ -52,11 +55,12 @@ constexpr u32 kTypeTable = 0x8033B590, kTypeSize = 0x1C, kTypeFlags = 0x08, kTyp
 constexpr u32 kCamera = 0x803A3820, kCamViewMtx = 0x18C;
 constexpr u32 kEvent = 0x803D2D40, kEventCursor = 0x0C;
 constexpr u32 kMenuOff = 0x804D8088;
+constexpr u32 kTrainingMap = 3;
 constexpr u32 kCurMap = 0x804D80C8, kMapTable = 0x802FF218, kMapDoors = 0x18;
 constexpr u32 kDoorSize = 0x1C, kDoorX = 0x08, kDoorY = 0x0C, kDoorZ = 0x10, kDoorRoomA = 0x1A, kDoorRoomB = 0x1B;
 constexpr u32 kDoorMax = 128;
 
-enum class Kind { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad };  // as access::Cue
+enum class Kind { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad, GhostAimed };  // as access::Cue
 
 bool kindOf(u32 type, Kind& k) {
     if (type == 122 || (type >= 373 && type <= 377)) k = Kind::Chest;
@@ -77,6 +81,7 @@ struct Target {
     Kind kind;
     Vec pos;
     u32 id;  // actor address, or door number + 1 in the high half
+    u32 leadsTo = 0;  // a door: the room on its other side
 };
 
 float rdf(u32 a) { return gu::rdf(a); }
@@ -137,7 +142,8 @@ std::vector<Target> scan(u32 luigi) {
             const u32 d = doors + i * kDoorSize;
             if (rd8(d) == 0) break;
             const Vec p{float(s32(rd32(d + kDoorX))), float(s32(rd32(d + kDoorY))), float(s32(rd32(d + kDoorZ)))};
-            if (rd8(d + kDoorRoomA) == room || rd8(d + kDoorRoomB) == room) out.push_back({Kind::Door, p, (i + 1) << 16});
+            const u32 a = rd8(d + kDoorRoomA), b = rd8(d + kDoorRoomB);
+            if (a == room || b == room) out.push_back({Kind::Door, p, (i + 1) << 16, a == room ? b : a});
         }
     }
     return out;
@@ -167,22 +173,23 @@ Tone toneFor(Kind k) {
     case Kind::Heart: return {392.0f, 330.0f, 170};
     case Kind::Treasure: return {1319.0f, 0.0f, 90};
     case Kind::Money: return {988.0f, 0.0f, 60};
-    case Kind::Ghost: return {311.0f, 233.0f, 210};
+    case Kind::Ghost: return {311.0f, 233.0f, 110};
+    case Kind::GhostAimed: return {622.0f, 932.0f, 110};  // bright and rising: the light is on it
     case Kind::Banana: return {1480.0f, 1397.0f, 90};  // a clash: something to avoid
     case Kind::Toad: return {659.0f, 988.0f, 140};
     default: return {196.0f, 0.0f, 110};  // door
     }
 }
 
-// pan: -1 left to 1 right. pitch scales the tone.
-void playTone(Channel& ch, Kind kind, float pan, float pitch) {
+// pan: -1 left to 1 right. pitch scales the tone. False while the last tone still plays.
+bool playTone(Channel& ch, Kind kind, float pan, float pitch) {
     if (!ch.stream) {
         const SDL_AudioSpec spec{SDL_AUDIO_F32, 2, kToneRate};
         ch.stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
-        if (!ch.stream) return;
+        if (!ch.stream) return true;
         SDL_ResumeAudioStreamDevice(ch.stream);
     }
-    if (SDL_GetAudioStreamQueued(ch.stream) > 1024) return;  // still playing: the resampler keeps a small tail
+    if (SDL_GetAudioStreamQueued(ch.stream) > 1024) return false;  // the resampler keeps a small tail
     const Tone tone = toneFor(kind);
     const int frames = kToneRate * tone.ms / 1000;
     const float angle = (pan + 1.0f) * 0.25f * 3.14159265f;
@@ -201,6 +208,7 @@ void playTone(Channel& ch, Kind kind, float pan, float pitch) {
     }
     SDL_PutAudioStreamData(ch.stream, out.data(), int(out.size() * sizeof(float)));
     sPlayed++;
+    return true;
 }
 // Luigi can stop 113 from a chest's centre and 95 from a door's: they are solid.
 constexpr float kDoorPress = 105.0f, kChestPress = 125.0f, kToadPress = 110.0f;
@@ -212,14 +220,16 @@ std::map<u32, int> sAutoPresses;
 std::set<u32> sReached;  // objects Luigi got to: silent until he changes room
 u32 sLastRoom = ~0u;
 
-void playFor(Channel& ch, const Target& t, const Vec& luigi) {
+bool playFor(Channel& ch, const Target& t, const Vec& luigi) {
     // The camera's right axis (first row of its view matrix) and forward on the floor.
     const Vec right{rdf(kCamera + kCamViewMtx), rdf(kCamera + kCamViewMtx + 4), rdf(kCamera + kCamViewMtx + 8)};
     const float dx = t.pos.x - luigi.x, dz = t.pos.z - luigi.z;
     const float side = dx * right.x + dz * right.z;
     const float ahead = dx * right.z - dz * right.x;  // stick up is forward
     const float dist = std::max(std::hypot(dx, dz), 1.0f);
-    playTone(ch, t.kind, std::clamp(side / dist * 1.4f, -1.0f, 1.0f), ahead < -dist * 0.2f ? 0.7f : 1.0f);
+    // Three pitches: level for straight left or right, higher for up and its diagonals, lower for down.
+    const float pitch = ahead > dist * kLevelBand ? kPitchUp : ahead < -dist * kLevelBand ? kPitchDown : 1.0f;
+    return playTone(ch, t.kind, std::clamp(side / dist * 1.4f, -1.0f, 1.0f), pitch);
 }
 
 void pulse(Channel& ch, const Target* t, const Vec& luigi, int fastest, int slowest) {
@@ -227,12 +237,14 @@ void pulse(Channel& ch, const Target* t, const Vec& luigi, int fastest, int slow
         ch.wait = 0;
         return;
     }
+    const int wait = std::clamp(int(flatDistance(t->pos, luigi) / 25.0f), fastest, slowest);
+    ch.wait = std::min(ch.wait, wait);  // something rushing closer must not wait out a slow beat
     if (ch.wait > 0) {
         ch.wait--;
         return;
     }
-    playFor(ch, *t, luigi);
-    ch.wait = std::clamp(int(flatDistance(t->pos, luigi) / 25.0f), fastest, slowest);
+    if (!playFor(ch, *t, luigi)) return;  // try again on the next read, or close sounds slower than far
+    ch.wait = wait;
 }
 
 // A short A press, then a pause, so the game sees separate presses.
@@ -270,8 +282,13 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY)
     }
     if (port::usCodeFeature() != port::Avail::Yes) return;
     const u32 luigi = rd32(kActorSlots);
-    if (!gu::inMem1(luigi)) return;
-    if (rd32(kEvent + kEventCursor) != 0 || rd32(kMenuOff) != 0 || gamePaused()) {  // Luigi is not free to move
+    if (!gu::inMem1(luigi)) {
+        nav::cancel("no Luigi");
+        return;
+    }
+    // The training room is one long event script, with Luigi free through it.
+    const bool scripted = rd32(kCurMap) != kTrainingMap && (rd32(kEvent + kEventCursor) != 0 || rd32(kMenuOff) != 0);
+    if (scripted || gamePaused()) {  // Luigi is not free to move
         nav::cancel("event or pause");
         return;
     }
@@ -312,7 +329,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY)
         case Kind::Toad: category = nav::Category::Toads; break;
         default: continue;
         }
-        objects.push_back({category, t.pos.x, t.pos.y, t.pos.z, t.id, t.kind == Kind::Door ? kDoorPress : t.kind == Kind::Chest ? kChestPress : t.kind == Kind::Toad ? kToadPress : 0.0f});
+        objects.push_back({category, t.pos.x, t.pos.y, t.pos.z, t.id, t.kind == Kind::Door ? kDoorPress : t.kind == Kind::Chest ? kChestPress : t.kind == Kind::Toad ? kToadPress : 0.0f, t.kind == Kind::Door ? doorName(t.leadsTo) : std::string()});
     }
     float box[4] = {-1e9f, -1e9f, 1e9f, 1e9f};
     roomBox(room, box);
@@ -332,7 +349,22 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY)
         pulse(sToad, toad, l, 8, 45);
         pulse(sBanana, banana, l, 5, 30);  // a hazard: stays on however close Luigi gets
     }
-    if (set.ghostSounds) pulse(sGhost, ghost, l, 6, 30);  // they move: keep up with them
+    if (set.ghostSounds) {  // they move: keep up with them
+        Target aimed;
+        if (ghost) {
+            const float fx = rdf(luigi + kFacing), fz = rdf(luigi + kFacing + 8), facing = std::hypot(fx, fz);
+            const float dx = ghost->pos.x - l.x, dz = ghost->pos.z - l.z, dist = std::max(std::hypot(dx, dz), 1.0f);
+            aimed = *ghost;
+            if (facing > 1e-3f && (fx * dx + fz * dz) / (facing * dist) > kAimCosine && dist < kAimReach) aimed.kind = Kind::GhostAimed;
+            if (sLog) {
+                static u32 sReads = 0;
+                if (sReads++ % 15 == 0)
+                    std::printf("[world] ghost at %llu ms: dist %.0f, cos %.2f, %s, tones %u\n", static_cast<unsigned long long>(SDL_GetTicks()), dist, (fx * dx + fz * dz) / std::max(facing * dist, 1e-3f),
+                                aimed.kind == Kind::GhostAimed ? "aimed" : "not aimed", sPlayed);
+            }
+        }
+        pulse(sGhost, ghost ? &aimed : nullptr, l, 3, 30);
+    }
     if (!set.autoInteract || walking) return;
     // Chests and keys open with A when close. A door only when Luigi walks at it, so walking past
     // one never leaves the room. Everything else is collected by touching it.

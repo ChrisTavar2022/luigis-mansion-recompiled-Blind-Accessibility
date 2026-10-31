@@ -11,6 +11,10 @@
 // Static furniture is in it. Moved furniture, chests and ghosts are not: when Luigi stops making
 // progress the spot ahead of him is marked blocked and the route is plotted again.
 //
+// A target on Luigi's level gets a flat route at his height. One on another level gets a route over
+// the floors themselves, each cell holding one node per floor above it: stairs are real steps about
+// 30 units high, walls to the flat route, and walkable here.
+//
 // Test aid: LM_ACCESS_WORLD_LOG=1 logs routes and progress.
 #include "recomp/access_nav.h"
 
@@ -55,6 +59,10 @@ constexpr float kArrivedMargin = 60.0f;
 constexpr int kMaxPresses = 3;
 constexpr int kDoorWaitReads = 1800;  // a door takes about 13 seconds to open, at 60 reads a second
 constexpr s8 kMoveDeadZone = 40;  // the player's stick above this takes over
+constexpr int kLayers = 6;            // floors stacked over one cell
+constexpr float kStepUp = 45.0f;      // a stair step: lower than this does not block him
+constexpr float kLevelGap = 200.0f;   // more height than this is another level; a door's y is above its floor
+constexpr float kStartHeight = 60.0f;  // the floor Luigi stands on is this close to him
 
 bool logOn() {
     static const bool sLog = std::getenv("LM_ACCESS_WORLD_LOG") != nullptr;
@@ -69,6 +77,7 @@ struct Tri {
 };
 
 std::vector<Tri> sTris;  // steep triangles of the loaded map
+std::vector<Tri> sFloorTris;  // floors of the loaded map, stairs included
 int sLoadedMap = -1;
 
 u32 be32(const u8* p) { return u32(p[0]) << 24 | u32(p[1]) << 16 | u32(p[2]) << 8 | p[3]; }
@@ -84,6 +93,7 @@ bool loadCollision(int map) {
     if (map == sLoadedMap) return !sTris.empty();
     sLoadedMap = map;
     sTris.clear();
+    sFloorTris.clear();
     const std::string path = "/Map/map" + std::to_string(map) + ".szp";
     const std::vector<u8> d = unused2::readDiscItem(path.c_str(), "col.mp");
     if (logOn()) std::printf("[nav] %s col.mp: %zu bytes\n", path.c_str(), d.size());
@@ -98,7 +108,9 @@ bool loadCollision(int map) {
     for (u32 t = tris; t + 0x18 <= end; t += 0x18) {
         const u32 a = be16(&d[t]), b = be16(&d[t + 2]), c = be16(&d[t + 4]), n = be16(&d[t + 6]);
         if (a >= vertexCount || b >= vertexCount || c >= vertexCount || n >= normalCount) continue;
-        if (std::abs(beFloat(&d[normals + n * 12 + 4])) > 0.7f) continue;  // floors and ceilings do not block
+        const float up = beFloat(&d[normals + n * 12 + 4]);
+        if (up > 0.7f) sFloorTris.push_back({vertex(a), vertex(b), vertex(c)});
+        if (std::abs(up) > 0.7f) continue;  // floors and ceilings do not block
         sTris.push_back({vertex(a), vertex(b), vertex(c)});
     }
     if (logOn()) std::printf("[nav] %zu blocking triangles\n", sTris.size());
@@ -241,6 +253,185 @@ bool plan(Grid& g, Vec2 from, Vec2 to, float allowed, std::vector<Vec2>& out) {
     return true;
 }
 
+// The floors around (x, z): every cell holds the heights of the floors over it, and which of them
+// Luigi's body fits on. Only cells inside the given box count.
+struct Floors {
+    Grid grid;  // only its coordinates
+    std::vector<float> height = std::vector<float>(size_t(kCells) * kCells * kLayers, 0.0f);
+    std::vector<u8> count = std::vector<u8>(size_t(kCells) * kCells, 0);
+    std::vector<u8> blocked = std::vector<u8>(size_t(kCells) * kCells * kLayers, 0);
+    static size_t cell(int x, int z) { return size_t(z) * kCells + x; }
+    static size_t node(int x, int z, int layer) { return cell(x, z) * kLayers + layer; }
+    // The open floor on this cell within a step of height y, or -1.
+    int layerNear(int x, int z, float y, float reach) const {
+        if (!grid.inside(x, z)) return -1;
+        int found = -1;
+        float best = reach;
+        for (int l = 0; l < count[cell(x, z)]; l++) {
+            const float gap = std::abs(height[node(x, z, l)] - y);
+            if (gap <= best && !blocked[node(x, z, l)]) {
+                best = gap;
+                found = l;
+            }
+        }
+        return found;
+    }
+};
+
+Floors buildFloors(float x, float y, float z, const float box[4], const std::vector<Vec2>& extra) {
+    Floors f;
+    f.grid.originX = x - kCells * kCell / 2.0f;
+    f.grid.originZ = z - kCells * kCell / 2.0f;
+    const Grid& g = f.grid;
+    for (const Tri& t : sFloorTris) {
+        const auto [minTX, maxTX] = std::minmax({t.a[0], t.b[0], t.c[0]});
+        const auto [minTZ, maxTZ] = std::minmax({t.a[2], t.b[2], t.c[2]});
+        const int x0 = std::max(g.cellX(std::max(minTX, box[0])), 0), x1 = std::min(g.cellX(std::min(maxTX, box[2])), kCells - 1);
+        const int z0 = std::max(g.cellZ(std::max(minTZ, box[1])), 0), z1 = std::min(g.cellZ(std::min(maxTZ, box[3])), kCells - 1);
+        const float det = (t.b[2] - t.c[2]) * (t.a[0] - t.c[0]) + (t.c[0] - t.b[0]) * (t.a[2] - t.c[2]);
+        if (std::abs(det) < 1e-3f) continue;
+        for (int cz = z0; cz <= z1; cz++)
+            for (int cx = x0; cx <= x1; cx++) {
+                const Vec2 c = g.centre(cx, cz);
+                const float u = ((t.b[2] - t.c[2]) * (c.x - t.c[0]) + (t.c[0] - t.b[0]) * (c.z - t.c[2])) / det;
+                const float v = ((t.c[2] - t.a[2]) * (c.x - t.c[0]) + (t.a[0] - t.c[0]) * (c.z - t.c[2])) / det;
+                const float w = 1.0f - u - v;
+                if (u < 0.0f || v < 0.0f || w < 0.0f) continue;
+                const float h = t.a[1] * u + t.b[1] * v + t.c[1] * w;
+                u8& n = f.count[Floors::cell(cx, cz)];
+                bool known = false;
+                for (int l = 0; l < n; l++) known |= std::abs(f.height[Floors::node(cx, cz, l)] - h) < 5.0f;
+                if (!known && n < kLayers) f.height[Floors::node(cx, cz, n++)] = h;
+            }
+    }
+    const int reach = int(std::ceil(kBodyRadius / kCell));
+    for (const Tri& t : sTris) {
+        const auto [minTX, maxTX] = std::minmax({t.a[0], t.b[0], t.c[0]});
+        const auto [minTZ, maxTZ] = std::minmax({t.a[2], t.b[2], t.c[2]});
+        const auto [minY, maxY] = std::minmax({t.a[1], t.b[1], t.c[1]});
+        if (maxTX < box[0] - kBodyRadius || minTX > box[2] + kBodyRadius || maxTZ < box[1] - kBodyRadius || minTZ > box[3] + kBodyRadius) continue;
+        const float size = std::max({maxTX - minTX, maxTZ - minTZ, maxY - minY});
+        const int steps = std::clamp(int(size / (kCell * 0.5f)) + 1, 1, 400);
+        for (int i = 0; i <= steps; i++)
+            for (int j = 0; j <= steps - i; j++) {
+                const float u = float(i) / float(steps), v = float(j) / float(steps), w = 1.0f - u - v;
+                const float py = t.a[1] * w + t.b[1] * u + t.c[1] * v;
+                const int sx = g.cellX(t.a[0] * w + t.b[0] * u + t.c[0] * v), sz = g.cellZ(t.a[2] * w + t.b[2] * u + t.c[2] * v);
+                for (int cz = sz - reach; cz <= sz + reach; cz++)
+                    for (int cx = sx - reach; cx <= sx + reach; cx++) {
+                        if (!g.inside(cx, cz) || std::hypot(float(cx - sx), float(cz - sz)) * kCell > kBodyRadius) continue;
+                        for (int l = 0; l < f.count[Floors::cell(cx, cz)]; l++) {
+                            const float above = py - f.height[Floors::node(cx, cz, l)];
+                            if (above > kStepUp && above < kBodyHigh) f.blocked[Floors::node(cx, cz, l)] = 1;
+                        }
+                    }
+            }
+    }
+    // Spots he got stuck at are at his height: another floor over the same cell stays open.
+    for (const Vec2& p : extra) {
+        const int sx = g.cellX(p.x), sz = g.cellZ(p.z), blockReach = reach + 1;
+        for (int cz = sz - blockReach; cz <= sz + blockReach; cz++)
+            for (int cx = sx - blockReach; cx <= sx + blockReach; cx++) {
+                if (!g.inside(cx, cz) || std::hypot(float(cx - sx), float(cz - sz)) * kCell > kBodyRadius + 15.0f) continue;
+                for (int l = 0; l < f.count[Floors::cell(cx, cz)]; l++)
+                    if (std::abs(f.height[Floors::node(cx, cz, l)] - y) < kLevelGap) f.blocked[Floors::node(cx, cz, l)] = 1;
+            }
+    }
+    return f;
+}
+
+// A straight walk from a at height ay stays on open floor, step by step, and ends at height by.
+bool floorLineFree(const Floors& f, Vec2 a, float ay, Vec2 b, float by) {
+    const float dist = std::hypot(b.x - a.x, b.z - a.z);
+    const int steps = int(dist / (kCell * 0.5f)) + 1;
+    float y = ay;
+    for (int i = 1; i <= steps; i++) {
+        const float t = float(i) / float(steps);
+        const int x = f.grid.cellX(a.x + (b.x - a.x) * t), z = f.grid.cellZ(a.z + (b.z - a.z) * t);
+        const int l = f.layerNear(x, z, y, kStepUp);
+        if (l < 0) return false;
+        y = f.height[Floors::node(x, z, l)];
+    }
+    return std::abs(y - by) <= kStepUp;
+}
+
+// As plan(), over the floors: the search runs from the floor under Luigi to the reachable node
+// closest to the target on the target's level.
+bool planFloors(const Floors& f, float fromX, float fromY, float fromZ, float toX, float toY, float toZ, float allowed, std::vector<Vec2>& out) {
+    int sx = f.grid.cellX(fromX), sz = f.grid.cellZ(fromZ), sl = f.layerNear(sx, sz, fromY, kStartHeight);
+    for (int r = 1; r <= 6 && sl < 0; r++)
+        for (int dz = -r; dz <= r && sl < 0; dz++)
+            for (int dx = -r; dx <= r && sl < 0; dx++)
+                if ((sl = f.layerNear(sx + dx, sz + dz, fromY, kStartHeight)) >= 0) {
+                    sx += dx;
+                    sz += dz;
+                }
+    if (sl < 0) return false;
+    const size_t count = size_t(kCells) * kCells * kLayers;
+    std::vector<float> cost(count, 1e30f);
+    std::vector<int> parent(count, -1);
+    using Node = std::pair<float, int>;
+    std::priority_queue<Node, std::vector<Node>, std::greater<Node>> open;
+    const int start = int(Floors::node(sx, sz, sl));
+    cost[size_t(start)] = 0.0f;
+    open.push({0.0f, start});
+    int goal = -1;
+    float best = 1e30f;
+    while (!open.empty()) {
+        const auto [c0, cur] = open.top();
+        open.pop();
+        if (c0 > cost[size_t(cur)]) continue;
+        const int cell = cur / kLayers, cx = cell % kCells, cz = cell / kCells;
+        const float h = f.height[size_t(cur)];
+        const Vec2 c = f.grid.centre(cx, cz);
+        if (std::abs(h - toY) <= kLevelGap) {
+            const float near = std::hypot(c.x - toX, c.z - toZ);
+            if (near < best) {
+                best = near;
+                goal = cur;
+            }
+        }
+        for (int dz = -1; dz <= 1; dz++)
+            for (int dx = -1; dx <= 1; dx++) {
+                if (dx == 0 && dz == 0) continue;
+                const int l = f.layerNear(cx + dx, cz + dz, h, kStepUp);
+                if (l < 0) continue;
+                if (dx != 0 && dz != 0 && (f.layerNear(cx + dx, cz, h, kStepUp) < 0 || f.layerNear(cx, cz + dz, h, kStepUp) < 0)) continue;
+                const float step = c0 + (dx != 0 && dz != 0 ? 1.414f : 1.0f);
+                const int n = int(Floors::node(cx + dx, cz + dz, l));
+                if (step >= cost[size_t(n)]) continue;
+                cost[size_t(n)] = step;
+                parent[size_t(n)] = cur;
+                open.push({step, n});
+            }
+    }
+    if (goal < 0 || best > allowed) {
+        if (logOn()) std::printf("[nav] closest spot on the target's level is %.0f from it\n", goal < 0 ? -1.0f : best);
+        return false;
+    }
+    struct Spot {
+        Vec2 at;
+        float y;
+    };
+    std::vector<Spot> raw;
+    for (int n = goal; n != -1; n = parent[size_t(n)]) {
+        const int cell = n / kLayers;
+        raw.push_back({f.grid.centre(cell % kCells, cell / kCells), f.height[size_t(n)]});
+    }
+    std::reverse(raw.begin(), raw.end());
+    out.clear();
+    size_t i = 0;
+    while (i + 1 < raw.size()) {
+        size_t next = raw.size() - 1;
+        while (next > i + 1 && !floorLineFree(f, raw[i].at, raw[i].y, raw[next].at, raw[next].y)) next--;
+        out.push_back(raw[next].at);
+        i = next;
+    }
+    if (out.empty()) out.push_back(raw.back().at);
+    if (logOn()) std::printf("[nav] floor route: %zu waypoints, from height %.0f to %.0f\n", out.size(), raw.front().y, raw.back().y);
+    return true;
+}
+
 // ---- Shared state -----------------------------------------------------------------------------
 
 std::mutex sM;  // the menu runs on the host thread, the walking in PADRead
@@ -289,6 +480,8 @@ const char* singleName(Category c) {
     }
 }
 
+std::string targetName(const Object& o) { return o.name.empty() ? singleName(o.category) : o.name; }
+
 // Where it is from Luigi, in the camera's frame: stick up is forward.
 std::string describe(const Object& o) {
     const float dx = o.x - sLuigi[0], dz = o.z - sLuigi[2];
@@ -304,14 +497,36 @@ void startWalk(const Object& o) {
     sWalk = Walk{};
     sWalk.on = true;
     sWalk.target = o;
+    // Test aid LM_ACCESS_GOTO=x,y,z: any pick walks there instead.
+    if (const char* v = std::getenv("LM_ACCESS_GOTO")) {
+        Object spot{};
+        spot.category = Category::Treasure;
+        if (std::sscanf(v, "%f,%f,%f", &spot.x, &spot.y, &spot.z) == 3) sWalk.target = spot;
+    }
     sWalk.wantPlan = true;
     sWalk.lastPos = {sLuigi[0], sLuigi[2]};
-    say(std::string("Going to ") + singleName(o.category));
+    loadCollision(int(sMap));  // the menu still holds the game: the disc read costs nothing here
+    say("Going to " + targetName(o));
 }
 
-// Host thread, or PADRead after a stop: the disc read and the search take a moment.
+// PADRead, on the guest thread: the search takes a moment, so a route is not replanned lightly.
 bool makeRoute() {
     if (!loadCollision(int(sMap))) return false;
+    const float allowed = sWalk.target.reach > 0.0f ? sWalk.target.reach + kPlanMargin : kItemAllowed;
+    std::vector<Vec2> route;
+    const auto useRoute = [&] {
+        sWalk.route = std::move(route);
+        sWalk.next = 0;
+        sWalk.stuck = 0;
+        if (logOn()) std::printf("[nav] route: %zu waypoints from %.0f,%.0f to %.0f,%.0f\n", sWalk.route.size(), sLuigi[0], sLuigi[2], sWalk.target.x, sWalk.target.z);
+        return true;
+    };
+    const auto overFloors = [&] {
+        const float box[4] = {sRoom[0] - kRoomMargin, sRoom[1] - kRoomMargin, sRoom[2] + kRoomMargin, sRoom[3] + kRoomMargin};
+        const Floors f = buildFloors(sLuigi[0], sLuigi[1], sLuigi[2], box, sWalk.extraBlocks);
+        return planFloors(f, sLuigi[0], sLuigi[1], sLuigi[2], sWalk.target.x, sWalk.target.y, sWalk.target.z, allowed, route);
+    };
+    if (std::abs(sWalk.target.y - sLuigi[1]) > kLevelGap) return overFloors() && useRoute();
     Grid g = buildGrid(sLuigi[0], sLuigi[1], sLuigi[2], sWalk.extraBlocks);
     // Routes stay in the room: a doorway is open in the collision, and must not lead Luigi out. The
     // room table's box stops short of the walls, so the margin lets him step into a doorway.
@@ -321,19 +536,14 @@ bool makeRoute() {
             if (c.x < sRoom[0] - kRoomMargin || c.z < sRoom[1] - kRoomMargin || c.x > sRoom[2] + kRoomMargin || c.z > sRoom[3] + kRoomMargin)
                 g.at(cx, cz) = 1;
         }
-    std::vector<Vec2> route;
-    if (!plan(g, {sLuigi[0], sLuigi[2]}, {sWalk.target.x, sWalk.target.z}, sWalk.target.reach > 0.0f ? sWalk.target.reach + kPlanMargin : kItemAllowed, route)) return false;
-    sWalk.route = std::move(route);
-    sWalk.next = 0;
-    sWalk.stuck = 0;
-    if (logOn()) std::printf("[nav] route: %zu waypoints from %.0f,%.0f to %.0f,%.0f\n", sWalk.route.size(), sLuigi[0], sLuigi[2], sWalk.target.x, sWalk.target.z);
-    return true;
+    if (plan(g, {sLuigi[0], sLuigi[2]}, {sWalk.target.x, sWalk.target.z}, allowed, route)) return useRoute();
+    return overFloors() && useRoute();  // the same level, but only by way of stairs
 }
 
-void finish(const std::string& text) {
+void finish(const std::string& text, bool interrupt = true) {
     if (logOn()) std::printf("[nav] end: %s\n", text.c_str());
     sWalk.on = false;
-    say(text);
+    say(text, interrupt);
 }
 
 }  // namespace
@@ -361,8 +571,11 @@ void doorLocked() {
 
 void cancel(const char* reason) {
     std::lock_guard lk(sM);
+    sObjects.clear();  // nothing is reachable until Luigi is free again
     if (!sWalk.on) return;
     if (logOn()) std::printf("[nav] cancelled: %s\n", reason);
+    // A press already made is what started this: a door or chest scene, not an interruption.
+    if (sWalk.presses == 0) finish("Walk interrupted", false);
     sWalk.on = false;
 }
 
@@ -377,7 +590,7 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
     // by access_game.cpp and ends the walk through doorLocked().
     if (sWalk.doorWait > 0) {
         stickX = stickY = 0;
-        if (sRoomNumber != sWalk.startRoom) finish("Through the door");
+        if (sRoomNumber != sWalk.startRoom) finish("Through the door", false);  // after the room's name
         else if (--sWalk.doorWait == 0) finish("The door did not open");
         return sWalk.on;
     }
@@ -395,13 +608,15 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
         if (o.id == sWalk.target.id && o.id != 0) {
             present = true;
             sWalk.target.x = o.x;
+            sWalk.target.y = o.y;
             sWalk.target.z = o.z;
         }
     if (!present) {
         finish("Got it");
         return false;
     }
-    const float toTarget = std::hypot(sWalk.target.x - luigi.x, sWalk.target.z - luigi.z);
+    // Standing under a landing is not being at the door on it.
+    const float toTarget = std::abs(sWalk.target.y - sLuigi[1]) > kLevelGap ? 1e6f : std::hypot(sWalk.target.x - luigi.x, sWalk.target.z - luigi.z);
     if (logOn()) {
         static u32 sN = 0;
         if (sN++ % 10 == 0) std::printf("[nav] at %.0f,%.0f, %.0f to go, waypoint %zu of %zu, stuck %d, presses %d, replans %d\n", luigi.x, luigi.z, toTarget, sWalk.next, sWalk.route.size(), sWalk.stuck, sWalk.presses, sWalk.replans);
@@ -417,7 +632,7 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
                 return true;
             }
             if (sWalk.presses >= (sWalk.target.category == Category::Toads ? 1 : kMaxPresses)) {  // a second A would skip his words
-                finish(std::string("At the ") + singleName(sWalk.target.category));
+                finish("At the " + targetName(sWalk.target));
                 return false;
             }
             sWalk.presses++;
@@ -434,7 +649,7 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
            std::hypot(sWalk.route[sWalk.next].x - luigi.x, sWalk.route[sWalk.next].z - luigi.z) < kWaypointReach)
         sWalk.next++;
     if (sWalk.next >= sWalk.route.size() && toTarget < kItemAllowed + kCell && sWalk.target.reach <= 0.0f) {
-        finish(std::string("As close as I can get to the ") + singleName(sWalk.target.category));
+        finish("As close as I can get to the " + targetName(sWalk.target));
         return false;
     }
     Vec2 aim{sWalk.target.x, sWalk.target.z};
@@ -449,7 +664,7 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
         sWalk.arrived = true;  // the thing he came to is what stopped him
     } else if (++sWalk.stuck > kStuckReads) {
         if (++sWalk.replans > kMaxReplans) {
-            finish(std::string("Blocked. I can't reach the ") + singleName(sWalk.target.category));
+            finish("Blocked. I can't reach the " + targetName(sWalk.target));
             return false;
         }
         sWalk.extraBlocks.push_back({luigi.x + dx / len * 60.0f, luigi.z + dz / len * 60.0f});
@@ -511,8 +726,12 @@ void drawMenu() {
     if (sCategory >= int(present.size())) sCategory = 0;
     if (!present.empty()) {
         const int count = int(present.size());
-        const bool left = ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadLStickLeft, false);
-        const bool right = ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadLStickRight, false);
+        // The stick counts only when pushed sideways: moving down the list is often a little diagonal.
+        const float across = std::max(ImGui::GetKeyData(ImGuiKey_GamepadLStickLeft)->AnalogValue, ImGui::GetKeyData(ImGuiKey_GamepadLStickRight)->AnalogValue);
+        const float along = std::max(ImGui::GetKeyData(ImGuiKey_GamepadLStickUp)->AnalogValue, ImGui::GetKeyData(ImGuiKey_GamepadLStickDown)->AnalogValue);
+        const bool sideways = across > along * 2.0f;
+        const bool left = ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, false) || (sideways && ImGui::IsKeyPressed(ImGuiKey_GamepadLStickLeft, false));
+        const bool right = ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight, false) || (sideways && ImGui::IsKeyPressed(ImGuiKey_GamepadLStickRight, false));
         if (left || right) {
             sCategory = (sCategory + (right ? 1 : count - 1)) % count;
             sFocus = true;
@@ -540,7 +759,7 @@ void drawMenu() {
                 if (o.category != category) continue;
                 n++;
                 char label[96];
-                std::snprintf(label, sizeof(label), "%s, %s##%d", singleName(category), describe(o).c_str(), n);
+                std::snprintf(label, sizeof(label), "%s, %s##%d", targetName(o).c_str(), describe(o).c_str(), n);
                 if (ImGui::Selectable(label)) {
                     std::lock_guard lk(sM);
                     startWalk(o);
