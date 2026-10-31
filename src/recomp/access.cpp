@@ -9,13 +9,15 @@
 // where the focused item and any tooltip are in it.
 //
 // The game is played with a controller, and so are the spoken menus. Pressing the right stick in
-// repeats the last announcement; pressing both sticks in opens the options menu.
+// repeats the last announcement, the left stick opens the Go to menu (access_nav.cpp), and pressing
+// both sticks in opens the options menu.
 //
 // Test aids: LM_ACCESS=1 runs all of this without speaking (for automated runs: with a screen
 // reader on the PC, a run on Auto would talk), LM_ACCESS=0 turns it off, LM_ACCESS=speak forces
 // real speech. LM_ACCESS_LOG=<file> writes every announcement. LM_VIRTUAL_PAD (controls.cpp) drives
 // the menus with a scripted controller.
 #include "recomp/access.h"
+#include "recomp/access_nav.h"
 
 #include "port/settings.h"
 
@@ -248,9 +250,11 @@ std::string describe(const std::string& logged) {
     return spoken(line);
 }
 
-void onNewFrame(ImGuiContext*, ImGuiContextHook*) {
+void onNewFrame(ImGuiContext* ctx, ImGuiContextHook*) {
     sScan = {};
     sSkipItem = false;
+    // A controller player's focus always counts, or A is ignored until the first D-pad press.
+    if (sActive) ctx->NavCursorVisible = true;
     if (sActive) ImGui::LogToBuffer(0);  // 0: tree nodes keep their state
 }
 
@@ -345,13 +349,31 @@ void say(const std::string& text, bool interrupt) {
 }
 
 bool handleEvent(const SDL_Event& ev) {
-    if (!sActive || ev.type != SDL_EVENT_GAMEPAD_BUTTON_DOWN) return false;
+    if (!sActive) return false;
+    static bool sLeftAlone = false;  // the left stick is down and the right has not joined it
+    if (ev.type == SDL_EVENT_GAMEPAD_BUTTON_UP && SDL_GamepadButton(ev.gbutton.button) == SDL_GAMEPAD_BUTTON_LEFT_STICK) {
+        if (sLeftAlone) {
+            sLeftAlone = false;
+            nav::toggleMenu();
+        }
+        return false;
+    }
+    if (ev.type != SDL_EVENT_GAMEPAD_BUTTON_DOWN) return false;
     const auto button = SDL_GamepadButton(ev.gbutton.button);
+    if (button == SDL_GAMEPAD_BUTTON_EAST && nav::menuOpen() && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
+        nav::toggleMenu();
+        return false;
+    }
     if (button != SDL_GAMEPAD_BUTTON_LEFT_STICK && button != SDL_GAMEPAD_BUTTON_RIGHT_STICK) return false;
     SDL_Gamepad* pad = SDL_GetGamepadFromID(ev.gbutton.which);
-    if (pad && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_STICK) && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK))
+    if (pad && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_LEFT_STICK) && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_RIGHT_STICK)) {
+        sLeftAlone = false;
         return true;
-    if (button != SDL_GAMEPAD_BUTTON_RIGHT_STICK) return false;
+    }
+    if (button == SDL_GAMEPAD_BUTTON_LEFT_STICK) {
+        sLeftAlone = true;
+        return false;
+    }
     std::string last;
     {
         std::lock_guard lk(sLastM);

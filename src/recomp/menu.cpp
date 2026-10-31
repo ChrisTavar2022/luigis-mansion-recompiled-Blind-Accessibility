@@ -9,6 +9,9 @@
 #include "port/settings.h"
 #include "port/update.h"
 #include "recomp/access.h"
+#include "recomp/access_nav.h"
+
+
 #include "recomp/audio.h"
 #include "recomp/controls.h"
 #include "recomp/crt.h"
@@ -728,26 +731,53 @@ void dataSection() {
     }
 }
 
+// The mod's own settings and the audio cue glossary (docs/accessibility/README.md).
+void accessibilityTab() {
+    auto& a = port::settings().accessibility;
+    static const char* const kScreenReader[] = {"Auto (when a screen reader is running)", "On", "Off"};
+    sDirty |= ImGui::Combo("Screen reader support", &a.mode, kScreenReader, 3);
+    sDirty |= ImGui::Checkbox("Object sounds", &a.objectSounds);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Chests, keys, hearts, treasure, money, doors, Toads and banana peels repeat a sound. It gets faster as you get "
+                          "closer. Centre it left and right to walk straight at the object.");
+    sDirty |= ImGui::Checkbox("Ghost sounds", &a.ghostSounds);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("The nearest ghost that is showing repeats a falling tone. It gets faster as the ghost gets "
+                          "closer, and lower when the ghost is behind you.");
+    sDirty |= ImGui::Checkbox("Auto interact", &a.autoInteract);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Presses A for you at chests and keys, and at doors you walk towards. It never acts on "
+                          "furniture or anything on the walls.");
+    ImGui::Separator();
+    ImGui::TextUnformatted("Audio cue glossary. Press a cue to hear it.");
+    using recomp::access::Cue;
+    static const struct {
+        const char* label;
+        Cue cue;
+    } kCues[] = {
+        {"Chest: two rising notes", Cue::Chest},
+        {"Key: two high rising notes", Cue::Key},
+        {"Heart: two low falling notes", Cue::Heart},
+        {"Treasure: one high note", Cue::Treasure},
+        {"Coins and bills: one short note", Cue::Money},
+        {"Door: one low note", Cue::Door},
+        {"Ghost: a slow falling tone", Cue::Ghost},
+        {"Banana peel, a hazard: a sharp clashing tone", Cue::Banana},
+        {"Toad: two bright rising notes", Cue::Toad},
+    };
+    for (const auto& c : kCues)
+        if (ImGui::Selectable(c.label)) recomp::access::playCue(c.cue);
+    ImGui::Separator();
+    ImGui::TextUnformatted("Every cue repeats faster as you get closer, and pans left and right with the object.");
+    ImGui::TextUnformatted("An object behind you sounds lower.");
+}
+
 void gameTab() {
     if (idcheck::selfTest()) {  // LM_MENU_ID_CHECK=selftest: a deliberate ID conflict
         recomp::menu::Button("ID check self-test");
         ImGui::SameLine();
         recomp::menu::Button("ID check self-test");
     }
-    static const char* const kScreenReader[] = {"Auto (when a screen reader is running)", "On", "Off"};
-    sDirty |= ImGui::Combo("Screen reader support", &port::settings().accessibility.mode, kScreenReader, 3);
-    sDirty |= ImGui::Checkbox("Object sounds", &port::settings().accessibility.objectSounds);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Chests, keys, hearts, treasure, money, doors and banana peels repeat a sound. It gets faster as you get "
-                          "closer. Centre it left and right to walk straight at the object.");
-    sDirty |= ImGui::Checkbox("Ghost sounds", &port::settings().accessibility.ghostSounds);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("The nearest ghost that is showing repeats a falling tone. It gets faster as the ghost gets "
-                          "closer, and lower when the ghost is behind you.");
-    sDirty |= ImGui::Checkbox("Auto interact", &port::settings().accessibility.autoInteract);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Presses A for you at chests and keys, and at doors you walk towards. It never acts on "
-                          "furniture or anything on the walls.");
     auto& inst = port::install();
     if (inst.staticBuild) {
         ImGui::Text("Developer build: %s, recompiled at build time.", port::versionName(inst.running));
@@ -1965,7 +1995,7 @@ void openTreesForCheck() {
     if (idcheck::active() || click::due()) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
 }
 
-bool isOpen() { return sOpen || recomp::dev::capturesInput(); }
+bool isOpen() { return sOpen || recomp::dev::capturesInput() || recomp::access::nav::menuOpen(); }
 bool quitRequested() { return sQuit; }
 
 void shutdown() {
@@ -2176,6 +2206,7 @@ void draw() {
     updateToast();
     refreshRateToast();
     startHint();
+    recomp::access::nav::drawMenu();
     if (!sOpen) return;
     // Default 680 x 400 and at least 520 x 300 at 100%, scaled with the menu size and kept on the
     // screen (ui_scale.cpp; after the first-use position, which would replace the one it sets).
@@ -2189,6 +2220,10 @@ void draw() {
         if (sFocusMenu && recomp::access::active()) ImGui::SetKeyboardFocusHere();
         sFocusMenu = false;
         if (ImGui::BeginTabBar("tabs")) {
+            if (tab("Accessibility")) {
+                accessibilityTab();
+                ImGui::EndTabItem();
+            }
             if (tab("Visuals")) {
                 if (ImGui::BeginTabBar("visuals")) {
                     if (ImGui::BeginTabItem("General", nullptr, envTab("General"))) {

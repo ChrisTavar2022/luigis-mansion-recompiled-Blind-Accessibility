@@ -9,6 +9,7 @@
 // Choices (fn_80043F14 sets one up, fn_80043FA8 moves the cursor): four 0x80 byte text buffers and
 // state words (4 = offered), and the selected index.
 #include "recomp/access.h"
+#include "recomp/access_nav.h"
 
 #include "port/install.h"
 #include "recomp/guest_util.h"
@@ -319,6 +320,16 @@ HLE(fn_80051380) {
     access::sStyleAddr = c.r[3];
     access::sStyle.calls++;
     callOriginal(c, "fn_80051380");
+}
+
+// The door scenes: r3 is 1 for the locked door's scene. Every attempt on a door comes here, by hand or
+// by the Go to menu.
+HLE(fn_8011496C) {
+    if (c.r[3] == 1) {
+        access::say("This door is locked");
+        access::nav::doorLocked();
+    }
+    callOriginal(c, "fn_8011496C");
 }
 
 // Pause screen update: r3 is its menu object.

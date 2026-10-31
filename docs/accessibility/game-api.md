@@ -76,12 +76,16 @@ The Start button skips cutscenes, which shortens test routes. In `--input` scrip
 - Character slots: `0x803D48A0`, 128 words, slot 0 is Luigi. Fields: +0x3C type, +0x44 position, +0xB4 room (top byte).
 - Parked actors sit at about -32000: skip them.
 - Ghosts: type table `0x8033B590`, 0x1C per type, +0x08 u16 flag 8. A ghost shows when actor +0x40 has none of 0x6100 and alpha +0xE3 is not 0.
-- Types: 122 and 373 to 377 chests, 86 to 91 keys, 205 and 206 hearts, 194 to 203 treasure (pearls, sapphire, emerald, ruby, diamonds, gold), 168 banana peel. A peel on the floor sits about 10 units above Luigi's height.
+- Toads: types 42 and 43. Types: 122 and 373 to 377 chests, 86 to 91 keys, 205 and 206 hearts, 194 to 203 treasure (pearls, sapphire, emerald, ruby, diamonds, gold), 168 banana peel. A peel on the floor sits about 10 units above Luigi's height.
 - Doors: map table `0x802FF218[0x804D80C8]` + 0x18 gives a table of 0x1C byte records, ending at first byte 0. +8, +0xC, +0x10 are s32 x, y, z, and +0x1A, +0x1B are the two rooms.
 - Spilled coins and bills are "grains", not actors: hooks `fn_80157030` and `fn_8015066C`, r5 = grain, +0x20 position, +0x74 state. State 3 is idle at a stale position.
 - Luigi health: +0xFC s16. Counters from +0x12F4: coins, bills, gold bars, then gems. A hit can reduce them.
 - Control style screen: `fn_80051380`, r3 object, +4 word: 1 Standard, 2 Sidestep.
 - Luigi stops about 113 units from a chest's centre and 95 from a door's: they are solid.
+- Room table: pointer at `0x804D8170`, 0x30 per room, int min x, y, z at +8, max at +0x14. The box stops short of the walls.
+- Door scenes: `fn_8011496C`, r3 is 1 for a locked door. Luigi's reported position does not change meaningfully during the scene, and his position jumps to a fixed spot, so do not read that as being stuck. An opening door takes about 13 seconds.
+- Collision `col.mp` in `/Map/mapN.szp`, big endian: 0x00 grid cell sizes, 0x0C minimum, 0x18 size, 0x24 vertices (3 floats), 0x28 normals, 0x2C triangles (0x18 bytes: u16 vertices a, b, c, normal), 0x30 end of triangles. Static furniture is included; chests are not.
+- `LM_SPAWN` objects inside each other block routes.
 - JAudio danger: each sound category has a fixed free list, and a start on an empty list writes through a null pointer (`fn_8018FF88`, seen as "low memory 80000028 overwritten" and then a crash). Do not start game sounds from the port.
 - `LM_SKIP_TEST pos` did not move Luigi in the tested routes; use scripted stick input.
 - `LM_SPAWN` places objects in front of Luigi: face open floor first, or they land behind a wall in another room.

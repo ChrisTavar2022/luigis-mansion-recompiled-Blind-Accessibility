@@ -8,14 +8,19 @@
 // repeat gets faster as Luigi gets closer, the stereo position is the object's place left or right
 // of Luigi along the camera's axis, and an object behind him sounds lower. Ghosts that show get the
 // same treatment on a third channel, with their own setting and a quicker repeat. Banana peels on
-// the floor get a fourth, under the object sounds setting, with a clashing warning tone.
+// the floor get a fourth, under the object sounds setting, with a clashing warning tone, and Toad a
+// fifth, so that nothing nearer can hide him.
 //
 // The tones have their own audio streams on purpose. Starting the game's own sounds from here takes
 // sounds from JAudio's fixed lists; in a busy moment (coins bouncing) the game's next start then
 // finds a list empty and writes through a null pointer (fn_8018FF88), which crashed the game.
 //
 // Test aid: LM_ACCESS_WORLD_LOG=1 logs the targets.
+
+
+
 #include "recomp/access.h"
+#include "recomp/access_nav.h"
 
 #include "port/install.h"
 #include "port/settings.h"
@@ -41,6 +46,7 @@ constexpr u32 kActorSlots = 0x803D48A0, kActorSlotCount = 128;
 constexpr u32 kActType = 0x3C, kActFlags = 0x40, kActPos = 0x44, kActRoom = 0xB4, kActAlpha = 0xE3;
 constexpr u32 kActHidden = 0x6100;  // +0x40 bits the game's ghost draw pass skips
 constexpr u32 kTypeBanana = 168;
+constexpr u32 kRoomTable = 0x804D8170;
 constexpr u32 kTypeTable = 0x8033B590, kTypeSize = 0x1C, kTypeFlags = 0x08, kTypeFlagGhost = 8, kTypeCount = 0x29C8 / 0x1C;
 constexpr u32 kCamera = 0x803A3820, kCamViewMtx = 0x18C;
 constexpr u32 kEvent = 0x803D2D40, kEventCursor = 0x0C;
@@ -49,13 +55,14 @@ constexpr u32 kCurMap = 0x804D80C8, kMapTable = 0x802FF218, kMapDoors = 0x18;
 constexpr u32 kDoorSize = 0x1C, kDoorX = 0x08, kDoorY = 0x0C, kDoorZ = 0x10, kDoorRoomA = 0x1A, kDoorRoomB = 0x1B;
 constexpr u32 kDoorMax = 128;
 
-enum class Kind { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana };
+enum class Kind { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad };  // as access::Cue
 
 bool kindOf(u32 type, Kind& k) {
     if (type == 122 || (type >= 373 && type <= 377)) k = Kind::Chest;
     else if (type >= 86 && type <= 91) k = Kind::Key;
     else if (type == 205 || type == 206) k = Kind::Heart;
     else if (type >= 194 && type <= 203) k = Kind::Treasure;  // pearls, gems, diamonds, gold
+    else if (type == 42 || type == 43) k = Kind::Toad;
     else return false;
     return true;
 }
@@ -79,6 +86,20 @@ float flatDistance(const Vec& a, const Vec& b) { return std::hypot(a.x - b.x, a.
 std::mutex sMoneyM;
 std::vector<Vec> sMoney;
 
+// The room table (0x30 per room): int min x, y, z at +8 and max at +0x14. box: min x, min z, max x, max z.
+bool roomBox(u32 room, float box[4]) {
+    const u32 rooms = rd32(kRoomTable);
+    if (!gu::inMem1(rooms)) return false;
+    const u32 b = rooms + room * 0x30;
+    const s32 minX = s32(rd32(b + 0x08)), minZ = s32(rd32(b + 0x10)), maxX = s32(rd32(b + 0x14)), maxZ = s32(rd32(b + 0x1C));
+    if (maxX <= minX || maxZ <= minZ) return false;
+    box[0] = float(minX);
+    box[1] = float(minZ);
+    box[2] = float(maxX);
+    box[3] = float(maxZ);
+    return true;
+}
+
 std::vector<Target> scan(u32 luigi) {
     std::vector<Target> out;
     const u32 room = rd32(luigi + kActRoom) >> 24;
@@ -101,7 +122,11 @@ std::vector<Target> scan(u32 luigi) {
     }
     {
         std::lock_guard lk(sMoneyM);
-        for (const Vec& p : sMoney) out.push_back({Kind::Money, p, 0});
+        // Spilled money has no room of its own: it counts when it lies inside Luigi's.
+        float box[4];
+        const bool known = roomBox(room, box);
+        for (const Vec& p : sMoney)
+            if (known && p.x >= box[0] && p.z >= box[1] && p.x <= box[2] && p.z <= box[3]) out.push_back({Kind::Money, p, 0});
         sMoney.clear();
     }
     const u32 map = rd32(kMapTable + 4 * rd32(kCurMap));
@@ -123,7 +148,7 @@ struct Channel {
     int wait = 0;
     SDL_AudioStream* stream = nullptr;
 };
-Channel sItem, sDoor, sGhost, sBanana;
+Channel sItem, sDoor, sGhost, sBanana, sToad;
 u32 sPlayed = 0;
 
 constexpr int kToneRate = 48000;
@@ -142,6 +167,7 @@ Tone toneFor(Kind k) {
     case Kind::Money: return {988.0f, 0.0f, 60};
     case Kind::Ghost: return {311.0f, 233.0f, 210};
     case Kind::Banana: return {1480.0f, 1397.0f, 90};  // a clash: something to avoid
+    case Kind::Toad: return {659.0f, 988.0f, 140};
     default: return {196.0f, 0.0f, 110};  // door
     }
 }
@@ -174,10 +200,11 @@ void playTone(Channel& ch, Kind kind, float pan, float pitch) {
     SDL_PutAudioStreamData(ch.stream, out.data(), int(out.size() * sizeof(float)));
     sPlayed++;
 }
-// Luigi stops this far from the centre of a chest or a door: they are solid.
-constexpr float kSolidReach = 140.0f;
+// Luigi can stop 113 from a chest's centre and 95 from a door's: they are solid.
+constexpr float kDoorPress = 105.0f, kChestPress = 125.0f, kToadPress = 110.0f;
+constexpr float kSolidReach = 140.0f;  // silent from here: Luigi has arrived
 constexpr int kMaxAutoPresses = 3;  // per object: an opened chest stays where it is
-bool solid(Kind k) { return k == Kind::Chest || k == Kind::Door; }
+bool solid(Kind k) { return k == Kind::Chest || k == Kind::Door || k == Kind::Toad; }
 std::map<u32, int> sAutoPresses;
 
 std::set<u32> sReached;  // objects Luigi got to: silent until he changes room
@@ -219,18 +246,23 @@ void pressA(u16& button, u32 id) {
 
 }  // namespace
 
+void playCue(Cue cue) { playTone(sItem, Kind(int(cue)), 0.0f, 1.0f); }
+
 void noteMoney(float x, float y, float z) {
     if (!active()) return;
     std::lock_guard lk(sMoneyM);
     if (sMoney.size() < 256) sMoney.push_back({x, y, z});
 }
 
-void worldFrame(std::uint16_t& button, std::int8_t stickX, std::int8_t stickY) {
+void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY) {
     const auto& set = port::settings().accessibility;
-    if (!active() || port::usCodeFeature() != port::Avail::Yes || (!set.objectSounds && !set.ghostSounds && !set.autoInteract)) return;
+    if (!active() || port::usCodeFeature() != port::Avail::Yes) return;
     const u32 luigi = rd32(kActorSlots);
     if (!gu::inMem1(luigi)) return;
-    if (rd32(kEvent + kEventCursor) != 0 || rd32(kMenuOff) != 0 || gamePaused()) return;  // Luigi is not free to move
+    if (rd32(kEvent + kEventCursor) != 0 || rd32(kMenuOff) != 0 || gamePaused()) {  // Luigi is not free to move
+        nav::cancel("event or pause");
+        return;
+    }
 
     const u32 room = rd32(luigi + kActRoom) >> 24;
     if (room != sLastRoom) {
@@ -243,6 +275,7 @@ void worldFrame(std::uint16_t& button, std::int8_t stickX, std::int8_t stickY) {
     const Target* door = nullptr;
     const Target* ghost = nullptr;
     const Target* banana = nullptr;
+    const Target* toad = nullptr;
     const std::vector<Target> targets = scan(luigi);
     for (const Target& t : targets) {
         const float dist = flatDistance(t.pos, l);
@@ -250,9 +283,30 @@ void worldFrame(std::uint16_t& button, std::int8_t stickX, std::int8_t stickY) {
             if (t.id && dist < (solid(t.kind) ? kSolidReach : 70.0f)) sReached.insert(t.id);
             if (t.id && sReached.count(t.id)) continue;
         }
-        const Target*& best = t.kind == Kind::Door ? door : t.kind == Kind::Ghost ? ghost : t.kind == Kind::Banana ? banana : item;
+        const Target*& best = t.kind == Kind::Door ? door : t.kind == Kind::Ghost ? ghost : t.kind == Kind::Banana ? banana : t.kind == Kind::Toad ? toad : item;
         if (!best || dist < flatDistance(best->pos, l)) best = &t;
     }
+    // What the Go to menu offers, and the walk in progress.
+    std::vector<nav::Object> objects;
+    for (const Target& t : targets) {
+        nav::Category category;
+        switch (t.kind) {
+        case Kind::Door: category = nav::Category::Doors; break;
+        case Kind::Money: category = nav::Category::Money; break;
+        case Kind::Heart: category = nav::Category::Hearts; break;
+        case Kind::Key: category = nav::Category::Keys; break;
+        case Kind::Chest: category = nav::Category::Chests; break;
+        case Kind::Treasure: category = nav::Category::Treasure; break;
+        case Kind::Toad: category = nav::Category::Toads; break;
+        default: continue;
+        }
+        objects.push_back({category, t.pos.x, t.pos.y, t.pos.z, t.id, t.kind == Kind::Door ? kDoorPress : t.kind == Kind::Chest ? kChestPress : t.kind == Kind::Toad ? kToadPress : 0.0f});
+    }
+    float box[4] = {-1e9f, -1e9f, 1e9f, 1e9f};
+    roomBox(room, box);
+    nav::publish(objects, l.x, l.y, l.z, rd32(kCurMap), room, box[0], box[1], box[2], box[3]);
+    const bool walking = nav::drive(rdf(kCamera + kCamViewMtx), rdf(kCamera + kCamViewMtx + 8), button, stickX, stickY);
+
     static const bool sLog = std::getenv("LM_ACCESS_WORLD_LOG") != nullptr;
     if (sLog) {
         static u32 sN = 0;
@@ -263,17 +317,18 @@ void worldFrame(std::uint16_t& button, std::int8_t stickX, std::int8_t stickY) {
     if (set.objectSounds) {
         pulse(sItem, item, l, 8, 45);
         pulse(sDoor, door, l, 8, 45);
+        pulse(sToad, toad, l, 8, 45);
         pulse(sBanana, banana, l, 5, 30);  // a hazard: stays on however close Luigi gets
     }
     if (set.ghostSounds) pulse(sGhost, ghost, l, 6, 30);  // they move: keep up with them
-    if (!set.autoInteract) return;
+    if (!set.autoInteract || walking) return;
     // Chests and keys open with A when close. A door only when Luigi walks at it, so walking past
     // one never leaves the room. Everything else is collected by touching it.
     u32 press = 0;
     for (const Target& t : targets) {
         const float dist = flatDistance(t.pos, l);
-        if ((t.kind == Kind::Chest || t.kind == Kind::Key) && dist < kSolidReach) press = t.id;
-        if (t.kind == Kind::Door && dist < kSolidReach && (stickX != 0 || stickY != 0)) {
+        if ((t.kind == Kind::Chest && dist < kChestPress) || (t.kind == Kind::Key && dist < 60.0f)) press = t.id;
+        if (t.kind == Kind::Door && dist < kDoorPress && (stickX != 0 || stickY != 0)) {
             const Vec right{rdf(kCamera + kCamViewMtx), 0.0f, rdf(kCamera + kCamViewMtx + 8)};
             const Vec fwd{right.z, 0.0f, -right.x};  // stick up, on the floor
             const float sx = float(stickX), sy = float(stickY), len = std::hypot(sx, sy);

@@ -46,15 +46,26 @@ These work in the options menu and on the setup screens:
 - A: press, toggle or open.
 - B: close a list, or close the options menu.
 - Right stick press: repeat the last announcement.
+- Left stick press: open or close the Go to menu. It acts on release, because it may be the start of pressing both.
 - Both sticks pressed in: open or close the options menu.
 
 ## How the spoken menus work
 
 `src/recomp/access.cpp` needs no code per option. ImGui's gamepad navigation moves the focus, ImGui's log holds the text every widget draws, and the item hooks in `src/imgui_hooks/` mark where the focused item and its tooltip are in that log. Text with no control, such as notes between options, cannot take focus and is not read. Disabled options cannot take focus either.
 
+## Accessibility tab
+
+The options menu opens on an Accessibility tab with the mod's settings and an audio cue glossary. Pressing a glossary entry plays that cue.
+
+## Go to menu
+
+`src/recomp/access_nav.cpp`. The left stick opens a list of what is in Luigi's room, by category: doors, coins and money, hearts, keys, chests, treasure, Toads. D-pad left and right change category, up and down move through it, A chooses, B closes.
+
+Luigi then walks there by himself. The route comes from the map's own collision, `col.mp` on the disc, and stays inside the room. The walk replaces the stick input, so moving the stick takes control back. Doors, chests and Toads get an A press on arrival. If something blocks him he marks that spot and plots again, up to four times.
+
 ## Object sounds and auto interact
 
-`src/recomp/access_world.cpp` scans for chests, keys, hearts, treasure, spilled money, doors, showing ghosts and banana peels on the floor in Luigi's room. The sounds and auto interact read only that list, and auto interact acts only on chests, keys and doors, so it cannot touch furniture or anything on walls. All are settings in the options menu's Game tab: object sounds (which include banana peels) and ghost sounds default on, auto interact default off.
+`src/recomp/access_world.cpp` scans for chests, keys, hearts, treasure, spilled money, doors, Toads, showing ghosts and banana peels on the floor in Luigi's room. The sounds and auto interact read only that list, and auto interact acts only on chests, keys and doors, so it cannot touch furniture or anything on walls. All are settings in the options menu's Accessibility tab: object sounds (which include banana peels) and ghost sounds default on, auto interact default off.
 
 ## How the game's own text works
 
@@ -86,12 +97,13 @@ Done:
 To do:
 
 4. Object sounds, auto interact, and health and money speech: built, awaiting the user's play test.
-5. The rest of the game's screens: saved files, save prompt, game over, area clear, map. Room names.
-6. Status on demand: health, money, ghosts, equipment.
-7. Spoken navigation: rooms, furniture, ghosts.
-8. Ghost capture, then bosses.
-9. Optional cutscene audio descriptions (`project_status.md`).
-10. European game support: add the addresses to the version map.
+5. Go to menu and pathfinding, Accessibility tab and audio cue glossary, locked door speech: built, awaiting the user's play test.
+6. The rest of the game's screens: saved files, save prompt, game over, area clear, map. Room names.
+7. Status on demand: health, money, ghosts, equipment.
+8. Spoken room descriptions and furniture.
+9. Ghost capture, then bosses.
+10. Optional cutscene audio descriptions (`project_status.md`).
+11. European game support: add the addresses to the version map.
 
 ## After every change
 

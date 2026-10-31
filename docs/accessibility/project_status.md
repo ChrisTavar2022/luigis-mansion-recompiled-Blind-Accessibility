@@ -2,7 +2,9 @@
 
 ## Release status
 
-Beta. This is not version 1, and no release or version tag has been made. The work is on the `accessibility-beta` branch. The user wants the repository private.
+Beta. This is not version 1, and no release or version tag has been made. The work is on the `accessibility-beta` branch of the private repository. Making it private also detached it from the upstream fork network, so GitHub lists it as a standalone repository; the `upstream` remote still pulls from the original port.
+
+Final silent tests for the Go to menu build: walks to a heart, a Toad, a locked door and an unlocked door, plus a stress run with coins, hits, a ghost, a chest and auto interact on. No corruption, crash or hang. The user has not played this build yet.
 
 ## Current milestone
 
@@ -34,7 +36,12 @@ User feedback from that session: the game's own ghost sounds showed a ghost was 
 - Ghost sounds, on by default, with their own setting: the nearest showing ghost in Luigi's room repeats a falling tone on a third channel, faster than object sounds. Tested with spawned, stationary portrait ghosts plus coins and hits: no corruption, no crash. Not yet tested on moving ghosts, or on ghosts fading out or hiding.
 - Banana peel warning, under the object sounds setting: peels on the floor in Luigi's room repeat a clashing tone on a fourth channel, however close he gets. Tested with a spawned peel, not yet one thrown by a ghost or by the user.
 - Sapphires, emeralds and rubies added to the treasure sounds.
-- Auto interact, off by default, in the options menu's Game tab: presses A at chests and keys, and at doors Luigi walks towards. At most 3 presses per object per room visit.
+- Toad beacon on a fifth channel, under the object sounds setting, with a Go to menu category.
+- Go to menu and pathfinding (`src/recomp/access_nav.cpp`): left stick press, categories, routes from `col.mp` inside Luigi's room, A at doors, chests and Toads. Tested with a simulated controller: walked to a heart and collected it, walked to a locked door and an unlocked one.
+- Spilled money now counts only inside Luigi's room.
+- Locked doors announced from `fn_8011496C`, by hand or through the Go to menu.
+- Accessibility tab in the options menu, with the settings moved there and an audio cue glossary.
+- Auto interact, off by default, in the options menu's Accessibility tab: presses A at chests and keys, and at doors Luigi walks towards. At most 3 presses per object per room visit.
 - Health, coins, bills, gold bars and gems spoken when they change.
 - Stress test with chests, keys, hearts, gold, coins and hits together: no memory corruption, no crash.
 
@@ -59,7 +66,7 @@ First real launch on the user's profile succeeded: game module built, game runni
 ## Next steps
 
 1. The user tests ghost sounds and banana peel warnings on real ghosts, and says whether ghost aim is accurate enough.
-2. Confirm auto interact opens an unlocked door and a real chest in normal play.
+2. Confirm auto interact and the Go to menu open a real chest, and that routes work in larger rooms, stairs and rooms with moved furniture.
 3. Map the file screen with saves: whether a file is empty, and the screens behind a saved file.
 4. Speak the save prompt, game over screen and area-clear screens.
 5. Status on demand, then spoken navigation.
@@ -79,5 +86,7 @@ The user asked for these, as in the Persona 4 accessibility mod. They are possib
 - Game choice menus move with the control stick, not the D-pad.
 - Object sounds are generated tones, not the game's sounds. Starting game sounds from the port crashed the game when coins were bouncing: it drains JAudio's fixed sound lists (`docs/accessibility/game-api.md`). Never call `fn_80189F78` or `fn_8018D6C0` for this.
 - Spoken object cues do not name the object; each kind has its own tone.
-- A locked door gets auto interact presses too; the game's locked rattle plays.
+- A locked door gets auto interact presses too; the game's locked animation plays and NVDA says it is locked.
+- Routes use one floor height: an object up or down stairs may be unreachable.
+- The Go to menu lists only what is scanned now, in Luigi's room.
 - Stick-press controls do not exist on a GameCube controller.

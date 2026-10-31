@@ -17,8 +17,9 @@ bool active();
 
 // Safe from any thread: never waits for the screen reader. interrupt stops what is being said.
 void say(const std::string& text, bool interrupt = true);
-// Right stick press repeats the last announcement. True when both sticks were pressed in: the
-// control that opens and closes the options menu.
+// Right stick press repeats the last announcement, left stick press opens the Go to menu (on release:
+// it may be the start of pressing both). True when both sticks were pressed in: the control that
+// opens and closes the options menu.
 bool handleEvent(const SDL_Event& ev);
 
 // What to say for the item just drawn, instead of its label.
@@ -31,8 +32,12 @@ int sliderKeys();
 void pollGame();
 bool gamePaused();  // the game's pause screen is running
 
-// Object sounds and auto interact. Call from PADRead: button may get A added.
-void worldFrame(std::uint16_t& button, std::int8_t stickX, std::int8_t stickY);
+// The audio cues, in the order of the glossary in the options menu.
+enum class Cue { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad };
+void playCue(Cue cue);
+
+// Object sounds, auto interact and walking. Call from PADRead: button and the stick may change.
+void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY);
 // Spilled coins and bills, from their update hooks.
 void noteMoney(float x, float y, float z);
 

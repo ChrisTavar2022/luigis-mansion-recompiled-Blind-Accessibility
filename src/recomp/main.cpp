@@ -353,7 +353,7 @@ int main(int argc, char* argv[]) {
     const std::string disc = launch.disc;
     const char* wantId = port::gameId(launch.version);
 #endif
-    recomp::access::say("Loading the game. Press both sticks in for the options menu. Press the right stick in to repeat "
+    recomp::access::say("Loading the game. Press the left stick in for the Go to menu, both sticks for options. Press the right stick in to repeat "
                         "the last announcement.", false);
     port::setPhase("loading the game");
     if (disc.empty() || !aurora_dvd_open(disc.c_str())) {
