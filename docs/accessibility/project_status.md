@@ -2,7 +2,9 @@
 
 ## Release status
 
-Beta. This is not version 1, and no release or version tag has been made. The work is on the `accessibility-beta` branch of the private repository. Making it private also detached it from the upstream fork network, so GitHub lists it as a standalone repository; the `upstream` remote still pulls from the original port.
+Beta, version 0.2.0. This is not version 1. The work is on the `accessibility-beta` branch, the default branch of the public repository. The user made it public by choice and is not advertising it yet. Making it private earlier detached it from the upstream fork network, so GitHub lists it as a standalone repository; the `upstream` remote still pulls from the original port.
+
+The updater and release script point at this repository, never at the original port, whose builds would remove the accessibility work. Numbering: 0.x while it is a beta. Publish releases as normal releases, not prereleases, or the updater ignores them. The update check runs only in a packaged copy, not a build folder.
 
 Final silent tests for the Go to menu build: walks to a heart, a Toad, a locked door and an unlocked door, plus a stress run with coins, hits, a ghost, a chest and auto interact on. No corruption, crash or hang. The user has not played this build yet.
 

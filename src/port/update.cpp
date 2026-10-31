@@ -1,8 +1,8 @@
 // Self-updater: see update.h and docs/SETUP.md ("Updates").
 //
 // Contract with the release pipeline (tools/release_windows.ps1, tools/release_linux.sh):
-//   - releases are GitHub releases of kRepo (rob646464/luigis-mansion-recompiled; the old name
-//     luigis-mansion-pc-port redirects) tagged v<version> (e.g. v1.1, v1.0.1); drafts and
+//   - releases are GitHub releases of kRepo, this accessibility fork and never the original port,
+//     whose builds would remove the accessibility work; tagged v<version> (e.g. v1.1, v1.0.1); drafts and
 //     prereleases are ignored;
 //   - assets: LuigisMansionRecompiled-<version>-windows-x64.zip and
 //     LuigisMansionRecompiled-<version>-linux-x86_64.tar.gz (from v1.1; v1.0/v1.0.1 used the prefix
@@ -63,11 +63,10 @@ namespace fs = std::filesystem;
 namespace port::update {
 namespace {
 
-constexpr const char* kRepo = "rob646464/luigis-mansion-recompiled";
-constexpr const char* kApiLatest = "https://api.github.com/repos/rob646464/luigis-mansion-recompiled/releases/latest";
-// Release downloads of the repository (new name, and the old one GitHub redirects).
-constexpr const char* kAssetPrefixes[] = {"https://github.com/rob646464/luigis-mansion-recompiled/releases/download/",
-                                          "https://github.com/rob646464/luigis-mansion-pc-port/releases/download/"};
+constexpr const char* kRepo = "ChrisTavar2022/luigis-mansion-recompiled-Blind-Accessibility";
+constexpr const char* kApiLatest = "https://api.github.com/repos/ChrisTavar2022/luigis-mansion-recompiled-Blind-Accessibility/releases/latest";
+// Release downloads of the repository.
+constexpr const char* kAssetPrefixes[] = {"https://github.com/ChrisTavar2022/luigis-mansion-recompiled-Blind-Accessibility/releases/download/"};
 // Package names: "<prefix><version><kAssetSuffix>".
 constexpr const char* kPackagePrefixes[] = {"LuigisMansionRecompiled-", "LuigisMansionPC-"};
 // Hosts a release download may redirect to (GitHub's asset storage).

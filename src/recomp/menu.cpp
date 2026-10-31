@@ -539,6 +539,31 @@ void updatesSection() {
     }
 }
 
+// What the update section shows, for screen readers: the phase changes on the worker thread.
+void speakUpdate() {
+    namespace up = port::update;
+    static up::Phase sLast = up::Phase::Idle;
+    const up::State st = up::state();
+    if (st.phase == sLast) return;
+    sLast = st.phase;
+    namespace ac = recomp::access;
+    switch (st.phase) {
+    case up::Phase::Available:
+        if (up::shouldNotify())
+            ac::say("Update available: version " + st.info.version + ". Press both sticks in, and it is at the top of the Accessibility tab.", false);
+        break;
+    case up::Phase::UpToDate:
+    case up::Phase::CheckFailed:
+        if (st.manual) ac::say(st.message);
+        break;
+    case up::Phase::Downloading: ac::say("Downloading the update"); break;
+    case up::Phase::Ready: ac::say("Update downloaded. Install and restart is ready. Save your game first."); break;
+    case up::Phase::Installing: ac::say("Installing the update"); break;
+    case up::Phase::Failed: ac::say("The update failed. " + st.message); break;
+    default: break;
+    }
+}
+
 // A short notice when a newer release was found (startup check): bottom-right corner for a few
 // seconds, takes no input, once per session. The details are in F1 > Game.
 void updateToast() {
@@ -734,6 +759,12 @@ void dataSection() {
 // The mod's own settings and the audio cue glossary (docs/accessibility/README.md).
 void accessibilityTab() {
     auto& a = port::settings().accessibility;
+    namespace up = port::update;
+    // An update goes first, where it is one press away. Otherwise the update check is at the end.
+    const up::Phase phase = up::state().phase;
+    const bool updateFirst = phase != up::Phase::Idle && phase != up::Phase::Checking && phase != up::Phase::UpToDate &&
+                             phase != up::Phase::CheckFailed && (up::shouldNotify() || phase != up::Phase::Available);
+    if (updateFirst) updatesSection();
     static const char* const kScreenReader[] = {"Auto (when a screen reader is running)", "On", "Off"};
     sDirty |= ImGui::Combo("Screen reader support", &a.mode, kScreenReader, 3);
     sDirty |= ImGui::Checkbox("Object sounds", &a.objectSounds);
@@ -770,6 +801,7 @@ void accessibilityTab() {
     ImGui::Separator();
     ImGui::TextUnformatted("Every cue repeats faster as you get closer, and pans left and right with the object.");
     ImGui::TextUnformatted("An object behind you sounds lower.");
+    if (!updateFirst) updatesSection();
 }
 
 void gameTab() {
@@ -2204,6 +2236,7 @@ void draw() {
             if (v >> (31 - i) & 1)
                 dl->AddRectFilled(ImVec2(o.x + s * (2 + i), o.y), ImVec2(o.x + s * (3 + i), o.y + s), IM_COL32(255, 255, 255, 255));
     }
+    speakUpdate();
     updateToast();
     refreshRateToast();
     startHint();

@@ -211,7 +211,7 @@ clicks: nothing is downloaded or replaced on its own.
    component, missing components are 0: 1.1 > 1.0.1 > 1.0 = 1.0.0.
 2. **Check.** In the background at startup (setting *Check for updates at startup*,
    `[updates] check_at_startup`, default on) and with the *Check for updates* button: one
-   unauthenticated `GET https://api.github.com/repos/rob646464/luigis-mansion-recompiled/releases/latest`
+   unauthenticated `GET https://api.github.com/repos/ChrisTavar2022/luigis-mansion-recompiled-Blind-Accessibility/releases/latest`
    (User-Agent `LuigisMansionRecompiled/<ver> (updater)`, 8 s connect/receive timeouts, 15 s total).
    Drafts and prereleases are ignored. Offline, an unknown host, HTTP errors and the rate limit
    (403 with `x-ratelimit-remaining: 0` or 429; the message names the reset time) end as a line
@@ -226,7 +226,7 @@ clicks: nothing is downloaded or replaced on its own.
    `LuigisMansionRecompiled-<ver>-linux-x86_64.tar.gz` / `LuigisMansionRecompiled-<ver>-macos-arm64.tar.gz`
    (macOS: built by GitHub Actions, docs/MACOS.md "Releases"; v1.0 and v1.0.1 used the prefix
    `LuigisMansionPC-`, still accepted). Its URL must be the repository's release download
-   (`https://github.com/rob646464/luigis-mansion-recompiled/releases/download/<tag>/<name>`, or the
+   (`https://github.com/ChrisTavar2022/luigis-mansion-recompiled-Blind-Accessibility/releases/download/<tag>/<name>`, or the
    old repository name); redirects are followed by hand, at most 6, HTTPS only, to `github.com`,
    `objects.githubusercontent.com` or `release-assets.githubusercontent.com`. Progress and *Cancel*
    in the menu. Integrity: the API asset `digest` (`sha256:<hex>`), else the SHA-256 in the release

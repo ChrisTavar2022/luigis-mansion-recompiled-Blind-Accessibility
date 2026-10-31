@@ -61,3 +61,13 @@ Every sound gets faster as you get closer and pans left and right with the objec
 - Health, coins, bills, gold bars and gems when they change.
 
 On the file screen, Y copies a saved file, and B on an Xbox controller erases it.
+
+### Credits
+
+- **Accessibility Mod Template** by Happy Starfish (CC BY 4.0): the guides, rules and workflow behind this mod's accessibility design. The original copies are in `docs/accessibility/template`.
+- **Luigi's Mansion Recompiled** by rob646464: the PC port this fork is built on ([original repository](https://github.com/rob646464/luigis-mansion-recompiled)).
+- **Tolk** by Davy Kager and contributors, and **NVDA's controller client** by NV Access: speech through screen readers.
+- **Aurora**, **lm-decomp** and **Dusklight**: see `NOTICE.md`.
+### Updates
+
+Download the latest package from this repository's Releases page. When a newer version is out, NVDA says so at startup. Press both sticks in, and the update is at the top of the Accessibility tab: choose Download and install, then Install and restart. Your settings and saves are kept.
