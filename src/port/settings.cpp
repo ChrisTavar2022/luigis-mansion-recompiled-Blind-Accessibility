@@ -74,6 +74,10 @@ std::vector<Field> fields() {
     return {
         num("interface", "menu_scale", sSettings.ui.menuScale),
         flag("interface", "start_hint", sSettings.ui.startHint),
+        num("accessibility", "mode", sSettings.accessibility.mode),
+        flag("accessibility", "object_sounds", sSettings.accessibility.objectSounds),
+        flag("accessibility", "ghost_sounds", sSettings.accessibility.ghostSounds),
+        flag("accessibility", "auto_interact", sSettings.accessibility.autoInteract),
         num("video", "target_fps", v.targetFps),
         flag("video", "unlimited_fps", v.unlimitedFps),
         flag("video", "match_display_refresh", v.matchDisplay),

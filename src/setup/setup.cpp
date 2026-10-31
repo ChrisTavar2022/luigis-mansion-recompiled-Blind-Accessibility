@@ -3,6 +3,7 @@
 
 #include "port/crash_handler.h"
 #include "port/dol.h"
+#include "recomp/access.h"
 #include "recomp/precache.h"
 #include "recomp/ui_scale.h"
 #include "setup/disc.h"
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -231,10 +233,57 @@ bool run(const Options& opts, LaunchInfo& launch) {
     port::setPhase("setup");
     bool finished = false;
     int framesDrawn = 0;  // the background precache is queued by the first frame (Aurora patch 0013)
+    // What sighted players read on the setup screens, for screen readers. Buttons speak by themselves.
+    using recomp::access::say;
+    using Clock = std::chrono::steady_clock;
+    std::optional<Screen> spokenScreen;
+    std::string spokenStage;
+    Clock::time_point spokenAt{};
+    int spokenShaders = -1;
+    auto announce = [&] {
+        if ((!showUi && plan.empty()) || !recomp::access::active()) return;
+        if (spokenScreen != screen) {
+            spokenScreen = screen;
+            spokenStage.clear();
+            spokenShaders = -1;
+            if (screen == Screen::Pick) {
+                std::string text = "Luigi's Mansion Recompiled setup. This port runs your own copy of the game. Choose your "
+                                   "disc image, ISO or RVZ. The D-pad moves between buttons, A presses one.";
+                for (const Slot& s : slots)
+                    if (!s.message.empty()) text += " " + s.message + ".";
+                say(text, false);
+            } else if (screen == Screen::Working) {
+                say("Preparing the game. This happens once per disc.", false);
+            } else if (screen == Screen::Shaders) {
+                say("Compiling shaders for your graphics card. This happens once.", false);
+            } else if (job) {
+                std::lock_guard lk(job->m);
+                say("Setup failed. " + job->error);
+            }
+        }
+        if (screen == Screen::Working && job) {
+            std::lock_guard lk(job->m);
+            // Every few seconds at most: the stages of a build go by quickly.
+            if (job->stage != spokenStage && Clock::now() - spokenAt > std::chrono::seconds(5)) {
+                spokenStage = job->stage;
+                spokenAt = Clock::now();
+                say(spokenStage, false);
+            }
+        }
+        if (screen == Screen::Shaders) {
+            const int quarter = int(recomp::precache::progress().fraction() * 4.0f);
+            if (quarter != spokenShaders) {
+                spokenShaders = quarter;
+                if (quarter > 0 && quarter < 4) say("Shaders " + std::to_string(quarter * 25) + " percent", false);
+            }
+        }
+    };
     while (!finished) {
         port::heartbeat();
+        recomp::access::sync();
         for (const AuroraEvent* ev = aurora_update(); ev && ev->type != AURORA_NONE; ++ev) {
             if (ev->type == AURORA_EXIT) return false;
+            if (ev->type == AURORA_SDL_EVENT) recomp::access::handleEvent(ev->sdl);
             if (ev->type == AURORA_PAUSED) port::setPhase(nullptr);  // waits for the window: not a hang
             if (ev->type == AURORA_UNPAUSED) port::setPhase("setup");
         }
@@ -247,6 +296,8 @@ bool run(const Options& opts, LaunchInfo& launch) {
                     validate(slots[i], i ? GameVersion::PAL : GameVersion::USA);
                     if (slots[i].valid && !slots[1 - i].valid) base = slots[i].version;
                     chooseBase();
+                    if (slots[i].valid) say(slots[i].message + " selected. Install and play is now available.");
+                    else say("That disc can't be used. " + slots[i].message);
                 }
             }
         }
@@ -263,6 +314,7 @@ bool run(const Options& opts, LaunchInfo& launch) {
         }
         if (screen == Screen::Shaders && recomp::precache::progress().finished()) finished = true;
         if (finished) break;
+        announce();
         if (!aurora_begin_frame()) continue;
 
         const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -291,6 +343,7 @@ bool run(const Options& opts, LaunchInfo& launch) {
             ImGui::Dummy(ImVec2(0, 8 * scale));
             const char* labels[2] = {"USA disc (GLME01)", "Europe disc (GLMP01)"};
             const char* notes[2] = {"", "Playable on its own; with a USA disc it also adds the European Hidden Mansion."};
+            if (framesDrawn == 0 && recomp::access::active()) ImGui::SetKeyboardFocusHere();
             for (int i = 0; i < 2; i++) {
                 ImGui::PushID(i);
                 ImGui::Text("%s", labels[i]);
@@ -298,6 +351,8 @@ bool run(const Options& opts, LaunchInfo& launch) {
                 if (*notes[i]) ImGui::TextDisabled("%s", notes[i]);
                 ImGui::TextWrapped("%s", slots[i].path.empty() ? "(none)" : slots[i].path.c_str());
                 if (ImGui::Button("Browse...")) browse(i, slots[i].path);
+                recomp::access::itemSpeech(std::string("Browse for the ") + labels[i] +
+                                           (slots[i].path.empty() ? ", none chosen" : ", currently " + slots[i].message));
 #ifndef _WIN32
                 // Linux: the file dialog needs xdg-desktop-portal (or zenity/kdialog); a typed or
                 // pasted path always works (docs/LINUX.md).
@@ -327,6 +382,7 @@ bool run(const Options& opts, LaunchInfo& launch) {
                         slots[i] = Slot{};
                         chooseBase();
                     }
+                    recomp::access::itemSpeech(std::string("Remove the ") + labels[i]);
                     ImGui::SameLine();
                     if (slots[i].valid) ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1), "%s", slots[i].message.c_str());
                     else ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1), "%s", slots[i].message.c_str());

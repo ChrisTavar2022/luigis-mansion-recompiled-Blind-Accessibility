@@ -17,6 +17,7 @@
 #include "port/recovery.h"
 #include "port/settings.h"
 #include "port/update.h"
+#include "recomp/access.h"
 #include "recomp/audio.h"
 #include "recomp/cpu_qos.h"
 #include "recomp/mem_report.h"
@@ -215,6 +216,7 @@ int main(int argc, char* argv[]) {
     config.appName = "Luigi's Mansion Recompiled";
     config.logCallback = &logCallback;
     port::loadSettings();
+    recomp::access::init();
     // Start-up recovery (docs/SETUP.md "When the game does not start"): after a start that failed,
     // offers to reset the settings, rebuild the game data or put the saves aside.
 #ifdef LM_STATIC_MODULE
@@ -297,6 +299,7 @@ int main(int argc, char* argv[]) {
     if (topmost) SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
     cpu::init();  // thread policy + Aurora thread hooks (issue #18), before Aurora starts its threads
     aurora_initialize(argc, argv, &config);
+    recomp::access::sync();
     mem::trackInit();  // LM_MEM_TRACK (test aid, docs/RENDERING.md "Memory use over time")
     if (topmost)
         if (SDL_Window* w = aurora_get_window()) SDL_SetWindowAlwaysOnTop(w, true);
@@ -350,6 +353,8 @@ int main(int argc, char* argv[]) {
     const std::string disc = launch.disc;
     const char* wantId = port::gameId(launch.version);
 #endif
+    recomp::access::say("Loading the game. Press both sticks in for the options menu. Press the right stick in to repeat "
+                        "the last announcement.", false);
     port::setPhase("loading the game");
     if (disc.empty() || !aurora_dvd_open(disc.c_str())) {
         std::fprintf(stderr, "Could not open a Luigi's Mansion disc image. Pass --disc <path to .iso/.rvz>.\n");

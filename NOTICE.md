@@ -7,6 +7,15 @@
 | `extern/aurora/` | [encounter/aurora](https://github.com/encounter/aurora) (submodule) | MIT |
 | `llvm/bin/clang.exe`, `llvm/bin/lld-link.exe` (release packages only, copied at install time; not in this repository) | [LLVM Project](https://llvm.org) | Apache-2.0 WITH LLVM-exception (`packaging/LLVM-LICENSE.TXT`, installed as `llvm/LLVM-LICENSE.TXT`) |
 
+`docs/accessibility/template/` contains files from the Accessibility Mod Template 1.0.1,
+Copyright (c) 2026 Happy Starfish, licensed under CC BY 4.0
+(https://creativecommons.org/licenses/by/4.0/). The copies are unmodified, apart from
+`CLAUDE.md` and `README.md` being renamed `TEMPLATE_CLAUDE.md` and `TEMPLATE_README.md`.
+The rest of `docs/accessibility/` and the port's accessibility code are adapted from them.
+
+`extern/tolk/` contains Tolk (https://github.com/ndarilek/tolk, LGPL 3.0, `LICENSE.txt`) and
+NVDA's controller client (`LICENSE-NVDA.txt`).
+
 lm-decomp does not accept AI-assisted contributions. Code in this repository that was
 written with AI assistance must not be submitted upstream to lm-decomp.
 

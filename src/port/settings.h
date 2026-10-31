@@ -353,8 +353,17 @@ struct InterfaceSettings {
     bool startHint = true;  // "Press F1 for options" notice for the first seconds of play (menu.cpp)
 };
 
+// Screen reader support (src/recomp/access.cpp).
+struct AccessibilitySettings {
+    int mode = 0;  // 0 Auto (on when a screen reader is running), 1 On, 2 Off
+    bool objectSounds = true;   // repeating tones lead Luigi to objects
+    bool ghostSounds = true;    // the same for ghosts that show
+    bool autoInteract = false;  // A is pressed for chests, keys and doors Luigi walks at
+};
+
 struct Settings {
     InterfaceSettings ui;  // (not "interface": a macro in the Windows headers)
+    AccessibilitySettings accessibility;
     VideoSettings video;
     RenderingSettings rendering;
     GhostLightSettings ghostLights;

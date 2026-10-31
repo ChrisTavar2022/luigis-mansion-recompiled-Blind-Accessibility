@@ -367,3 +367,9 @@ fn_800CD1F4 us pal
 fn_801589A8 us pal
 fn_80151CC8 us pal
 fn_80059710 us pal
+
+# Screen reader support (src/recomp/access_game.cpp): title, file and pause screen updates.
+fn_8003A6FC
+fn_80038744
+fn_80051380
+fn_8004A004

@@ -8,6 +8,7 @@
 #include "port/options.h"
 #include "port/settings.h"
 #include "port/update.h"
+#include "recomp/access.h"
 #include "recomp/audio.h"
 #include "recomp/controls.h"
 #include "recomp/crt.h"
@@ -63,6 +64,7 @@ ImGuiTabItemFlags envTab(const char* name) {
     return ImGuiTabItemFlags_SetSelected;
 }
 bool sDirty = false;
+bool sFocusMenu = false;  // screen reader: the menu just opened, put the focus on its first item
 bool sQuit = false;  // "Quit game" confirmed
 // The menu window. The ID after ### is the old title, so imgui.ini keeps the window's saved size
 // and place.
@@ -732,6 +734,20 @@ void gameTab() {
         ImGui::SameLine();
         recomp::menu::Button("ID check self-test");
     }
+    static const char* const kScreenReader[] = {"Auto (when a screen reader is running)", "On", "Off"};
+    sDirty |= ImGui::Combo("Screen reader support", &port::settings().accessibility.mode, kScreenReader, 3);
+    sDirty |= ImGui::Checkbox("Object sounds", &port::settings().accessibility.objectSounds);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Chests, keys, hearts, treasure, money, doors and banana peels repeat a sound. It gets faster as you get "
+                          "closer. Centre it left and right to walk straight at the object.");
+    sDirty |= ImGui::Checkbox("Ghost sounds", &port::settings().accessibility.ghostSounds);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("The nearest ghost that is showing repeats a falling tone. It gets faster as the ghost gets "
+                          "closer, and lower when the ghost is behind you.");
+    sDirty |= ImGui::Checkbox("Auto interact", &port::settings().accessibility.autoInteract);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Presses A for you at chests and keys, and at doors you walk towards. It never acts on "
+                          "furniture or anything on the walls.");
     auto& inst = port::install();
     if (inst.staticBuild) {
         ImGui::Text("Developer build: %s, recompiled at build time.", port::versionName(inst.running));
@@ -1964,9 +1980,21 @@ void shutdown() {
 void handleEvent(const SDL_Event& ev) {
     if (recomp::controls::handleEvent(ev)) return;  // binding capture owns the key
     if (recomp::dev::handleKey(ev)) return;
-    if (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat) return;
-    if (ev.key.key == SDLK_F1) sOpen = !sOpen;
+    // Screen reader players work the menu with the controller (access.h). B closes an open list first.
+    const bool padToggle = recomp::access::handleEvent(ev);
+    const bool padBack = sOpen && recomp::access::active() && ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN &&
+                         ev.gbutton.button == SDL_GAMEPAD_BUTTON_EAST &&
+                         !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
+    if (!padToggle && !padBack && (ev.type != SDL_EVENT_KEY_DOWN || ev.key.repeat)) return;
+    const bool wasOpen = sOpen;
+    if (padToggle) sOpen = !sOpen;
+    else if (padBack) sOpen = false;
+    else if (ev.key.key == SDLK_F1) sOpen = !sOpen;
     else if (ev.key.key == SDLK_ESCAPE && sOpen) sOpen = false;
+    if (sOpen != wasOpen) {
+        sFocusMenu = sOpen;
+        recomp::access::say(sOpen ? "Options menu" : "Options menu closed");
+    }
     if (!sOpen && sDirty) {
         port::saveSettings();
         sDirty = false;
@@ -2058,9 +2086,12 @@ int stepButtons() {
     const float h = ImGui::GetFrameHeight(), gap = ImGui::GetStyle().ItemInnerSpacing.x;
     const float width = ImGui::CalcItemWidth();
     int dir = 0;
+    // Screen reader players change the value with Left/Right on the slider itself.
+    ImGui::PushItemFlag(ImGuiItemFlags_NoNav, recomp::access::active());
     if (ImGui::Button("-##step", ImVec2(h, h))) dir = -1;
     ImGui::SameLine(0.0f, gap);
     if (ImGui::Button("+##step", ImVec2(h, h))) dir = 1;
+    ImGui::PopItemFlag();
     ImGui::SameLine(0.0f, gap);
     ImGui::SetNextItemWidth(std::max(width - 2.0f * (h + gap), h));
     return dir;
@@ -2072,10 +2103,15 @@ bool SliderFloat(const char* label, float* v, float min, float max, const char* 
     const int dir = stepButtons();
     ImGui::PopID();
     bool changed = ImGui::SliderFloat(label, v, min, max, format, flags);
+    const float lo = std::min(min, max), hi = std::max(min, max);
     if (dir != 0) {
         const float step = sliderStep(format);
-        const float lo = std::min(min, max), hi = std::max(min, max);
         *v = std::clamp(std::round(*v / step + float(dir)) * step, lo, hi);
+        changed = true;
+    }
+    if (const int key = recomp::access::sliderKeys()) {  // 20 presses cover a float slider
+        const float step = std::max(sliderStep(format), (hi - lo) / 20.0f);
+        *v = std::clamp(*v + float(key) * step, lo, hi);
         changed = true;
     }
     return changed;
@@ -2083,9 +2119,10 @@ bool SliderFloat(const char* label, float* v, float min, float max, const char* 
 
 bool SliderInt(const char* label, int* v, int min, int max, const char* format, int flags) {
     ImGui::PushID(label);
-    const int dir = stepButtons();
+    int dir = stepButtons();
     ImGui::PopID();
     bool changed = ImGui::SliderInt(label, v, min, max, format, flags);
+    if (dir == 0) dir = recomp::access::sliderKeys();
     if (dir != 0) {
         *v = std::clamp(*v + dir, std::min(min, max), std::max(min, max));
         changed = true;
@@ -2094,6 +2131,8 @@ bool SliderInt(const char* label, int* v, int min, int max, const char* format, 
 }
 
 void draw() {
+    recomp::access::sync();
+    recomp::access::pollGame();
     click::frame();
     scriptedSettings();
     skip::drawOverlay();
@@ -2147,6 +2186,8 @@ void draw() {
     bool open = true;
     if (ImGui::Begin(kMenuWindow, &open, ImGuiWindowFlags_NoCollapse)) {
         ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.45f);
+        if (sFocusMenu && recomp::access::active()) ImGui::SetKeyboardFocusHere();
+        sFocusMenu = false;
         if (ImGui::BeginTabBar("tabs")) {
             if (tab("Visuals")) {
                 if (ImGui::BeginTabBar("visuals")) {

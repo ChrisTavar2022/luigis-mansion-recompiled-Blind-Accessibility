@@ -1,5 +1,6 @@
 // HLE: controllers, via Aurora's PAD (SDL gamepads + keyboard bindings), plus
 // an optional scripted input for automated testing (--input).
+#include "recomp/access.h"
 #include "recomp/ghost_lights.h"
 #include "recomp/hle.h"
 
@@ -195,6 +196,7 @@ HLE(PADRead) {
             log("[pad] retrace %u frame %u: buttons %04X err %d", viRetraceCount(), skip::guestFrames(), st[0].button, st[0].err);
     }
     skip::filterPad(st, PAD_MAX_CONTROLLERS);
+    access::worldFrame(st[0].button, st[0].stickX, st[0].stickY);
     // 2-player co-op improvements: player 2's Game Boy Horror buttons do nothing, and player 2
     // has no input while an event has set them aside (coop_fixes.cpp).
     if (coop::fixes()) {

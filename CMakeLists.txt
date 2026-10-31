@@ -51,6 +51,9 @@ if (NOT _stamped STREQUAL _patch_ids)
     file(WRITE ${_stamp} "${_patch_ids}")
 endif ()
 add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
+# ImGui's item hooks, for screen reader menus (src/recomp/access.cpp). Off unless a player needs them.
+target_compile_definitions(imgui PUBLIC IMGUI_ENABLE_TEST_ENGINE)
+target_sources(imgui PRIVATE ${CMAKE_SOURCE_DIR}/src/imgui_hooks/imgui_hooks.cpp)
 
 
 # ---- Shared game/library compile environment -------------------------------
@@ -146,6 +149,10 @@ function(lm_runtime_target tgt)
             add_custom_command(TARGET ${tgt} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_dawn_extra_dlls} $<TARGET_FILE_DIR:${tgt}>)
         endif ()
+        # Screen reader output (extern/tolk/README.md), loaded at run time.
+        file(GLOB _tolk_dlls "${CMAKE_SOURCE_DIR}/extern/tolk/*.dll")
+        add_custom_command(TARGET ${tgt} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_tolk_dlls} $<TARGET_FILE_DIR:${tgt}>)
     elseif (APPLE)
         # macOS (docs/MACOS.md): same reason as the game module's -ffp-contract=off
         # (src/setup/module_builder.cpp): no fused multiply-adds the PowerPC would not do, in
@@ -235,6 +242,8 @@ install(FILES data/pipelines.bin DESTINATION .)
 install(FILES packaging/LLVM-LICENSE.TXT DESTINATION llvm)
 if (WIN32)
     install(FILES packaging/windows/README.txt DESTINATION .)
+    install(FILES extern/tolk/LICENSE.txt DESTINATION . RENAME Tolk-LICENSE.txt)
+    install(FILES extern/tolk/LICENSE-NVDA.txt DESTINATION . RENAME NVDA-Client-LICENSE.txt)
     install(CODE "
         file(GLOB _dlls \"$<TARGET_FILE_DIR:LuigisMansionRecomp>/*.dll\")
         file(INSTALL \${_dlls} DESTINATION \"\${CMAKE_INSTALL_PREFIX}\")")

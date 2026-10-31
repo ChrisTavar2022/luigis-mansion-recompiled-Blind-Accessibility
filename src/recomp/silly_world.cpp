@@ -1,4 +1,5 @@
 // Silly options, world part (silly_world.h; docs/ENHANCEMENTS.md "Silly options: world").
+#include "recomp/access.h"
 #include "recomp/silly_world.h"
 
 #include "port/settings.h"
@@ -87,8 +88,11 @@ struct FloatPatch {
 using namespace recomp;
 using namespace recomp::sillyworld;
 
+constexpr u32 kGrainIdle = 3;  // +0x74: a grain not in play, at a stale position
+
 // Coin grain update (r3 manager, r4 emitter, r5 grain).
 HLE(fn_80157030) {
+    if (rd32(c.r[5] + 0x74) != kGrainIdle) access::noteMoney(gu::rdf(c.r[5] + 0x20), gu::rdf(c.r[5] + 0x24), gu::rdf(c.r[5] + 0x28));
     const float k = moonScale();
     if (k == 1.0f) return callOriginal(c, "fn_80157030");
     FloatPatch g, r;
@@ -107,6 +111,7 @@ HLE(fn_80157030) {
 
 // Bill grain update (r3 manager, r4 emitter, r5 grain).
 HLE(fn_8015066C) {
+    if (rd32(c.r[5] + 0x74) != kGrainIdle) access::noteMoney(gu::rdf(c.r[5] + 0x20), gu::rdf(c.r[5] + 0x24), gu::rdf(c.r[5] + 0x28));
     const float k = moonScale();
     if (k == 1.0f) return callOriginal(c, "fn_8015066C");
     FloatPatch g;
