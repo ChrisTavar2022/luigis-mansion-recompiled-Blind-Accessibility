@@ -371,6 +371,8 @@ fn_80059710 us pal
 # Screen reader support (src/recomp/access_game.cpp): title, file and pause screen updates.
 fn_8003A6FC
 fn_80038744
+# Game Boy Horror map update (Y), for the screen reader (access_game.cpp).
+fn_80029C38
 fn_80051380
 fn_80054508
 fn_8011496C

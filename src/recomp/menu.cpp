@@ -804,6 +804,18 @@ void accessibilityTab() {
     for (const auto& c : kCues)
         if (ImGui::Selectable(c.label)) recomp::access::playCue(c.cue);
     ImGui::Separator();
+    ImGui::TextUnformatted("Which cues play. Object sounds and Ghost sounds above turn whole groups off.");
+    sDirty |= ImGui::Checkbox("Chest cue", &a.cueChest);
+    sDirty |= ImGui::Checkbox("Key cue", &a.cueKey);
+    sDirty |= ImGui::Checkbox("Heart cue", &a.cueHeart);
+    sDirty |= ImGui::Checkbox("Treasure cue", &a.cueTreasure);
+    sDirty |= ImGui::Checkbox("Coins and bills cue", &a.cueMoney);
+    sDirty |= ImGui::Checkbox("Door cue", &a.cueDoor);
+    sDirty |= ImGui::Checkbox("Toad cue", &a.cueToad);
+    sDirty |= ImGui::Checkbox("Banana peel cue", &a.cueBanana);
+    sDirty |= ImGui::Checkbox("Ghost cue", &a.cueGhost);
+    sDirty |= ImGui::Checkbox("Ghost in your flashlight cue", &a.cueGhostAimed);
+    ImGui::Separator();
     ImGui::TextUnformatted("Every cue repeats faster as you get closer, and pans left and right with the object.");
     ImGui::TextUnformatted("Pitch gives the direction: normal when it is straight left or right, higher when it is up or up to a side, lower when it is down or down to a side.");
     if (!updateFirst) updatesSection();

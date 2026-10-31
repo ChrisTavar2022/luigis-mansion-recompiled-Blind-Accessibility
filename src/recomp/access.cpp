@@ -9,7 +9,7 @@
 // where the focused item and any tooltip are in it.
 //
 // The game is played with a controller, and so are the spoken menus. Pressing the right stick in
-// repeats the last announcement, the left stick opens the Go to menu (access_nav.cpp), and pressing
+// says Luigi's status while he is free and otherwise repeats the last announcement, the left stick opens the Go to menu (access_nav.cpp), and pressing
 // both sticks in opens the options menu.
 //
 // Test aids: LM_ACCESS=1 runs all of this without speaking (for automated runs: with a screen
@@ -393,6 +393,7 @@ bool handleEvent(const SDL_Event& ev, bool goToAllowed) {
         sLeftAlone = true;
         return false;
     }
+    if (goToAllowed && !nav::menuOpen() && sayStatus()) return false;
     std::string last;
     {
         std::lock_guard lk(sLastM);

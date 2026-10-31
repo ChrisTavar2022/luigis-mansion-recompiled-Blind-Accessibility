@@ -354,8 +354,8 @@ int main(int argc, char* argv[]) {
     const std::string disc = launch.disc;
     const char* wantId = port::gameId(launch.version);
 #endif
-    recomp::access::say("Loading the game. Press the left stick in for the Go to menu, both sticks for options. Press the right stick in to repeat "
-                        "the last announcement.", false);
+    recomp::access::say("Loading the game. Press the left stick in for the Go to menu, both sticks for options. Press the right stick in for your "
+                        "status, or to repeat in menus.", false);
     port::setPhase("loading the game");
     if (disc.empty() || !aurora_dvd_open(disc.c_str())) {
         std::fprintf(stderr, "Could not open a Luigi's Mansion disc image. Pass --disc <path to .iso/.rvz>.\n");

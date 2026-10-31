@@ -45,7 +45,7 @@ These work in the options menu and on the setup screens:
 - D-pad or left stick left and right on a slider: change its value.
 - A: press, toggle or open.
 - B: close a list, or close the options menu.
-- Right stick press: repeat the last announcement.
+- Right stick press: while Luigi is free, the next of health, total money and location, starting over after 5 seconds without a press. In menus, cutscenes and conversations it repeats the last announcement.
 - Left stick press: open or close the Go to menu. It acts on release, because it may be the start of pressing both.
 - Both sticks pressed in: open or close the options menu.
 
@@ -59,13 +59,23 @@ The options menu opens on an Accessibility tab with the mod's settings and an au
 
 ## Go to menu
 
-`src/recomp/access_nav.cpp`. The left stick opens a list of what is in Luigi's room, by category: doors, coins and money, hearts, keys, chests, treasure, Toads. D-pad left and right change category, up and down move through it, A chooses, B closes.
+`src/recomp/access_nav.cpp`. The left stick opens a list of what is in Luigi's room, by category: doors, coins and money, hearts, keys, chests, treasure, Toads, furniture. D-pad left and right change category, up and down move through it, A chooses, B closes.
 
-Luigi then walks there by himself. The route comes from the map's own collision, `col.mp` on the disc, and stays inside the room. The walk replaces the stick input, so moving the stick takes control back. Doors, chests and Toads get an A press on arrival. If something blocks him he marks that spot and plots again, up to four times.
+Luigi then walks there by himself. The route comes from a layout of the whole map, built once from its collision, `col.mp` on the disc, when the map starts: every floor over every spot, stairs included. It stays inside the room. Searches run on their own threads, so the game never waits for one. The walk replaces the stick input, so moving the stick takes control back. Doors, chests and Toads get an A press on arrival; furniture gets "At the chair" and no press. Chests and Toads are routed round. If something blocks him he marks that spot and plots again, up to six times. If nothing gets him close enough he goes to the closest spot and says so.
+
+Furniture comes from the map's table `jmp/furnitureinfo`, read with the layout. `kModelWords` turns its model names into words, and anything not listed says "Furniture". A press of A in play says the piece Luigi faces. Furniture has no beacons, by the user's choice.
 
 ## Object sounds and auto interact
 
 `src/recomp/access_world.cpp` scans for chests, keys, hearts, treasure, spilled money, doors, Toads, showing ghosts and banana peels on the floor in Luigi's room. The sounds and auto interact read only that list, and auto interact acts only on chests, keys and doors, so it cannot touch furniture or anything on walls. All are settings in the options menu's Accessibility tab: object sounds (which include banana peels) and ghost sounds default on, auto interact default off.
+
+## Game Boy Horror
+
+The map (Y, `pollGbhMap` in `access_game.cpp`) says the floor, Luigi's room and the visited rooms of the floor. Zoom only changes the picture and is not spoken. The search view (X, `searchView` in `access_world.cpp`) names what lies in the middle of the view, furniture and the object list, by left and right only, and says "look up" or "look down" when height is more than 17 degrees off. Pictures drawn on the screens carry no text, so all these words are built here.
+
+## Audio cue choices
+
+Each cue has its own setting in the Accessibility tab, under the Object sounds and Ghost sounds groups. A cue turned off is skipped when the nearest object is chosen, so the next nearest kind still sounds. The Go to menu is not affected.
 
 ## How the game's own text works
 

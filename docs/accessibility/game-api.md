@@ -30,7 +30,7 @@ Keyboard defaults, from docs/CONTROLS.md. All game inputs can be rebound, so new
 
 Accessibility controls go on the controller. By default both Menu and View send START, and every button but the two stick presses is bound. So the stick presses are used:
 
-- Right stick press: repeat the last announcement.
+- Right stick press: status while Luigi is free, otherwise repeat the last announcement.
 - Both sticks pressed in: options menu.
 
 A GameCube controller has no stick presses, so this layout does not reach it yet. A player who binds a stick press to a game input gets both actions.
@@ -103,6 +103,15 @@ The Start button skips cutscenes, which shortens test routes. In `--input` scrip
 - Door scenes: `fn_8011496C`, r3 is 1 for a locked door. Luigi's reported position does not change meaningfully during the scene, and his position jumps to a fixed spot, so do not read that as being stuck. An opening door takes about 13 seconds.
 - Collision `col.mp` in `/Map/mapN.szp`, big endian: 0x00 grid cell sizes, 0x0C minimum, 0x18 size, 0x24 vertices (3 floats), 0x28 normals, 0x2C triangles (0x18 bytes: u16 vertices a, b, c, normal), 0x30 end of triangles. Static furniture is included; chests are not.
 - `LM_SPAWN` objects inside each other block routes.
+- Room sizes reach 5150 by 550 (room 6, the long hall) and 6725 by 950 (room 24). The old route grid, 2400 either way from Luigi, could not span them.
+- Doors stand 150 above their floor, large double doors 275. Floors are 550 apart. Test aid `LM_ACCESS_NAV_AUDIT=1` plots between the doors of every room and logs failures: 225 of 234 work in the mansion. The 9 failures are in rooms 33 (door to room 56 at height 1375), 34 and 40 (the door between them, at height 830), 72 and 73. The cause there is not found: they are not stair faces, body width or step height, all tried. Nothing above tells whether they are real gaps or a door the game moves Luigi through.
+- `LM_TELEPORT` into a hallway left Luigi unable to walk there: stick input had no effect. Walk in through a door to test hallways.
+- A `LM_VIRTUAL_PAD` run ignores `--input`: script everything on the pad. Its times are PADRead calls, about 40 a second.
+- Money: `fn_8004D688` adds up 12 counters from Luigi +0x12F4, valued by the table at `0x80335B78`: 5000, 20000, 100000, 500000, 800000, 1000000, 2000000, 5000, 20000000, 50000, 100000, 1000000.
+- Furniture: `jmp/furnitureinfo` in `/Map/mapN.szp`, 730 rows in map 2, 0xC4 bytes each. Fields (hash, offset): dmd_name 0x9BC8CD +84 (model, 32 bytes), pos 0x17BEFD9 +0, dir_y 0x17A0565 +16, room_no 0xC9952D +148, furniture_x 0x1545CAA +176, furniture_z 0x1545CAC +184. A model of "(null)" or a size of 0 is not a real piece. Other fields: item_table, generate, move, appear_flag, disappear_flag.
+- Game Boy Horror map (Y): update `fn_80029C38`. `0x804D8314` (r13+0x3B4) signed byte, the floor shown: -1 basement, 0 first floor, range -1 to 3, moved by the stick only in `fn_8002A364`. The zoom state is not found: `0x804D8328` (r13+0x3C8) is 1 for the training maps' map, `0x804D834A` (r13+0x3EA) did not change on A, and `0x804D8354` (r13+0x3F4) is a running counter. `0x803CDF50 + room * 2`: u16, bit 0 set once a room is known to the map (`fn_8002A260`), bit 1 a further state not identified.
+- Game Boy Horror search view (X): `0x804D8160` (r13+0x200) byte, set while it is up. Camera `0x803A3820` is the first-person view then: eye about 180 above Luigi. Stick left and right turn it quickly, about 90 degrees a second at 0.6. It rests tilted down about -0.51, and both sticks tilt it, inverted: down looks up to about 0.58, up looks down to about -0.71. How the game decides what A found is not traced.
+- Xbox defaults: game X is the B button, game Y is the Y button.
 - JAudio danger: each sound category has a fixed free list, and a start on an empty list writes through a null pointer (`fn_8018FF88`, seen as "low memory 80000028 overwritten" and then a crash). Do not start game sounds from the port.
 - `LM_SKIP_TEST pos` did not move Luigi in the tested routes; use scripted stick input.
 - `LM_SPAWN` places objects in front of Luigi: face open floor first, or they land behind a wall in another room.
@@ -141,7 +150,6 @@ Test aids: `LM_ACCESS_WORLD_LOG=1` logs targets and tones. `LM_SPAWN=<type>@<fra
 - File screen: object +8 values 0x0C, 0x0D, 0x0E and 0x11
 - Memory card error screens (`fn_80047798`, `fn_80054324`)
 - Game over screen's own object, if it has one
-- Map and Game Boy Horror screens
 - Health, money and ghost-count addresses
 - Room layout data: walls, doors, furniture
 - Which objects can be interacted with, and how to detect them

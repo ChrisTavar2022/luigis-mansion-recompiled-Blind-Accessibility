@@ -17,9 +17,9 @@ bool active();
 
 // Safe from any thread: never waits for the screen reader. interrupt stops what is being said.
 void say(const std::string& text, bool interrupt = true);
-// Right stick press repeats the last announcement, left stick press opens the Go to menu (on release:
-// it may be the start of pressing both). True when both sticks were pressed in: the control that
-// opens and closes the options menu.
+// Right stick press says Luigi's status, and repeats the last announcement where that does not apply.
+// Left stick press opens the Go to menu (on release: it may be the start of pressing both). True when
+// both sticks were pressed in: the control that opens and closes the options menu.
 bool handleEvent(const SDL_Event& ev, bool goToAllowed = true);
 
 // What to say for the item just drawn, instead of its label.
@@ -31,6 +31,8 @@ int sliderKeys();
 // Speaks the game's own text. Call once per frame while the game runs.
 void pollGame();
 bool gamePaused();  // the game's pause screen is running
+// While Luigi is free: says the next of health, total money and location. False anywhere else.
+bool sayStatus();
 void luigiDown(std::uint32_t actor);  // his health was just set to 0
 void ghostCaught(std::uint32_t message);  // Luigi's capture message, its data
 std::string doorName(std::uint32_t room);  // "Foyer door", from the room behind it; empty off the mansion

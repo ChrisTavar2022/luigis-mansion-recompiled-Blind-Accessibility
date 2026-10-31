@@ -358,6 +358,17 @@ struct AccessibilitySettings {
     int mode = 0;  // 0 Auto (on when a screen reader is running), 1 On, 2 Off
     bool objectSounds = true;   // repeating tones lead Luigi to objects
     bool ghostSounds = true;    // the same for ghosts that show
+    // One cue each, under those two: a cue turned off lets the next nearest object of another kind sound.
+    bool cueChest = true;
+    bool cueKey = true;
+    bool cueHeart = true;
+    bool cueTreasure = true;
+    bool cueMoney = true;
+    bool cueDoor = true;
+    bool cueGhost = true;
+    bool cueGhostAimed = true;
+    bool cueBanana = true;
+    bool cueToad = true;
     bool autoInteract = false;  // A is pressed for chests, keys and doors Luigi walks at
     bool announceRooms = true;  // the room and floor Luigi enters are spoken
 };

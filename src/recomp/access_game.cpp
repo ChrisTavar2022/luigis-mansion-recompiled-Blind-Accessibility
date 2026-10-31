@@ -78,7 +78,7 @@ constexpr u32 kPauseStyle = 0x124;   // word: 1 Standard, 2 Sidestep
 constexpr u32 kStyleValue = 4;       // control style screen, word: 1 Standard, 2 Sidestep
 
 constexpr u32 kActorSlots = 0x803D48A0;  // slot 0 is Luigi
-constexpr u32 kHealth = 0xFC, kCounters = 0x12F4, kCounterCount = 10;
+constexpr u32 kHealth = 0xFC, kCounters = 0x12F4, kCounterCount = 10, kMoneyCounters = 12;
 constexpr u32 kCaughtType = 0x68;  // in Luigi's capture message, the type the game adds to his list (+0x11F0)
 constexpr u32 kGhostTypes = 0x8033B590, kGhostTypeSize = 0x1C, kGhostTypeName = 0x18, kGhostTypeCount = 0x29C8 / 0x1C;
 constexpr u32 kGhostTypeFlags = 0x08, kGhostTypeFlag = 8;
@@ -88,7 +88,11 @@ constexpr u32 kActPos = 0x44, kActRoom = 0xB4;
 constexpr u32 kRoomTable = 0x804D8170, kRoomSize = 0x30, kRoomCount = 74;
 constexpr u32 kMapTable = 0x802FF218, kMapDoors = 0x18;
 constexpr u32 kRoomInfo = 0x80C, kRoomNameIndex = 0x20;  // Luigi +0x80C (fn_800B1B34), read by fn_800458D0
-constexpr u32 kCurMap = 0x804D80C8, kMansionMap = 2;
+constexpr u32 kCurMap = 0x804D80C8, kMansionMap = 2, kLabMap = 1, kTrainingMap = 3, kGalleryMap = 6;
+constexpr u32 kEvent = 0x803D2D40, kEventCursor = 0x0C, kMenuOff = 0x804D8088;
+constexpr auto kStatusRestart = std::chrono::seconds(5);
+constexpr u32 kMapFloor = 0x804D8314;  // r13+0x3B4, byte, signed: -1 basement, 0 first floor
+constexpr u32 kRoomVisited = 0x803CDF50;  // u16 per room, bit 0
 
 using clock = std::chrono::steady_clock;
 
@@ -228,7 +232,7 @@ struct ScreenRun {
         return clock::now() - last < std::chrono::milliseconds(300);
     }
 };
-ScreenRun sTitle, sFileMenu, sPause, sStyle, sSave, sAccount;
+ScreenRun sTitle, sFileMenu, sPause, sStyle, sSave, sAccount, sGbhMap;
 std::atomic<u32> sFileMenuAddr{0}, sPauseAddr{0}, sStyleAddr{0}, sSaveAddr{0}, sAccountAddr{0};
 
 void pollTitle() {
@@ -525,6 +529,10 @@ void pollRoom(u32 luigi) {
     sFloor = floor;
 }
 
+// What the game's treasure counters are worth, in order: the table at 0x80335B78, as added up by
+// fn_8004D688. The first three counters are coins, bills and gold bars.
+constexpr s64 kCounterValues[kMoneyCounters] = {5000, 20000, 100000, 500000, 800000, 1000000, 2000000, 5000, 20000000, 50000, 100000, 1000000};
+
 // Luigi's health and money, spoken when they change.
 // Actor +0xFC is health, +0x12F4 onwards the treasure counters.
 void pollStatus() {
@@ -593,6 +601,47 @@ void pollStatus() {
     say(text, false);
 }
 
+// The Game Boy Horror's map (Y), fn_80029C38. The floor changes in fn_8002A364, the rooms come from
+// the room table, and a room's visited bit is what the map uses to draw it (fn_8002A260).
+std::string mapFloorText(s32 floor) {
+    std::string text = floorName(u32(floor));
+    const u32 rooms = rd32(kRoomTable);
+    if (rd32(kCurMap) != kMansionMap || !gu::inMem1(rooms)) return text;
+    std::string list;
+    std::vector<std::string> seen;
+    for (u32 n = 0; n < kRoomCount; n++) {
+        if (rd8(rooms + n * kRoomSize + 1) != u8(floor) || !(rd16(kRoomVisited + n * 2) & 1)) continue;
+        const char* name = roomName(n);
+        if (!*name || std::find(seen.begin(), seen.end(), name) != seen.end()) continue;
+        seen.push_back(name);
+        list += (list.empty() ? "" : ", ") + std::string(name);
+    }
+    return text + (list.empty() ? ". No rooms visited here yet." : ". Rooms visited: " + list + ".");
+}
+
+void pollGbhMap() {
+    static s32 sFloor = 1000;
+    if (!sGbhMap.running()) {
+        sFloor = 1000;
+        return;
+    }
+    const s32 floor = s8(rd8(kMapFloor));
+    if (sFloor == 1000) {
+        const u32 luigi = rd32(kActorSlots);
+        std::string here;
+        if (gu::inMem1(luigi) && rd32(kCurMap) == kMansionMap) {
+            const u32 index = rd32(luigi + kRoomInfo + kRoomNameIndex) & 0xFF;
+            const char* name = index < std::size(kRoomNames) ? kRoomNames[index] : "";
+            here = std::string(" You are in ") + (*name ? name : "a hallway") + ".";
+        }
+        say("Map. The stick up and down changes floor, A zooms, B returns." + here);
+        say(mapFloorText(floor), false);
+    } else if (floor != sFloor) {
+        say(mapFloorText(floor));
+    }
+    sFloor = floor;
+}
+
 // The control style screen in E. Gadd's first talk (fn_80051380).
 void pollControlStyle() {
     static std::string sLast;
@@ -635,6 +684,47 @@ void watchMemory() {
 
 bool gamePaused() { return sPause.running(); }
 
+bool sayStatus() {
+    if (port::usCodeFeature() != port::Avail::Yes) return false;
+    const u32 luigi = rd32(kActorSlots);
+    if (!gu::inMem1(luigi)) return false;
+    // In a menu, a cutscene or a conversation the stick repeats what was said instead.
+    if (sTitle.running() || sFileMenu.running() || sPause.running() || sSave.running() || sAccount.running() || sStyle.running() || sGbhMap.running()) return false;
+    if (rd32(kCurMap) != kTrainingMap && (rd32(kEvent + kEventCursor) != 0 || rd32(kMenuOff) != 0)) return false;
+    for (u32 slot = 0; slot < 4; slot++)
+        if (rd32(kState + slot * 4) != 0) return false;
+    const s32 health = s16(rd16(luigi + kHealth));
+    if (health < 0 || health > kHealthMax) return false;
+    // Each press says the next thing. After a pause the next press starts over, so the first thing
+    // is always the same one press away.
+    static int sNext = 0;
+    static clock::time_point sLastPress{};
+    if (clock::now() - sLastPress > kStatusRestart) sNext = 0;
+    sLastPress = clock::now();
+    const int item = sNext;
+    sNext = (sNext + 1) % 3;
+    if (item == 0) {
+        say("Health " + std::to_string(health));
+    } else if (item == 1) {
+        s64 total = 0;
+        for (u32 i = 0; i < kMoneyCounters; i++) {
+            const s32 count = s32(rd32(luigi + kCounters + 4 * i));
+            if (count > 0 && count <= kCounterMax) total += count * kCounterValues[i];
+        }
+        say("Total " + std::to_string(total) + " dollars");
+    } else if (rd32(kCurMap) == kMansionMap) {
+        const u32 index = rd32(luigi + kRoomInfo + kRoomNameIndex) & 0xFF;
+        const char* name = index < std::size(kRoomNames) ? kRoomNames[index] : "";
+        const u32 rooms = rd32(kRoomTable);
+        std::string where = *name ? name : "Hallway";
+        if (gu::inMem1(rooms)) where += std::string(", ") + floorName(rd8(rooms + (rd32(luigi + kActRoom) >> 24) * kRoomSize + 1));
+        say(where);
+    } else {
+        say(rd32(kCurMap) == kLabMap ? "E. Gadd's Lab" : rd32(kCurMap) == kTrainingMap ? "Training room" : rd32(kCurMap) == kGalleryMap ? "Portrait gallery" : "Outside the mansion");
+    }
+    return true;
+}
+
 void luigiDown(u32 actor) {
     if (port::usCodeFeature() == port::Avail::Yes && actor == rd32(kActorSlots)) say("Game over", false);
 }
@@ -674,6 +764,7 @@ void pollGame() {
     pollSave();
     pollAccount();
     pollControlStyle();
+    pollGbhMap();
     pollStatus();
     pollCaught();
     pollMessages();
@@ -705,6 +796,12 @@ HLE(fn_8011496C) {
         access::nav::doorLocked();
     }
     callOriginal(c, "fn_8011496C");
+}
+
+// Game Boy Horror map update.
+HLE(fn_80029C38) {
+    access::sGbhMap.calls++;
+    callOriginal(c, "fn_80029C38");
 }
 
 // Save screen update: r3 is its menu object.

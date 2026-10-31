@@ -27,19 +27,25 @@ Screen reader support turns on by itself when NVDA or another supported screen r
 
 - **Left stick press:** open or close the Go to menu.
 - **Both sticks pressed in:** open or close the options menu.
-- **Right stick press:** repeat the last announcement.
+- **Right stick press:** your status. The first press says your health, the next your total money, the next your room and floor, then it starts again. After 5 seconds without a press it starts from health. In menus, cutscenes and conversations it repeats the last announcement instead.
+- **A at furniture:** NVDA says what Luigi is facing, such as "Chair", as well as doing what A normally does.
 
 In the menus, the D-pad or left stick moves, A selects, and B goes back or closes. Opening the Go to menu or the options menu pauses the game.
 
 ### Go to menu (pathfinding)
 
-The Go to menu lists what is in the room you are in: doors, coins and money, hearts, keys, chests, treasure and Toads. Doors are named after the room behind them, such as "Foyer door". A door to a hallway is "Hallway door".
+The Go to menu lists what is in the room you are in: doors, coins and money, hearts, keys, chests, treasure, Toads and furniture. Doors are named after the room behind them, such as "Foyer door". A door to a hallway is "Hallway door".
 
 1. Press the left stick in, then release it.
 2. Use left and right to change category, and up and down to choose an object.
-3. Press A. Luigi walks there by himself, around furniture, and collects it. He presses A for you at doors, chests and Toads.
+3. Press A. Luigi walks there by himself, around furniture, and collects it. He presses A for you at doors, chests and Toads. At furniture he stops and NVDA says "At the chair", and searching it is up to you.
 
-Luigi takes the stairs when what you picked is on another level of the room. Moving the stick yourself stops the walk at any time. NVDA tells you how it ended. When a door is locked, it names the room behind it, such as "Anteroom is locked".
+Luigi takes the stairs when what you picked is on another level of the room. If he cannot get right up to something, he goes as close as he can and says so. Moving the stick yourself stops the walk at any time. NVDA tells you how it ended. When a door is locked, it names the room behind it, such as "Anteroom is locked".
+
+### Game Boy Horror
+
+- **Map (Y):** NVDA says the floor, the room you are in and the rooms you have visited on that floor. The stick up and down changes floor, and B or Y returns. A zooms the picture, which NVDA does not announce.
+- **Search view (X):** as you look around with the stick, NVDA names what is in the middle of the view, such as "Chair", "Ghost" or "Foyer door". If it says "look up" or "look down", tilt that way first: the view is inverted, so pull the stick down to look up and push it up to look down. A searches it, and NVDA reads the answer.
 
 ### Accessibility tab
 
