@@ -131,6 +131,8 @@ HLE(fn_800B9488) {
     static const u32 sMsg = guestSymbol("fn_800AEEA8");
     const bool scripted = c.lr >= sMsg && c.lr < sMsg + 0x2884;  // size of fn_800AEEA8 (both releases)
     if (scripted) return callOriginal(c, "fn_800B9488");
+    // fn_800B9680 saved its caller at its own frame's back chain + 4.
+    if (access::damageCancelled(c.lr, rd32(rd32(c.r[1]) + 4))) return;
     const float k = current().damageScale;
     if (k != 1.0f) {
         const u32 luigi = c.r[3];
@@ -233,8 +235,14 @@ void callLuigiMessage(Ctx& c) {
         hpOrig = rds16(luigi + 0xFC);
         wr16(luigi + 0xFC, u32(scaleDown(hpOrig, k)) & 0xFFFF);
     }
+    // The handler clears the message, so its type is read first. The list it adds to is the surer word.
+    const u32 caughtBefore = id == 21 && inMem1(luigi) ? rd32(luigi + 0x11EC) : 0;
+    const u32 typeBefore = id == 21 && inMem1(data) ? rd32(data + 0x68) : 0;
     callOriginal(c, "fn_800AEEA8");
-    if (id == 21) access::ghostCaught(data);
+    if (id == 21) {
+        const u32 count = inMem1(luigi) ? rd32(luigi + 0x11EC) : 0;
+        access::ghostCaught(count > caughtBefore && count <= 64 ? rd32(luigi + 0x11F0 + (count - 1) * 4) : typeBefore);
+    }
     if (rank) wr16(luigi + 0xFC, u32(hpOrig) & 0xFFFF);
     if (field) wr32(field, fieldOrig);
     // 59: leaving the map, health and maximum were copied into the record: store them in
@@ -352,6 +360,7 @@ HLE(fn_800C0F08) {
     cooptest::onMessage(self, msg);                // coop_test.cpp test aids (AI objects of the map)
     if (inMem1(self)) ghostlights::onCharacterEvent(rd32(self + 0x808), msg, self, c.r[4]);  // ghost_lights.cpp
     if (msg == 2 && inMem1(self)) enh::onGhostInBeam(rd32(self + 0x808));  // realistic flashlight flare
+    access::ghostMessage(msg);
     callOriginal(c, "fn_800C0F08");
     if (msg == 21 && inMem1(self) && ghostlights::testForceLit(rd32(self + 0x808))) c.r[3] = 1;  // LM_GHOST_HUNT_BEAM
     if ((msg != 6 && msg != 7) || !inMem1(self)) return;

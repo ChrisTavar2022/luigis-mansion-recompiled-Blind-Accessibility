@@ -61,7 +61,7 @@ The options menu opens on an Accessibility tab with the mod's settings and an au
 
 `src/recomp/access_nav.cpp`. The left stick opens a list of what is in Luigi's room, by category: doors, coins and money, hearts, keys, chests, treasure, Toads, furniture. D-pad left and right change category, up and down move through it, A chooses, B closes.
 
-Luigi then walks there by himself. The route comes from a layout of the whole map, built once from its collision, `col.mp` on the disc, when the map starts: every floor over every spot, stairs included. It stays inside the room. Searches run on their own threads, so the game never waits for one. The walk replaces the stick input, so moving the stick takes control back. Doors, chests and Toads get an A press on arrival; furniture gets "At the chair" and no press. Chests and Toads are routed round. If something blocks him he marks that spot and plots again, up to six times. If nothing gets him close enough he goes to the closest spot and says so.
+Luigi then walks there by himself. The route comes from a layout of the whole map, built once from its collision, `col.mp` on the disc, when the map starts: every floor over every spot, stairs included. It stays inside the room. Searches run on their own threads, so the game never waits for one. The walk replaces the stick input, so moving the stick takes control back. Doors, chests and Toads get an A press on arrival; furniture gets "At the chair" and no press. Chests and Toads are routed round. A chest walk tries each side of the chest in turn, its front first, facing it and pressing A, until a scene starts. Changing category says its name and position, such as "Doors, 1 of 3", with the first item. If something blocks him he marks that spot and plots again, up to six times. If nothing gets him close enough he goes to the closest spot and says so.
 
 Furniture comes from the map's table `jmp/furnitureinfo`, read with the layout. `kModelWords` turns its model names into words, and anything not listed says "Furniture". A press of A in play says the piece Luigi faces. Furniture has no beacons, by the user's choice.
 
@@ -72,6 +72,14 @@ Furniture comes from the map's table `jmp/furnitureinfo`, read with the layout. 
 ## Game Boy Horror
 
 The map (Y, `pollGbhMap` in `access_game.cpp`) says the floor, Luigi's room and the visited rooms of the floor. Zoom only changes the picture and is not spoken. The search view (X, `searchView` in `access_world.cpp`) names what lies in the middle of the view, furniture and the object list, by left and right only, and says "look up" or "look down" when height is more than 17 degrees off. Pictures drawn on the screens carry no text, so all these words are built here.
+
+## Difficulty settings
+
+In the Accessibility tab, for screen reader players only. On by default: no damage from ghosts and bosses, no damage from thrown objects, dropped items do not vanish, health refills by itself. Off by default: no damage from hazards, from floors, and no lingering damage. The user asked for each, so the rule against cheats is met, and each can be turned off.
+
+## State of a room
+
+Advice follows the state of the room, read from the game, not from where the player should be by the guide. A room's lit bit (room objects at `0x804D8178`, 0x14C each, +6 bit 0x80) says it is cleared. A boss or portrait ghost's advice speaks only while it is there, and Boo advice only when the game's own records put a Boo in a cleared room.
 
 ## Audio cue choices
 

@@ -196,7 +196,7 @@ HLE(PADRead) {
             log("[pad] retrace %u frame %u: buttons %04X err %d", viRetraceCount(), skip::guestFrames(), st[0].button, st[0].err);
     }
     skip::filterPad(st, PAD_MAX_CONTROLLERS);
-    access::worldFrame(st[0].button, st[0].stickX, st[0].stickY);
+    access::worldFrame(st[0].button, st[0].stickX, st[0].stickY, st[0].substickX, st[0].substickY, st[0].triggerLeft, st[0].triggerRight);
     // 2-player co-op improvements: player 2's Game Boy Horror buttons do nothing, and player 2
     // has no input while an event has set them aside (coop_fixes.cpp).
     if (coop::fixes()) {

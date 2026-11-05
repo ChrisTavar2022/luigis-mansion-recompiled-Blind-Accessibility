@@ -275,6 +275,9 @@ void onNewFrame(ImGuiContext* ctx, ImGuiContextHook*) {
     if (sActive) ImGui::LogToBuffer(0);  // 0: tree nodes keep their state
 }
 
+std::string sItemPrefix;
+Uint64 sItemPrefixAt = 0;
+
 void onEndFrame(ImGuiContext* ctx, ImGuiContextHook*) {
     ImGuiContext& g = *ctx;
     if (!g.LogEnabled) return;
@@ -285,11 +288,16 @@ void onEndFrame(ImGuiContext* ctx, ImGuiContextHook*) {
         std::string item = describe(piece(sScan.itemStart, sScan.itemEnd));
         const int position = sScan.tabs ? sScan.tabPosition : sScan.position, total = sScan.tabs ? sScan.tabs : sScan.items;
         if (position > 0 && total > 1) item += ", " + std::to_string(position) + " of " + std::to_string(total);
-        if (item != sLastItem && !item.empty()) {
+        if ((item != sLastItem || !sItemPrefix.empty()) && !item.empty()) {
             sLastItem = item;
             sLastTip.clear();
-            say(item);
+            say(sItemPrefix.empty() ? item : sItemPrefix + ". " + item);
+            sItemPrefix.clear();
         }
+    }
+    if (!sItemPrefix.empty() && SDL_GetTicks() - sItemPrefixAt > 400) {  // no item came: on its own
+        say(sItemPrefix);
+        sItemPrefix.clear();
     }
     if (sScan.tipStart >= 0) {
         const std::string tip = joinedLines(piece(sScan.tipStart, sScan.tipEnd));
@@ -343,6 +351,11 @@ void sync() {
         else io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
         if (on) say("Screen reader support on");
     }
+}
+
+void beforeNextItem(const std::string& text) {
+    sItemPrefix = text;
+    sItemPrefixAt = SDL_GetTicks();
 }
 
 void say(const std::string& text, bool interrupt) {

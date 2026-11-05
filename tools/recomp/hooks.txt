@@ -373,6 +373,16 @@ fn_8003A6FC
 fn_80038744
 # Game Boy Horror map update (Y), for the screen reader (access_game.cpp).
 fn_80029C38
+# Loads a file by name: which event script is next, for cutscene descriptions (access_game.cpp).
+fn_800067D0__FPCcPFPvP13LMDvdFileInfo_vP18LMDvdFileInfoBlockl
+# A hit on Luigi, with its attacker: the accessibility damage settings (access_world.cpp).
+fn_800B9124
+setNextState__13EnemyStrategyFUs
+fn_8005232C
+fn_800A3460
+fn_8009D050
+fn_800A95C0
+fn_800C3B14
 fn_80051380
 fn_80054508
 fn_8011496C

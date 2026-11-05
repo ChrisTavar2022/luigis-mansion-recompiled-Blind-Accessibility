@@ -765,59 +765,134 @@ void accessibilityTab() {
     const bool updateFirst = phase != up::Phase::Idle && phase != up::Phase::Checking && phase != up::Phase::UpToDate &&
                              phase != up::Phase::CheckFailed && (up::shouldNotify() || phase != up::Phase::Available);
     if (updateFirst) updatesSection();
-    static const char* const kScreenReader[] = {"Auto (when a screen reader is running)", "On", "Off"};
-    sDirty |= ImGui::Combo("Screen reader support", &a.mode, kScreenReader, 3);
-    sDirty |= ImGui::Checkbox("Object sounds", &a.objectSounds);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Chests, keys, hearts, treasure, money, doors, Toads and banana peels repeat a sound. It gets faster as you get "
-                          "closer. Centre it left and right to walk straight at the object.");
-    sDirty |= ImGui::Checkbox("Ghost sounds", &a.ghostSounds);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("The nearest ghost that is showing repeats a falling tone. It gets faster as the ghost gets "
-                          "closer, and lower when the ghost is behind you.");
-    sDirty |= ImGui::Checkbox("Announce rooms", &a.announceRooms);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Says the name of each room as you enter it, using the names on the map, and the floor when "
-                          "it changes.");
-    sDirty |= ImGui::Checkbox("Auto interact", &a.autoInteract);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Presses A for you at chests and keys, and at doors you walk towards. It never acts on "
-                          "furniture or anything on the walls.");
-    ImGui::Separator();
-    ImGui::TextUnformatted("Audio cue glossary. Press a cue to hear it.");
-    using recomp::access::Cue;
-    static const struct {
-        const char* label;
-        Cue cue;
-    } kCues[] = {
-        {"Chest: two rising notes", Cue::Chest},
-        {"Key: two high rising notes", Cue::Key},
-        {"Heart: two low falling notes", Cue::Heart},
-        {"Treasure: one high note", Cue::Treasure},
-        {"Coins and bills: one short note", Cue::Money},
-        {"Door: one low note", Cue::Door},
-        {"Ghost: a low falling tone", Cue::Ghost},
-        {"Ghost in your flashlight: a bright rising tone", Cue::GhostAimed},
-        {"Banana peel, a hazard: a sharp clashing tone", Cue::Banana},
-        {"Toad: two bright rising notes", Cue::Toad},
-    };
-    for (const auto& c : kCues)
-        if (ImGui::Selectable(c.label)) recomp::access::playCue(c.cue);
-    ImGui::Separator();
-    ImGui::TextUnformatted("Which cues play. Object sounds and Ghost sounds above turn whole groups off.");
-    sDirty |= ImGui::Checkbox("Chest cue", &a.cueChest);
-    sDirty |= ImGui::Checkbox("Key cue", &a.cueKey);
-    sDirty |= ImGui::Checkbox("Heart cue", &a.cueHeart);
-    sDirty |= ImGui::Checkbox("Treasure cue", &a.cueTreasure);
-    sDirty |= ImGui::Checkbox("Coins and bills cue", &a.cueMoney);
-    sDirty |= ImGui::Checkbox("Door cue", &a.cueDoor);
-    sDirty |= ImGui::Checkbox("Toad cue", &a.cueToad);
-    sDirty |= ImGui::Checkbox("Banana peel cue", &a.cueBanana);
-    sDirty |= ImGui::Checkbox("Ghost cue", &a.cueGhost);
-    sDirty |= ImGui::Checkbox("Ghost in your flashlight cue", &a.cueGhostAimed);
-    ImGui::Separator();
-    ImGui::TextUnformatted("Every cue repeats faster as you get closer, and pans left and right with the object.");
-    ImGui::TextUnformatted("Pitch gives the direction: normal when it is straight left or right, higher when it is up or up to a side, lower when it is down or down to a side.");
+    if (ImGui::BeginTabBar("accessibility")) {
+        if (ImGui::BeginTabItem("General", nullptr, envTab("General"))) {
+            static const char* const kScreenReader[] = {"Auto (when a screen reader is running)", "On", "Off"};
+            sDirty |= ImGui::Combo("Screen reader support", &a.mode, kScreenReader, 3);
+            sDirty |= ImGui::Checkbox("Cutscene descriptions", &a.sceneDescriptions);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Says what is happening in cutscenes. Only some scenes have descriptions so far.");
+            sDirty |= ImGui::Checkbox("Room hints", &a.roomHints);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("The first time you enter a room with a puzzle or portrait ghost, says what it asks of you. Turn this off to work rooms out for yourself.");
+            sDirty |= ImGui::Checkbox("Announce rooms", &a.announceRooms);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Says the name of each room as you enter it, using the names on the map, and the floor when "
+                                  "it changes.");
+            sDirty |= ImGui::Checkbox("Announce moving platforms", &a.announcePlatforms);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Says when something starts carrying Luigi while you are not moving him, and when he is off it.");
+            sDirty |= ImGui::Checkbox("Boss announcements", &a.bossSpeech);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Says a boss's health as it drops, when it vanishes and returns, what is being thrown, and each phase of the fight.");
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Gameplay", nullptr, envTab("Gameplay"))) {
+            sDirty |= ImGui::Checkbox("Auto interact", &a.autoInteract);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Presses A for you at chests and keys, and at doors you walk towards. It never acts on "
+                                  "furniture or anything on the walls.");
+            sDirty |= ImGui::Checkbox("Keep objects in the vacuum", &a.holdObjects);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Press the right trigger with a ball or other object in reach, and the vacuum locks on. You can let go, and it stays on until you press the left trigger to throw.");
+            sDirty |= ImGui::Checkbox("Lock on to bosses", &a.bossLock);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("In a boss fight, holding the vacuum turns the nozzle to the nearest ball, or to the boss when it is stunned or a ball is held. A throw then goes straight at the boss from anywhere. Moving the right stick yourself takes over.");
+            sDirty |= ImGui::Checkbox("Easier boss hits", &a.easierBossHits);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("A ball or other object you throw is steered into the boss when it passes near. Turn this off for the original, harder game.");
+            static const char* const kStun[] = {"Normal", "Twice as long", "Three times as long", "Four times as long"};
+            sDirty |= ImGui::Combo("How long a stunned ghost stays", &a.stunLength, kStun, 4);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("More time to vacuum a ghost once it is stunned. Normal is the original, harder game.");
+            sDirty |= ImGui::Checkbox("Health refills by itself", &a.healthRefill);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Five seconds after Luigi was last hurt, his health starts to come back, about a point a second. Turn this off for the original, harder game.");
+            sDirty |= ImGui::Checkbox("Dropped items do not vanish", &a.itemsStay);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Hearts, coins and bills stay until you collect them. Turn this off for the original, harder game.");
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Damage", nullptr, envTab("Damage"))) {
+            sDirty |= ImGui::Checkbox("No damage from ghosts and bosses", &a.noGhostDamage);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Hits from ghosts and bosses, and running into them, do not hurt Luigi. Turn this off for the original, harder game.");
+            sDirty |= ImGui::Checkbox("No damage from thrown objects", &a.noThrownDamage);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Balls, books, bombs and other thrown objects do not hurt Luigi. Turn this off for the original, harder game.");
+            sDirty |= ImGui::Checkbox("No damage from hazards", &a.noHazardDamage);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Fire, explosions and any other hit that does not come from a ghost or a thrown object do not hurt Luigi.");
+            sDirty |= ImGui::Checkbox("No damage from floors", &a.noFloorDamage);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Floors that hurt Luigi while he stands on them do not hurt him.");
+            sDirty |= ImGui::Checkbox("No lingering damage", &a.noLingeringDamage);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Damage that ticks away over time after something happens to Luigi does not hurt him.");
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Audio cues", nullptr, envTab("Audio cues"))) {
+            sDirty |= ImGui::Checkbox("Object sounds", &a.objectSounds);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Chests, keys, hearts, treasure, money, doors, Toads and banana peels repeat a sound. It gets faster as you get "
+                                  "closer. Centre it left and right to walk straight at the object.");
+            sDirty |= ImGui::Checkbox("Ghost sounds", &a.ghostSounds);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("The nearest ghost that is showing repeats a falling tone. It gets faster as the ghost gets "
+                                  "closer, and lower when the ghost is behind you.");
+            sDirty |= recomp::menu::SliderInt("Audio cue volume", &a.cueVolume, 0, 200, "%d%%");
+            ImGui::Separator();
+            ImGui::TextUnformatted("Audio cues. A turns a cue on or off, and Y plays a sample of it. Object sounds and Ghost sounds above turn whole groups off.");
+            using recomp::access::Cue;
+            const struct {
+                const char* label;
+                Cue cue;
+                bool& on;
+            } kCues[] = {
+                {"Chest: two rising notes", Cue::Chest, a.cueChest},
+                {"Element medal chest: a bright high leap", Cue::Medal, a.cueMedal},
+                {"Element spirit, once you have its medal: a soft falling step", Cue::Spirit, a.cueSpirit},
+                {"Key: two high rising notes", Cue::Key, a.cueKey},
+                {"Heart: two low falling notes", Cue::Heart, a.cueHeart},
+                {"Treasure: one high note", Cue::Treasure, a.cueTreasure},
+                {"Coins and bills: one short note", Cue::Money, a.cueMoney},
+                {"Door: one low note", Cue::Door, a.cueDoor},
+                {"Ghost: a low falling tone", Cue::Ghost, a.cueGhost},
+                {"Ghost in your flashlight: a bright rising tone", Cue::GhostAimed, a.cueGhostAimed},
+                {"Banana peel, a hazard: a sharp clashing tone", Cue::Banana, a.cueBanana},
+                {"Toad: two bright rising notes", Cue::Toad, a.cueToad},
+                {"Thrown object, such as a ball, book or bomb: a quick jump of an octave", Cue::Thrown, a.cueThrown},
+                {"A person to talk to, such as the professor: a soft rise and fall", Cue::Npc, a.cueNpc},
+                {"A boss: a heavy low rise", Cue::Boss, a.cueBoss},
+                {"A ghost's heart is showing, so vacuum it now: a fast double rise", Cue::GhostHeart, a.cueGhostHeart},
+                {"The furniture a Boo is hiding in, in a cleared room: a wavering high tone", Cue::Boo, a.cueBoo},
+                {"A candle stand is fully lit and needs no more fire: a warm rising chime", Cue::Candle, a.cueCandle},
+                {"The vacuum has locked on to an object: two quick high notes", Cue::Holding, a.cueHolding},
+                {"You can throw at the boss now, press the left trigger: a fast bright pulse", Cue::CanThrow, a.cueCanThrow},
+                {"Your flashlight is on a ghost: a quick high rise", Cue::GhostLit, a.cueGhostLit},
+                {"The vacuum has hooked a ghost, so pull away from it: a deep jump of an octave", Cue::GhostHooked, a.cueGhostHooked},
+                {"A scene starts and you lose control of Luigi: two low rising notes", Cue::SceneStart, a.cueSceneStart},
+                {"The scene ended and you have control: two low falling notes", Cue::SceneEnd, a.cueSceneEnd},
+                {"Dialogue is over: one soft note", Cue::DialogueEnd, a.cueDialogueEnd},
+            };
+            for (const auto& c : kCues) {
+                // ImGui's own gamepad mapping activates the focused item with Y too: here Y is only the sample.
+                const bool was = c.on;
+                const bool changed = ImGui::Checkbox(c.label, &c.on);
+                const bool yHeld = ImGui::IsKeyDown(ImGuiKey_GamepadFaceUp) || ImGui::IsKeyReleased(ImGuiKey_GamepadFaceUp);
+                if (changed && yHeld) c.on = was;
+                else sDirty |= changed;
+                if (ImGui::IsItemFocused() && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false)) {
+                    recomp::access::playCue(c.cue);
+                    if (std::getenv("LM_ACCESS_WORLD_LOG")) std::printf("[menu] cue sample: %s\n", c.label);
+                }
+            }
+            ImGui::Separator();
+            ImGui::TextUnformatted("Every cue repeats faster as you get closer, and pans left and right with the object.");
+            ImGui::TextUnformatted("Pitch gives the direction: normal when it is straight left or right, higher when it is up or up to a side, lower when it is down or down to a side.");
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
     if (!updateFirst) updatesSection();
 }
 

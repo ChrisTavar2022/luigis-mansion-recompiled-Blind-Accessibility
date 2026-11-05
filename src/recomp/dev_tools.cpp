@@ -5,6 +5,7 @@
 
 #include "port/install.h"
 #include "port/settings.h"
+#include "recomp/access.h"
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
 #include "recomp/menu.h"
@@ -227,6 +228,7 @@ HLE(fn_8018712C) {
         log("[dev] LM_GALLERY_PARAM: gallery screen %d instead of %d", sParam, s32(c.r[3]));
         c.r[3] = u32(sParam);
     }
+    access::galleryPlaque(s32(c.r[3]));
     callOriginal(c, "fn_8018712C");
 }
 

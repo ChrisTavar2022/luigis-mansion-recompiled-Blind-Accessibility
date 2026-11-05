@@ -22,8 +22,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <iterator>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -78,8 +80,7 @@ constexpr u32 kPauseStyle = 0x124;   // word: 1 Standard, 2 Sidestep
 constexpr u32 kStyleValue = 4;       // control style screen, word: 1 Standard, 2 Sidestep
 
 constexpr u32 kActorSlots = 0x803D48A0;  // slot 0 is Luigi
-constexpr u32 kHealth = 0xFC, kCounters = 0x12F4, kCounterCount = 10, kMoneyCounters = 12;
-constexpr u32 kCaughtType = 0x68;  // in Luigi's capture message, the type the game adds to his list (+0x11F0)
+constexpr u32 kHealth = 0xFC, kCounters = 0x12F4, kCounterCount = 10, kMoneyCounters = 12;  // spoken ones; all that fn_8004D688 adds up
 constexpr u32 kGhostTypes = 0x8033B590, kGhostTypeSize = 0x1C, kGhostTypeName = 0x18, kGhostTypeCount = 0x29C8 / 0x1C;
 constexpr u32 kGhostTypeFlags = 0x08, kGhostTypeFlag = 8;
 constexpr s32 kCounterMax = 99999, kHealthMax = 999;
@@ -90,7 +91,16 @@ constexpr u32 kMapTable = 0x802FF218, kMapDoors = 0x18;
 constexpr u32 kRoomInfo = 0x80C, kRoomNameIndex = 0x20;  // Luigi +0x80C (fn_800B1B34), read by fn_800458D0
 constexpr u32 kCurMap = 0x804D80C8, kMansionMap = 2, kLabMap = 1, kTrainingMap = 3, kGalleryMap = 6;
 constexpr u32 kEvent = 0x803D2D40, kEventCursor = 0x0C, kMenuOff = 0x804D8088;
+constexpr u32 kRoomLights = 0x804D8178, kRoomLightSize = 0x14C, kRoomLightByte = 6, kRoomLightBit = 0x80;  // set when a room is cleared
+constexpr u32 kElement = 0x1184, kElementFire = 2;
 constexpr auto kStatusRestart = std::chrono::seconds(5);
+constexpr u32 kCurScene = 0x804CFF98, kSceneOpening = 0x8021DBD8, kSceneMain = 0x8021DB68;
+constexpr u32 kOpeningNext = 0x804CFFAC, kOpeningIsDemo = 1;  // the title screen's demo is the same scene
+constexpr u32 kOpeningScript = 0x804CFFA8;  // fn_8000CE58: 76 the forest opening, 0 the short walk-up from the lab once flag 7 is set
+constexpr u32 kLuigiStopped = 0x10;  // +0x40, <LUIGISTOP>
+constexpr int kFoyerEvent = 48;
+constexpr u32 kFlagBoosOut = 73, kFlagBlackout = 61;  // game flags (fn_80065FA4; 61 as fn_80037894 reads it)
+bool gameFlag(u32 flag) { return (rd8(kEvent + 0x659 + flag / 8) >> (flag % 8)) & 1; }
 constexpr u32 kMapFloor = 0x804D8314;  // r13+0x3B4, byte, signed: -1 basement, 0 first floor
 constexpr u32 kRoomVisited = 0x803CDF50;  // u16 per room, bit 0
 
@@ -123,6 +133,8 @@ std::string gameText(u32 addr, u32 len) {
     return out;
 }
 
+clock::time_point sDescribing{};  // a cutscene description lasts about this long
+
 void pollMessages() {
     static std::string sLast[4];
     for (u32 slot = 0; slot < 4; slot++) {
@@ -135,7 +147,8 @@ void pollMessages() {
         const std::string text = gameText(kText + slot * 0x200, 0x200);
         if (text == sLast[slot]) continue;
         sLast[slot] = text;
-        say(text);
+        // A description still being read is not cut off: the line follows it.
+        say(text, clock::now() >= sDescribing);
     }
 }
 
@@ -165,6 +178,22 @@ const char* ghostName(const std::string& type) {
         const char* type;
         const char* name;
     } kNames[] = {
+        // Regular ghosts: internal names matched by the rooms jmp/enemyinfo puts them in against the
+        // Super Mario Wiki's lists. Flash and Blue Blaze are by being the second of their kind, the
+        // variants the wiki names; both grabber colours say Grabbing Ghost.
+        {"yapoo2", "Temper Terror"},
+        {"mapoo1", "Purple Puncher"},
+        {"mapoo2", "Flash"},
+        {"mopoo1", "Blue Twirler"},
+        {"mopoo2", "Blue Blaze"},
+        {"topoo2", "Mirror Ghost"},
+        {"topoo3", "Cinema Ghost"},
+        {"topoo", "Grabbing Ghost"},
+        {"putcher", "Bowling Ghost"},
+        {"tenjyo2", "Purple Bomber"},
+        {"skul", "Mr. Bones"},
+        {"eskul", "Mr. Bones"},
+        {"bmtelesa", "Boo"},
         {"father", "Neville"},
         {"mother", "Lydia"},
         {"baby", "Chauncey"},
@@ -192,9 +221,9 @@ const char* ghostName(const std::string& type) {
         {"mgyapoo", "Gold Ghost"},
         {"yapoo", "Gold Ghost"},
         {"iyapoo", "Speedy Spirit"},
-        {"heypo", "Shy Guy"},
+        {"heypo", "Shy Guy Ghost"},
         {"tenjyo", "Ceiling Surprise"},
-        {"banaoba", "Banana Ghost"},
+        {"banaoba", "Garbage Can Ghost"},
         {"waiter", "Waiter Ghost"},
         {"telesa", "Boo"},
         {"goldrat", "Gold Mouse"},
@@ -454,6 +483,103 @@ constexpr const char* kRoomNames[] = {
     "", "", "Pipe Room", "Breaker Room", "", "Bottom of the Well", "Secret Altar", "",
 };
 
+// What a room asks of the player, by name index, from the guides. Own words, kept short. Each is
+// spoken once in a run, when the room reaches that state: a boss or portrait ghost's advice only
+// while it is there, what comes after it once the lights are on. docs/accessibility/guide-notes.md
+// has more.
+// Dark: its ghosts are there. Cleared: they are gone. JustCleared: they went while Luigi watched, for
+// a job that comes straight after and cannot be seen to be done later. Fire: Luigi holds fire and the
+// room's candles are out. Seal: cleared, candles out. BoosIn: cleared, Boos not yet let out. Blackout:
+// the power is off.
+enum class When { Always, Dark, Cleared, JustCleared, Fire, Seal, BoosIn, Blackout };
+struct RoomHint {
+    u32 room;
+    When when;
+    const char* text;
+};
+constexpr RoomHint kRoomHints[] = {
+    {35, When::Dark, "Vacuum the candles around the portrait on the back wall to bring out the ghosts. The Go to menu lists them under Candles."},
+    {34, When::Dark, "Neville hides while you face him. Stand beside him with your back turned until he yawns and his heart shows, then turn and vacuum."},
+    {33, When::Dark, "Lydia cannot be stunned while she combs her hair. Vacuum the right curtain to let in a draft, and catch her when she gets up to close it."},
+    {38, When::Dark, "Two ghosts hide in the closets. Press A at them. Later, turn your back to the mirror to find a ghost."},
+    {20, When::Dark, "Ghosts here grab Luigi. Wiggle the stick to shake them off."},
+    {10, When::Dark, "Vacuum the masks off the ghosts, flash them, then vacuum them. Then ride the spinning floor with your back to the dancers until the heart shows."},
+    {14, When::BoosIn, "Press the red wall button opposite the mirror. A wall rolls back. Further in, vacuum the Danger poster off the wall to find another button. Pressing that one lets the Boos out, and the story goes on from there."},
+    {17, When::Dark, "Vacuum the toilet."},
+    {3, When::Dark, "Flash the crystal ball to bring out Madame Clairvoya, then press A at her. She wants to hear about each of Mario's five items."},
+    {3, When::Fire, "Light the candles in the four corners with the left trigger. A key then appears on top of the brass column beside the booth. The Go to menu lists them under Candles."},
+    {4, When::Dark, "The ghosts here show only in the mirror, and you cannot see them in the room. They come at you, so keep flashing and vacuuming."},
+    {4, When::Seal, "The door back to the Fortune-teller's Room is sealed, and it will not open until the seal is broken. Open the chest for the fire medal. Then vacuum up a fire spirit by the coals, and light the candle stands at each end of the room with the left trigger. The Go to menu lists them under Candles, and the spirits under Elements."},
+    {5, When::JustCleared, "Vacuum the washing machine."},
+    {0, When::Dark, "Shivers sits down here after fire scares him, and the candle burns him. Vacuum him while he is seated."},
+    {0, When::JustCleared, "There is a mouse hole in the back right corner: press A at it in the search view."},
+    {21, When::Dark, "Press A at each instrument except the piano. The drums are three. Then go to the piano. Answer water, or Super Mario Bros. 3. Vacuum up the sheet music."},
+    {9, When::Dark, "Vacuum the bananas first. Light the candelabras beside Mr. Luggs with fire, catch his two servers, and vacuum up his food. Dodge his fireballs until he tires."},
+    {8, When::Dark, "Vacuum the fridge door open. Shoot the ice ghost with fire."},
+    {8, When::JustCleared, "Take water from the sink to put out the burning door."},
+    {11, When::Dark, "Water the sprout by the faucet, and again after each boss. Dodge Spooky three times to bring out Mr. Bones. Catch him, and his bone draws Spooky out with his heart showing."},
+    {16, When::Dark, "Shake the tombstones to bring out three skeletons. After them, go to the big tombstone."},
+    {23, When::Always, "Press A at the birdhouse, and at the shack from its right side. There is a well to climb down."},
+    {22, When::Dark, "Press A at a punching bag to swing it at Biff Atlas, then get clear. Three hits show his heart."},
+    {22, When::JustCleared, "Walk on the treadmill for a few seconds, and a key appears."},
+    {47, When::Always, "Plates fly here. The emblem in the near right corner puts you on the ceiling, and another drops you on the table, where the white chest is."},
+    {40, When::Dark, "Light all the candelabras with fire to bring out the ghosts."},
+    {41, When::Dark, "Press A at the telescope in the search view. Then vacuum up the meteor and throw it at the moon."},
+    {46, When::Dark, "Knock over the yarn basket, then vacuum a ball and throw it at Nana. Three hits show her heart."},
+    {45, When::Dark, "Pull back the curtain from the left wall, and dodge her water. Spray her with ice, then vacuum."},
+    {25, When::Dark, "Spin the helicopter mobile on the ceiling with the vacuum. Play hide and seek: leave, come back, and vacuum the boxes. The ones that shake hold the twins. Vacuum the car and plane first."},
+    {12, When::Dark, "Slim shoots balls. Vacuum one and throw it at him, three times, to show his heart. Look for his floating cue."},
+    {13, When::Dark, "Press A at the projector. The ghosts are invisible: watch for puffs of smoke. Seven of them."},
+    {52, When::Dark, "Shake the animal heads to bring out water ghosts. Spray them with ice."},
+    {67, When::Blackout, "Press A at the generator's red switch in the right corner to bring back the power."},
+    {63, When::Dark, "Vacuum the dirt off the floor before you fight, and shake the barrels to bring out the ghosts."},
+    {50, When::Dark, "The ghosts hide in the trunks. Press A at them."},
+    {56, When::Dark, "Shake every clock to start them. Vacuum the keys out of the soldiers' backs, then vacuum the soldiers."},
+    {56, When::Cleared, "The door between the small clock towers is the lift to the roof."},
+    {48, When::Dark, "Shake the boxes, then each suit of armor. Keep clear of the ones holding maces."},
+    {55, When::Dark, "Press A at the blue vase and play. Jarvis pops out of vases: hit him with ice each time."},
+    {36, When::Always, "Vacuum the cloth off the mirror, then press A at it in the search view to go back to the Foyer."},
+    {27, When::Dark, "Light the two candles beside the painting with fire. Ghosts come in waves, then fire ghosts, so take water."},
+    {28, When::Dark, "Spray Sue Pea with water three times to wake her. Vacuum her dolls first."},
+    {66, When::Always, "Freeze the sewage with ice, walk across, and turn the wheel."},
+    {61, When::Dark, "Take fire and light the two fires in the corner, then melt Sir Weston's ice block. If he freezes you, shake the stick."},
+    {57, When::Dark, "Each painting sends out three ghosts, seven times over. After them the painter shows his heart."},
+};
+
+// What the key found in a room opens, by the room's name index, from the guides. Two rooms give a
+// second key late in the game, and the mod does not know which it is, so those name both.
+struct RoomKey {
+    u32 room;
+    const char* opens;
+};
+constexpr RoomKey kRoomKeys[] = {
+    {35, "the Anteroom"},
+    {38, "the second floor hallway to the west, or late in the game, the Breaker Room in the basement"},
+    {34, "the Master Bedroom"},
+    {33, "the Nursery"},
+    {24, "the double doors on the Foyer's ground floor"},
+    {20, "the Ball Room"},
+    {10, "the Storage Room"},
+    {17, "the Fortune-teller's Room"},
+    {3, "the Laundry Room, or late in the game, the Safari Room on the third floor"},
+    {0, "the Conservatory"},
+    {21, "the Dining Room"},
+    {16, "the Courtyard"},
+    {69, "the Rec Room"},
+    {22, "a first floor hallway door, a shortcut through the house"},
+    {46, "the Twins' Room"},
+    {45, "the Billiards Room"},
+    {52, "the Balcony"},
+    {59, "the west side of the third floor"},
+    {67, "the Cellar"},
+    {63, "the Clockwork Room"},
+    {48, "the Pipe Room"},
+    {36, "the Sitting Room"},
+    {66, "Cold Storage"},
+    {61, "the Artist's Studio"},
+    {57, "the Secret Altar"},
+};
+
 const char* floorName(u32 floor) {
     switch (floor) {
     case 0: return "First floor";
@@ -475,6 +601,8 @@ const char* roomName(u32 number) {
 
 }  // namespace
 
+std::string roomWord(u32 nameIndex) { return nameIndex < std::size(kRoomNames) ? kRoomNames[nameIndex] : ""; }
+
 std::string doorName(u32 room) {
     if (rd32(kCurMap) != kMansionMap || room >= kRoomCount) return "";
     const char* name = roomName(room);
@@ -484,6 +612,7 @@ std::string doorName(u32 room) {
 namespace {
 
 // What a locked door leads to: the nearest door of Luigi's room, the room on its other side.
+constexpr u32 kFlagFirstKey = 3, kFlagFirstKeyGone = 14;
 std::string lockedDoorText() {
     const u32 luigi = rd32(kActorSlots);
     const u32 map = rd32(kMapTable + 4 * rd32(kCurMap));
@@ -505,7 +634,59 @@ std::string lockedDoorText() {
         }
     }
     const char* name = other == ~0u ? "" : roomName(other);
+    // The Mirror Room's seal: its candles are the only ones that open a door (candleResult in
+    // access_world.cpp). Other rooms' candles bring a key or ghosts, and their locked doors are just locked.
+    constexpr u32 kMirrorRoom = 4;
+    const u32 lights = rd32(kRoomLights);
+    if ((rd32(luigi + kRoomInfo + kRoomNameIndex) & 0xFF) == kMirrorRoom && candlesUnlit() && gu::inMem1(lights) &&
+        (rd8(lights + room * kRoomLightSize + kRoomLightByte) & kRoomLightBit))
+        return (*name ? std::string("The ") + name + " door" : std::string("This door")) + " is sealed. It will not open until the candles here are lit with fire.";
+    // The first key: flag 3 brings it down in the Foyer (jmp/keyinfo, demo_key, door 34), and flag 14
+    // takes it away. Trying the Parlor's door is what starts that.
+    if (!gameFlag(kFlagFirstKeyGone) && (gameFlag(kFlagFirstKey) || std::strcmp(name, "Parlor") == 0))
+        return (*name ? std::string(name) + " is locked. " : std::string("This door is locked. ")) + "A key has appeared in the Foyer, back the way you came. It opens the Parlor.";
     return *name ? std::string(name) + " is locked" : std::string("This door is locked");
+}
+
+// The hints that fit the room as it is now. A room that clears while Luigi stands in it gets its
+// next hint then, once any scene is over.
+void roomHints(u32 luigi, u32 room) {
+    if (!port::settings().accessibility.roomHints || rd32(kEvent + kEventCursor) != 0 || rd32(kMenuOff) != 0) return;
+    for (u32 slot = 0; slot < 4; slot++)
+        if (rd32(kState + slot * 4) != 0) return;
+    const u32 lights = rd32(kRoomLights);
+    if (!gu::inMem1(lights)) return;
+    const bool cleared = (rd8(lights + (rd32(luigi + kActRoom) >> 24) * kRoomLightSize + kRoomLightByte) & kRoomLightBit) != 0;
+    // A room seen dark and then clear, on this visit.
+    static u32 sDarkRoom = ~0u;
+    static bool sJustCleared = false;
+    if (room != sDarkRoom) sJustCleared = false;
+    if (!cleared) sDarkRoom = room;
+    else if (sDarkRoom == room) sJustCleared = true;
+    const bool blackout = gameFlag(kFlagBlackout);
+    static std::set<const RoomHint*> sSaid;
+    static u32 sRun = 0;
+    if (runCount() != sRun) {  // a new game: every hint again
+        sRun = runCount();
+        sSaid.clear();
+    }
+    for (const RoomHint& hint : kRoomHints) {
+        if (hint.room != room || sSaid.count(&hint)) continue;
+        bool fits = false;
+        switch (hint.when) {
+        case When::Always: fits = true; break;
+        case When::Dark: fits = !cleared && !blackout; break;
+        case When::Cleared: fits = cleared; break;
+        case When::JustCleared: fits = sJustCleared; break;
+        case When::Fire: fits = rd32(luigi + kElement) == kElementFire && candlesUnlit(); break;
+        case When::Seal: fits = cleared && candlesUnlit(); break;
+        case When::BoosIn: fits = cleared && !gameFlag(kFlagBoosOut); break;
+        case When::Blackout: fits = blackout; break;
+        }
+        if (!fits) continue;
+        sSaid.insert(&hint);
+        say(hint.text, false);
+    }
 }
 
 // The room Luigi walks into, then the floor when that changed too. Only the mansion has these names.
@@ -516,11 +697,18 @@ void pollRoom(u32 luigi) {
         return;
     }
     const u32 room = rd32(luigi + kRoomInfo + kRoomNameIndex) & 0xFF;
-    if (room == sRoom) return;
+    if (room == sRoom) {
+        roomHints(luigi, room);
+        return;
+    }
     const bool first = sRoom == ~0u;
     sRoom = room;
     const char* name = room < std::size(kRoomNames) ? kRoomNames[room] : "";
-    say(*name ? name : "Hallway", false);
+    // A room already won says so on the way in, in the name's sentence.
+    const u32 lights = rd32(kRoomLights);
+    const bool clear = *name && gu::inMem1(lights) && !gameFlag(kFlagBlackout) && (rd8(lights + (rd32(luigi + kActRoom) >> 24) * kRoomLightSize + kRoomLightByte) & kRoomLightBit);
+    say(*name ? (std::string(name) + (clear ? ", clear" : "")) : std::string("Hallway"), false);
+    roomHints(luigi, room);
     // The room table's own floor, once Luigi's room number is known.
     const u32 rooms = rd32(kRoomTable);
     if (!gu::inMem1(rooms)) return;
@@ -535,6 +723,72 @@ constexpr s64 kCounterValues[kMoneyCounters] = {5000, 20000, 100000, 500000, 800
 
 // Luigi's health and money, spoken when they change.
 // Actor +0xFC is health, +0x12F4 onwards the treasure counters.
+// The element in the Poltergust and the medals. A spirit fills the meter to the game's own limit
+// (int at 0x804D2C2C, fn_800AEEA8), and the element is 1 once the meter runs out.
+constexpr u32 kElementMeter = 0x1188, kElementMax = 0x804D2C2C;
+constexpr struct {
+    u32 element, flag;
+    const char* word;
+    const char* lower;
+} kElements[] = {{2, 43, "Fire", "fire"}, {3, 44, "Water", "water"}, {4, 45, "Ice", "ice"}};
+const char* elementWord(u32 element) {
+    for (const auto& e : kElements)
+        if (e.element == element) return e.word;
+    return nullptr;
+}
+float elementMax() {
+    const s32 max = s32(rd32(kElementMax));
+    return max > 0 && max < 100000 ? float(max) : 100.0f;
+}
+
+void pollElement(u32 luigi, bool settled) {
+    static u32 sElement = 0;
+    static bool sFull = false, sMedals[3] = {};
+    // Test aid LM_ACCESS_TEST_ELEMENT=<read>: fire at half, then full, then gone, 150 reads apart.
+    static const int sTest = [] {
+        const char* v = std::getenv("LM_ACCESS_TEST_ELEMENT");
+        return v ? std::atoi(v) : 0;
+    }();
+    static int sReads = 0;
+    if (sTest && ++sReads >= sTest) {
+        const int step = (sReads - sTest) / 150;
+        if (step == 0) wr32(luigi + kElement, 2), wr32(luigi + kElementMeter, std::bit_cast<u32>(elementMax() / 2));
+        else if (step == 1) wr32(luigi + kElementMeter, std::bit_cast<u32>(elementMax()));
+        else if (step == 2) wr32(luigi + kElement, 1), wr32(luigi + kElementMeter, 0);
+    }
+    const u32 element = rd32(luigi + kElement);
+    if (element > 4) return;  // junk during a load
+    const float meter = gu::rdf(luigi + kElementMeter);
+    const bool full = meter >= elementMax() - 0.5f;
+    if (settled) {
+        for (u32 i = 0; i < std::size(kElements); i++)
+            if (gameFlag(kElements[i].flag) && !sMedals[i])
+                say(std::string(kElements[i].word) + " Medal collected. You can now vacuum up " + kElements[i].lower + " spirits, and each one fills your element meter.", false);
+        const char* word = elementWord(element);
+        if (element != sElement) {
+            if (word) say(std::string(word) + " collected." + (full ? " Meter full." : ""), false);
+            else if (const char* was = elementWord(sElement)) say(std::string(was) + " used up.", false);
+        } else if (word && full && !sFull) {
+            say(std::string(word) + " meter full.", false);
+        }
+    }
+    for (u32 i = 0; i < std::size(kElements); i++) sMedals[i] = gameFlag(kElements[i].flag);
+    sElement = element;
+    sFull = full;
+}
+
+// "Fire, meter 80 percent. Medals: fire, water", or empty before the first medal.
+std::string elementStatus(u32 luigi) {
+    std::string medals;
+    for (const auto& e : kElements)
+        if (gameFlag(e.flag)) medals += (medals.empty() ? "" : ", ") + std::string(e.lower);
+    const char* word = elementWord(rd32(luigi + kElement));
+    if (medals.empty() && !word) return "";
+    std::string out = word ? std::string(word) + ", meter " + std::to_string(int(gu::rdf(luigi + kElementMeter) * 100.0f / elementMax() + 0.5f)) + " percent." : std::string("No element held.");
+    if (!medals.empty()) out += " Medals: " + medals;
+    return out;
+}
+
 void pollStatus() {
     const u32 luigi = rd32(kActorSlots);
     if (!gu::inMem1(luigi)) return;
@@ -551,10 +805,13 @@ void pollStatus() {
     }
     const bool settled = clock::now() - sMapStart > kMapSettle;
     if (sound && health != sHealth) {
-        if (sHealth > 0 && health > 0 && settled) say("Health " + std::to_string(health), false);  // 0: luigiDown
+        // A point at a time is the refill setting, which says when it is full.
+        const bool refilling = health == sHealth + 1 && port::settings().accessibility.healthRefill;
+        if (sHealth > 0 && health > 0 && settled && !refilling) say("Health " + std::to_string(health), false);  // 0: luigiDown
         sHealth = health;
     }
     if (sound && health > 0) pollRoom(luigi);
+    if (sound) pollElement(luigi, settled);
     // Money. A burst of coins gives one total: speak once the counters have been still briefly.
     // Coins, bills, gold bars; the rest are gems. They are reloaded when Luigi's actor changes, and
     // that is not a pickup.
@@ -567,6 +824,7 @@ void pollStatus() {
     for (u32 i = 0; i < kCounterCount; i++) {
         const s32 v = s32(rd32(luigi + kCounters + 4 * i));
         if (v < 0 || v > kCounterMax) {
+            if (std::getenv("LM_ACCESS_WORLD_LOG")) log("[access] counter %u is out of range: %d", i, v);
             sActor = 0;
             sPending = false;
             return;
@@ -642,6 +900,140 @@ void pollGbhMap() {
     sFloor = floor;
 }
 
+// Cutscene descriptions: what a scene shows, spoken between its lines. event is the number of the
+// script (/Event/eventNN.szp), or kOpening. at is seconds into the scene. Written from frames of each
+// scene, so the wording is a draft for the user to review.
+constexpr int kOpening = -1, kReturnWalk = -2;
+struct SceneLine {
+    int event;
+    float at;
+    const char* text;
+};
+constexpr SceneLine kSceneLines[] = {
+    {kOpening, 1.0f, "Night. Luigi walks alone through a dark forest of twisted, moss-covered trees, a flashlight lighting the way."},
+    {kOpening, 20.0f, "The trees open onto a huge, decaying mansion on a hill, under a storm of green-black cloud. Two windows glow orange. A broken carriage lies by the path, and a small crooked shed glows beside it."},
+    {kOpening, 34.0f, "Luigi climbs the wide stone steps to the mansion's arched double doors."},
+    {kOpening, 40.0f, "The doors fill the view: dark wood and iron scrollwork, with a small skull at their centre."},
+    {kReturnWalk, 0.5f, "Lightning over the mansion on its hill. Down by his lab, E. Gadd waves Luigi off."},
+    {kReturnWalk, 7.0f, "Through the gate, and the view follows close behind Luigi, the Poltergust on his back, up to the front door."},
+    {kFoyerEvent, 0.5f, "Inside is the Foyer, a tall dark hall. A carpeted staircase rises to a landing, under a chandelier and a large clock."},
+    {kFoyerEvent, 8.0f, "The view moves to a door beneath the clock. It is sealed by a glowing blue web."},
+    {1, 1.0f, "A small old man in a white coat fights a ghost with a vacuum on his back. It flings him across the floor at Luigi's feet."},
+    {2, 1.0f, "Back in the lab, the professor stands by a big machine, the Ghost Portrificationizer. It draws in the captured ghosts, and a framed painting comes out."},
+    {7, 0.5f, "A key appears in the room."},
+    {8, 1.0f, "E. Gadd's lab, a cluttered workshop of machines and pipes. The little professor faces Luigi."},
+    {11, 1.0f, "The Game Boy Horror crackles, and the professor's face appears on its screen."},
+    {12, 1.0f, "The Game Boy Horror rings, and the professor's face appears on its screen."},
+    {15, 1.0f, "The Game Boy Horror rings, and the professor's face appears on its screen."},
+    {30, 0.5f, "Luigi steps onto a lift, and it carries him up to the roof."},
+    {40, 0.5f, "The lift carries Luigi back down."},
+    {42, 1.0f, "The Game Boy Horror crackles, and the professor's face appears on its screen."},
+    {44, 0.5f, "Lightning strikes outside. Every light in the mansion goes out."},
+    {46, 1.0f, "Far below in the well, Luigi sees Mario, trapped and crying out for help."},
+    {50, 0.5f, "Chauncey, a giant ghost baby, sits up in his crib."},
+    {54, 1.0f, "Luigi holds up a medal, and the professor's face appears on the Game Boy Horror."},
+    {61, 0.5f, "The candles blaze up, and something in the room turns on Luigi."},
+    {64, 0.5f, "Luigi, shrunk tiny, lands on Chauncey's enormous bed. The huge baby towers over him."},
+    {65, 0.5f, "The glowing grave draws Luigi down into the dark."},
+    {66, 0.5f, "A round, shadowy arena among the graves. Bogmire, a black ghost, rises out of the shadows."},
+    {67, 0.5f, "Luigi is back in the graveyard."},
+    {68, 0.5f, "Luigi looks through the telescope at the night sky."},
+    {69, 0.5f, "A swarm of Boos bursts out, cackling, and scatters through the mansion."},
+    {70, 1.0f, "Luigi holds up a medal, and the professor's face appears on the Game Boy Horror."},
+    {71, 0.5f, "On the moonlit balcony, a ring of Boos circles and laughs at Luigi."},
+    {72, 0.5f, "The Boos pile together and swell into one giant Boo, Boolossus."},
+    {73, 0.5f, "A dim altar room. A huge painting of Mario hangs on the wall, and a small glowing figure floats before it: King Boo, wearing a crown."},
+    {74, 0.5f, "King Boo gazes at his painting. Then he swaps it for one of Bowser, and it drags Luigi inside."},
+    {75, 0.5f, "Luigi lands on a rooftop arena under a dark sky. A giant Bowser stomps towards him."},
+    {76, 0.5f, "The strange room clears, and the way ahead opens."},
+    {80, 1.0f, "The Game Boy Horror crackles, and the professor's face appears on its screen."},
+    {82, 0.5f, "The defeated painter's ghost begins to fade away."},
+    {88, 1.0f, "The professor's face appears on the Game Boy Horror, and Luigi lifts the great painting of Mario down."},
+    {90, 0.5f, "The giant Bowser falls apart, and Luigi drops back into the altar room, beside the painting of Mario."},
+    {93, 0.5f, "The telephone rings, and Luigi picks it up."},
+    {94, 0.5f, "The telephone rings, and Luigi picks it up."},
+};
+
+std::atomic<int> sEventFile{-1};  // the last event script loaded
+std::atomic<u32> sRunCount{0};
+
+// When a scene starts and ends, when dialogue ends, and each scene's descriptions.
+void pollScene() {
+    const u32 scene = rd32(kCurScene);
+    const u32 luigi = rd32(kActorSlots);
+    const bool stopped = gu::inMem1(luigi) && (rd32(luigi + 0x40) & kLuigiStopped);
+    const bool event = rd32(kEvent + kEventCursor) != 0 && rd32(kCurMap) != kTrainingMap;
+    const bool demo = scene == kSceneOpening && rd32(kOpeningNext) == kOpeningIsDemo;
+    const bool inScene = (scene == kSceneOpening && !demo) || (scene == kSceneMain && event && (rd32(kMenuOff) != 0 || stopped));
+
+    // Short gaps between a scene's parts are the same scene.
+    static bool sShown = false;
+    static clock::time_point sChanged{}, sStart{};
+    static bool sLast = false;
+    static int sKey = -3;
+    static size_t sNext = 0;
+    if (inScene != sLast) {
+        sLast = inScene;
+        sChanged = clock::now();
+    }
+    // Longer to call a scene over: one part often hands straight to the next, as the opening does to
+    // the Foyer, and "you have control" would be false.
+    if (inScene != sShown && clock::now() - sChanged > std::chrono::milliseconds(inScene ? 400 : 2000)) {
+        sShown = inScene;
+        noticeCue(inScene ? Cue::SceneStart : Cue::SceneEnd);
+    }
+    // Descriptions follow any script, including ones that leave Luigi free, and play once per run:
+    // the lab's scripts come round on every visit, and the title demo loops. The real opening always
+    // plays them, whatever the demo already said.
+    static bool sRunning = false;
+    static std::vector<bool> sSpoken(std::size(kSceneLines), false);
+    if (scene != kSceneOpening && scene != kSceneMain) sSpoken.assign(std::size(kSceneLines), false);  // a new start
+    {
+        static bool sWasOut = true;
+        const bool out = scene != kSceneOpening && scene != kSceneMain;
+        if (out && !sWasOut) {
+            sRunCount++;
+            log("[access] back at the title: run %u", sRunCount.load());
+        }
+        sWasOut = out;
+    }
+    const bool running = scene == kSceneOpening || (scene == kSceneMain && rd32(kEvent + kEventCursor) != 0);
+    // One script can follow another with no gap.
+    const int key = scene == kSceneOpening ? (rd32(kOpeningScript) == 0 ? kReturnWalk : kOpening) : sEventFile.load();
+    if (running && (!sRunning || key != sKey)) {
+        sKey = key;
+        sStart = clock::now();
+        sNext = 0;
+        log("[access] scene starts: event %d%s", sKey, demo ? ", title demo" : "");
+    }
+    sRunning = running;
+    if (running && port::settings().accessibility.sceneDescriptions) {
+        const float at = std::chrono::duration<float>(clock::now() - sStart).count();
+        for (; sNext < std::size(kSceneLines); sNext++) {
+            const SceneLine& line = kSceneLines[sNext];
+            if (line.event != sKey) continue;
+            if (at < line.at) break;
+            if (!sSpoken[sNext] || (sKey == kOpening && !demo)) {
+                say(line.text, false);
+                sDescribing = clock::now() + std::chrono::milliseconds(70 * std::strlen(line.text));  // about 14 letters a second
+            }
+            sSpoken[sNext] = true;
+        }
+    }
+
+    bool window = false;
+    for (u32 slot = 0; slot < 4; slot++) window |= rd32(kState + slot * 4) != 0;
+    static bool sWindow = false;
+    static clock::time_point sClosed{};
+    if (window) {
+        sWindow = true;
+        sClosed = clock::now();
+    } else if (sWindow && clock::now() - sClosed > std::chrono::milliseconds(500)) {
+        sWindow = false;
+        if (sShown || !inScene) noticeCue(Cue::DialogueEnd);  // a line that follows at once is the same talk
+    }
+}
+
 // The control style screen in E. Gadd's first talk (fn_80051380).
 void pollControlStyle() {
     static std::string sLast;
@@ -677,15 +1069,24 @@ void watchMemory() {
     if (now == sLast) return;
     sLast = now;
     std::printf("[watch] frame %u: %s\n", copyDispCount(), now.c_str());
-    std::fflush(stdout);
 }
 
 }  // namespace
 
 bool gamePaused() { return sPause.running(); }
 
+void keyCollected(u32 room) {
+    if (port::usCodeFeature() != port::Avail::Yes) return;
+    for (const RoomKey& key : kRoomKeys)
+        if (key.room == room) {
+            say(std::string("This key opens ") + key.opens + ".", false);
+            return;
+        }
+    say("Key collected. The map shows locked doors.", false);
+}
+
 bool sayStatus() {
-    if (port::usCodeFeature() != port::Avail::Yes) return false;
+    if (port::usCodeFeature() != port::Avail::Yes || rd32(kCurScene) != kSceneMain) return false;
     const u32 luigi = rd32(kActorSlots);
     if (!gu::inMem1(luigi)) return false;
     // In a menu, a cutscene or a conversation the stick repeats what was said instead.
@@ -701,9 +1102,17 @@ bool sayStatus() {
     static clock::time_point sLastPress{};
     if (clock::now() - sLastPress > kStatusRestart) sNext = 0;
     sLastPress = clock::now();
+    // Further stops: the element and medals once there are any, and a boss while one is about.
+    std::vector<std::string> extra;
+    if (const std::string element = elementStatus(luigi); !element.empty()) extra.push_back(element);
+    if (const std::string boss = bossStatus(); !boss.empty()) extra.push_back(boss);
+    const int stops = 3 + int(extra.size());
+    if (sNext >= stops) sNext = 0;
     const int item = sNext;
-    sNext = (sNext + 1) % 3;
-    if (item == 0) {
+    sNext = (sNext + 1) % stops;
+    if (item >= 3) {
+        say(extra[item - 3]);
+    } else if (item == 0) {
         say("Health " + std::to_string(health));
     } else if (item == 1) {
         s64 total = 0;
@@ -729,12 +1138,15 @@ void luigiDown(u32 actor) {
     if (port::usCodeFeature() == port::Avail::Yes && actor == rd32(kActorSlots)) say("Game over", false);
 }
 
-void ghostCaught(u32 data) {
-    if (port::usCodeFeature() != port::Avail::Yes || !gu::inMem1(data)) return;
+constexpr u32 kStunFrames = 29;
+namespace {
+void noteCaught(u32 type) {
+    // Written to the log every time, so a report from play shows how far a catch got.
+    const bool ghost = type < kGhostTypeCount && (rd16(kGhostTypes + type * kGhostTypeSize + kGhostTypeFlags) & kGhostTypeFlag);
+    const std::string name = type < kGhostTypeCount ? gameText(rd32(kGhostTypes + type * kGhostTypeSize + kGhostTypeName), 16) : std::string();
+    log("[access] message 21: type %u %s, %s", type, name.c_str(), ghost ? "a ghost" : "not a ghost");
     // Keys, hearts and other items come through the same message: the game's own text covers those.
-    const u32 type = rd32(data + kCaughtType);
-    if (type >= kGhostTypeCount || !(rd16(kGhostTypes + type * kGhostTypeSize + kGhostTypeFlags) & kGhostTypeFlag)) return;
-    const std::string name = gameText(rd32(kGhostTypes + type * kGhostTypeSize + kGhostTypeName), 16);
+    if (!ghost) return;
     std::lock_guard lk(sCaughtM);
     sCaughtAt = clock::now();
     for (auto& [caught, count] : sCaught)
@@ -743,6 +1155,15 @@ void ghostCaught(u32 data) {
             return;
         }
     sCaught.push_back({ghostName(name), 1});
+}
+}  // namespace
+
+std::string ghostWord(u32 type) {
+    return type < kGhostTypeCount ? ghostName(gameText(rd32(kGhostTypes + type * kGhostTypeSize + kGhostTypeName), 16)) : "Ghost";
+}
+
+void ghostCaught(u32 type) {
+    if (port::usCodeFeature() == port::Avail::Yes) noteCaught(type);
 }
 
 void pollGame() {
@@ -758,6 +1179,15 @@ void pollGame() {
         }
     }
     if (!active()) return;
+    // Test aid LM_ACCESS_TEST_CAUGHT=<type>@<frame>: a catch, as the message would report it.
+    if (const char* v = std::getenv("LM_ACCESS_TEST_CAUGHT")) {
+        unsigned type = 0, frame = 0;
+        static bool sDone = false;
+        if (!sDone && std::sscanf(v, "%u@%u", &type, &frame) == 2 && copyDispCount() >= frame) {
+            sDone = true;
+            noteCaught(type);
+        }
+    }
     pollTitle();
     pollFileMenu();
     pollPause();
@@ -765,11 +1195,15 @@ void pollGame() {
     pollAccount();
     pollControlStyle();
     pollGbhMap();
+    pollScene();
+    noticeTick();
     pollStatus();
     pollCaught();
     pollMessages();
     pollChoices();
 }
+
+u32 runCount() { return sRunCount.load(); }
 
 }  // namespace recomp::access
 
@@ -796,6 +1230,67 @@ HLE(fn_8011496C) {
         access::nav::doorLocked();
     }
     callOriginal(c, "fn_8011496C");
+}
+
+// The Game Boy Horror's list screen, which Z opens: its update, with the screen object in r3.
+HLE(fn_8005232C) {
+    const u32 screen = c.r[3];
+    callOriginal(c, "fn_8005232C");
+    access::listScreen(screen);
+}
+
+// An object leaves the nozzle: this reads the nozzle's direction (Luigi +0x10FC) for its flight.
+HLE(fn_800A3460) {
+    access::aimThrow(c.r[3]);
+    callOriginal(c, "fn_800A3460");
+}
+HLE(fn_8009D050) {
+    access::aimThrow(c.r[3]);
+    callOriginal(c, "fn_8009D050");
+}
+HLE(fn_800A95C0) {
+    access::aimThrow(c.r[3]);
+    callOriginal(c, "fn_800A95C0");
+}
+
+// How long a stunned ghost stays, by the setting. A stun is 29 game frames in the light-bind
+// sub-strategy (strategy +0x504, pointed to by +0x590), state 3, and its counters do not end it: the
+// way out is setNextState, held back here until the longer time is up. A ghost the vacuum has
+// hooked goes on at once.
+HLE(setNextState__13EnemyStrategyFUs) {
+    const u32 sub = c.r[3];
+    if (access::active() && port::usCodeFeature() == port::Avail::Yes && gu::inMem1(sub - 0x504) && rd16(sub + 0xE) == 3 && rd32(sub - 0x504 + 0x590) == sub) {
+        static const char* sTest = std::getenv("LM_ACCESS_TEST_STUN");
+        const u32 length = u32(std::clamp(sTest ? std::atoi(sTest) : port::settings().accessibility.stunLength, 0, 3));
+        const u32 luigi = rd32(access::kActorSlots);
+        const bool hooked = gu::inMem1(luigi) && rd32(luigi + 0x11A0) != 0;
+        if (!hooked && rd32(sub + 0x10) < access::kStunFrames * (length + 1)) return;
+    }
+    access::noteStrategy(sub);
+    callOriginal(c, "setNextState__13EnemyStrategyFUs");
+}
+
+// A hit on Luigi: the attacker is in the hit's data. A cancelled one returns as the handler's own
+// checks do when no hit lands (0).
+HLE(fn_800B9124) {
+    if (access::hitCancelled(c.r[4])) {
+        c.r[3] = 0;
+        return;
+    }
+    callOriginal(c, "fn_800B9124");
+}
+
+// A file load by name: event scripts come through here.
+HLE(fn_800067D0__FPCcPFPvP13LMDvdFileInfo_vP18LMDvdFileInfoBlockl) {
+    int no = 0;
+    if (const char* path = gstr(c.r[3]); path && std::sscanf(path, "/Event/event%d.szp", &no) == 1) access::sEventFile = no;
+    callOriginal(c, "fn_800067D0__FPCcPFPvP13LMDvdFileInfo_vP18LMDvdFileInfoBlockl");
+}
+
+// The Boo manager's update. There is no global pointer to it.
+HLE(fn_800C3B14) {
+    access::noteBooManager(c.r[3]);
+    callOriginal(c, "fn_800C3B14");
 }
 
 // Game Boy Horror map update.
