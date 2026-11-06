@@ -386,6 +386,11 @@ struct AccessibilitySettings {
     bool cueGhostLit = true;
     bool cueGhostHooked = true;
     int cueVolume = 100;  // percent of the normal level, 0 to 200
+    bool cueHorse = true;  // Chauncey's rocking horses, their own beacon
+    bool cuePlatform = true;  // stepping on and off a moving floor, and riding it
+    // Each cue's own volume, percent, by access::Cue number (kCueLevelKeys in settings.cpp names them).
+    int cueLevel[28] = {100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100};
+    bool hookRumble = true;  // a short buzz when the vacuum hooks a ghost or a Boo
     bool cueSceneStart = true;
     bool cueSceneEnd = true;
     bool cueDialogueEnd = true;

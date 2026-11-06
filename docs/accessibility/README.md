@@ -48,6 +48,8 @@ These work in the options menu and on the setup screens:
 - Right stick press: while Luigi is free, the next of health, total money and location, starting over after 5 seconds without a press. In menus, cutscenes and conversations it repeats the last announcement.
 - Left stick press: open or close the Go to menu. It acts on release, because it may be the start of pressing both.
 - Both sticks pressed in: open or close the options menu.
+- Both shoulder buttons together, in play: turn every audio cue off, or back on. On an Xbox pad both bumpers are the game's Z, so a lone bumper's Z reaches the game a moment late.
+- Left and right on a cue in Accessibility > Audio cues: that cue's own volume.
 
 ## How the spoken menus work
 

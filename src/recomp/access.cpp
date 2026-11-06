@@ -20,6 +20,9 @@
 #include "recomp/access_nav.h"
 
 #include "port/settings.h"
+#include "recomp/hle.h"
+
+#include <dolphin/pad.h>
 
 #include <backends/imgui_impl_sdl3.h>
 #include <imgui.h>
@@ -277,6 +280,7 @@ void onNewFrame(ImGuiContext* ctx, ImGuiContextHook*) {
 
 std::string sItemPrefix;
 Uint64 sItemPrefixAt = 0;
+int sQuietFrames = 0;  // quietItemChange: frames left to take the focused item's new text unspoken
 
 void onEndFrame(ImGuiContext* ctx, ImGuiContextHook*) {
     ImGuiContext& g = *ctx;
@@ -288,6 +292,11 @@ void onEndFrame(ImGuiContext* ctx, ImGuiContextHook*) {
         std::string item = describe(piece(sScan.itemStart, sScan.itemEnd));
         const int position = sScan.tabs ? sScan.tabPosition : sScan.position, total = sScan.tabs ? sScan.tabs : sScan.items;
         if (position > 0 && total > 1) item += ", " + std::to_string(position) + " of " + std::to_string(total);
+        if (sQuietFrames > 0 && item != sLastItem) {  // its new text was already said in short
+            sLastItem = item;
+            sQuietFrames = 0;
+        }
+        if (sQuietFrames > 0) sQuietFrames--;
         if ((item != sLastItem || !sItemPrefix.empty()) && !item.empty()) {
             sLastItem = item;
             sLastTip.clear();
@@ -380,8 +389,44 @@ void say(const std::string& text, bool interrupt) {
     q.cv.notify_all();
 }
 
+// Both shoulder buttons together turn every audio cue off or on. On an Xbox pad both bumpers are the
+// game's Z, so Z from a lone bumper is held back a few reads (filterChord) to see if the other joins.
+constexpr int kChordReads = 4;  // input reads, about 30 a second
+std::atomic<bool> sCuesMuted{false}, sBumperL{false}, sBumperR{false}, sChordSwallow{false};
+
+bool cuesMuted() { return sCuesMuted; }
+
+void filterChord(std::uint16_t& button) {
+    static int sHeld = 0;
+    const bool l = sBumperL, r = sBumperR;
+    if (sChordSwallow) {
+        if (!l && !r) sChordSwallow = false;
+        else button &= std::uint16_t(~PAD_TRIGGER_Z);
+        sHeld = 0;
+        return;
+    }
+    if (l != r && (button & PAD_TRIGGER_Z) && sHeld < kChordReads) {
+        sHeld++;
+        button &= std::uint16_t(~PAD_TRIGGER_Z);
+    } else if (!l && !r) {
+        sHeld = 0;
+    }
+}
+
 bool handleEvent(const SDL_Event& ev, bool goToAllowed) {
     if (!sActive) return false;
+    if ((ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || ev.type == SDL_EVENT_GAMEPAD_BUTTON_UP) &&
+        (ev.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || ev.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) {
+        const bool down = ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+        (ev.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER ? sBumperL : sBumperR) = down;
+        if (down && sBumperL && sBumperR && !sChordSwallow) {
+            sChordSwallow = true;
+            sCuesMuted = !sCuesMuted;
+            say(sCuesMuted ? "Audio cues off" : "Audio cues on");
+            log("[access] audio cues %s by both shoulder buttons", sCuesMuted ? "off" : "on");
+        }
+        return false;
+    }
     static bool sLeftAlone = false;  // the left stick is down and the right has not joined it
     if (ev.type == SDL_EVENT_GAMEPAD_BUTTON_UP && SDL_GamepadButton(ev.gbutton.button) == SDL_GAMEPAD_BUTTON_LEFT_STICK) {
         if (sLeftAlone) {
@@ -414,6 +459,12 @@ bool handleEvent(const SDL_Event& ev, bool goToAllowed) {
     }
     say(last);
     return false;
+}
+
+void quietItemChange(const std::string& text) {
+    if (!sActive) return;
+    say(text);
+    sQuietFrames = 3;
 }
 
 void itemSpeech(const std::string& text) {

@@ -21,9 +21,16 @@ void say(const std::string& text, bool interrupt = true);
 // Left stick press opens the Go to menu (on release: it may be the start of pressing both). True when
 // both sticks were pressed in: the control that opens and closes the options menu.
 bool handleEvent(const SDL_Event& ev, bool goToAllowed = true);
+// Both shoulder buttons pressed together turn every audio cue off or on (not saved). filterChord holds
+// back the game's Z from a lone bumper for a few reads, since both Xbox bumpers are Z. From PADRead.
+bool cuesMuted();
+void filterChord(std::uint16_t& button);
 
 // What to say for the item just drawn, instead of its label.
 void itemSpeech(const std::string& text);
+// The focused item's own text is about to change (a value in its label): says text instead, and the
+// next frames do not read the whole item again. Render thread only.
+void quietItemChange(const std::string& text);
 // Said in front of the next focused item, in one announcement, so the item does not cut it off. Said
 // alone if no item takes focus soon. Render thread only (the ImGui frame).
 void beforeNextItem(const std::string& text);
@@ -52,7 +59,7 @@ std::string doorName(std::uint32_t room);  // "Foyer door", from the room behind
 void swallowPadPress();
 
 // The audio cues, in the order of the glossary in the options menu.
-enum class Cue { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad, GhostAimed, Thrown, SceneStart, SceneEnd, DialogueEnd, Npc, GhostLit, GhostHooked, Boss, Holding, CanThrow, GhostHeart, Boo, Candle, Medal, Spirit };
+enum class Cue { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad, GhostAimed, Thrown, SceneStart, SceneEnd, DialogueEnd, Npc, GhostLit, GhostHooked, Boss, Holding, CanThrow, GhostHeart, Boo, Candle, Medal, Spirit, Horse, PlatformStep, PlatformRide, Count };
 void playCue(Cue cue);
 void noticeCue(Cue cue);  // the scene and dialogue cues, on their own channel
 void noticeTick();        // once per frame: plays the next one waiting
@@ -73,6 +80,8 @@ bool hasMedal(std::uint32_t element);  // 2 fire, 3 water, 4 ice
 std::string roomWord(std::uint32_t nameIndex);  // a room's name by its name index; empty for a hallway
 // A message to a ghost's AI: 2 the flashlight touches it, 9 the vacuum has hooked it.
 void ghostMessage(std::uint32_t msg);
+// The game looked up a ghost type's stun length: a stun is starting. Guest thread: only notes it.
+void noteLightBind(std::uint32_t type);
 // Spilled coins and bills, from their update hooks.
 void noteMoney(float x, float y, float z);
 // The same hooks, a grain in play: keeps its timer from running out, by the setting.

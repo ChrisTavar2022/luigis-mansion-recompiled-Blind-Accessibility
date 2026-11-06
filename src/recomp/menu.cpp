@@ -840,8 +840,13 @@ void accessibilityTab() {
                 ImGui::SetTooltip("The nearest ghost that is showing repeats a falling tone. It gets faster as the ghost gets "
                                   "closer, and lower when the ghost is behind you.");
             sDirty |= recomp::menu::SliderInt("Audio cue volume", &a.cueVolume, 0, 200, "%d%%");
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("All cues together. Pressing both shoulder buttons in the game turns every cue off, and again turns them back on.");
+            sDirty |= ImGui::Checkbox("Vibrate when a ghost is hooked", &a.hookRumble);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("A buzz when the vacuum hooks a ghost or a Boo, and a light one every second and a half while it stays on. Uses the controller's rumble setting.");
             ImGui::Separator();
-            ImGui::TextUnformatted("Audio cues. A turns a cue on or off, and Y plays a sample of it. Object sounds and Ghost sounds above turn whole groups off.");
+            ImGui::TextUnformatted("Audio cues. A turns a cue on or off, Y plays a sample of it, and left and right change its own volume. Object sounds and Ghost sounds above turn whole groups off.");
             using recomp::access::Cue;
             const struct {
                 const char* label;
@@ -851,16 +856,18 @@ void accessibilityTab() {
                 {"Chest: two rising notes", Cue::Chest, a.cueChest},
                 {"Element medal chest: a bright high leap", Cue::Medal, a.cueMedal},
                 {"Element spirit, once you have its medal: a soft falling step", Cue::Spirit, a.cueSpirit},
-                {"Key: two high rising notes", Cue::Key, a.cueKey},
+                {"Key: a metal tink", Cue::Key, a.cueKey},
                 {"Heart: two low falling notes", Cue::Heart, a.cueHeart},
                 {"Treasure: one high note", Cue::Treasure, a.cueTreasure},
-                {"Coins and bills: one short note", Cue::Money, a.cueMoney},
-                {"Door: one low note", Cue::Door, a.cueDoor},
+                {"Coins and bills: the key's metal tink, higher", Cue::Money, a.cueMoney},
+                {"Door: a creaking door", Cue::Door, a.cueDoor},
                 {"Ghost: a low falling tone", Cue::Ghost, a.cueGhost},
                 {"Ghost in your flashlight: a bright rising tone", Cue::GhostAimed, a.cueGhostAimed},
                 {"Banana peel, a hazard: a sharp clashing tone", Cue::Banana, a.cueBanana},
                 {"Toad: two bright rising notes", Cue::Toad, a.cueToad},
-                {"Thrown object, such as a ball, book or bomb: a quick jump of an octave", Cue::Thrown, a.cueThrown},
+                {"Thrown object, such as a ball, book or bomb: a bouncing ball", Cue::Thrown, a.cueThrown},
+                {"Chauncey's rocking horse: a slow, heavy creak", Cue::Horse, a.cueHorse},
+                {"Moving floor, such as the Ball Room's spinning floor or the treadmill: a footstep on and off, and a soft clack while you ride it", Cue::PlatformStep, a.cuePlatform},
                 {"A person to talk to, such as the professor: a soft rise and fall", Cue::Npc, a.cueNpc},
                 {"A boss: a heavy low rise", Cue::Boss, a.cueBoss},
                 {"A ghost's heart is showing, so vacuum it now: a fast double rise", Cue::GhostHeart, a.cueGhostHeart},
@@ -877,7 +884,31 @@ void accessibilityTab() {
             for (const auto& c : kCues) {
                 // ImGui's own gamepad mapping activates the focused item with Y too: here Y is only the sample.
                 const bool was = c.on;
-                const bool changed = ImGui::Checkbox(c.label, &c.on);
+                int& level = a.cueLevel[int(c.cue)];
+                char label[256];
+                std::snprintf(label, sizeof label, "%s, volume %d%%###cue%d", c.label, level, int(c.cue));
+                const bool changed = ImGui::Checkbox(label, &c.on);
+                // Left and right: this cue's own volume, 0 to 200 in steps of 10, with a sample to hear it.
+                if (ImGui::IsItemFocused()) {
+                    static constexpr ImGuiKey kLeft[] = {ImGuiKey_GamepadDpadLeft, ImGuiKey_GamepadLStickLeft};
+                    static constexpr ImGuiKey kRight[] = {ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadLStickRight};
+                    const ImGuiID id = ImGui::GetItemID();
+                    int dir = 0;
+                    for (const ImGuiKey k : kLeft) {
+                        ImGui::SetKeyOwner(k, id);
+                        if (ImGui::IsKeyPressed(k, ImGuiInputFlags_Repeat, id)) dir = -1;
+                    }
+                    for (const ImGuiKey k : kRight) {
+                        ImGui::SetKeyOwner(k, id);
+                        if (ImGui::IsKeyPressed(k, ImGuiInputFlags_Repeat, id)) dir = 1;
+                    }
+                    if (dir != 0) {
+                        level = std::clamp(level + dir * 10, 0, 200);
+                        sDirty = true;
+                        recomp::access::quietItemChange("Volume " + std::to_string(level) + " percent");
+                        recomp::access::playCue(c.cue);
+                    }
+                }
                 const bool yHeld = ImGui::IsKeyDown(ImGuiKey_GamepadFaceUp) || ImGui::IsKeyReleased(ImGuiKey_GamepadFaceUp);
                 if (changed && yHeld) c.on = was;
                 else sDirty |= changed;

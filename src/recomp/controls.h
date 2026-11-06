@@ -23,5 +23,7 @@ void beforeRead();
 void afterRead(PADStatus* status);
 // PADControlMotor with the port's rumble setting applied.
 void controlMotor(u32 chan, u32 cmd);
+// A short buzz on port 1's gamepad, for accessibility cues; nothing while the game rumbles.
+void accessPulse(u32 ms);
 
 }  // namespace recomp::controls

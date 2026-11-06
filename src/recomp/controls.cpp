@@ -1514,6 +1514,20 @@ void afterRead(PADStatus* status) {
     }
 }
 
+// A short buzz for the accessibility layer (a Boo hooked): straight to the gamepad on port 1,
+// with the player's rumble switch and strength. A game rumble already running is left alone.
+void accessPulse(u32 ms) {
+    const auto& st = sPorts[0];
+    if (sMotor[0].on) return;
+    SDL_Gamepad* g = st.pad.id ? SDL_GetGamepadFromID(st.pad.id) : nullptr;
+    if (!g) return;
+    const Profile& prof = padProfile(st.pad);
+    if (!prof.rumble) return;
+    const u16 level = u16(std::clamp(std::max(prof.rumbleStrength, 0.6f), 0.0f, 1.0f) * 65535.0f);
+    const bool ok = SDL_RumbleGamepad(g, level, level, ms);
+    if (sRumbleLog) log("[rumble] accessibility pulse %u ms on '%s': %s", ms, st.pad.name.c_str(), ok ? "ok" : SDL_GetError());
+}
+
 void controlMotor(u32 chan, u32 cmd) {
     if (chan >= PAD_MAX_CONTROLLERS) return;
     std::lock_guard lk(sMutex);

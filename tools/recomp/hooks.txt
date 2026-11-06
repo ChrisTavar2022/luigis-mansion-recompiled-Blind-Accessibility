@@ -383,6 +383,8 @@ fn_800A3460
 fn_8009D050
 fn_800A95C0
 fn_800C3B14
+# A ghost's stun length is looked up as a stun starts: stun speech for every ghost (access_world.cpp).
+getEnemyLightBindFrame__Q24Koga14EnTypesManagerFi
 fn_80051380
 fn_80054508
 fn_8011496C

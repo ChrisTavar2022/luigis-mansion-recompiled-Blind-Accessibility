@@ -62,6 +62,14 @@ Field enm(const char* section, const char* key, E& v) {
             [&v](const std::string& s) { v = E(std::atoi(s.c_str())); }};
 }
 
+// Keys for AccessibilitySettings::cueLevel, in access::Cue order.
+constexpr const char* kCueLevelKeys[] = {"level_chest", "level_key", "level_heart", "level_treasure", "level_money", "level_door", "level_ghost",
+                                         "level_banana", "level_toad", "level_ghost_aimed", "level_thrown", "level_scene_start", "level_scene_end",
+                                         "level_dialogue_end", "level_npc", "level_ghost_lit", "level_ghost_hooked", "level_boss", "level_holding",
+                                         "level_can_throw", "level_ghost_heart", "level_boo", "level_candle", "level_medal", "level_spirit", "level_horse",
+                                         "level_platform_step", "level_platform_ride"};
+static_assert(std::size(kCueLevelKeys) == std::size(AccessibilitySettings{}.cueLevel));
+
 std::vector<Field> fields() {
     auto& v = sSettings.video;
     auto& a = sSettings.audio;
@@ -71,7 +79,7 @@ std::vector<Field> fields() {
     auto& r = sSettings.rendering;
     auto& l = sSettings.enhancedLighting;
     auto& u = sSettings.unused2;
-    return {
+    std::vector<Field> out = {
         num("interface", "menu_scale", sSettings.ui.menuScale),
         flag("interface", "start_hint", sSettings.ui.startHint),
         num("accessibility", "mode", sSettings.accessibility.mode),
@@ -104,6 +112,9 @@ std::vector<Field> fields() {
         flag("accessibility", "cue_ghost_lit", sSettings.accessibility.cueGhostLit),
         flag("accessibility", "cue_ghost_hooked", sSettings.accessibility.cueGhostHooked),
         num("accessibility", "cue_volume", sSettings.accessibility.cueVolume),
+        flag("accessibility", "cue_horse", sSettings.accessibility.cueHorse),
+        flag("accessibility", "cue_platform", sSettings.accessibility.cuePlatform),
+        flag("accessibility", "hook_rumble", sSettings.accessibility.hookRumble),
         flag("accessibility", "cue_scene_start", sSettings.accessibility.cueSceneStart),
         flag("accessibility", "cue_scene_end", sSettings.accessibility.cueSceneEnd),
         flag("accessibility", "cue_dialogue_end", sSettings.accessibility.cueDialogueEnd),
@@ -343,6 +354,8 @@ std::vector<Field> fields() {
         flag("updates", "check_at_startup", sSettings.updates.checkAtStartup),
         str("updates", "skip_version", sSettings.updates.skipVersion),
     };
+    for (size_t i = 0; i < std::size(kCueLevelKeys); i++) out.push_back(num("accessibility", kCueLevelKeys[i], sSettings.accessibility.cueLevel[i]));
+    return out;
 }
 
 void writeSettings(std::ostream& out);

@@ -82,6 +82,7 @@ constexpr u32 kHashName = 0x6175C6, kHashAccessName = 0xB64611, kHashCodeName = 
 constexpr float kCheeseSize = 50.0f;
 constexpr u32 kNoRow = ~0u;  // a listed spot that is not in the furniture table
 constexpr u32 kStorageRoom = 14;  // name index
+constexpr u32 kHashMove = 0x16F7E9F, kHashSheet = 0x6E1C60, kMoveButton = 33;  // furnitureinfo fields
 constexpr float kStorageWall = 2850.0f;  // x of its moving wall; the far end lies below this
 constexpr float kThrownMoved = 150.0f;  // plot again when a thrown object has gone this far
 constexpr float kDoorHeight = 275.0f;  // a door's y above its floor, at most
@@ -297,6 +298,12 @@ std::vector<Furniture> readFurniture(const std::string& path) {
     const int model = field(0x9BC8CD), x = field(0x17BEFD9), y = field(0x17BEFDA), z = field(0x17BEFDB), dirY = field(0x17A0565);
     const int room = field(0xC9952D), sizeX = field(0x1545CAA), sizeY = field(0x1545CAB), sizeZ = field(0x1545CAC);
     const int itemTable = field(0x1023327), generateNum = field(0x1A16608), generate = field(0x1624539), access = field(kHashAccessName);
+    // move and sheet share a word with other bit fields: their masks are in the field list.
+    const auto bits = [&](u32 hash, const u8* row) -> u32 {
+        for (u32 i = 0; i < fields; i++)
+            if (be32(&t[0x10 + i * 12]) == hash) return (be32(row + be16(&t[0x10 + i * 12 + 8])) & be32(&t[0x10 + i * 12 + 4])) >> t[0x10 + i * 12 + 10];
+        return 0;
+    };
     if (model < 0 || x < 0 || y < 0 || z < 0 || dirY < 0 || room < 0 || sizeX < 0 || sizeY < 0 || sizeZ < 0) return out;
     for (u32 r = 0; r < rows; r++) {
         const u8* row = &t[data + r * size];
@@ -305,7 +312,12 @@ std::vector<Furniture> readFurniture(const std::string& path) {
         // A row with no model is drawn into the room itself: posters, wall buttons, spots to check. The
         // table says only their size, so a flat one is on a wall, and a very small flat one is a button.
         const u32 thin = std::min(wide, deep), across = std::max(wide, deep);
-        const char* word = name != "(null)" ? modelWord(name) : thin > kFlat ? "Something to check" : across <= kButtonSize ? "Wall button" : "Poster";
+        // move 33 is a button the game presses: the Storage Room's two. The one under a sheet (the
+        // Danger poster) is found by vacuuming the poster off, and lets the Boos out.
+        const bool button = bits(kHashMove, row) == kMoveButton;
+        const char* word = name != "(null)" ? modelWord(name)
+                           : button ? (bits(kHashSheet, row) != 0 ? "Wall button behind the Danger poster" : "Wall button")
+                           : thin > kFlat ? "Something to check" : across <= kButtonSize ? "Wall button" : "Poster";
         if (!*word || wide == 0 || deep == 0) continue;
         // A quarter turn swaps its width and depth.
         const bool turned = std::abs(std::remainder(beFloat(row + dirY), 180.0f)) > 45.0f;
@@ -1400,6 +1412,10 @@ void pressedA(float x, float z, float facingX, float facingZ, bool roomDark) {
     say(instrument ? instrumentCount(*nav, *best) : best->label, false);
     // A cheese spot is found with the search view (X), not A: it stays in Hidden items.
     if (std::strcmp(best->word, "Cheese") != 0) sSearched.insert(best);
+    // The red button opens the room's far end, in a short camera scene with no script, so no event
+    // description covers it: said here, the first time.
+    if (best->room == kStorageRoom && std::strcmp(best->word, "Wall button") == 0 && !sStorageOpen)
+        say("Luigi presses the button. With a low rumble, the wall at the end of the room slides back, and a hidden part of the Storage Room opens.", false);
     if (best->room == kStorageRoom && std::strcmp(best->word, "Wall button") == 0) sStorageOpen = true;
 }
 

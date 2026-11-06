@@ -501,7 +501,7 @@ constexpr RoomHint kRoomHints[] = {
     {35, When::Dark, "Vacuum the candles around the portrait on the back wall to bring out the ghosts. The Go to menu lists them under Candles."},
     {34, When::Dark, "Neville hides while you face him. Stand beside him with your back turned until he yawns and his heart shows, then turn and vacuum."},
     {33, When::Dark, "Lydia cannot be stunned while she combs her hair. Vacuum the right curtain to let in a draft, and catch her when she gets up to close it."},
-    {38, When::Dark, "Two ghosts hide in the closets. Press A at them. Later, turn your back to the mirror to find a ghost."},
+    {38, When::Dark, "Two ghosts hide in the closets. Press A at them."},
     {20, When::Dark, "Ghosts here grab Luigi. Wiggle the stick to shake them off."},
     {10, When::Dark, "Vacuum the masks off the ghosts, flash them, then vacuum them. Then ride the spinning floor with your back to the dancers until the heart shows."},
     {14, When::BoosIn, "Press the red wall button opposite the mirror. A wall rolls back. Further in, vacuum the Danger poster off the wall to find another button. Pressing that one lets the Boos out, and the story goes on from there."},
@@ -544,6 +544,18 @@ constexpr RoomHint kRoomHints[] = {
     {66, When::Always, "Freeze the sewage with ice, walk across, and turn the wheel."},
     {61, When::Dark, "Take fire and light the two fires in the corner, then melt Sir Weston's ice block. If he freezes you, shake the stick."},
     {57, When::Dark, "Each painting sends out three ghosts, seven times over. After them the painter shows his heart."},
+    // Added 2026-11-06 from IGN's walkthrough, for rooms that had nothing to say.
+    {39, When::Dark, "The door freezes shut as you come in. Catch the ghosts here, three Gold Ghosts and two Purple Punchers, and the lights come on and the door opens. Shake the tables for hearts if you are hurt."},
+    {1, When::Dark, "Four ice ghosts hide in the chests. As each one comes out, spray it with fire, then vacuum it while its heart shows."},
+    {1, When::Always, "To leave, open the search view with X, face the mouse hole and press A."},
+    {42, When::Dark, "A fire ghost hides in the toilet. Take water from above the toilet, spray him with the left trigger, then vacuum."},
+    {23, When::Dark, "Four ghosts here drop bombs. Keep clear until a bomb bursts, then flash and vacuum. Water the four plants round the fountain for treasure."},
+    {69, When::Always, "Walk to the end of the passage, where Mario calls from inside a painting. Then catch the ghost that drops down. Its key opens the Rec Room door in the Courtyard."},
+    {5, When::Dark, "Two Purple Punchers and two Grabbers. If one grabs you, wiggle the stick to shake it off. When the room is clear, vacuum the washing machine."},
+    {36, When::Dark, "Catch the ghosts here one at a time, then take the key from the chest."},
+    {70, When::Always, "This is the way to the final boss, and there is no coming back from it. Your 40 Boos open the sealed door ahead. Vacuum the chandelier and candles for a gem, then go to Mario's painting when you are ready."},
+    {2, When::Blackout, "The power is out all over the mansion, and ghosts roam everywhere. Go to the Wardrobe Room on the second floor: the ghost there has the key to the Breaker Room in the basement, down the stairs east of the Foyer."},
+    {38, When::Blackout, "Uncle Grimmly is here. Turn your back to the mirror and wait until his heart shows, then turn round and vacuum him. His chest holds the Breaker Room key."},
 };
 
 // What the key found in a room opens, by the room's name index, from the guides. Two rooms give a
@@ -938,7 +950,10 @@ constexpr SceneLine kSceneLines[] = {
     {66, 0.5f, "A round, shadowy arena among the graves. Bogmire, a black ghost, rises out of the shadows."},
     {67, 0.5f, "Luigi is back in the graveyard."},
     {68, 0.5f, "Luigi looks through the telescope at the night sky."},
-    {69, 0.5f, "A swarm of Boos bursts out, cackling, and scatters through the mansion."},
+    {69, 0.5f, "Luigi presses the hidden button. A hatch bursts open, and a swarm of Boos pours out, cackling."},
+    {69, 5.5f, "Luigi jumps back in fright and cowers as the Boos circle round him, taunting."},
+    {69, 21.0f, "The Boos scatter through the walls into the mansion. Luigi stands alone, catching his breath."},
+    {69, 26.0f, "The Game Boy Horror rings, and the professor's face appears on its screen."},
     {70, 1.0f, "Luigi holds up a medal, and the professor's face appears on the Game Boy Horror."},
     {71, 0.5f, "On the moonlit balcony, a ring of Boos circles and laughs at Luigi."},
     {72, 0.5f, "The Boos pile together and swell into one giant Boo, Boolossus."},
@@ -1268,6 +1283,14 @@ HLE(setNextState__13EnemyStrategyFUs) {
     }
     access::noteStrategy(sub);
     callOriginal(c, "setNextState__13EnemyStrategyFUs");
+}
+
+// The stun length of a ghost type (static, r3 the type), looked up every frame of a light-bind stun
+// from one caller (lr 800DBEC0) for every ghost: the stun speech follows it, not only the heart.
+HLE(getEnemyLightBindFrame__Q24Koga14EnTypesManagerFi) {
+    const u32 type = c.r[3];
+    callOriginal(c, "getEnemyLightBindFrame__Q24Koga14EnTypesManagerFi");
+    access::noteLightBind(type);
 }
 
 // A hit on Luigi: the attacker is in the hit's data. A cancelled one returns as the handler's own

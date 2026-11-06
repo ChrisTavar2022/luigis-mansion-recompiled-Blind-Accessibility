@@ -153,6 +153,11 @@ Test aids: `LM_ACCESS_WORLD_LOG=1` logs targets and tones. `LM_SPAWN=<type>@<fra
 - Opening script: `0x804CFFA8`, 76 the forest, 0 the walk-up after flag 7.
 - Test aids: `LM_ACCESS_TEST_CLEAR=1` makes every room Luigi enters count as cleared. `LM_ACCESS_TEST_LIGHT=<reads>` lights one flame of his room that often, without fire. `LM_SKIP_TEST=<frame>:flag:73` lets the Boos out at run time; a Boo hides only after Luigi re-enters a cleared room, or after a while there.
 
+- Stuns: `getEnemyLightBindFrame__Q24Koga14EnTypesManagerFi` (0x800DAE20), static, r3 the ghost type, returns the stun length in frames (25 for the gold ghost, type 11). Called every frame of a light-bind stun, from one caller (lr 0x800DBEC0), for every ghost type.
+- Furniture `move` (mask 0x3F at +192): 33 a wall button (only two in map 2, both in the Storage Room: row 284 the red one, row 294 under the Danger poster, which has `sheet` 9), 37 a poster sheet, 30 the Ball Room's spinning floors (rows 267, 268), 42 the Rec Room treadmill (row 106), 12 the Storage Room's moving wall.
+- Flag 35 places Shivers: event 08 sets it in the lab talk once flag 73 (Boos out) is on. Event 69 is the Boo release and sets flag 73.
+- Type table flags: Boos 222 (`telesa`) and 214 (`bmtelesa`) have the ghost flag; balls (65) and horses (66, `moku`) do not.
+
 ## Text and hook points
 
 - `fn_80044138`: draws every message window, already hooked in `src/recomp/tags.cpp`.

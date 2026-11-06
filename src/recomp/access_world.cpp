@@ -24,6 +24,7 @@
 
 #include "port/install.h"
 #include "port/settings.h"
+#include "recomp/controls.h"
 #include "recomp/guest_util.h"
 #include "recomp/hle.h"
 
@@ -97,9 +98,7 @@ constexpr int kLockLost = 45;  // input reads with nothing in reach
 constexpr u8 kTriggerPressed = 100;
 constexpr float kThrowCosine = 0.94f, kThrowReach = 1200.0f;  // about 20 degrees either side
 constexpr float kThrownNotice = 900.0f;  // what is thrown from further off is not news yet
-constexpr float kPlatformMoving = 0.6f, kPlatformJump = 200.0f;  // units per input read
-constexpr int kPlatformReads = 20, kPlatformLeave = 30, kStickAtRest = 6;
-constexpr u32 kBallRoom = 10, kRecRoom = 22, kNursery = 24;  // name indices
+constexpr u32 kBallRoom = 10, kRecRoom = 22, kNursery = 24, kNanasRoom = 46, kBilliardsRoom = 12;  // name indices
 constexpr u32 kFishedGhost = 0x11A0;  // Luigi: the ghost on the vacuum, which drags him
 constexpr u32 kGrainTimer = 0x48, kHeartLife = 0x1AC;
 constexpr s32 kKeepTimer = 300;  // game frames: above where an item starts to fade
@@ -114,7 +113,7 @@ constexpr u32 kDoorSize = 0x1C, kDoorX = 0x08, kDoorY = 0x0C, kDoorZ = 0x10, kDo
 constexpr u32 kDoorMax = 128, kAuditRooms = 74;
 constexpr u32 kDoorId = 7, kNoDoor = 0xFF;  // an open boundary between two zones, as at the top of the Foyer stairs
 
-enum class Kind { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad, GhostAimed, Thrown, SceneStart, SceneEnd, DialogueEnd, Npc, GhostLit, GhostHooked, Boss, Holding, CanThrow, GhostHeart, Boo, Candle, Medal, Spirit };  // as access::Cue
+enum class Kind { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad, GhostAimed, Thrown, SceneStart, SceneEnd, DialogueEnd, Npc, GhostLit, GhostHooked, Boss, Holding, CanThrow, GhostHeart, Boo, Candle, Medal, Spirit, Horse, PlatformStep, PlatformRide };  // as access::Cue
 
 bool kindOf(u32 type, Kind& k) {
     if (type == 122 || (type >= 373 && type <= 377)) k = Kind::Chest;
@@ -238,6 +237,7 @@ bool beenIn(u32 room) { return sBeenIn.count(rd32(kCurMap) << 8 | room) != 0; }
 constexpr u32 kTypeMelody = 38;  // pianist
 constexpr float kSeatSlack = 60.0f;
 constexpr u32 kTypeShivers = 14, kShiversHall = 17, kButlersRoom = 0;  // room number; name index
+constexpr u32 kShiversFlag = 35;  // "resident butler placed", event 08's lab talk once flag 73 is on
 bool sShiversHere = false;
 u32 sShiversRoom = 0, sShiversId = 0;
 Vec sShiversPos{};
@@ -267,7 +267,9 @@ std::vector<Target> scan(u32 luigi) {
         const Vec p = rdVec(a + kActPos);
         if (sRoomLog && (rd32(a + kActRoom) >> 24 == room || flatDistance(p, rdVec(luigi + kActPos)) < 1500.0f) && sLoggedActors.insert(a).second)
             std::printf("[world] room %u actor type %u %s, its room %u, at %.0f,%.0f,%.0f flags %08X alpha %u ghost %d\n", room, type, ghostWord(type).c_str(), rd32(a + kActRoom) >> 24, p.x, p.y, p.z, rd32(a + kActFlags), rd8(a + kActAlpha), isGhost(type));
-        if (type == kTypeShivers && p.x > -20000.0f) {  // wherever he is, once out of the park: he has his own speech
+        // Wherever he is, once out of the park and placed by the story: flag 35, set in the lab talk after
+        // the Boos are let out. His actor can stand outside the park before that, which spoke too early.
+        if (type == kTypeShivers && p.x > -20000.0f && flagOn(kShiversFlag)) {
             sShiversHere = true;
             sShiversRoom = rd32(a + kActRoom) >> 24;
             if (sShiversId != a) log("[access] Shivers is out at %.0f,%.0f,%.0f, room %u", p.x, p.y, p.z, rd32(a + kActRoom) >> 24);
@@ -486,44 +488,44 @@ void refillHealth(u32 luigi) {
     if (health + 1 == most) say("Health full", false);
 }
 
-// A moving platform: Luigi travels while nobody is moving him. Knockback is over in a moment, so it
-// takes a while to count. The game has no one marker for these, so this watches the result, and only
-// where the guides name a moving floor: the Ball Room's and the Rec Room's treadmill. A light push of
-// the stick walks Luigi too, so anything past its rest position counts as steering.
-void noticePlatform(const Vec& l, s8 stickX, s8 stickY, bool walking, u32 nameIndex, bool towed) {
-    static Vec sWas{};
-    static int sCarried = 0, sStill = 0, sSteered = 0;
-    static bool sOn = false;
-    const float moved = std::sqrt((l.x - sWas.x) * (l.x - sWas.x) + (l.y - sWas.y) * (l.y - sWas.y) + (l.z - sWas.z) * (l.z - sWas.z));
-    sWas = l;
-    if (moved > kPlatformJump) {  // a door or a warp
-        sCarried = sStill = sSteered = 0;
-        sOn = false;
+// Moving floors, from the map's furniture table (map 2): the Ball Room's two spinning floors (rows 267
+// and 268, "yuka", move 30, no size given) and the Rec Room's treadmill (row 106, "o_run1", move 42,
+// 160 by 210). Being on one is judged by where Luigi stands, not by his movement: the player steers
+// on both, which hid the old "carried while the stick rests" test. A step sound and a line on and
+// off, and a soft clack while he is on it.
+// Their places from the table: the reader in access_nav.cpp skips rows of no size, as the floors are.
+constexpr float kSpinFloors[][2] = {{2230.0f, -2060.0f}, {3470.0f, -2060.0f}}, kTreadmill[2] = {1757.0f, -4943.0f};
+constexpr float kSpinFloorRadius = 380.0f;  // a guess: the table gives no size for the floors
+constexpr float kTreadmillHalfX = 80.0f + 25.0f, kTreadmillHalfZ = 105.0f + 25.0f;
+constexpr int kRideBeat = 24;  // input reads between clacks
+struct Channel;
+Channel& platformChannel();
+bool playTone(Channel& ch, Kind kind, float pan, float pitch);
+bool cueOn(Kind k);
+
+void noticePlatform(const Vec& l, u32 nameIndex) {
+    static const char* sOn = nullptr;
+    static int sBeat = 0;
+    const char* which = nullptr;
+    if (rd32(kCurMap) == kMansionMap && nameIndex == kBallRoom) {
+        for (const auto& at : kSpinFloors)
+            if (std::hypot(l.x - at[0], l.z - at[1]) < kSpinFloorRadius) which = "the spinning floor";
+    } else if (rd32(kCurMap) == kMansionMap && nameIndex == kRecRoom) {
+        if (std::abs(l.x - kTreadmill[0]) < kTreadmillHalfX && std::abs(l.z - kTreadmill[1]) < kTreadmillHalfZ) which = "the treadmill";
+    }
+    const bool sound = cueOn(Kind::PlatformStep);
+    if (which != sOn) {
+        const char* was = sOn;
+        sOn = which;
+        sBeat = kRideBeat;
+        if (sound) playTone(platformChannel(), Kind::PlatformStep, 0.0f, which ? 1.25f : 0.8f);
+        if (port::settings().accessibility.announcePlatforms) say(which ? std::string("On ") + which : std::string("Off ") + was, false);
+        log("[access] %s %s", which ? "on" : "off", which ? which : was);
         return;
     }
-    if (nameIndex != kBallRoom && nameIndex != kRecRoom) {
-        sCarried = sStill = sSteered = 0;
-        sOn = false;
-        return;
-    }
-    const bool steering = walking || towed || std::abs(stickX) > kStickAtRest || std::abs(stickY) > kStickAtRest;
-    sSteered = steering ? sSteered + 1 : 0;
-    if (!steering && moved > kPlatformMoving) {
-        sCarried++;
-        sStill = 0;
-    } else if (!steering) {
-        sCarried = 0;
-        sStill++;
-    }
-    if (!sOn && sCarried >= kPlatformReads) {
-        sOn = true;
-        say("On a moving platform", false);
-    }
-    // Stopped, or the player has walked Luigi away.
-    if (sOn && (sStill >= kPlatformReads || sSteered >= kPlatformLeave)) {
-        sOn = false;
-        sCarried = 0;
-        say("Off the platform", false);
+    if (which && sound && --sBeat <= 0) {
+        sBeat = kRideBeat;
+        playTone(platformChannel(), Kind::PlatformRide, 0.0f, 1.0f);
     }
 }
 
@@ -1013,13 +1015,36 @@ struct Channel {
     int wait = 0;
     SDL_AudioStream* stream = nullptr;
 };
-Channel sItem, sDoor, sGhost, sBanana, sToad, sThrown, sNotice, sNpc, sCombat, sBoss, sBoo, sMedal, sSpirit;
+Channel sItem, sDoor, sGhost, sBanana, sToad, sThrown, sNotice, sNpc, sCombat, sBoss, sBoo, sMedal, sSpirit, sHorse, sPlatform;
+Channel& platformChannel() { return sPlatform; }
 u32 sPlayed = 0;
 std::mutex sNoticeM;  // the queue is filled from the input thread too (candles)
 std::vector<Kind> sNoticeWaiting;
 std::atomic<bool> sSwallowPress{false};
+std::atomic<u64> sHookedAt{0};  // when the vacuum last hooked a ghost (message 9), 0 once let go
 
 constexpr int kToneRate = 48000;
+
+// Recorded cues, in place of tones (tools/access/make_sounds.py, Kenney's CC0 sounds): a creaking
+// door for doors, the same creak slowed for Chauncey's rocking horses, a bouncing ball for thrown
+// objects. Mono at kToneRate.
+#include "recomp/access_sounds.inc"
+struct Sample {
+    const std::int16_t* data;
+    size_t frames;
+};
+Sample sampleFor(Kind k) {
+    switch (k) {
+    case Kind::Door: return {kDoorCreak, std::size(kDoorCreak)};
+    case Kind::Horse: return {kHorseCreak, std::size(kHorseCreak)};
+    case Kind::Thrown: return {kBallBounce, std::size(kBallBounce)};
+    case Kind::Key: return {kKeyTink, std::size(kKeyTink)};
+    case Kind::Money: return {kCoinTink, std::size(kCoinTink)};
+    case Kind::PlatformStep: return {kPlatformStep, std::size(kPlatformStep)};
+    case Kind::PlatformRide: return {kPlatformRide, std::size(kPlatformRide)};
+    default: return {nullptr, 0};
+    }
+}
 
 // One tone per kind: frequency, a second tone that follows it (0 none) and the length in ms.
 struct Tone {
@@ -1049,6 +1074,7 @@ Tone toneFor(Kind k) {
     case Kind::Medal: return {988.0f, 1480.0f, 170};
     case Kind::Spirit: return {622.0f, 466.0f, 140};
     case Kind::Candle: return {587.0f, 880.0f, 200};
+    case Kind::Horse: return {131.0f, 165.0f, 220};
     case Kind::SceneStart: return {220.0f, 330.0f, 260};
     case Kind::SceneEnd: return {330.0f, 220.0f, 260};
     case Kind::DialogueEnd: return {587.0f, 0.0f, 120};
@@ -1065,11 +1091,32 @@ bool playTone(Channel& ch, Kind kind, float pan, float pitch) {
         SDL_ResumeAudioStreamDevice(ch.stream);
     }
     if (SDL_GetAudioStreamQueued(ch.stream) > 1024) return false;  // the resampler keeps a small tail
-    const Tone tone = toneFor(kind);
-    const int frames = kToneRate * tone.ms / 1000;
+    if (cuesMuted()) return true;  // both shoulder buttons: as if played, so the beats keep time
+    const auto& a = port::settings().accessibility;
+    const int level = int(kind) < int(std::size(a.cueLevel)) ? std::clamp(a.cueLevel[int(kind)], 0, 200) : 100;
     const float angle = (pan + 1.0f) * 0.25f * 3.14159265f;
     const float left = std::cos(angle), right = std::sin(angle);
-    const float volume = 0.3f * port::settings().audio.masterVolume * float(port::settings().accessibility.cueVolume) / 100.0f;
+    const float volume = 0.3f * port::settings().audio.masterVolume * float(a.cueVolume) / 100.0f * float(level) / 100.0f;
+    if (volume <= 0.0f) return true;
+    // A recording plays faster for higher and slower for lower, as the tones shift their pitch.
+    if (const Sample smp = sampleFor(kind); smp.data) {
+        const size_t frames = size_t(float(smp.frames - 1) / pitch);
+        std::vector<float> out(frames * 2);
+        const float gain = volume * 1.6f / 32768.0f;  // a recording's energy is spread: lift it to the tones' level
+        for (size_t i = 0; i < frames; i++) {
+            const float at = float(i) * pitch;
+            const size_t j = size_t(at);
+            const float f = at - float(j);
+            const float v = (float(smp.data[j]) * (1.0f - f) + float(smp.data[std::min(j + 1, smp.frames - 1)]) * f) * gain;
+            out[i * 2] = v * left;
+            out[i * 2 + 1] = v * right;
+        }
+        SDL_PutAudioStreamData(ch.stream, out.data(), int(out.size() * sizeof(float)));
+        sPlayed++;
+        return true;
+    }
+    const Tone tone = toneFor(kind);
+    const int frames = kToneRate * tone.ms / 1000;
     std::vector<float> out(size_t(frames) * 2);
     float phase = 0.0f;
     for (int i = 0; i < frames; i++) {
@@ -1109,6 +1156,9 @@ bool cueOn(Kind k) {
     case Kind::Boo: return a.cueBoo;
     case Kind::Medal: return a.cueMedal;
     case Kind::Spirit: return a.cueSpirit;
+    case Kind::Horse: return a.cueHorse;
+    case Kind::PlatformStep:
+    case Kind::PlatformRide: return a.cuePlatform;
     case Kind::Candle: return a.cueCandle;
     case Kind::SceneStart: return a.cueSceneStart;
     case Kind::SceneEnd: return a.cueSceneEnd;
@@ -1468,6 +1518,12 @@ void ghostMessage(u32 msg) {
         sLastMsg = msg;
         sLastAt = at;
     }
+    // The vacuum hooked a ghost or a Boo: a buzz, then light ones while it holds (worldFrame).
+    if (msg == 9 && active() && port::usCodeFeature() == port::Avail::Yes) {
+        if (port::settings().accessibility.hookRumble) controls::accessPulse(350);
+        sHookedAt = SDL_GetTicks();
+        log("[access] ghost hooked");
+    }
     if ((msg != 2 && msg != 9) || !active() || !port::settings().accessibility.ghostSounds || port::usCodeFeature() != port::Avail::Yes) return;
     // The beam message comes every frame the light touches: a repeat at most this often.
     static u64 sLastLit = 0;
@@ -1479,6 +1535,23 @@ void ghostMessage(u32 msg) {
     playTone(sCombat, kind, 0.0f, 1.0f);
     if (msg == 9 && sBossNear && port::settings().accessibility.bossSpeech) say("Hooked. Pull away.");
     if (std::getenv("LM_ACCESS_WORLD_LOG")) std::printf("[world] ghost message %u\n", msg);
+}
+
+// Stuns from the game's stun length lookup, for every ghost, including those whose heart the scan
+// does not see. Repeats of one type within half a second are one stun.
+std::mutex sStunM;
+std::vector<u32> sStunTypes;
+void noteLightBind(u32 type) {
+    if (!active()) return;
+    // Per type: two ghosts stunned together call it in turn every frame.
+    std::lock_guard lk(sStunM);
+    static std::map<u32, u64> sLastAt;
+    const u64 now = SDL_GetTicks();
+    const auto it = sLastAt.find(type);
+    const bool repeat = it != sLastAt.end() && now - it->second < 500;
+    sLastAt[type] = now;
+    if (repeat) return;
+    if (sStunTypes.size() < 16) sStunTypes.push_back(type);
 }
 
 void keepMoney(u32 grain) {
@@ -1615,6 +1688,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         }
         else sSwallowPress = false;
     }
+    filterChord(button);
     if (port::usCodeFeature() != port::Avail::Yes) return;
     const u32 luigi = rd32(kActorSlots);
     if (!gu::inMem1(luigi)) {
@@ -1652,6 +1726,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
     const Target* banana = nullptr;
     const Target* toad = nullptr;
     const Target* thrown = nullptr;
+    const Target* horse = nullptr;
     const Target* npc = nullptr;
     const Target* bossTarget = nullptr;
     const Target* medal = nullptr;
@@ -1670,6 +1745,11 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         }
         if (t.kind != Kind::Ghost && !cueOn(t.kind)) continue;  // the ghost's own cue is chosen below
         if (t.kind == Kind::Thrown && t.id == sHeldId) continue;  // in the vacuum: no need to find it
+        // Chauncey's rocking horses have their own beacon: they come at Luigi and cannot be caught.
+        if (t.kind == Kind::Thrown && (t.type == 66 || t.type == 67)) {
+            if (cueOn(Kind::Horse) && (!horse || dist < flatDistance(horse->pos, l))) horse = &t;
+            continue;
+        }
         if (t.kind != Kind::Ghost && t.kind != Kind::Banana && t.kind != Kind::Thrown && t.kind != Kind::Boss) {
             if (t.id && dist < (solid(t.kind) ? kSolidReach : 70.0f)) sReached.insert(t.id);
             if (t.id && sReached.count(t.id)) continue;
@@ -1754,7 +1834,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
     if (sLog) {
         static u32 sN = 0;
         if (sN++ % 60 == 0)
-            std::printf("[world] medal %.0f, spirit %.0f\n", medal ? flatDistance(medal->pos, l) : -1.0f, spirit ? flatDistance(spirit->pos, l) : -1.0f),
+            std::printf("[world] medal %.0f, spirit %.0f, horse %.0f, cues muted %d\n", medal ? flatDistance(medal->pos, l) : -1.0f, spirit ? flatDistance(spirit->pos, l) : -1.0f, horse ? flatDistance(horse->pos, l) : -1.0f, int(cuesMuted())),
             std::printf("[world] luigi %.0f,%.0f,%.0f room %u: %zu targets, item %.0f, door %.0f, ghost %.0f, banana %.0f, thrown %.0f, npc %.0f, boss %.0f, tones %u\n", l.x, l.y, l.z, room,
                         targets.size(), item ? flatDistance(item->pos, l) : -1.0f, door ? flatDistance(door->pos, l) : -1.0f, ghost ? flatDistance(ghost->pos, l) : -1.0f, banana ? flatDistance(banana->pos, l) : -1.0f, thrown ? flatDistance(thrown->pos, l) : -1.0f, npc ? flatDistance(npc->pos, l) : -1.0f, bossTarget ? flatDistance(bossTarget->pos, l) : -1.0f, sPlayed);
     }
@@ -1786,7 +1866,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         sKey = near;
         sKeyRoom = room;
     }
-    if (set.announcePlatforms) noticePlatform(l, stickX, stickY, walking, nameIndex, rd32(luigi + kFishedGhost) != 0);
+    noticePlatform(l, nameIndex);
     // A fake door looks like any other, and hurts.
     static u32 sFakeSaid = 0;
     if (sFakeDoorNear && sFakeDoorNear != sFakeSaid) say("Fake door here. Do not open it.", false);
@@ -1797,6 +1877,27 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
     if (sHeartNow && !sHeartWas) {
         log("[access] a ghost's heart shows at %llu ms", static_cast<unsigned long long>(SDL_GetTicks()));
         sHeartBeat = 0;
+    }
+    // One line per stunned ghost, whichever way it was seen first: the same name within 2 seconds is
+    // the same stun.
+    static std::map<std::string, u64> sStunSaid;
+    const auto sayStunned = [&](const std::string& name, bool interrupt) {
+        const u64 now = SDL_GetTicks();
+        auto it = sStunSaid.find(name);
+        if (it != sStunSaid.end() && now - it->second < 2000) return;
+        sStunSaid[name] = now;
+        say(name + " stunned. Vacuum now.", interrupt);
+    };
+    {
+        std::vector<u32> types;
+        {
+            std::lock_guard lk(sStunM);
+            types.swap(sStunTypes);
+        }
+        for (const u32 type : types) {
+            log("[access] stun starts, type %u", type);
+            if (set.cueGhostHeart && (isGhost(type) || isBoss(type))) sayStunned(isBoss(type) ? bossWord(type) : ghostWord(type), false);
+        }
     }
     // Each stunned ghost by name, once: its heart hangs over it, so the nearest ghost to that is it.
     {
@@ -1810,7 +1911,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
             for (const Target& t : targets)
                 if ((t.kind == Kind::Ghost || t.kind == Kind::Boss) && (!who || flatDistance(t.pos, at) < flatDistance(who->pos, at))) who = &t;
             const std::string name = !who ? "Ghost" : who->kind == Kind::Boss ? bossWord(who->type) : ghostWord(who->type);
-            say(name + " stunned. Vacuum now.", first);
+            sayStunned(name, first);
             first = false;
         }
         sStunned = std::move(now);
@@ -1844,6 +1945,21 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
             triggerLeft = 255;
         }
     }
+    // While a hooked ghost still pulls (message 9 came within the last 1.5 seconds and Luigi is still
+    // fishing, +0x11A0 set), a light buzz every second and a half.
+    {
+        static int sBuzz = 0;
+        const bool holding = rd32(luigi + kFishedGhost) != 0 || rd32(luigi + 0x10EC) != 0;
+        if (sHookedAt != 0 && holding && set.hookRumble) {
+            if (--sBuzz <= 0) {
+                if (SDL_GetTicks() - sHookedAt > 1000) controls::accessPulse(90);
+                sBuzz = 45;
+            }
+        } else {
+            sBuzz = 45;
+            if (!holding && SDL_GetTicks() - sHookedAt > 1500) sHookedAt = 0;
+        }
+    }
     // The moment something is truly on the nozzle, which the game's own slots show.
     {
         static bool sWasOn = false;
@@ -1851,8 +1967,11 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         if (on && !sWasOn && lockBoss) say("Got it. Left trigger throws at " + std::string(bossWord(lockBoss->type)) + ".");
         sWasOn = on;
     }
-    // The Nursery's ball needs no lock until Chauncey is up and fighting.
-    holdObject(luigi, l, lockBoss, targets, rd32(kCurMap) == kMansionMap && nameIndex == kNursery && !lockBoss, button, triggerLeft, triggerRight);
+    // Only where throwing back is the way to win: boss fights, Nana's yarn and Slim's billiard balls
+    // (the user: Neville's books do not need it). The Nursery's ball needs no lock until Chauncey is
+    // up and fighting.
+    const bool throwRoom = rd32(kCurMap) == kMansionMap && (nameIndex == kNanasRoom || nameIndex == kBilliardsRoom) && !cleared;
+    holdObject(luigi, l, lockBoss, targets, !lockBoss && !throwRoom, button, triggerLeft, triggerRight);
     steerShot(lockBoss, targets);
     if (!walking) lockAim(luigi, l, lockBoss, open, targets, button, triggerRight, stickX, stickY, substickX, substickY);
     if (rd32(kCurMap) != kMansionMap) sBooManager = 0;  // it goes with the map
@@ -1877,6 +1996,9 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         }
         pulse(sGhost, ghost && cueOn(aimed.kind) ? &aimed : nullptr, l, 3, 30);
         pulse(sThrown, thrown, l, 2, 20);  // the fastest cue: these come at Luigi
+        Target horseTone;
+        if (horse) (horseTone = *horse).kind = Kind::Horse;
+        pulse(sHorse, horse ? &horseTone : nullptr, l, 2, 20);
         pulse(sBoss, bossTarget, l, 3, 25);
     }
     if (!set.autoInteract || walking) return;
