@@ -67,7 +67,7 @@ constexpr const char* kCueLevelKeys[] = {"level_chest", "level_key", "level_hear
                                          "level_banana", "level_toad", "level_ghost_aimed", "level_thrown", "level_scene_start", "level_scene_end",
                                          "level_dialogue_end", "level_npc", "level_ghost_lit", "level_ghost_hooked", "level_boss", "level_holding",
                                          "level_can_throw", "level_ghost_heart", "level_boo", "level_candle", "level_medal", "level_spirit", "level_horse",
-                                         "level_platform_step", "level_platform_ride"};
+                                         "level_platform_step", "level_platform_ride", "level_mario_item"};
 static_assert(std::size(kCueLevelKeys) == std::size(AccessibilitySettings{}.cueLevel));
 
 std::vector<Field> fields() {
@@ -101,12 +101,16 @@ std::vector<Field> fields() {
         flag("accessibility", "cue_ghost_heart", sSettings.accessibility.cueGhostHeart),
         flag("accessibility", "cue_boo", sSettings.accessibility.cueBoo),
         flag("accessibility", "cue_medal", sSettings.accessibility.cueMedal),
+        flag("accessibility", "cue_mario_item", sSettings.accessibility.cueMarioItem),
         flag("accessibility", "cue_spirit", sSettings.accessibility.cueSpirit),
         flag("accessibility", "cue_candle", sSettings.accessibility.cueCandle),
         flag("accessibility", "cue_holding", sSettings.accessibility.cueHolding),
         flag("accessibility", "cue_can_throw", sSettings.accessibility.cueCanThrow),
         flag("accessibility", "hold_objects", sSettings.accessibility.holdObjects),
         flag("accessibility", "easier_boss_hits", sSettings.accessibility.easierBossHits),
+        flag("accessibility", "shadow_pull", sSettings.accessibility.shadowPull),
+        flag("accessibility", "search_aim", sSettings.accessibility.searchAim),
+        flag("accessibility", "spray_aim", sSettings.accessibility.sprayAim),
         flag("accessibility", "boss_lock", sSettings.accessibility.bossLock),
         flag("accessibility", "boss_speech", sSettings.accessibility.bossSpeech),
         flag("accessibility", "cue_ghost_lit", sSettings.accessibility.cueGhostLit),

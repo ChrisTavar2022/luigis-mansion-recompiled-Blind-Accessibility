@@ -48,7 +48,9 @@ std::uint32_t runCount();
 bool sayStatus();
 void luigiDown(std::uint32_t actor);  // his health was just set to 0
 void ghostCaught(std::uint32_t type);  // Luigi's capture message: the type caught
-std::string ghostWord(std::uint32_t type);  // what the capture speech calls this type
+std::string ghostWord(std::uint32_t type);
+int ghostsInRoom();  // ghosts still to catch in Luigi's room, -1 before it is counted
+void requestHintRepeat();  // the left shoulder button: the room's hints that fit now, again  // what the capture speech calls this type
 std::string plaqueName(int plaque);  // the gallery's plaques, 1 to 23: the ghost once caught
 void galleryPlaque(int plaque);      // a plaque was opened: says the portrait
 void listScreen(std::uint32_t screen);  // the Game Boy Horror's list screen, each update
@@ -59,7 +61,7 @@ std::string doorName(std::uint32_t room);  // "Foyer door", from the room behind
 void swallowPadPress();
 
 // The audio cues, in the order of the glossary in the options menu.
-enum class Cue { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad, GhostAimed, Thrown, SceneStart, SceneEnd, DialogueEnd, Npc, GhostLit, GhostHooked, Boss, Holding, CanThrow, GhostHeart, Boo, Candle, Medal, Spirit, Horse, PlatformStep, PlatformRide, Count };
+enum class Cue { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad, GhostAimed, Thrown, SceneStart, SceneEnd, DialogueEnd, Npc, GhostLit, GhostHooked, Boss, Holding, CanThrow, GhostHeart, Boo, Candle, Medal, Spirit, Horse, PlatformStep, PlatformRide, MarioItem, Count };
 void playCue(Cue cue);
 void noticeCue(Cue cue);  // the scene and dialogue cues, on their own channel
 void noticeTick();        // once per frame: plays the next one waiting

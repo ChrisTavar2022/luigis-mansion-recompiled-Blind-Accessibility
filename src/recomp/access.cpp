@@ -405,6 +405,10 @@ void filterChord(std::uint16_t& button) {
         sHeld = 0;
         return;
     }
+    if (l && !r) {  // the left bumper alone repeats the hint (handleEvent), and is not the game's Z
+        button &= std::uint16_t(~PAD_TRIGGER_Z);
+        return;
+    }
     if (l != r && (button & PAD_TRIGGER_Z) && sHeld < kChordReads) {
         sHeld++;
         button &= std::uint16_t(~PAD_TRIGGER_Z);
@@ -418,6 +422,11 @@ bool handleEvent(const SDL_Event& ev, bool goToAllowed) {
     if ((ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN || ev.type == SDL_EVENT_GAMEPAD_BUTTON_UP) &&
         (ev.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER || ev.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) {
         const bool down = ev.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+        // A left bumper let go with no right one joining it: repeat the room's hint.
+        static bool sLeftChorded = false;
+        if (ev.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER && down) sLeftChorded = sBumperR;
+        if (down && (sBumperL || ev.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER) && (sBumperR || ev.gbutton.button == SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) sLeftChorded = true;
+        if (ev.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER && !down && !sLeftChorded) requestHintRepeat();
         (ev.gbutton.button == SDL_GAMEPAD_BUTTON_LEFT_SHOULDER ? sBumperL : sBumperR) = down;
         if (down && sBumperL && sBumperR && !sChordSwallow) {
             sChordSwallow = true;

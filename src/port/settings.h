@@ -375,12 +375,16 @@ struct AccessibilitySettings {
     bool cueGhostHeart = true;
     bool cueBoo = true;
     bool cueMedal = true;
+    bool cueMarioItem = true;  // Mario's hat, letter, star, shoe and glove
     bool cueSpirit = true;
     bool cueCandle = true;
     bool cueHolding = true;
     bool cueCanThrow = true;
     bool holdObjects = true;  // what the vacuum holds stays until the left trigger
     bool easierBossHits = true;  // a thrown object near a boss is steered into it
+    bool shadowPull = true;
+    bool searchAim = true;
+    bool sprayAim = true;  // spraying water turns the nozzle to the plant, sprout or burning door in front  // the search view turns to the cheese, mouse hole, telescope, crystal ball or mirror in the room  // Bogmire's shadows in front of the running vacuum drift into it
     bool bossLock = true;        // with the vacuum on, the nozzle turns to the boss or its ball, and a throw goes at the boss
     bool bossSpeech = true;  // says what is happening in a boss fight
     bool cueGhostLit = true;
@@ -389,7 +393,7 @@ struct AccessibilitySettings {
     bool cueHorse = true;  // Chauncey's rocking horses, their own beacon
     bool cuePlatform = true;  // stepping on and off a moving floor, and riding it
     // Each cue's own volume, percent, by access::Cue number (kCueLevelKeys in settings.cpp names them).
-    int cueLevel[28] = {100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100};
+    int cueLevel[29] = {100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100};
     bool hookRumble = true;  // a short buzz when the vacuum hooks a ghost or a Boo
     bool cueSceneStart = true;
     bool cueSceneEnd = true;

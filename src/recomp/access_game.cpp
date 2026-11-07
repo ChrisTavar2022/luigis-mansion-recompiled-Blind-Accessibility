@@ -229,6 +229,7 @@ const char* ghostName(const std::string& type) {
         {"goldrat", "Gold Mouse"},
         {"rat", "Mouse"},
         {"bat", "Bat"},
+        {"poo", "Spark"},  // poo1/poo2: no health, they burst (generators poo_23 in the Courtyard, poo_66 in the Pipe Room)
     };
     for (const auto& n : kNames)
         if (type.rfind(n.type, 0) == 0) return n.name;
@@ -519,7 +520,7 @@ constexpr RoomHint kRoomHints[] = {
     {8, When::JustCleared, "Take water from the sink to put out the burning door."},
     {11, When::Dark, "Water the sprout by the faucet, and again after each boss. Dodge Spooky three times to bring out Mr. Bones. Catch him, and his bone draws Spooky out with his heart showing."},
     {16, When::Dark, "Shake the tombstones to bring out three skeletons. After them, go to the big tombstone."},
-    {23, When::Always, "Press A at the birdhouse, and at the shack from its right side. There is a well to climb down."},
+    {23, When::Always, "Press A at the birdhouse for Mario's letter, and at the shack from its right side. Catch the ghosts here and the well opens: it is under Furniture in Go to, and A climbs down."},
     {22, When::Dark, "Press A at a punching bag to swing it at Biff Atlas, then get clear. Three hits show his heart."},
     {22, When::JustCleared, "Walk on the treadmill for a few seconds, and a key appears."},
     {47, When::Always, "Plates fly here. The emblem in the near right corner puts you on the ceiling, and another drops you on the table, where the white chest is."},
@@ -662,7 +663,33 @@ std::string lockedDoorText() {
 
 // The hints that fit the room as it is now. A room that clears while Luigi stands in it gets its
 // next hint then, once any scene is over.
+std::atomic<bool> sHintRepeat{false};
+
 void roomHints(u32 luigi, u32 room) {
+    // The left shoulder button: what fits now, said again, with the ghosts left. Not held back by the
+    // hint setting: it is asked for.
+    if (sHintRepeat.exchange(false)) {
+        const u32 lightsNow = rd32(kRoomLights);
+        const bool clearNow = gu::inMem1(lightsNow) && (rd8(lightsNow + (rd32(luigi + kActRoom) >> 24) * kRoomLightSize + kRoomLightByte) & kRoomLightBit) != 0;
+        std::string text;
+        for (const RoomHint& hint : kRoomHints) {
+            if (hint.room != room) continue;
+            bool fits = false;
+            switch (hint.when) {
+            case When::Always: fits = true; break;
+            case When::Dark: fits = !clearNow && !gameFlag(kFlagBlackout); break;
+            case When::Cleared: case When::JustCleared: fits = clearNow; break;
+            case When::Fire: fits = rd32(luigi + kElement) == kElementFire && candlesUnlit(); break;
+            case When::Seal: fits = clearNow && candlesUnlit(); break;
+            case When::BoosIn: fits = clearNow && !gameFlag(kFlagBoosOut); break;
+            case When::Blackout: fits = gameFlag(kFlagBlackout); break;
+            }
+            if (fits) text += std::string(text.empty() ? "" : " ") + hint.text;
+        }
+        const int left = ghostsInRoom();
+        if (!clearNow && left > 0) text += std::string(text.empty() ? "" : " ") + std::to_string(left) + (left == 1 ? " ghost left here." : " ghosts left here.");
+        say(text.empty() ? "No hint for this room." : text);
+    }
     if (!port::settings().accessibility.roomHints || rd32(kEvent + kEventCursor) != 0 || rd32(kMenuOff) != 0) return;
     for (u32 slot = 0; slot < 4; slot++)
         if (rd32(kState + slot * 4) != 0) return;
@@ -1219,6 +1246,8 @@ void pollGame() {
 }
 
 u32 runCount() { return sRunCount.load(); }
+
+void requestHintRepeat() { sHintRepeat = true; }
 
 }  // namespace recomp::access
 

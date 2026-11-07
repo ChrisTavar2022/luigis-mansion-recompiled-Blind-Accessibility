@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,11 @@ void doorLocked();                // the door Luigi tried is locked: the walk en
 // angle starts as the widest allowed and comes back as how far off centre it is, with its size taken
 // off, counted left and right only. height comes back as the angle up to it. Empty: nothing nearer
 // the middle than angle.
+// The search view's purpose in Luigi's room (cheese, a mouse hole, the telescope, the crystal ball,
+// a mirror, a dog house): the nearest, where its middle is, and its word. False when there is none.
+bool searchSpot(float out[3], std::string& word);
+// The plants in Luigi's room that give treasure when watered (the Courtyard's, the Balcony's).
+std::vector<std::array<float, 3>> waterSpots();
 std::string aimedFurniture(const float eye[3], const float dir[3], float& angle, float& height, float heightWeight);
 // Where a row of the map's furniture table stands. False if the row is not one the mod lists.
 bool furnitureRow(std::uint32_t row, float out[3]);

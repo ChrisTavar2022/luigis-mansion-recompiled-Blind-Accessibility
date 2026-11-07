@@ -1,4 +1,4 @@
-// Screen reader support: object sounds and auto interact (docs/accessibility/README.md). USA game
+﻿// Screen reader support: object sounds and auto interact (docs/accessibility/README.md). USA game
 // only for now. Runs from PADRead, once per game input read.
 //
 // One scanner lists the important objects: chests, keys, hearts, treasure, spilled money and doors.
@@ -38,6 +38,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <set>
@@ -113,7 +114,7 @@ constexpr u32 kDoorSize = 0x1C, kDoorX = 0x08, kDoorY = 0x0C, kDoorZ = 0x10, kDo
 constexpr u32 kDoorMax = 128, kAuditRooms = 74;
 constexpr u32 kDoorId = 7, kNoDoor = 0xFF;  // an open boundary between two zones, as at the top of the Foyer stairs
 
-enum class Kind { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad, GhostAimed, Thrown, SceneStart, SceneEnd, DialogueEnd, Npc, GhostLit, GhostHooked, Boss, Holding, CanThrow, GhostHeart, Boo, Candle, Medal, Spirit, Horse, PlatformStep, PlatformRide };  // as access::Cue
+enum class Kind { Chest, Key, Heart, Treasure, Money, Door, Ghost, Banana, Toad, GhostAimed, Thrown, SceneStart, SceneEnd, DialogueEnd, Npc, GhostLit, GhostHooked, Boss, Holding, CanThrow, GhostHeart, Boo, Candle, Medal, Spirit, Horse, PlatformStep, PlatformRide, MarioItem };  // as access::Cue
 
 bool kindOf(u32 type, Kind& k) {
     if (type == 122 || (type >= 373 && type <= 377)) k = Kind::Chest;
@@ -122,6 +123,7 @@ bool kindOf(u32 type, Kind& k) {
     else if (type >= 194 && type <= 203) k = Kind::Treasure;  // pearls, gems, diamonds, gold
     else if (type == 42 || type == 43) k = Kind::Toad;
     else if (type >= 39 && type <= 41) k = Kind::Npc;  // the professor: lohakase, dhakase, dhakase2
+    else if (type >= 188 && type <= 192) k = Kind::MarioItem;  // mcap, mstar, mglove, mshoes, mletter
     else return false;
     return true;
 }
@@ -158,10 +160,21 @@ const char* thrownWord(u32 type) {
     }
 }
 
+const char* marioWord(u32 type) {
+    switch (type) {
+    case 188: return "Mario's hat";
+    case 189: return "Mario's star";
+    case 190: return "Mario's glove";
+    case 191: return "Mario's shoe";
+    default: return "Mario's letter";
+    }
+}
+
 const char* bossWord(u32 type) {
     switch (type) {
     case 63: case 64: return "Chauncey";
     case 213: return "Bogmire";
+    case 174: return "Mr. Luggs' food";  // not a boss: the vacuum lock aims at it
     case 220: return "Boolossus";
     case 221: return "King Boo";
     default: return "Bowser";
@@ -172,6 +185,63 @@ const char* bossWord(u32 type) {
 bool isBoss(u32 type) { return type == 63 || type == 64 || type == 213 || type == 220 || type == 221 || type == 229 || type == 230; }
 
 bool isGhost(u32 type) { return type < kTypeCount && (rd16(kTypeTable + type * kTypeSize + kTypeFlags) & kTypeFlagGhost); }
+
+// The type table's own name (+0x18) starts with prefix: "eldoor" for the doors an element unblocks.
+bool typeNamed(u32 type, const char* prefix) {
+    if (type >= kTypeCount) return false;
+    const u32 p = rd32(kTypeTable + type * kTypeSize + 0x18);
+    return gu::inMem1(p) && std::strncmp(reinterpret_cast<const char*>(hostp(p)), prefix, std::strlen(prefix)) == 0;
+}
+constexpr u32 kMirrorRoom = 4, kFoyerName = 2;  // name indices
+constexpr u32 kTypeFireDoor1 = 264, kTypeFireDoor2 = 265;  // eldoor01, eldoor02
+constexpr u32 kFireDoorBurning = 0x10000;  // +0x40: set on the Kitchen's in a new game, clear on the Foyer's sealed door
+constexpr u32 kTypeSpark1 = 70, kTypeSpark2 = 71;  // poo1, poo2
+constexpr u32 kTypeSeed = 235, kTypeKareki = 238;  // the Boneyard's sprout: seed, blossom, nut, kareki (withered)
+constexpr u32 kElementWater = 3;
+constexpr float kSprayReach = 600.0f, kSprayFacing = 0.15f, kSprayPush = 100.0f;  // within, radians off before it sprays, stick push
+constexpr int kSprayTurnReads = 45;  // at most this long turning before the spray goes anyway
+bool sLockOtherStick = false;  // the stick that turns Luigi, as the boss lock learned it
+constexpr u32 kTypeWaiter = 56, kTypeLuggs = 44, kTypeBiff = 54;
+constexpr u32 kCourtyard = 23, kFlagWellOpen = 27;  // event 19, down the well, waits on flag 27 (jmp/eventinfo)
+constexpr float kWellX = 1573.0f, kWellZ = -5896.0f;
+std::atomic<int> sGhostsHere{-1};  // ghosts still to catch in Luigi's room, -1 none counted
+
+// A ghost that counts toward clearing a room: not a Boo, mouse, Speedy Spirit, bat, boss, Luigi's
+// own parts or something thrown.
+bool roomGhost(u32 type) {
+    if (type < 11 || !isGhost(type) || isThrown(type) || isBoss(type)) return false;
+    if (type == 75 || type == 214 || (type >= 220 && type <= 222) || (type >= 274 && type <= 276)) return false;  // Boos
+    if ((type >= 104 && type <= 113) || (type >= 239 && type <= 263)) return false;  // mice, bats, Speedy Spirits
+    if ((type >= 177 && type <= 185) || type == 228 || type == 38) return false;  // Mario and the suits, the meteor, Melody (her quiz)
+    if (type == kTypeSpark1 || type == kTypeSpark2) return false;  // they burst, they are not caught
+    return true;
+}
+constexpr u32 kTypeFood = 174;  // tabemono: Mr. Luggs' heap of food, its health (+0xFC) falls as it is vacuumed
+constexpr u32 kDiningRoom = 9;  // name index
+constexpr u32 kActHealth = 0xFC;
+constexpr float kFoodLock = 900.0f;    // the vacuum turns to the food from this close
+constexpr float kFoodStop = 260.0f;    // Go to stops this far from it: across the table
+constexpr float kShadowPull = 650.0f;  // a shadow this near, in front of the running vacuum, drifts to it
+constexpr float kShadowStep = 9.0f;    // units per input read
+constexpr float kShadowCone = 0.5f;    // cosine: about 60 degrees either side
+u64 sBossHitAt = 0;
+
+// The portrait ghosts, the mansion's mini bosses, by the names ghostWord gives their types. Bosses,
+// Shivers and Melody have their own handling.
+bool isPortraitGhost(u32 type) {
+    static std::map<u32, bool> sKnown;
+    const auto it = sKnown.find(type);
+    if (it != sKnown.end()) return it->second;
+    static const char* const kNames[] = {"Neville", "Lydia", "Chauncey", "Mr. Luggs", "Melody Pianissima", "The Floating Whirlindas", "Madame Clairvoya", "Spooky",
+                                         "Biff Atlas", "Nana", "Miss Petunia", "Slim Bankshot", "Henry and Orville", "Uncle Grimmly", "Jarvis",
+                                         "Vincent Van Gore", "Sue Pea", "Clockwork Soldier", "Sir Weston"};
+    const std::string name = ghostWord(type);
+    bool yes = false;
+    for (const char* n : kNames)
+        if (name == n) yes = true;
+    sKnown[type] = yes;
+    return yes;
+}  // when "Shadow hit Bogmire" was said, so the stun line does not repeat it
 
 struct Vec {
     float x, y, z;
@@ -367,7 +437,7 @@ std::vector<Target> scan(u32 luigi) {
         if (isGhost(type) && !(rd32(a + kActFlags) & kActHidden) && (rd8(a + kActAlpha) != 0 || type == kTypeShivers)) {
             out.push_back({Kind::Ghost, p, a, 0, type});
         } else if (kindOf(type, k)) {
-            out.push_back({k, p, a});
+            out.push_back({k, p, a, 0, k == Kind::MarioItem ? type : 0});
             if (k == Kind::Chest && rd32(kCurMap) == kMansionMap) {
                 const u32 rooms = rd32(kRoomTable);
                 const u32 index = gu::inMem1(rooms) ? rd8(rooms + room * 0x30 + 3) : ~0u;
@@ -401,10 +471,76 @@ std::vector<Target> scan(u32 luigi) {
 
 // The Game Boy Horror's search view: says what is in the middle of the view as the player looks
 // around. The game names something only when A is pressed, and that text is spoken as dialogue.
-void searchView(u32 luigi) {
+// With the search view up, turns it to what the room's search view is for (nav::searchSpot), and says
+// to press A once it is there. The stick's sense in the search view is learned: if a push makes the
+// error grow, that axis is turned round. Moving the stick takes over for a while.
+// Returns the word it has just said, so the focus speech does not say it again.
+std::string searchAim(s8& stickX, s8& stickY, const float eye[3], const float dir[3], float flat, float pitch, bool fresh, u32 nameIndex) {
+    static int sYield = 0, sSignX = 1, sSignY = 1, sCheckX = 0, sCheckY = 0;
+    static float sErrX = 0.0f, sErrY = 0.0f;
+    static std::string sDone;
+    if (fresh) {
+        sYield = 0;
+        sDone.clear();
+        sCheckX = sCheckY = 0;
+    }
+    if (!port::settings().accessibility.searchAim) return {};
+    if (std::abs(int(stickX)) > kLockGrab || std::abs(int(stickY)) > kLockGrab) {
+        sYield = 90;
+        return {};
+    }
+    if (sYield > 0) {
+        sYield--;
+        return {};
+    }
+    float spot[3];
+    std::string word;
+    if (!nav::searchSpot(spot, word)) return {};
+    const float dx = spot[0] - eye[0], dz = spot[2] - eye[2], dist = std::max(std::hypot(dx, dz), 1.0f);
+    const float cross = (dir[0] * dz - dir[2] * dx) / (flat * dist), ahead = (dir[0] * dx + dir[2] * dz) / (flat * dist);
+    const float yaw = ahead < 0.0f ? (cross < 0.0f ? -3.0f : 3.0f) : std::asin(std::clamp(cross, -1.0f, 1.0f));
+    const float up = std::atan2(spot[1] - eye[1], dist) - pitch;
+    const bool there = std::abs(yaw) < 0.06f && std::abs(up) < 0.10f;
+    if (there) {
+        if (sDone != word) {
+            sDone = word;
+            // A mirror seen in the search view warps Luigi to the Foyer, all but the Mirror Room's
+            // (Super Mario Wiki, Game Boy Horror).
+            const bool mirror = word.rfind("Mirror", 0) == 0;
+            say(!mirror ? word + ". Press A."
+                : nameIndex == kMirrorRoom ? word + ". This one does not take you anywhere: it shows the ghosts here."
+                : nameIndex == kFoyerName ? word + ". Mirrors in other rooms bring you back here, to the Foyer, when you press A at them."
+                                          : word + ". Press A to go through it, back to the Foyer.");
+            return word;
+        }
+        return {};
+    }
+    if (sDone == word) sDone.clear();
+    // A push that made it worse, held for a while, means that axis runs the other way here.
+    if (std::abs(yaw) >= 0.06f) {
+        if (sCheckX == 0) sErrX = std::abs(yaw);
+        if (++sCheckX == 20) {
+            if (std::abs(yaw) > sErrX + 0.02f) sSignX = -sSignX;
+            sCheckX = 0;
+        }
+        stickX = s8(std::clamp(yaw * 300.0f * float(sSignX), -90.0f, 90.0f));
+    }
+    if (std::abs(up) >= 0.10f) {
+        if (sCheckY == 0) sErrY = std::abs(up);
+        if (++sCheckY == 20) {
+            if (std::abs(up) > sErrY + 0.02f) sSignY = -sSignY;
+            sCheckY = 0;
+        }
+        stickY = s8(std::clamp(up * 300.0f * float(sSignY), -90.0f, 90.0f));
+    }
+    return {};
+}
+
+void searchView(u32 luigi, s8& stickX, s8& stickY) {
     static bool sOn = false;
     static std::string sSaid, sSeen;
     static int sSeenFor = 0;
+    bool fresh = false;
     if (rd8(kSearchView) == 0) {
         if (sOn) say("Search view closed");
         sOn = false;
@@ -412,6 +548,7 @@ void searchView(u32 luigi) {
     }
     if (!sOn) {
         sOn = true;
+        fresh = true;
         sSaid.clear();
         sSeen.clear();
         say("Search view. The stick looks around, A searches, B returns.");
@@ -430,11 +567,14 @@ void searchView(u32 luigi) {
     // judge without seeing. Height is then said in words, so the player can tilt to it before A.
     const float flat = std::max(std::hypot(dir[0], dir[2]), 1e-3f);
     const float pitch = std::atan2(dir[1], flat);
+    const u32 rooms = rd32(kRoomTable), room = rd32(luigi + kActRoom) >> 24;
+    const std::string aimed = searchAim(stickX, stickY, eye, dir, flat, pitch, fresh, gu::inMem1(rooms) ? rd8(rooms + room * 0x30 + 3) : room);
+    if (!aimed.empty()) sSaid = sSeen = aimed;
     float angle = kFocusCone + kFocusHeightWeight, height = 0.0f;
     std::string word = nav::aimedFurniture(eye, dir, angle, height, kFocusHeightWeight);
     for (const Target& t : scan(luigi)) {
         const char* name = t.kind == Kind::Ghost ? "Ghost" : t.kind == Kind::Chest ? "Chest" : t.kind == Kind::Key ? "Key" : t.kind == Kind::Heart ? "Heart"
-                         : t.kind == Kind::Treasure ? "Treasure" : t.kind == Kind::Toad ? "Toad" : t.kind == Kind::Banana ? "Banana peel" : t.kind == Kind::Door ? "Door" : t.kind == Kind::Thrown ? thrownWord(t.type) : t.kind == Kind::Boss ? bossWord(t.type) : t.kind == Kind::Npc ? (t.type == kTypeMelody ? "Melody Pianissima" : "Professor") : nullptr;
+                         : t.kind == Kind::Treasure ? "Treasure" : t.kind == Kind::MarioItem ? marioWord(t.type) : t.kind == Kind::Toad ? "Toad" : t.kind == Kind::Banana ? "Banana peel" : t.kind == Kind::Door ? "Door" : t.kind == Kind::Thrown ? thrownWord(t.type) : t.kind == Kind::Boss ? bossWord(t.type) : t.kind == Kind::Npc ? (t.type == kTypeMelody ? "Melody Pianissima" : "Professor") : nullptr;
         if (!name) continue;
         const float dx = t.pos.x - eye[0], dz = t.pos.z - eye[2], dist = std::max(std::hypot(dx, dz), 1.0f);
         const float ahead = (dx * dir[0] + dz * dir[2]) / (dist * flat);
@@ -1015,7 +1155,7 @@ struct Channel {
     int wait = 0;
     SDL_AudioStream* stream = nullptr;
 };
-Channel sItem, sDoor, sGhost, sBanana, sToad, sThrown, sNotice, sNpc, sCombat, sBoss, sBoo, sMedal, sSpirit, sHorse, sPlatform;
+Channel sItem, sDoor, sGhost, sBanana, sToad, sThrown, sNotice, sNpc, sCombat, sBoss, sBoo, sMedal, sSpirit, sHorse, sPlatform, sMario;
 Channel& platformChannel() { return sPlatform; }
 u32 sPlayed = 0;
 std::mutex sNoticeM;  // the queue is filled from the input thread too (candles)
@@ -1072,6 +1212,7 @@ Tone toneFor(Kind k) {
     case Kind::GhostHeart: return {1175.0f, 1568.0f, 130};
     case Kind::Boo: return {740.0f, 831.0f, 120};
     case Kind::Medal: return {988.0f, 1480.0f, 170};
+    case Kind::MarioItem: return {784.0f, 1568.0f, 240};  // an octave jump
     case Kind::Spirit: return {622.0f, 466.0f, 140};
     case Kind::Candle: return {587.0f, 880.0f, 200};
     case Kind::Horse: return {131.0f, 165.0f, 220};
@@ -1155,6 +1296,7 @@ bool cueOn(Kind k) {
     case Kind::GhostHeart: return a.cueGhostHeart;
     case Kind::Boo: return a.cueBoo;
     case Kind::Medal: return a.cueMedal;
+    case Kind::MarioItem: return a.cueMarioItem;
     case Kind::Spirit: return a.cueSpirit;
     case Kind::Horse: return a.cueHorse;
     case Kind::PlatformStep:
@@ -1471,7 +1613,7 @@ bool hitCancelled(u32 hit) {
     const u32 attacker = id >= 0 && u32(id) < kActorSlotCount ? rd32(kActorSlots + 4 * u32(id)) : 0;
     const u32 type = gu::inMem1(attacker) ? rd32(attacker + kActType) : ~0u;
     const auto& a = port::settings().accessibility;
-    const bool thrown = isThrown(type);  // Bogmire's shadows are ghosts by flag, and count as thrown
+    const bool thrown = isThrown(type) || type == 147 || type == 148;  // + the Kitchen's flying dishes (ifly) and pots (inabe)  // Bogmire's shadows are ghosts by flag, and count as thrown
     const bool cancel = thrown ? a.noThrownDamage : isBoss(type) || isGhost(type) ? a.noGhostDamage : a.noHazardDamage;
     // In last_run.log: which attacks come from which type, for the bosses not played in testing.
     // A cancelled hit lands again every frame while Luigi stays in contact.
@@ -1499,6 +1641,8 @@ void noticeTick() {
     if (std::getenv("LM_ACCESS_WORLD_LOG")) std::printf("[world] notice cue %d\n", int(sNoticeWaiting.front()));
     sNoticeWaiting.erase(sNoticeWaiting.begin());
 }
+
+int ghostsInRoom() { return sGhostsHere; }
 
 std::string bossStatus() {
     std::lock_guard lk(sBossM);
@@ -1595,8 +1739,101 @@ bool bossOpen(const Target* boss) {
     }
 }
 
+// Spraying water near a plant, the sprout or a burning door (the user: watering plants blind). Neither
+// stick turns Luigi while he sprays, and the nozzle's direction is not kept then (0,0,1 in a test), so
+// the turn comes first: on the left trigger, the spray waits while a light push of the left stick turns
+// him to the nearest one, then goes. Moving the left stick yourself takes over.
+void sprayAim(u32 luigi, const Vec& l, const std::vector<Vec>& spots, u16& button, u8& triggerLeft, s8& stickX, s8& stickY, s8& substickY) {
+    static int sTurnReads = 0;
+    static bool sSaid = false;
+    const bool pressed = (button & PAD_TRIGGER_L) || triggerLeft > kTriggerPressed;
+    if (!pressed) {
+        sTurnReads = 0;
+        sSaid = false;
+        return;
+    }
+    if (!port::settings().accessibility.sprayAim || rd32(luigi + kLuigiElement) != kElementWater) return;
+    if (std::abs(int(stickX)) + std::abs(int(stickY)) > kLockIdle) return;  // the player steers
+    float fx = rdf(luigi + kFacing), fz = rdf(luigi + kFacing + 8);
+    const float facing = std::hypot(fx, fz);
+    if (facing < 1e-3f) return;
+    fx /= facing;
+    fz /= facing;
+    const Vec* best = nullptr;
+    float bestD = kSprayReach;
+    for (const Vec& s : spots) {
+        const float d = std::hypot(s.x - l.x, s.z - l.z);
+        if (d < bestD) {
+            bestD = d;
+            best = &s;
+        }
+    }
+    if (!best) return;
+    const float dx = best->x - l.x, dz = best->z - l.z, dist = std::max(std::hypot(dx, dz), 1.0f);
+    const float off = std::acos(std::clamp((fx * dx + fz * dz) / dist, -1.0f, 1.0f));
+    substickY = s8(std::clamp((best->y - l.y - 100.0f) / dist * 500.0f, -127.0f, 127.0f));
+    if (off > kSprayFacing && sTurnReads < kSprayTurnReads) {
+        sTurnReads++;
+        button &= u16(~PAD_TRIGGER_L);
+        triggerLeft = 0;
+        const Vec camRight{rdf(kCamera + kCamViewMtx), 0.0f, rdf(kCamera + kCamViewMtx + 8)};
+        const float way = kSprayPush / dist;
+        stickX = s8(std::clamp((dx * camRight.x + dz * camRight.z) * way, -127.0f, 127.0f));
+        stickY = s8(std::clamp((dx * camRight.z - dz * camRight.x) * way, -127.0f, 127.0f));
+    } else {
+        sTurnReads = kSprayTurnReads;  // once facing it, the spray runs and he stays put
+        if (!sSaid) {
+            sSaid = true;
+            log("[access] water aim: facing it, %.2f off, %.0f away", off, dist);
+        }
+    }
+    static u64 sLogAt = 0;
+    if (std::getenv("LM_ACCESS_WORLD_LOG") && SDL_GetTicks() - sLogAt > 500) {
+        sLogAt = SDL_GetTicks();
+        std::printf("[world] spray aim: target %.0f,%.0f,%.0f, %.0f away, %.2f off, turn reads %d\n", best->x, best->y, best->z, dist, off, sTurnReads);
+    }
+}
+
+// Bogmire's shadows dodge about, and must be held in the suction until they grow: with the vacuum
+// running, the nearest one in front of Luigi drifts toward the nozzle (the user: "a little easier").
+void pullShadow(u32 luigi, const Vec& l, const std::vector<Target>& targets, u16 button, u8 triggerRight) {
+    if (!port::settings().accessibility.shadowPull || rd32(kCurMap) != kBogmireMap) return;
+    if (!(button & PAD_TRIGGER_R) && triggerRight <= kTriggerPressed) return;
+    if (rd32(luigi + kFishedGhost) != 0) return;  // Bogmire hooked
+    if (rd32(luigi + 0x10EC) != 0 || rd32(luigi + 0x10F0) != 0 || rd32(luigi + 0x10F4) != 0 || rd32(luigi + 0x10F8) != 0) return;  // one is on
+    float fx = rdf(luigi + kFacing), fz = rdf(luigi + kFacing + 8);
+    const float facing = std::hypot(fx, fz);
+    if (facing < 1e-3f) return;
+    fx /= facing;
+    fz /= facing;
+    const Target* best = nullptr;
+    float bestD = kShadowPull;
+    for (const Target& t : targets) {
+        if (t.kind != Kind::Thrown || (t.type != 211 && t.type != 212)) continue;
+        const float dx = t.pos.x - l.x, dz = t.pos.z - l.z, d = std::max(std::hypot(dx, dz), 1.0f);
+        if (d < bestD && (fx * dx + fz * dz) / d > kShadowCone) {
+            bestD = d;
+            best = &t;
+        }
+    }
+    if (!best) return;
+    // Toward a point just past the nozzle.
+    const float tx = l.x + fx * 110.0f, tz = l.z + fz * 110.0f;
+    const float dx = tx - best->pos.x, dz = tz - best->pos.z, d = std::hypot(dx, dz);
+    if (d < 20.0f) return;
+    const float step = std::min(kShadowStep, d);
+    gu::wrf(best->id + kActPos, best->pos.x + dx / d * step);
+    gu::wrf(best->id + kActPos + 8, best->pos.z + dz / d * step);
+    static u64 sLogAt = 0;
+    if (std::getenv("LM_ACCESS_WORLD_LOG") && SDL_GetTicks() - sLogAt > 500) {
+        sLogAt = SDL_GetTicks();
+        std::printf("[world] shadow pull: type %u at %.0f from Luigi\n", best->type, bestD);
+    }
+}
+
 void lockAim(u32 luigi, const Vec& l, const Target* boss, bool open, const std::vector<Target>& targets, u16& button, u8& triggerRight, s8& stickX, s8& stickY, s8& substickX, s8& substickY) {
-    static bool sOn = false, sOtherStick = false;
+    static bool sOn = false;
+    bool& sOtherStick = sLockOtherStick;
     static int sStill = 0;
     static float sBearing = 0.0f;
     const bool right = (button & PAD_TRIGGER_R) != 0 || triggerRight > kTriggerPressed;
@@ -1696,7 +1933,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         return;
     }
     keepHearts();
-    searchView(luigi);
+    searchView(luigi, stickX, stickY);
     // The training room is one long event script, with Luigi free through it.
     const bool scripted = rd32(kCurMap) != kTrainingMap && (rd32(kEvent + kEventCursor) != 0 || rd32(kMenuOff) != 0);
     if (scripted || gamePaused()) {  // Luigi is not free to move
@@ -1729,7 +1966,9 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
     const Target* horse = nullptr;
     const Target* npc = nullptr;
     const Target* bossTarget = nullptr;
+    const Target* miniBoss = nullptr;  // the nearest portrait ghost showing in the room
     const Target* medal = nullptr;
+    const Target* mario = nullptr;  // one of Mario's items, its own beacon
     const Target* spirit = nullptr;
     const std::vector<Target> targets = scan(luigi);
     for (const Target& t : targets) {
@@ -1743,6 +1982,16 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
             if (set.cueSpirit && (!spirit || dist < flatDistance(spirit->pos, l))) spirit = &t;
             continue;
         }
+        // A Spark bursts in the vacuum: a warning, and no ghost tone to lead Luigi to it.
+        if (t.kind == Kind::Ghost && (t.type == kTypeSpark1 || t.type == kTypeSpark2)) {
+            static u64 sSparkAt = 0;
+            if (dist < 500.0f && (sSparkAt == 0 || SDL_GetTicks() - sSparkAt > 60000) && (sSparkAt = SDL_GetTicks())) say("Spark nearby. Do not vacuum it: spray it with water or fire, or keep away until it bursts.", false);
+            continue;
+        }
+        if (t.kind == Kind::MarioItem) {
+            if (set.cueMarioItem && (!mario || dist < flatDistance(mario->pos, l))) mario = &t;
+            continue;
+        }
         if (t.kind != Kind::Ghost && !cueOn(t.kind)) continue;  // the ghost's own cue is chosen below
         if (t.kind == Kind::Thrown && t.id == sHeldId) continue;  // in the vacuum: no need to find it
         // Chauncey's rocking horses have their own beacon: they come at Luigi and cannot be caught.
@@ -1754,8 +2003,35 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
             if (t.id && dist < (solid(t.kind) ? kSolidReach : 70.0f)) sReached.insert(t.id);
             if (t.id && sReached.count(t.id)) continue;
         }
+        // A portrait ghost has the boss tone while it is far, so it can be found among the others.
+        // Melody in her seat too: the user counts her a mini boss, not a person.
+        if ((t.kind == Kind::Ghost && isPortraitGhost(t.type)) || (t.kind == Kind::Npc && t.type == kTypeMelody)) {
+            if (!miniBoss || dist < flatDistance(miniBoss->pos, l)) miniBoss = &t;
+            continue;
+        }
         const Target*& best = t.kind == Kind::Door ? door : t.kind == Kind::Ghost ? ghost : t.kind == Kind::Banana ? banana : t.kind == Kind::Toad ? toad : t.kind == Kind::Thrown ? thrown : t.kind == Kind::Npc ? npc : t.kind == Kind::Boss ? bossTarget : item;
         if (!best || dist < flatDistance(best->pos, l)) best = &t;
+    }
+    // Near enough to fight, a portrait ghost goes back to the ghost tone, which tells the aim.
+    Target miniTone{};
+    bool miniFar = false;
+    if (miniBoss) {
+        if (flatDistance(miniBoss->pos, l) < kAimReach && miniBoss->kind == Kind::Ghost) {
+            if (!ghost || flatDistance(miniBoss->pos, l) < flatDistance(ghost->pos, l)) ghost = miniBoss;
+        } else if (cueOn(Kind::Boss)) {
+            miniTone = *miniBoss;
+            miniTone.kind = Kind::Boss;
+            miniFar = true;
+        }
+    }
+    // One of Mario's items has come out: said once each, with its own sound. Madame Clairvoya wants all five.
+    {
+        static std::set<u32> sMarioSaid;
+        for (const Target& t : targets)
+            if (t.kind == Kind::MarioItem && sMarioSaid.insert(t.id).second) {
+                if (set.cueMarioItem) playTone(sMario, Kind::MarioItem, 0.0f, 1.0f);
+                say(std::string(marioWord(t.type)) + " is here. Walk into it or vacuum it to take it. It is in Go to under Treasure.", false);
+            }
     }
     // The boss, whatever its cue is set to: the walk and the lock do not depend on hearing it.
     const Target* lockBoss = pickBoss(targets, l);
@@ -1767,6 +2043,11 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         static bool sWasOpen = false;
         static u32 sOpenType = 0;
         if (open && !sWasOpen) log("[access] the boss can be vacuumed");
+        // Bogmire opens only when a thrown shadow hits him: the moment to vacuum (the user asked for it).
+        if (open && !sWasOpen && lockBoss->type == 213 && set.bossSpeech) {
+            say("Shadow hit Bogmire. Vacuum him now.");
+            sBossHitAt = SDL_GetTicks();
+        }
         if (sWasOpen && !open && rd32(luigi + kFishedGhost) == 0 && sOpenType != 0) say(std::string(bossWord(sOpenType)) + " has recovered.", false);
         if (open) sOpenType = lockBoss->type;
         sWasOpen = open;
@@ -1775,6 +2056,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
     // What the Go to menu offers, and the walk in progress.
     std::vector<nav::Object> objects;
     if (lockBoss) objects.push_back({nav::Category::Bosses, lockBoss->pos.x, l.y, lockBoss->pos.z, lockBoss->id, kBossStop, bossWord(lockBoss->type)});  // it may be in the air: the walk is on the floor
+    else if (miniBoss && miniBoss->kind == Kind::Ghost) objects.push_back({nav::Category::Bosses, miniBoss->pos.x, l.y, miniBoss->pos.z, miniBoss->id, kBossStop, ghostWord(miniBoss->type)});
     // Shivers, in Bosses while he paces Luigi's hallway: the walk follows him, and says what to do there.
     if (!lockBoss && sShiversHere && sShiversRoom == room && rd32(kCurMap) == kMansionMap && !nameLit(kButlersRoom)) {
         nav::Object o{nav::Category::Bosses, sShiversPos.x, l.y, sShiversPos.z, sShiversId, kShiversStop, "Shivers"};
@@ -1800,13 +2082,15 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         case Kind::Key: category = nav::Category::Keys; break;
         case Kind::Chest: category = nav::Category::Chests; break;
         case Kind::Treasure: category = nav::Category::Treasure; break;
+        case Kind::MarioItem: category = nav::Category::Treasure; break;
         case Kind::Toad: category = nav::Category::Toads; break;
-        case Kind::Npc: category = nav::Category::People; break;
+        case Kind::Npc: category = t.type == kTypeMelody ? nav::Category::Bosses : nav::Category::People; break;
         case Kind::Thrown: category = nav::Category::Thrown; break;
         default: continue;
         }
+        if (t.kind == Kind::Door && t.open && nameIndex == kCourtyard && doorName(t.leadsTo).find("Well") != std::string::npos) continue;  // the Well entry climbs down
         const std::string note = t.kind == Kind::Door && beenIn(t.leadsTo) ? "visited" : "";
-        std::string name = t.kind == Kind::Chest && t.type == kMedalChest ? "Element medal chest" : t.kind == Kind::Door ? doorName(t.leadsTo) : t.kind == Kind::Npc ? (t.type == kTypeMelody ? "Melody Pianissima" : "Professor") : t.kind == Kind::Thrown ? thrownWord(t.type) : std::string();
+        std::string name = t.kind == Kind::MarioItem ? std::string(marioWord(t.type)) : t.kind == Kind::Chest && t.type == kMedalChest ? "Element medal chest" : t.kind == Kind::Door ? doorName(t.leadsTo) : t.kind == Kind::Npc ? (t.type == kTypeMelody ? "Melody Pianissima" : "Professor") : t.kind == Kind::Thrown ? thrownWord(t.type) : std::string();
         if (t.open) name = name.size() > 5 ? "Way to " + name.substr(0, name.size() - 5) : "Way through";  // "Hallway door"
         objects.push_back({category, t.pos.x, t.pos.y, t.pos.z, t.id, t.open ? 0.0f : t.kind == Kind::Door ? kDoorPress : t.kind == Kind::Chest ? kChestPress : t.kind == Kind::Toad || t.kind == Kind::Npc ? kToadPress : t.kind == Kind::Thrown ? kThrownReach : 0.0f, name, t.open, note});
         // A chest's front, from its heading (+0x88, 0x10000 a turn), so Go to tries that side first.
@@ -1818,6 +2102,176 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
     }
     float box[4] = {-1e9f, -1e9f, 1e9f, 1e9f};
     roomBox(room, box);
+    // Mr. Luggs' food and the doors an element unblocks (the Kitchen's burning door to the Boneyard):
+    // neither is in the scan's lists. In the Go to menu, and the food takes the vacuum lock.
+    Target food{};
+    bool foodHere = false;
+    s32 foodLeft = 0;
+    if (rd32(kCurMap) == kMansionMap) {
+        for (u32 i = 1; i < kActorSlotCount; i++) {
+            const u32 a = rd32(kActorSlots + 4 * i);
+            if (!gu::inMem1(a)) continue;
+            const u32 type = rd32(a + kActType);
+            // eldoor01 the Kitchen's door to the Boneyard, eldoor02 the Tea Room's. The other eldoors are the
+            // Boo-sealed doors (their arg0 is the room behind: 42 Washroom, 59 Balcony), not fire.
+            if (type != kTypeFood && type != kTypeFireDoor1 && type != kTypeFireDoor2) continue;
+            const Vec p = rdVec(a + kActPos);
+            static std::set<u32> sLogged;
+            if (std::getenv("LM_ACCESS_WORLD_LOG") && sLogged.insert(a).second)
+                std::printf("[world] %s type %u at %.0f,%.0f, its room %u, flags %08X health %d; Luigi's room %u box %.0f,%.0f to %.0f,%.0f\n", type == kTypeFood ? "food" : "element door", type, p.x, p.z,
+                            rd32(a + kActRoom) >> 24, rd32(a + kActFlags), s16(rd16(a + kActHealth)), room, box[0], box[1], box[2], box[3]);
+            if (p.x < -20000.0f || p.x < box[0] || p.z < box[1] || p.x > box[2] || p.z > box[3]) continue;
+            if (type == kTypeFood) {
+                foodLeft = s16(rd16(a + kActHealth));
+                if (foodLeft <= 0 || cleared) continue;
+                food = {Kind::Boss, p, a, 0, kTypeFood};
+                foodHere = true;
+                nav::Object o{nav::Category::Bosses, p.x, l.y, p.z, a, kFoodStop, "Mr. Luggs' food"};
+                o.arrive = "Hold the right trigger to vacuum it. The nozzle turns to it.";
+                objects.push_back(o);
+                continue;
+            }
+            if (!(rd32(a + kActFlags) & kFireDoorBurning) || std::abs(rdf(a + kActPos + 4) - l.y) > 300.0f) continue;
+            // Named by the door it blocks: the nearest door record.
+            std::string name = "Burning door";
+            float nearest = 400.0f;
+            for (const Target& t : targets)
+                if (t.kind == Kind::Door && flatDistance(t.pos, p) < nearest) {
+                    nearest = flatDistance(t.pos, p);
+                    const std::string door = doorName(t.leadsTo);
+                    name = door.size() > 5 && door.compare(door.size() - 5, 5, " door") == 0 ? "Burning door to the " + door.substr(0, door.size() - 5) : "Burning door";
+                }
+            const u32 element = rd32(luigi + kLuigiElement);
+            nav::Object o{nav::Category::Elements, p.x, l.y, p.z, a, kThrownReach, name};
+            o.arrive = element == 3 ? "Face the door and spray water at it with the left trigger until the fire is out."
+                                    : "The fire needs water. Take water from the sink: after the water medal it is under Elements.";
+            objects.push_back(o);
+        }
+    }
+    // The Boneyard's sprout, in Go to (the user: help with watering). Its four stages (seed, blossom,
+    // nut, withered) all stand there as actors at once, so which one shows is not known: one entry.
+    bool sprout = false;
+    Vec sproutPos{};
+    if (rd32(kCurMap) == kMansionMap) {
+        for (u32 i = 1; i < kActorSlotCount && !sprout; i++) {
+            const u32 a = rd32(kActorSlots + 4 * i);
+            if (!gu::inMem1(a) || rd32(a + kActRoom) >> 24 != room) continue;
+            const u32 type = rd32(a + kActType);
+            if (type < kTypeSeed || type > kTypeKareki) continue;
+            const Vec p = rdVec(a + kActPos);
+            if (p.x < -20000.0f || (rd32(a + kActFlags) & kActHidden)) continue;
+            sprout = true;
+            sproutPos = {p.x, p.y + 40.0f, p.z};
+            const bool water = rd32(luigi + kLuigiElement) == kElementWater;
+            nav::Object o{nav::Category::Furniture, p.x, l.y, p.z, 0, 160.0f, "Sprout"};
+            o.arrive = water ? "Spray water at it with the left trigger: the nozzle turns to it. Water it again after each boss." : "It needs water: the faucet beside it is the water source.";
+            objects.push_back(o);
+        }
+    }
+    // The food's health in quarters, and the moment it is gone, which starts his fireballs.
+    {
+        static s32 sFoodStep = 4;
+        static bool sFoodSeen = false;
+        if (nameIndex == kDiningRoom && !cleared && foodLeft > 0) {
+            const s32 step = (foodLeft * 4 + 99) / 100;
+            if (sFoodSeen && step < sFoodStep) say("Food " + std::to_string(foodLeft) + " percent left", false);
+            if (sFoodSeen && step > sFoodStep) say("More food. Catch the waiters so they cannot bring it.", false);
+            sFoodStep = step;
+            sFoodSeen = true;
+        } else if (nameIndex == kDiningRoom && !cleared && sFoodSeen && foodLeft <= 0) {
+            sFoodSeen = false;  // the fight's own line says what comes next
+            sFoodStep = 4;
+        } else if (nameIndex != kDiningRoom) {
+            sFoodSeen = false;
+            sFoodStep = 4;
+        }
+    }
+    // Ghosts left in a dark room, hidden ones too, said as the count falls (the user asked how many
+    // the Courtyard's well waits on).
+    {
+        int here = 0;
+        for (u32 i = 1; i < kActorSlotCount; i++) {
+            const u32 a = rd32(kActorSlots + 4 * i);
+            if (!gu::inMem1(a) || rd32(a + kActRoom) >> 24 != room || rdf(a + kActPos) < -20000.0f) continue;
+            if (roomGhost(rd32(a + kActType))) here++;  // hidden ones too: their health is 0 until they come out
+        }
+        static u32 sCountRoom = ~0u;
+        static int sLast = -1;
+        if (room != sCountRoom || cleared) {
+            sCountRoom = room;
+            sLast = cleared ? -1 : here;
+        } else if (here < sLast) {
+            sLast = here;
+            if (here > 0) say(std::to_string(here) + (here == 1 ? " ghost left in this room" : " ghosts left in this room"), false);
+        } else if (here > sLast) {
+            sLast = here;
+        }
+        sGhostsHere = cleared ? 0 : here;
+    }
+    // The Courtyard's well: in Go to, and open once flag 27 is set.
+    if (nameIndex == kCourtyard && rd32(kCurMap) == kMansionMap) {
+        nav::Object o{nav::Category::Furniture, kWellX, l.y, kWellZ, 0, 130.0f, "Well"};
+        const int left = sGhostsHere;
+        o.arrive = flagOn(kFlagWellOpen) ? "Press A to climb down into it."
+                   : left > 0         ? "It stays shut until the ghosts here are caught: " + std::to_string(left) + " left."
+                                      : "It is shut for now.";
+        objects.push_back(o);
+    }
+    // Biff Atlas: his AI state, logged on each change, to find where a punching bag's hit shows.
+    for (const Target& t : targets)
+        if (t.kind == Kind::Ghost && t.type == kTypeBiff) {
+            const u32 thought = thoughtOf(t.id);
+            const u32 strategy = thought ? rd32(thought + kAiStrategy) : 0;
+            static u32 sState = ~0u;
+            static s32 sHp = -1;
+            const u32 state = gu::inMem1(strategy) ? rd16(strategy + 0xE) : 0xFFFF;
+            const s32 hp = s16(rd16(t.id + kActHealth));
+            if (state != sState || hp != sHp) log("[access] Biff Atlas state %X health %d at %.0f,%.0f,%.0f", state, hp, t.pos.x, t.pos.y, t.pos.z);
+            sState = state;
+            sHp = hp;
+        }
+    // Mr. Luggs' fight, step by step (the user: no word of what to do at any point). From what is in
+    // play: candles out, waiters showing (they are faded out until he eats), food left, then his temper.
+    int waiters = 0;
+    const Target* luggs = nullptr;
+    for (const Target& t : targets)
+        if (t.kind == Kind::Ghost && t.type == kTypeWaiter) waiters++;
+        else if (t.kind == Kind::Ghost && t.type == kTypeLuggs) luggs = &t;
+    int candlesOut = 0;
+    for (const Stand& s : stands) candlesOut += s.out > 0;
+    if (nameIndex == kDiningRoom && !cleared && set.bossSpeech) {
+        const bool fire = rd32(luigi + kLuigiElement) == kElementFire;
+        std::string phase;
+        if (candlesOut > 0)
+            phase = std::string("Mr. Luggs is waiting for his dinner. Light the candelabras on each side of him with fire, using the left trigger. They are under Candles in Go to.") +
+                    (fire ? "" : " You have no fire now. A fire spirit shows under Elements in Go to when one is near.");
+        else if (waiters > 0)
+            phase = waiters == 1 ? "A waiter is bringing his food. Flash it and vacuum it." : "Two waiters are bringing his food. Flash and vacuum them first, so the food stops coming.";
+        else if (foodLeft > 0)
+            phase = "The waiters are gone. Vacuum his food: stand in front of the table and hold the right trigger, and the nozzle turns to it. It is under Bosses in Go to.";
+        else if (luggs)
+            phase = "His food is gone and he is angry. He spits fireballs: keep moving left and right until he tires and his heart shows, then vacuum him.";
+        static std::string sPhase, sSaid;
+        static u64 sSince = 0;
+        const u64 now = SDL_GetTicks();
+        if (phase != sPhase) {
+            sPhase = phase;
+            sSince = now;
+        }
+        if (!phase.empty() && phase != sSaid && now - sSince > 900) {
+            sSaid = phase;
+            say(phase, false);
+            log("[access] Mr. Luggs: %s (candles out %d, waiters %d, food %d)", phase.c_str(), candlesOut, waiters, foodLeft);
+        }
+        // His health by quarters, once he can be caught.
+        static s32 sStep = 4;
+        if (luggs) {
+            const s32 hp = s16(rd16(luggs->id + kActHealth));
+            const s32 step = (hp * 4 + 99) / 100;
+            if (hp > 0 && step < sStep) say("Mr. Luggs, health " + std::to_string(hp), false);
+            sStep = hp > 0 ? step : 4;
+        }
+    }
     auditRooms();
     const u32 rooms = rd32(kRoomTable);
     nav::publish(objects, l.x, l.y, l.z, rd32(kCurMap), room, gu::inMem1(rooms) ? rd8(rooms + room * 0x30 + 3) : room, box[0], box[1], box[2], box[3]);
@@ -1849,6 +2303,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         if (spirit) spiritTone = *spirit;
         pulse(sMedal, medal ? &medalTone : nullptr, l, 6, 40);
         pulse(sSpirit, spirit ? &spiritTone : nullptr, l, 4, 30);  // they drift
+        pulse(sMario, mario, l, 6, 40);
     }
     // A key that goes from beside Luigi is one he took: nothing else removes them.
     {
@@ -1885,6 +2340,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         const u64 now = SDL_GetTicks();
         auto it = sStunSaid.find(name);
         if (it != sStunSaid.end() && now - it->second < 2000) return;
+        if (name == "Bogmire" && now - sBossHitAt < 3000) return;  // "Shadow hit Bogmire" said it
         sStunSaid[name] = now;
         say(name + " stunned. Vacuum now.", interrupt);
     };
@@ -1973,7 +2429,18 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
     const bool throwRoom = rd32(kCurMap) == kMansionMap && (nameIndex == kNanasRoom || nameIndex == kBilliardsRoom) && !cleared;
     holdObject(luigi, l, lockBoss, targets, !lockBoss && !throwRoom, button, triggerLeft, triggerRight);
     steerShot(lockBoss, targets);
-    if (!walking) lockAim(luigi, l, lockBoss, open, targets, button, triggerRight, stickX, stickY, substickX, substickY);
+    // Mr. Luggs' food takes the same nozzle lock as a boss, while the vacuum runs near it.
+    const bool foodLock = !lockBoss && foodHere && waiters == 0 && candlesOut == 0 && flatDistance(food.pos, l) < kFoodLock;  // only once he eats and the waiters are caught
+    if (!walking) lockAim(luigi, l, foodLock ? &food : lockBoss, open && !foodLock, foodLock ? std::vector<Target>{} : targets, button, triggerRight, stickX, stickY, substickX, substickY);
+    pullShadow(luigi, l, targets, button, triggerRight);
+    {
+        std::vector<Vec> spots;
+        for (const auto& s : nav::waterSpots()) spots.push_back({s[0], s[1], s[2]});
+        for (const nav::Object& o : objects)
+            if (o.category == nav::Category::Elements && o.name.rfind("Burning door", 0) == 0) spots.push_back({o.x, l.y + 100.0f, o.z});
+        if (sprout) spots.push_back(sproutPos);
+        if (!walking) sprayAim(luigi, l, spots, button, triggerLeft, stickX, stickY, substickY);
+    }
     if (rd32(kCurMap) != kMansionMap) sBooManager = 0;  // it goes with the map
     {
         static Target sBooSpot;
@@ -1999,7 +2466,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         Target horseTone;
         if (horse) (horseTone = *horse).kind = Kind::Horse;
         pulse(sHorse, horse ? &horseTone : nullptr, l, 2, 20);
-        pulse(sBoss, bossTarget, l, 3, 25);
+        pulse(sBoss, bossTarget ? bossTarget : miniFar ? &miniTone : nullptr, l, 3, 25);
     }
     if (!set.autoInteract || walking) return;
     // Chests and keys open with A when close. A door only when Luigi walks at it, so walking past
@@ -2030,7 +2497,7 @@ void noteStrategy(u32 strategy) {
     if (!active() || !gu::inMem1(strategy)) return;
     const u32 thought = rd32(strategy + 4);
     const u32 actor = gu::inMem1(thought) ? rd32(thought + kAiActor) : 0;
-    if (!gu::inMem1(actor) || !isBoss(rd32(actor + kActType))) return;
+    if (!gu::inMem1(actor) || (!isBoss(rd32(actor + kActType)) && rd32(actor + kActType) != kTypeBiff)) return;  // Biff: his state is logged
     if (sBossThoughts.size() > 16) sBossThoughts.clear();
     sBossThoughts[actor] = thought;
 }

@@ -80,6 +80,7 @@ constexpr float kStartHeight = 60.0f;  // the floor Luigi stands on is this clos
 constexpr u32 kFlat = 40, kButtonSize = 60;  // furniture table sizes
 constexpr u32 kHashName = 0x6175C6, kHashAccessName = 0xB64611, kHashCodeName = 0x1565142;
 constexpr float kCheeseSize = 50.0f;
+constexpr const char* kMelodyName = "Melody Pianissima";  // under Bosses, but A starts her quiz as with a person
 constexpr u32 kNoRow = ~0u;  // a listed spot that is not in the furniture table
 constexpr u32 kStorageRoom = 14;  // name index
 constexpr u32 kHashMove = 0x16F7E9F, kHashSheet = 0x6E1C60, kMoveButton = 33;  // furnitureinfo fields
@@ -114,6 +115,7 @@ struct ModelWord {
     const char* word;
 };
 constexpr ModelWord kModelWords[] = {
+    {"o_tama", "Crystal ball"}, {"o_bou", "Telescope"},  // the Fortune-teller's ball; bouenkyou, the Observatory's telescope
     {"omark", ""}, {"flrd", ""}, {"yuka", ""}, {"tesu", ""}, {"a_tesu", ""}, {"kabe", "Moving wall"},
     {"booka", "Book"}, {"bookb", "Book"}, {"book", "Bookshelf"}, {"o_hon", "Books"}, {"o_syo", "Books"},
     {"gakub", "Picture"}, {"opic", "Picture"}, {"tpic", "Picture"}, {"pic", "Picture"}, {"oe", "Picture"}, {"o_e", "Picture"},
@@ -135,7 +137,7 @@ constexpr ModelWord kModelWords[] = {
     {"o_syan", "Chandelier"}, {"osyan", "Chandelier"}, {"syan", "Chandelier"}, {"shan", "Chandelier"},
     {"a_lamp", "Lamp"}, {"a_ligh", "Light"}, {"ohikari", "Lamp"}, {"o_hika", "Lamp"},
     {"rou", "Candle stand"}, {"orou", "Candle stand"}, {"o_rou", "Candle stand"}, {"osoku", "Candle stand"}, {"a_cand", "Candle stand"},
-    {"torch", "Torch"}, {"a_torc", "Torch"}, {"a_tomb", "Tombstone"}, {"a_tree", "Tree"}, {"a_foun", "Fountain"}, {"a_dog", "Dog house"}, {"a_bird", "Birdbath"},
+    {"torch", "Torch"}, {"a_torc", "Torch"}, {"a_tomb", "Tombstone"}, {"a_tree", "Tree"}, {"a_foun", "Fountain"}, {"a_dog", "Dog house"}, {"a_bird", "Birdhouse"}, {"a_stam", "Statue"}, {"a_staw", "Statue"}, {"mono", "Shack"},
     {"oben", "Stove"}, {"okori", "Frozen vase"}, {"hundle", "Wheel"}, {"cam", "Projector"}, {"o_sando", "Punching bag"}, {"o_ziten", "Exercise bike"}, {"o_haao", "Plant"},
     {"a_suid", "Faucet"}, {"a_pipe", "Pipe"}, {"otoke", "Clock"}, {"dan4", "Cardboard box"}, {"danb", "Cardboard box"}, {"a_plat", "Platform"}, {"a_fenc", "Fence"},
     {"tubo", "Vase"}, {"otubo", "Vase"}, {"sk13", "Screen"}, {"sp13", "Speaker"}, {"break", "Breaker box"}, {"a_ladd", "Ladder"},
@@ -315,7 +317,10 @@ std::vector<Furniture> readFurniture(const std::string& path) {
         // move 33 is a button the game presses: the Storage Room's two. The one under a sheet (the
         // Danger poster) is found by vacuuming the poster off, and lets the Boos out.
         const bool button = bits(kHashMove, row) == kMoveButton;
+        // The Butler's Room's and the Hidden Room's mouse holes: no model, 31.5 up the wall.
+        const bool mouseHole = name == "(null)" && std::abs(beFloat(row + y) - 31.5f) < 0.1f;
         const char* word = name != "(null)" ? modelWord(name)
+                           : mouseHole ? "Mouse hole"
                            : button ? (bits(kHashSheet, row) != 0 ? "Wall button behind the Danger poster" : "Wall button")
                            : thin > kFlat ? "Something to check" : across <= kButtonSize ? "Wall button" : "Poster";
         if (!*word || wide == 0 || deep == 0) continue;
@@ -328,7 +333,9 @@ std::vector<Furniture> readFurniture(const std::string& path) {
             const std::string link(reinterpret_cast<const char*>(row + access), strnlen(reinterpret_cast<const char*>(row + access), 32));
             if (!link.empty() && link != "(null)" && speedy.count(link)) hidden = link.back() == 't' ? "Speedy Spirit, in the blackout" : "Speedy Spirit";
         }
-        out.push_back({beFloat(row + x), beFloat(row + y), beFloat(row + z), float(turned ? deep : wide) * 0.5f, float(turned ? wide : deep) * 0.5f, float(be32(row + sizeY)), be32(row + room), word, hidden, r, {}, modelWhy(be32(row + room), name)});
+        // The Rec Room's punching bags hang from the ceiling: their row is the top. Listed at their foot.
+        const float rowY = name.rfind("o_sando", 0) == 0 ? std::max(beFloat(row + y) - float(be32(row + sizeY)), 0.0f) : beFloat(row + y);
+        out.push_back({beFloat(row + x), rowY, beFloat(row + z), float(turned ? deep : wide) * 0.5f, float(turned ? wide : deep) * 0.5f, float(be32(row + sizeY)), be32(row + room), word, hidden, r, {}, modelWhy(be32(row + room), name)});
     }
     addCheese(path, out);
     // Several of one word in a room are numbered in table order, so Box 2 stays Box 2 wherever Luigi
@@ -796,6 +803,10 @@ constexpr u32 kConservatory = 21, kInstruments[] = {121, 122, 123, 131, 132, 133
 bool isInstrument(u32 row) { return std::find(std::begin(kInstruments), std::end(kInstruments), row) != std::end(kInstruments); }
 bool shown(const Furniture& p) { return sStorageOpen || p.room != kStorageRoom || p.x >= kStorageWall; }
 
+// A plant that gives treasure when watered: the Courtyard's and the Balcony's (kWhy).
+bool waterMe(const Furniture& p) { return p.why && std::strstr(p.why, "water it") != nullptr; }
+
+
 std::set<const Furniture*> sSearched;  // pressed A at, this map: the game's own record is not found yet
 std::set<u32> sVisitedRows, sVisitedIds;  // walked to with Go to, or opened, this map
 
@@ -833,7 +844,7 @@ std::vector<Object> furnitureObjects() {
         if (p.room != sRoomNameIndex || !shown(p) || std::abs(p.y - sLuigi[1]) > kLevelGap) continue;
         const float reach = std::max(p.halfX, p.halfZ) + kFurnitureMargin;
         if (p.row == kNoRow) {  // found by looking, not by walking into it
-            if (!sSearched.count(&p)) out.push_back({Category::Hidden, p.x, p.y, p.z, 0, reach, "Cheese for a gold mouse. Press X and look around for it"});
+            if (!sSearched.count(&p)) out.push_back({Category::Hidden, p.x, p.y, p.z, 0, reach, "Cheese for a gold mouse. Press X here: the search view turns to it"});
             continue;
         }
         // The Conservatory's instruments and its piano have a list of their own.
@@ -844,6 +855,7 @@ std::vector<Object> furnitureObjects() {
         std::string note = sSearched.count(&p) ? "searched" : sVisitedRows.count(p.row) ? "visited" : "";
         if (p.why) note = note.empty() ? p.why : std::string(p.why) + ", " + note;
         out.push_back({Category::Furniture, p.x, p.y, p.z, 0, reach, p.label, false, note, p.row});
+        if (waterMe(p)) out.back().arrive = "Spray water at it with the left trigger until treasure drops: the nozzle turns to it.";
         if (p.hidden && !sSearched.count(&p)) out.push_back({Category::Hidden, p.x, p.y, p.z, 0, reach, std::string(p.hidden) + " in the " + lowerFirst(p.label), false, note, p.row});
     }
     for (const Plaque& p : nav->plaques) {
@@ -1111,9 +1123,13 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
     const Vec2 luigi{sLuigi[0], sLuigi[2]};
     // The target may be moving, or gone: an actor that left the list was collected.
     bool present = sWalk.target.id == 0;  // furniture and spots stay
+    // A boss walk follows its own actor, or else the boss listed now: Bowser's suit is two actors, and
+    // King Boo comes out of it. Mr. Luggs and his food are both listed: each keeps its own walk.
+    bool ownListed = false;
     for (const Object& o : sObjects)
-        // A boss walk follows the one boss listed: Bowser's suit is two actors, and King Boo comes out of it.
-        if ((o.id == sWalk.target.id && o.id != 0) || (sWalk.target.category == Category::Bosses && o.category == Category::Bosses)) {
+        if (o.id == sWalk.target.id && o.id != 0) ownListed = true;
+    for (const Object& o : sObjects)
+        if ((o.id == sWalk.target.id && o.id != 0) || (!ownListed && !present && sWalk.target.category == Category::Bosses && o.category == Category::Bosses)) {
             present = true;
             if (sWalk.side >= 0) break;  // a chest stays put, and the target is the spot beside it
             if (sWalk.target.category == Category::Bosses) {
@@ -1198,7 +1214,7 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
     // At a door or chest: close enough, or at the end of the route, the closest reachable spot.
     if (sWalk.next < sWalk.route.size() && std::hypot(sWalk.route[sWalk.next].x - luigi.x, sWalk.route[sWalk.next].z - luigi.z) < kWaypointReach) sWalk.next++;
     if (sWalk.partial && !sWalk.target.open && sWalk.next >= sWalk.route.size()) {
-        finish("As close as I can get to " + withThe(sWalk.target));
+        finish("As close as I can get to " + withThe(sWalk.target) + (sWalk.target.arrive.empty() ? "" : ". " + sWalk.target.arrive));
         return false;
     }
     if (sWalk.target.reach > 0.0f && (toTarget < sWalk.target.reach || sWalk.next >= sWalk.route.size() || sWalk.arrived)) {
@@ -1208,7 +1224,7 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
                                                           : "At the candle stand. The flames are above you: aim up with the right stick, and spray fire with the left trigger.");
             return false;
         }
-        if (sWalk.target.category == Category::Bosses) {
+        if (sWalk.target.category == Category::Bosses && sWalk.target.name != kMelodyName) {
             finish("Near " + targetName(sWalk.target) + (sWalk.target.arrive.empty() ? "" : ". " + sWalk.target.arrive));
             return false;
         }
@@ -1219,7 +1235,8 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
             return false;
         }
         if (sWalk.target.category == Category::Furniture || sWalk.target.category == Category::Hidden || sWalk.target.category == Category::Thrown || sWalk.target.category == Category::Elements) {
-            finish(sWalk.target.category == Category::Hidden ? "Here: " + lowerFirst(targetName(sWalk.target)) : "At the " + lowerFirst(targetName(sWalk.target)));
+            finish((sWalk.target.category == Category::Hidden ? "Here: " + lowerFirst(targetName(sWalk.target)) : "At the " + lowerFirst(targetName(sWalk.target))) +
+                   (sWalk.target.arrive.empty() ? "" : ". " + sWalk.target.arrive));
             return false;
         }
         if (sWalk.pressTimer == 0) {
@@ -1228,7 +1245,7 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
                 sWalk.startRoom = sRoomNumber;
                 return true;
             }
-            if (sWalk.presses >= (sWalk.target.category == Category::Toads || sWalk.target.category == Category::People ? 1 : kMaxPresses)) {  // a second A would skip his words
+            if (sWalk.presses >= (sWalk.target.category == Category::Toads || sWalk.target.category == Category::People || sWalk.target.name == kMelodyName ? 1 : kMaxPresses)) {  // a second A would skip his words
                 finish("At " + withThe(sWalk.target));
                 return false;
             }
@@ -1341,6 +1358,51 @@ void audit(int map, std::vector<AuditRoom> rooms) {
         std::printf("[nav-audit] %d routes tried, %d failed\n", pairs, failed);
         std::fflush(stdout);
     }).detach();
+}
+
+// The plants to water in Luigi's room, on his level: their middles.
+std::vector<std::array<float, 3>> waterSpots() {
+    std::vector<std::array<float, 3>> out;
+    std::shared_ptr<const NavMap> nav;
+    {
+        std::lock_guard lk(sNavM);
+        nav = sNav;
+    }
+    if (!nav || nav->map != int(sMap)) return out;
+    for (const Furniture& p : nav->furniture)
+        if (p.room == sRoomNameIndex && waterMe(p) && std::abs(p.y - sLuigi[1]) <= kLevelGap + kBodyHigh) out.push_back({p.x, p.y + std::min(p.tall * 0.5f, 80.0f), p.z});
+    return out;
+}
+
+// What the search view is for in Luigi's room: the nearest thing used with A there.
+bool searchSpot(float out[3], std::string& word) {
+    std::shared_ptr<const NavMap> nav;
+    {
+        std::lock_guard lk(sNavM);
+        nav = sNav;
+    }
+    if (!nav || nav->map != int(sMap)) return false;
+    static const char* const kWords[] = {"Cheese", "Mouse hole", "Telescope", "Crystal ball", "Mirror", "Dog house"};
+    const Furniture* best = nullptr;
+    float bestD = 1e9f;
+    for (const Furniture& p : nav->furniture) {
+        if (p.room != sRoomNameIndex || !shown(p) || std::abs(p.y - sLuigi[1]) > kLevelGap + kBodyHigh) continue;
+        bool want = false;
+        for (const char* w : kWords)
+            if (std::strcmp(p.word, w) == 0) want = true;
+        if (!want) continue;
+        const float d = std::hypot(p.x - sLuigi[0], p.z - sLuigi[2]);
+        if (d < bestD) {
+            bestD = d;
+            best = &p;
+        }
+    }
+    if (!best) return false;
+    out[0] = best->x;
+    out[1] = best->y + std::min(best->tall * 0.5f, 60.0f);
+    out[2] = best->z;
+    word = std::strcmp(best->word, "Cheese") == 0 ? "Cheese" : best->label;
+    return true;
 }
 
 std::string aimedFurniture(const float eye[3], const float dir[3], float& angle, float& height, float heightWeight) {

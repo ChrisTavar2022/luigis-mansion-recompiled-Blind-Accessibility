@@ -800,6 +800,15 @@ void accessibilityTab() {
             sDirty |= ImGui::Checkbox("Easier boss hits", &a.easierBossHits);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
                 ImGui::SetTooltip("A ball or other object you throw is steered into the boss when it passes near. Turn this off for the original, harder game.");
+            sDirty |= ImGui::Checkbox("Water aims for you", &a.sprayAim);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Spray water with the left trigger near a plant, the Boneyard's sprout or a burning door in front of you, and the nozzle turns to it. Moving the right stick yourself takes over.");
+            sDirty |= ImGui::Checkbox("Search view aims for you", &a.searchAim);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Open the search view with X, and it turns to the cheese, mouse hole, telescope, crystal ball, mirror or dog house in the room, then says to press A. Moving the stick yourself takes over.");
+            sDirty |= ImGui::Checkbox("Pull Bogmire's shadows to the vacuum", &a.shadowPull);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("In Bogmire's fight, a shadow in front of you drifts into the vacuum while it runs, so it is easier to catch. Turn this off for the original, harder game.");
             static const char* const kStun[] = {"Normal", "Twice as long", "Three times as long", "Four times as long"};
             sDirty |= ImGui::Combo("How long a stunned ghost stays", &a.stunLength, kStun, 4);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
@@ -855,6 +864,7 @@ void accessibilityTab() {
             } kCues[] = {
                 {"Chest: two rising notes", Cue::Chest, a.cueChest},
                 {"Element medal chest: a bright high leap", Cue::Medal, a.cueMedal},
+                {"One of Mario's items, his hat, letter, star, shoe or glove: a jump up an octave and back", Cue::MarioItem, a.cueMarioItem},
                 {"Element spirit, once you have its medal: a soft falling step", Cue::Spirit, a.cueSpirit},
                 {"Key: a metal tink", Cue::Key, a.cueKey},
                 {"Heart: two low falling notes", Cue::Heart, a.cueHeart},
