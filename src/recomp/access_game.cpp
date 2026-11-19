@@ -625,6 +625,21 @@ bool roomVisited(u32 nameIndex) {
     return rd32(kCurMap) == kMansionMap && nameIndex < kRoomCount && (rd16(kMapRoomBits + nameIndex * 2) & 1);
 }
 
+int boosCaught() {
+    // fn_800AEEA8, message 21: a caught Boo's id (+0x6C) sets its bit in [Luigi +0x800] +4, 48 bits,
+    // and the game counts them; the save record keeps the same bits at +0x368.
+    constexpr u32 kBooBitsHolder = 0x800, kBooBits = 4, kBooBitCount = 48;
+    const u32 luigi = rd32(kActorSlots);
+    if (port::usCodeFeature() != port::Avail::Yes || !gu::inMem1(luigi)) return -1;
+    const u32 holder = rd32(luigi + kBooBitsHolder);
+    if (!gu::inMem1(holder)) return -1;
+    const u32 bits = rd32(holder + kBooBits);
+    if (!gu::inMem1(bits)) return -1;
+    int n = 0;
+    for (u32 i = 0; i < kBooBitCount; i++) n += (rd8(bits + i / 8) >> (i % 8)) & 1;
+    return n;
+}
+
 DoorLock doorLock(u32 door) {
     DoorLock out;
     constexpr u32 kDoorStates = 0x804D7F60 + 0x2A4, kDoorStateSize = 104, kStateLocked = 0x400, kLuigiKeys = 0x7F4;
@@ -1261,6 +1276,10 @@ bool sayStatus() {
     std::vector<std::string> extra;
     if (const std::string element = elementStatus(luigi); !element.empty()) extra.push_back(element);
     if (const std::string boss = bossStatus(); !boss.empty()) extra.push_back(boss);
+    // Once the Boos are out: how many are caught, against the doors they seal.
+    if (const int boos = boosCaught(); boos >= 0 && gameFlag(kFlagBoosOut))
+        extra.push_back("Boos caught " + std::to_string(boos) + " of 50" +
+                        (boos < 20 ? ". The Balcony wants 20" : boos < 40 ? ". The Secret Altar wants 40" : ""));
     const int stops = 3 + int(extra.size());
     if (sNext >= stops) sNext = 0;
     const int item = sNext;
@@ -1335,6 +1354,19 @@ void pollGame() {
         const u32 keys = gu::inMem1(luigi) && rd32(kCurScene) == kSceneMain ? rd32(luigi + 0x7F4) : 0;
         const u32 bits = gu::inMem1(keys) ? rd32(keys + 4) : 0;
         if (gu::inMem1(bits)) wr8(bits + key / 8, rd8(bits + key / 8) | (1u << (key % 8)));
+    }
+    // Test aid LM_ACCESS_TEST_BOOS=<n>: the first n Boo bits are set, as if that many were caught.
+    if (const char* v = std::getenv("LM_ACCESS_TEST_BOOS")) {
+        const u32 luigi = rd32(kActorSlots);
+        const u32 holder = gu::inMem1(luigi) && rd32(kCurScene) == kSceneMain ? rd32(luigi + 0x800) : 0;
+        const u32 bits = gu::inMem1(holder) ? rd32(holder + 4) : 0;
+        if (gu::inMem1(bits))
+            for (int i = 0; i < std::min(std::atoi(v), 48); i++) wr8(bits + i / 8, rd8(bits + i / 8) | (1u << (i % 8)));
+    }
+    // Test aid LM_ACCESS_TEST_STATUS=<frames>: the right stick's status, every that many frames.
+    if (const char* v = std::getenv("LM_ACCESS_TEST_STATUS")) {
+        static int sCount = 0;
+        if (std::atoi(v) > 0 && ++sCount % std::atoi(v) == 0) sayStatus();
     }
     // Test aid LM_ACCESS_POKE=<frame>:<address>:<value>: one guest word, to open a screen.
     if (const char* v = std::getenv("LM_ACCESS_POKE")) {

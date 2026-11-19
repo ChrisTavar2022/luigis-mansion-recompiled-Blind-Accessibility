@@ -201,6 +201,12 @@ Test aids: `LM_ACCESS_WORLD_LOG=1` logs targets and tones. `LM_SPAWN=<type>@<fra
 - Boss fight mechanics
 - Which of these work on PAL
 
+## Boos caught, the moon (2026-11-18)
+
+- Boos caught: `fn_800AEEA8`, message 21, a caught ghost with a Boo id (data +0x6C, not negative) sets bit id in `[Luigi +0x800] +4` (48 bits) and counts them. The save record keeps the same bits at +0x368. `access::boosCaught()`.
+- Boo-sealed doors: door records with a key no key item gives, each with an `eldoor` actor: 21 (hallway 20 to room 24, eldoor08), 59 (Balcony, eldoor09, 20 Boos), 72 (Secret Altar, eldoor10, 40 Boos). eldoor07 stands at the Foyer's web-sealed door. At the Balcony door with too few Boos, Luigi is held and loses health a point at a time (Boo types 211 to 221 about him).
+- Observatory: the meteor is type 228 `star` (generator star_41_1 at 4560,880,-3260). Mario's star (type 189 `mstar`) stands at 7770,760,-3970 from the start, with the same flags (0xC00) and alpha (255) before the moon breaks; the moon is part of the sky model.
+
 ## Emblems and flying objects (2026-11-18)
 
 - Emblems: furniture table rows with model `omark` and `move` 29 (furnitureinfo, room_no is the name index). Stepping on one flips Luigi between floor and ceiling (his y changes by about 500). Tea Room (47): floor 3840,551,-4620, ceiling 2600,1048.5,-4920; the ceiling one drops him onto the table (y 670). Cellar (63): ceiling 2750,-51,-210 and 2900,-51,-610, floor 2750,-549,140 and 3950,-549,-390.

@@ -66,6 +66,8 @@ DoorLock doorLock(std::uint32_t door);
 // Luigi has been in the room with this name index: the Game Boy Horror map's own record
 // (0x803CDF50 + name index * 2, bit 0), saved with the game.
 bool roomVisited(std::uint32_t nameIndex);
+// Boos caught: the bits the game sets as each is caught ([Luigi +0x800] +4, 48 bits). -1 off the game.
+int boosCaught();
 
 // A menu closed on A or B: the game ignores those until they are released, or the press that closed
 // the menu would also act in the game, such as opening the door Luigi stands at.

@@ -84,6 +84,7 @@ constexpr u32 kAiPlayer = 0x950, kAiActor = 0x808;  // an AI object: which playe
 constexpr float kBossStop = 350.0f;  // Go to stops this far from a boss
 constexpr u32 kLuigiElement = 0x1184, kElementFire = 2;  // Luigi +0x1184: 2 fire, 3 water, 4 ice
 constexpr float kShiversStop = 220.0f;  // close enough for the fire to reach his candle: a guess, not measured
+constexpr float kBalconyWarn = 700.0f;  // the Balcony door's guard Boo is spoken from this far
 constexpr float kLockCatch = 900.0f;  // a ball nearer than this comes before the boss
 constexpr u64 kLockSayMs = 8000;
 constexpr u32 kAiStrategy = 0x800;
@@ -99,7 +100,9 @@ constexpr int kLockLost = 45;  // input reads with nothing in reach
 constexpr u8 kTriggerPressed = 100;
 constexpr float kThrowCosine = 0.94f, kThrowReach = 1200.0f;  // about 20 degrees either side
 constexpr float kThrownNotice = 900.0f;  // what is thrown from further off is not news yet
-constexpr u32 kBallRoom = 10, kRecRoom = 22, kNursery = 24, kNanasRoom = 46, kBilliardsRoom = 12;  // name indices
+constexpr u32 kBallRoom = 10, kRecRoom = 22, kNursery = 24, kNanasRoom = 46, kBilliardsRoom = 12, kObservatory = 41;  // name indices
+constexpr u32 kTypeMeteor = 228, kTypeMarioStar = 189;
+constexpr float kStarReach = 1500.0f;  // Mario's star counts from this close: only the path of light comes this near
 constexpr u32 kFishedGhost = 0x11A0;  // Luigi: the ghost on the vacuum, which drags him
 constexpr u32 kGrainTimer = 0x48, kHeartLife = 0x1AC;
 constexpr s32 kKeepTimer = 300;  // game frames: above where an item starts to fade
@@ -135,7 +138,7 @@ bool kindOf(u32 type, Kind& k) {
 bool isThrown(u32 type) {
     switch (type) {
     case 65: case 66: case 67: case 68: case 69: case 149: case 150: case 155: case 156: case 157:
-    case 158: case 159: case 160: case 161: case 167: case 170: case 171: case 172: case 211: case 212: case 215: case 216: case 219: case 231:
+    case 158: case 159: case 160: case 161: case 167: case 170: case 171: case 172: case 211: case 212: case 215: case 216: case 219: case 228: case 231:
         return true;
     default:
         return false;
@@ -155,6 +158,7 @@ const char* thrownWord(u32 type) {
     case 211: case 212: return "Shadow";
     case 215: case 216: return "Icicle";
     case 219: return "Ice";
+    case 228: return "Meteor";  // the Observatory's shining meteor, thrown at the moon
     case 231: return "Spiked bomb";
     default: return "Ball";
     }
@@ -258,6 +262,9 @@ struct Target {
     bool open = false;  // a door record with no door: the edge of a zone, nothing to press
 };
 
+// The moon the Observatory's meteor is thrown at: where Mario's star waits in the halved moon afterwards
+// (characterinfo mstar, room 41). The moon is part of the sky model, so it has no actor of its own.
+constexpr Vec kMoon{7770.0f, 760.0f, -3970.0f};
 float rdf(u32 a) { return gu::rdf(a); }
 Vec rdVec(u32 a) { return {rdf(a), rdf(a + 4), rdf(a + 8)}; }
 float flatDistance(const Vec& a, const Vec& b) { return std::hypot(a.x - b.x, a.z - b.z); }
@@ -458,6 +465,20 @@ std::vector<Target> scan(u32 luigi) {
         if (isGhost(type) && !(rd32(a + kActFlags) & kActHidden) && (rd8(a + kActAlpha) != 0 || type == kTypeShivers)) {
             out.push_back({Kind::Ghost, p, a, 0, type});
         } else if (kindOf(type, k)) {
+            // Mario's star waits in the sky beyond the Observatory until the moon is broken: only an item
+            // the game shows counts.
+            // Its flags and alpha are the same before the moon breaks, and it stands about 2400 beyond the
+            // Observatory's east wall: it counts once Luigi is out on the path of light.
+            const bool farStar = type == kTypeMarioStar && flatDistance(p, rdVec(luigi + kActPos)) > kStarReach;
+            if (k == Kind::MarioItem && ((rd32(a + kActFlags) & kActHidden) || farStar)) {
+                static std::set<u32> sLogged;
+                if (sRoomLog && sLogged.insert(a).second) std::printf("[world] Mario's item type %u hidden at %.0f,%.0f,%.0f\n", type, p.x, p.y, p.z);
+                continue;
+            }
+            if (k == Kind::MarioItem && sRoomLog) {
+                static std::set<u32> sLogged;
+                if (sLogged.insert(a).second) std::printf("[world] Mario's item type %u shown at %.0f,%.0f,%.0f, flags %08X alpha %u\n", type, p.x, p.y, p.z, rd32(a + kActFlags), rd8(a + kActAlpha));
+            }
             out.push_back({k, p, a, 0, k == Kind::MarioItem ? type : 0});
             if (k == Kind::Chest && rd32(kCurMap) == kMansionMap) {
                 const u32 rooms = rd32(kRoomTable);
@@ -2210,8 +2231,10 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         // Luigi back to the Foyer from the Balcony's. Said until he has been through (guides: 20 and 40).
         if (t.kind == Kind::Door && !t.open && note.empty()) {
             const std::string behind = doorName(t.leadsTo);
-            if (behind == "Balcony door") note = "sealed by the Boos until you have caught 20";
-            else if (behind == "Secret Altar door") note = "sealed by the Boos until you have caught 40";
+            const int want = behind == "Balcony door" ? 20 : behind == "Secret Altar door" ? 40 : 0;
+            const int boos = boosCaught();
+            if (want && boos < want)
+                note = "sealed by the Boos until you have caught " + std::to_string(want) + (boos >= 0 ? ", you have " + std::to_string(boos) : "");
         }
         std::string name = t.kind == Kind::MarioItem ? std::string(marioWord(t.type)) : t.kind == Kind::Chest && t.type == kMedalChest ? "Element medal chest" : t.kind == Kind::Door ? doorName(t.leadsTo) : t.kind == Kind::Npc ? (t.type == kTypeMelody ? "Melody Pianissima" : "Professor") : t.kind == Kind::Thrown ? thrownWord(t.type) : std::string();
         if (t.open) name = name.size() > 5 ? "Way to " + name.substr(0, name.size() - 5) : "Way through";  // "Hallway door"
@@ -2519,6 +2542,26 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
     }
     if (set.bossSpeech) bossSpeech(targets, l, cleared);
     if (set.roomHints) shiversSpeech(room);
+    // The Balcony's door: with fewer than 20 Boos caught, a Boo there holds Luigi and sends him back
+    // to the Foyer, and nothing on screen says why (guides; seen in a silent test). Once a run, as he
+    // comes near it.
+    if (set.roomHints) {
+        static bool sWarned = false;
+        static u32 sWarnRun = 0;
+        if (runCount() != sWarnRun) {
+            sWarnRun = runCount();
+            sWarned = false;
+        }
+        const int boos = boosCaught();
+        for (const Target& t : targets)
+            if (!sWarned && t.kind == Kind::Door && boos >= 0 && boos < 20 && !beenIn(t.leadsTo) && flatDistance(t.pos, l) < kBalconyWarn &&
+                doorName(t.leadsTo) == "Balcony door") {
+                sWarned = true;
+                say("The Balcony door ahead is guarded by a Boo. Until you have caught 20 Boos, it sends you back to the Foyer. You have " +
+                        std::to_string(boos) + ".",
+                    false);
+            }
+    }
     {
         static const bool sDoorLog = std::getenv("LM_ACCESS_SHIVERS_LOG") != nullptr;
         static u32 sDone = ~0u;
@@ -2571,12 +2614,26 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
     // Only where throwing back is the way to win: boss fights, Nana's yarn and Slim's billiard balls
     // (the user: Neville's books do not need it). The Nursery's ball needs no lock until Chauncey is
     // up and fighting.
-    const bool throwRoom = rd32(kCurMap) == kMansionMap && (nameIndex == kNanasRoom || nameIndex == kBilliardsRoom) && !cleared;
+    // The Observatory: while the meteor is about, the moon is what the lock and the throw aim at.
+    bool moonLock = false;
+    if (rd32(kCurMap) == kMansionMap && nameIndex == kObservatory && !lockBoss)
+        for (const Target& t : targets) moonLock |= t.kind == Kind::Thrown && t.type == kTypeMeteor;
+    const Target moon{Kind::Thrown, kMoon, 0, 0, 0};
+    if (moonLock) {
+        sLockBoss = kMoon;
+        sLockBossSet = true;
+        static u32 sSaidRun = ~0u;
+        if (sSaidRun != runCount() && set.bossLock) {
+            sSaidRun = runCount();
+            say("The meteor is in Go to under Thrown. Hold the right trigger: the vacuum turns to it. Once you hold it, the left trigger throws it at the moon.", false);
+        }
+    }
+    const bool throwRoom = rd32(kCurMap) == kMansionMap && (moonLock || ((nameIndex == kNanasRoom || nameIndex == kBilliardsRoom) && !cleared));
     holdObject(luigi, l, lockBoss, targets, !lockBoss && !throwRoom, button, triggerLeft, triggerRight);
     steerShot(lockBoss, targets);
     // Mr. Luggs' food takes the same nozzle lock as a boss, while the vacuum runs near it.
     const bool foodLock = !lockBoss && foodHere && waiters == 0 && candlesOut == 0 && flatDistance(food.pos, l) < kFoodLock;  // only once he eats and the waiters are caught
-    if (!walking) lockAim(luigi, l, foodLock ? &food : lockBoss, open && !foodLock, foodLock ? std::vector<Target>{} : targets, button, triggerRight, stickX, stickY, substickX, substickY);
+    if (!walking) lockAim(luigi, l, moonLock ? &moon : foodLock ? &food : lockBoss, open && !foodLock, foodLock ? std::vector<Target>{} : targets, button, triggerRight, stickX, stickY, substickX, substickY);
     pullShadow(luigi, l, targets, button, triggerRight);
     if (lockBoss || throwRoom) pullObject(luigi, l, targets, button, triggerRight);
     {
