@@ -92,7 +92,14 @@ constexpr float kTouchFurniture = 90.0f, kFacingFurniture = 0.4f;  // A names wh
 constexpr u32 kHashEventNo = 0x1796DED, kHashEventParameter = 0x6A7ED8, kEventGallery = 79;
 constexpr int kPlaques = 23;
 constexpr int kPushReads = 60;  // how long he pushes on over a zone's edge before saying which way it is
-constexpr float kPlaqueReach = 70.0f;  // its triggers reach 100, or 80 at the first two
+constexpr float kPlaqueReach = 70.0f;
+constexpr float kFlipHeight = 250.0f;
+constexpr float kEmblemReach = 20.0f;
+constexpr int kNoProgressReads = 120;   // about 3 seconds without getting closer to the waypoint
+constexpr float kProgressStep = 20.0f;
+constexpr int kFlipWaitReads = 60;  // input reads to stand on an emblem waiting for the flip
+constexpr u32 kTeaRoomName = 47;
+constexpr float kTeaRoomTable = 620.0f;  // the floor is at 550, the tables' tops at 670  // an emblem moves Luigi about 500 up or down  // its triggers reach 100, or 80 at the first two
 
 bool logOn() {
     static const bool sLog = std::getenv("LM_ACCESS_WORLD_LOG") != nullptr;
@@ -116,7 +123,7 @@ struct ModelWord {
 };
 constexpr ModelWord kModelWords[] = {
     {"o_tama", "Crystal ball"}, {"o_bou", "Telescope"},  // the Fortune-teller's ball; bouenkyou, the Observatory's telescope
-    {"omark", ""}, {"flrd", ""}, {"yuka", ""}, {"tesu", ""}, {"a_tesu", ""}, {"kabe", "Moving wall"},
+    {"omark", "Emblem"}, {"flrd", ""}, {"yuka", ""}, {"tesu", ""}, {"a_tesu", ""}, {"kabe", "Moving wall"},
     {"booka", "Book"}, {"bookb", "Book"}, {"book", "Bookshelf"}, {"o_hon", "Books"}, {"o_syo", "Books"},
     {"gakub", "Picture"}, {"opic", "Picture"}, {"tpic", "Picture"}, {"pic", "Picture"}, {"oe", "Picture"}, {"o_e", "Picture"},
     {"papa", "Toilet paper"}, {"otoire", "Toilet"}, {"tank", "Toilet tank"}, {"bath", "Bathtub"}, {"senmen", "Sink"}, {"sen", "Sink"}, {"wash", "Sink"},
@@ -159,6 +166,8 @@ constexpr struct {
     {55, "okori", "ice source"},
     {59, "o_haao", "water it for treasure"},
     {59, "o_kusa", "water it for treasure"},
+    {47, "omark", "step on it to flip between the floor and the ceiling"},  // to the table with the ice medal chest
+    {63, "omark", "step on it to flip between the floor and the ceiling"},
     {66, "hundle", "press A to turn it, across the frozen sewage"},
 };
 
@@ -729,6 +738,13 @@ struct Walk {
     int doorWait = 0;  // input reads left to see whether the door let him through
     int pushed = 0;    // input reads spent pushing on past the end of a route, over a zone's edge
     u32 startRoom = 0;
+    float startY = 0.0f;  // Luigi's height when the walk began: an emblem flips him to the ceiling or back
+    int flipWait = 0;     // input reads stood on an emblem
+    // Progress toward the waypoint being walked to: Luigi jiggling against something moves enough
+    // each read to pass the stuck check, but gets no closer.
+    size_t bestFor = SIZE_MAX;
+    float bestAim = 0.0f;
+    int noProgress = 0;
     Vec2 lastPos{};
     bool wantPlan = false;
     std::shared_ptr<Job> job;  // the search under way
@@ -849,7 +865,10 @@ std::vector<Object> furnitureObjects() {
     if (!nav || nav->map != int(sMap)) return out;
     for (const Furniture& p : nav->furniture) {
         if (p.room != sRoomNameIndex || !shown(p) || std::abs(p.y - sLuigi[1]) > kLevelGap) continue;
-        const float reach = std::max(p.halfX, p.halfZ) + kFurnitureMargin;
+        // An emblem is a flat tile to step onto, not something to stand beside: the walk goes on to
+        // its centre, and the flip ends it (drive).
+        const bool emblem = std::strcmp(p.word, "Emblem") == 0;
+        const float reach = emblem ? kEmblemReach : std::max(p.halfX, p.halfZ) + kFurnitureMargin;
         if (p.row == kNoRow) {  // found by looking, not by walking into it
             if (!sSearched.count(&p)) out.push_back({Category::Hidden, p.x, p.y, p.z, 0, reach, "Cheese for a gold mouse. Press X here: the search view turns to it"});
             continue;
@@ -946,14 +965,24 @@ void startWalk(const Object& o) {
     sWalk = Walk{};
     sWalk.on = true;
     sWalk.target = o;
-    // Test aid LM_ACCESS_GOTO=x,y,z: any pick walks there instead.
+    // Test aid LM_ACCESS_GOTO=x,y,z[;x,y,z...]: each pick walks to the next spot instead, the last one
+    // again once the list runs out. A spot keeps the pick's name.
     if (const char* v = std::getenv("LM_ACCESS_GOTO")) {
-        Object spot{};
+        static int sPick = 0;
+        std::string list = v;
+        for (int i = 0; i < sPick; i++) {
+            const size_t semi = list.find(';');
+            if (semi == std::string::npos) break;
+            list = list.substr(semi + 1);
+        }
+        sPick++;
+        Object spot = o;  // its name, for the emblem check
         spot.category = Category::Treasure;
-        if (std::sscanf(v, "%f,%f,%f", &spot.x, &spot.y, &spot.z) == 3) sWalk.target = spot;
+        if (std::sscanf(list.c_str(), "%f,%f,%f", &spot.x, &spot.y, &spot.z) == 3) sWalk.target = spot;
     }
     sWalk.wantPlan = true;
     sWalk.lastPos = {sLuigi[0], sLuigi[2]};
+    sWalk.startY = sLuigi[1];
     sWalk.homeRoom = sRoomNumber;
     if (sWalk.target.category == Category::Chests) {
         sWalk.chest = sWalk.target;
@@ -1077,7 +1106,8 @@ void cancel(const char* reason) {
 bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
     std::lock_guard lk(sM);
     // Test aid LM_ACCESS_TEST_WALK=<reads>:<category>: logs the menu's lines, then walks to its first
-    // entry in that category, and again 300 reads after each walk ends.
+    // entry in that category, and again 300 reads after each walk ends. LM_ACCESS_TEST_WALK_NAME=<start>:
+    // only entries whose name starts so.
     if (const char* v = std::getenv("LM_ACCESS_TEST_WALK")) {
         static int sReads = 0;
         int wait = 0, category = 0;
@@ -1086,7 +1116,8 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
             const std::vector<Object> list = listObjects();
             for (const Object& o : list) std::printf("[menu] %d: %s, %s%s\n", int(o.category), targetName(o).c_str(), describe(o).c_str(), o.note.empty() ? "" : (", " + o.note).c_str());
             for (const Object& o : list)
-                if (int(o.category) == category && o.note.empty() && (!o.open) == (std::getenv("LM_ACCESS_TEST_WALK_OPEN") == nullptr)) {
+                if (int(o.category) == category && (o.note.empty() || std::getenv("LM_ACCESS_TEST_WALK_NAME")) && (!o.open) == (std::getenv("LM_ACCESS_TEST_WALK_OPEN") == nullptr) &&
+                    (!std::getenv("LM_ACCESS_TEST_WALK_NAME") || targetName(o).rfind(std::getenv("LM_ACCESS_TEST_WALK_NAME"), 0) == 0)) {
                     startWalk(o);
                     break;
                 }
@@ -1095,6 +1126,15 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
     if (!sWalk.on) return false;
     if (std::abs(stickX) > kMoveDeadZone || std::abs(stickY) > kMoveDeadZone) {
         finish("Stopped");
+        return false;
+    }
+    // The Tea Room's and the Cellar's emblems flip Luigi between the floor and the ceiling as he
+    // steps on one, before he is close enough to arrive: the walk is over, with him on the other side.
+    if (std::abs(sLuigi[1] - sWalk.startY) > kFlipHeight && targetName(sWalk.target).rfind("Emblem", 0) == 0) {
+        sVisitedRows.insert(sWalk.target.row);
+        // The Tea Room's ceiling emblem drops him onto the table, about 120 above the floor.
+        const bool table = sRoomNameIndex == kTeaRoomName && sLuigi[1] < sWalk.startY && sLuigi[1] > kTeaRoomTable;
+        finish(sLuigi[1] > sWalk.startY ? "Flipped onto the ceiling" : table ? "Dropped onto the table" : "Back on the floor");
         return false;
     }
     // The door was pressed: its animation plays, then Luigi is through it. A locked door is announced
@@ -1126,6 +1166,7 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
         sWalk.partial = job->partial;
         sWalk.next = 0;
         sWalk.stuck = 0;
+        sWalk.bestFor = SIZE_MAX;
         sWalk.lastPos = {sLuigi[0], sLuigi[2]};
         if (logOn()) std::printf("[nav] walking: %zu waypoints from %.0f,%.0f to %.0f,%.0f\n", sWalk.route.size(), sLuigi[0], sLuigi[2], sWalk.target.x, sWalk.target.z);
     }
@@ -1228,6 +1269,8 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
     }
     if (sWalk.target.reach > 0.0f && (toTarget < sWalk.target.reach || sWalk.next >= sWalk.route.size() || sWalk.arrived)) {
         stickX = stickY = 0;
+        // On an emblem: stand still while it flips him (the check above ends the walk then).
+        if (targetName(sWalk.target).rfind("Emblem", 0) == 0 && ++sWalk.flipWait < kFlipWaitReads) return true;
         if (sWalk.target.category == Category::Candles) {
             finish(sWalk.target.name.rfind("Lit", 0) == 0 ? "At the candle stand. The flames are above you: aim up with the right stick, and hold the right trigger to vacuum them out."
                                                           : "At the candle stand. The flames are above you: aim up with the right stick, and spray fire with the left trigger.");
@@ -1312,12 +1355,26 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
     }
 
     // No progress: mark the spot ahead as blocked and plot again.
-    if (std::hypot(luigi.x - sWalk.lastPos.x, luigi.z - sWalk.lastPos.z) > 8.0f) {
+    bool jammed = false;
+    if (sWalk.bestFor != sWalk.next) {
+        sWalk.bestFor = sWalk.next;
+        sWalk.bestAim = len;
+        sWalk.noProgress = 0;
+    } else if (len < sWalk.bestAim - kProgressStep) {
+        sWalk.bestAim = len;
+        sWalk.noProgress = 0;
+    } else if (++sWalk.noProgress > kNoProgressReads) {
+        sWalk.bestFor = SIZE_MAX;
+        jammed = true;
+        if (logOn()) std::printf("[nav] no closer to waypoint %zu for %d reads\n", sWalk.next, kNoProgressReads);
+    }
+    if (!jammed && std::hypot(luigi.x - sWalk.lastPos.x, luigi.z - sWalk.lastPos.z) > 8.0f) {
         sWalk.lastPos = luigi;
         sWalk.stuck = 0;
     } else if (sWalk.target.reach > 0.0f && toTarget < sWalk.target.reach + kArrivedMargin && ++sWalk.stuck > kArrivedReads) {
         sWalk.arrived = true;  // the thing he came to is what stopped him
-    } else if (++sWalk.stuck > kStuckReads) {
+    } else if (jammed || ++sWalk.stuck > kStuckReads) {
+        sWalk.stuck = 0;
         if (++sWalk.replans > kMaxReplans) {
             if (sWalk.side >= 0) {
                 nextChestSide();

@@ -10,7 +10,7 @@ Type names come from the character type table on the disc (`0x8033B590`, name at
 - Mirrors: every mirror but the Mirror Room's warps to the Foyer with A in the search view (Super Mario Wiki). Said when the search view lands on one.
 - Mini bosses (portrait ghosts): boss tone while far, Bosses in Go to. Done 2026-11-06. Melody too.
 - Boo-sealed doors: element door actors `eldoor07` to `eldoor10` (arg0 the room behind: 42 Washroom, 59 Balcony). Not spoken as such yet: say how many Boos the door wants, and how many are caught. Open.
-- Emblems (Tea Room, Cellar) that move Luigi between floor and ceiling: not found in the map tables read so far. Open: research in the Tea Room.
+- Emblems (Tea Room, Cellar) that move Luigi between floor and ceiling: done 2026-11-18. Furniture `omark` (move 29), "Emblem" under Furniture in Go to; the walk says where the flip put him. Tea Room tested silently. Open: the Cellar's floor emblem at 3950,-390 is out of the route's reach.
 
 ## Area 1
 
@@ -25,7 +25,7 @@ Cleared blind by the user. Added 2026-11-06: Bogmire hit speech, shadow pull, Mr
 - Courtyard, well, Bottom of the Well, Rec Room (punching bags, treadmill key): room hints exist. Treadmill notice untested.
 - Second floor burning door to the Tea Room: `eldoor02`, at the top of the stairwell from the Rec Room's hallway door. In Go to under Elements; the stairwell says it is on fire and where water is (Courtyard spirit). Stairs route tested 2026-11-18.
 - Biff Atlas: "Hit 1 of 3" from the game's counter, tested 2026-11-18.
-- Tea Room: plates fly (type 147 `ifly` is under the thrown damage setting), emblems to the ceiling and onto the table for the ice medal chest: emblems open (above). Cheese at the back: search view aim.
+- Tea Room: plates fly (types 140/141 `oufo1`/`oufo2`, under the thrown damage setting since 2026-11-18; 147 `ifly` is the Kitchen's), emblems to the ceiling and onto the table for the ice medal chest: done (above). Cheese at the back: search view aim.
 - Sparks (explode when vacuumed) and bowling balls: probably types 70/71 `poo1`/`poo2` and 72/73 `ball1`/`ball2`, both with the ghost flag, so they get the ghost tone and the word "Ghost". Open: confirm in play, then name them and warn not to vacuum Sparks.
 - Gold mouse in the second floor hallway: ghost flag, so ghost tone and "Gold Mouse".
 - Astral Hall: Candles in Go to.

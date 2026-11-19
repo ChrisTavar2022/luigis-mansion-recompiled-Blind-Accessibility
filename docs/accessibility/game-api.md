@@ -200,3 +200,8 @@ Test aids: `LM_ACCESS_WORLD_LOG=1` logs targets and tones. `LM_SPAWN=<type>@<fra
 - Which objects can be interacted with, and how to detect them
 - Boss fight mechanics
 - Which of these work on PAL
+
+## Emblems and flying objects (2026-11-18)
+
+- Emblems: furniture table rows with model `omark` and `move` 29 (furnitureinfo, room_no is the name index). Stepping on one flips Luigi between floor and ceiling (his y changes by about 500). Tea Room (47): floor 3840,551,-4620, ceiling 2600,1048.5,-4920; the ceiling one drops him onto the table (y 670). Cellar (63): ceiling 2750,-51,-210 and 2900,-51,-610, floor 2750,-549,140 and 3950,-549,-390.
+- Flying objects with type flags 0x6 (not ghosts, flag 8 clear) hurt by contact, hit kind 2: 129 `ikuma1`, 139 `okami1`, 140/141 `oufo1`/`oufo2` (Tea Room saucers, 5 damage), 147 `ifly`, 148 `inabe`, 149/150 books, 151/152 `piero1`/`piero2`. Type names are at the type table (0x8033B590, 0x1C a type) +0x18, flags at +0x08.

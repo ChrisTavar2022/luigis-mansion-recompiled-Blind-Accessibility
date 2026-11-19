@@ -1683,7 +1683,12 @@ bool hitCancelled(u32 hit) {
     const u32 attacker = id >= 0 && u32(id) < kActorSlotCount ? rd32(kActorSlots + 4 * u32(id)) : 0;
     const u32 type = gu::inMem1(attacker) ? rd32(attacker + kActType) : ~0u;
     const auto& a = port::settings().accessibility;
-    const bool thrown = isThrown(type) || type == 147 || type == 148;  // + the Kitchen's flying dishes (ifly) and pots (inabe)  // Bogmire's shadows are ghosts by flag, and count as thrown
+    // + the Kitchen's flying dishes (ifly 147) and pots (inabe 148), the Tea Room's flying saucers
+    // (oufo1/oufo2 140/141, seen hitting for 5), and the other flying objects with the same type
+    // flags: okami1 (139, paper), ikuma1 (129, toy bear), piero1/piero2 (151/152, clowns).
+    // Bogmire's shadows are ghosts by flag, and count as thrown (above).
+    const bool thrown = isThrown(type) || type == 147 || type == 148 || type == 140 || type == 141 || type == 139 ||
+                        type == 129 || type == 151 || type == 152;
     const bool cancel = thrown ? a.noThrownDamage : isBoss(type) || isGhost(type) ? a.noGhostDamage : a.noHazardDamage;
     // In last_run.log: which attacks come from which type, for the bosses not played in testing.
     // A cancelled hit lands again every frame while Luigi stays in contact.

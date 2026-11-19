@@ -4,6 +4,7 @@
 #include "port/crash_handler.h"
 #include "port/dol.h"
 #include "recomp/access.h"
+#include "recomp/controls.h"
 #include "recomp/precache.h"
 #include "recomp/ui_scale.h"
 #include "setup/disc.h"
@@ -18,6 +19,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -248,7 +250,13 @@ bool run(const Options& opts, LaunchInfo& launch) {
             spokenShaders = -1;
             if (screen == Screen::Pick) {
                 std::string text = "Luigi's Mansion Recompiled setup. This port runs your own copy of the game. Choose your "
-                                   "disc image, ISO or RVZ. The D-pad moves between buttons, A presses one.";
+                                   "disc image, ISO or RVZ. The D-pad moves between buttons: up and down between rows, "
+                                   "left and right along a row. A presses one."
+#ifdef _WIN32
+                                   " Browse opens a Windows file window: use the keyboard there, type or paste the "
+                                   "path to your disc image and press Enter."
+#endif
+                    ;
                 for (const Slot& s : slots)
                     if (!s.message.empty()) text += " " + s.message + ".";
                 say(text, false);
@@ -281,6 +289,8 @@ bool run(const Options& opts, LaunchInfo& launch) {
     while (!finished) {
         port::heartbeat();
         recomp::access::sync();
+        static const bool sTestPad = std::getenv("LM_VIRTUAL_PAD") != nullptr;
+        if (sTestPad) recomp::controls::beforeRead();  // test pad, timed in setup frames here
         for (const AuroraEvent* ev = aurora_update(); ev && ev->type != AURORA_NONE; ++ev) {
             if (ev->type == AURORA_EXIT) return false;
             if (ev->type == AURORA_SDL_EVENT) recomp::access::handleEvent(ev->sdl, false);  // no game yet, so no Go to menu

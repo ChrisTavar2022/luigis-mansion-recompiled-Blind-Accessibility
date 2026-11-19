@@ -523,7 +523,7 @@ constexpr RoomHint kRoomHints[] = {
     {23, When::Always, "Press A at the birdhouse for Mario's letter, and at the shack from its right side. Catch the ghosts here and the well opens: it is under Furniture in Go to, and A climbs down."},
     {22, When::Dark, "Press A at a punching bag to swing it at Biff Atlas, then get clear. Three hits show his heart."},
     {22, When::JustCleared, "Walk on the treadmill for a few seconds, and a key appears."},
-    {47, When::Always, "Plates fly here. The emblem in the near right corner puts you on the ceiling, and another drops you on the table, where the white chest is."},
+    {47, When::Always, "Plates fly here. The emblem in the near right corner puts you on the ceiling, and another drops you on the table, where the white chest is. Both emblems are under Furniture in the Go to menu."},
     {40, When::Dark, "Light all the candelabras with fire to bring out the ghosts."},
     {41, When::Dark, "Press A at the telescope in the search view. Then vacuum up the meteor and throw it at the moon."},
     {46, When::Dark, "Knock over the yarn basket, then vacuum a ball and throw it at Nana. Three hits show her heart."},
@@ -534,6 +534,7 @@ constexpr RoomHint kRoomHints[] = {
     {52, When::Dark, "Shake the animal heads to bring out water ghosts. Spray them with ice."},
     {67, When::Blackout, "Press A at the generator's red switch in the right corner to bring back the power."},
     {63, When::Dark, "Vacuum the dirt off the floor before you fight, and shake the barrels to bring out the ghosts."},
+    {63, When::Always, "Emblems on the floor and ceiling flip you between the two. They are under Furniture in the Go to menu."},
     {50, When::Dark, "The ghosts hide in the trunks. Press A at them."},
     {56, When::Dark, "Shake every clock to start them. Vacuum the keys out of the soldiers' backs, then vacuum the soldiers."},
     {56, When::Cleared, "The door between the small clock towers is the lift to the roof."},
@@ -1131,7 +1132,14 @@ void pollScene() {
     // plays them, whatever the demo already said.
     static bool sRunning = false;
     static std::vector<bool> sSpoken(std::size(kSceneLines), false);
-    if (scene != kSceneOpening && scene != kSceneMain) sSpoken.assign(std::size(kSceneLines), false);  // a new start
+    // A new start: back at the title from a real game. The title demo goes back to the title after
+    // every loop, and clearing then would describe the demo again each time.
+    static bool sPlayed = false;
+    if (scene == kSceneMain || (scene == kSceneOpening && !demo)) sPlayed = true;
+    if (scene != kSceneOpening && scene != kSceneMain && sPlayed) {
+        sSpoken.assign(std::size(kSceneLines), false);
+        sPlayed = false;
+    }
     {
         static bool sWasOut = true;
         const bool out = scene != kSceneOpening && scene != kSceneMain;
