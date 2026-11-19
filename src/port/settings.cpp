@@ -109,6 +109,7 @@ std::vector<Field> fields() {
         flag("accessibility", "hold_objects", sSettings.accessibility.holdObjects),
         flag("accessibility", "easier_boss_hits", sSettings.accessibility.easierBossHits),
         flag("accessibility", "shadow_pull", sSettings.accessibility.shadowPull),
+        flag("accessibility", "pull_objects", sSettings.accessibility.pullObjects),
         flag("accessibility", "search_aim", sSettings.accessibility.searchAim),
         flag("accessibility", "spray_aim", sSettings.accessibility.sprayAim),
         flag("accessibility", "boss_lock", sSettings.accessibility.bossLock),

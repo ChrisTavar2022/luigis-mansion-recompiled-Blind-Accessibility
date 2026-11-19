@@ -23,7 +23,8 @@ Cleared blind by the user. Added 2026-11-06: Bogmire hit speech, shadow pull, Mr
 ## Area 3
 
 - Courtyard, well, Bottom of the Well, Rec Room (punching bags, treadmill key): room hints exist. Treadmill notice untested.
-- Second floor burning door to the Tea Room: `eldoor02`, in Go to under Elements like the Kitchen's (named after the nearest door). Untested.
+- Second floor burning door to the Tea Room: `eldoor02`, at the top of the stairwell from the Rec Room's hallway door. In Go to under Elements; the stairwell says it is on fire and where water is (Courtyard spirit). Stairs route tested 2026-11-18.
+- Biff Atlas: "Hit 1 of 3" from the game's counter, tested 2026-11-18.
 - Tea Room: plates fly (type 147 `ifly` is under the thrown damage setting), emblems to the ceiling and onto the table for the ice medal chest: emblems open (above). Cheese at the back: search view aim.
 - Sparks (explode when vacuumed) and bowling balls: probably types 70/71 `poo1`/`poo2` and 72/73 `ball1`/`ball2`, both with the ghost flag, so they get the ghost tone and the word "Ghost". Open: confirm in play, then name them and warn not to vacuum Sparks.
 - Gold mouse in the second floor hallway: ghost flag, so ghost tone and "Gold Mouse".

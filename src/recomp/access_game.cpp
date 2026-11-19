@@ -616,6 +616,27 @@ const char* roomName(u32 number) {
 
 std::string roomWord(u32 nameIndex) { return nameIndex < std::size(kRoomNames) ? kRoomNames[nameIndex] : ""; }
 
+bool roomVisited(u32 nameIndex) {
+    constexpr u32 kMapRoomBits = 0x803CDF50;  // + name index * 2, u16, bit 0: Luigi has been in it (saved with the game)
+    return rd32(kCurMap) == kMansionMap && nameIndex < kRoomCount && (rd16(kMapRoomBits + nameIndex * 2) & 1);
+}
+
+DoorLock doorLock(u32 door) {
+    DoorLock out;
+    constexpr u32 kDoorStates = 0x804D7F60 + 0x2A4, kDoorStateSize = 104, kStateLocked = 0x400, kLuigiKeys = 0x7F4;
+    const u32 table = rd32(kDoorStates);
+    if (door >= 0xFF || !gu::inMem1(table) || rd32(kCurMap) != kMansionMap) return out;
+    const u32 entry = table + door * kDoorStateSize;
+    out.state = rd32(entry + 0xC);
+    out.key = rd8(entry);
+    out.locked = (out.state & kStateLocked) != 0;
+    const u32 luigi = rd32(kActorSlots);
+    const u32 keys = gu::inMem1(luigi) ? rd32(luigi + kLuigiKeys) : 0;
+    const u32 bits = gu::inMem1(keys) ? rd32(keys + 4) : 0;
+    if (gu::inMem1(bits)) out.held = (rd8(bits + u32(out.key) / 8) >> (out.key % 8)) & 1;
+    return out;
+}
+
 std::string doorName(u32 room) {
     if (rd32(kCurMap) != kMansionMap || room >= kRoomCount) return "";
     const char* name = roomName(room);
@@ -661,6 +682,68 @@ std::string lockedDoorText() {
     return *name ? std::string(name) + " is locked" : std::string("This door is locked");
 }
 
+// The locked doors Luigi holds the key to, from the game's own records (doorLock): "Your key opens the
+// Tea Room, on the second floor." A door between a room and a hallway is named after the room. Empty
+// when he holds no unused key.
+std::string heldKeysText() {
+    const u32 map = rd32(kMapTable + 4 * rd32(kCurMap));
+    const u32 doors = gu::inMem1(map) ? rd32(map + kMapDoors) : 0;
+    const u32 rooms = rd32(kRoomTable);
+    if (!gu::inMem1(doors) || !gu::inMem1(rooms) || rd32(kCurMap) != kMansionMap) return "";
+    std::vector<std::string> opens;
+    for (u32 i = 0; i < 128; i++) {
+        const u32 d = doors + i * 0x1C;
+        if (rd8(d) == 0) break;
+        const DoorLock lock = doorLock(rd8(d + 7));
+        if (!lock.locked || !lock.held) continue;
+        const u32 a = rd8(d + 0x1A), b = rd8(d + 0x1B);
+        const u32 room = *roomName(a) ? a : b;  // the room, or a hallway when both are
+        std::string name = *roomName(room) ? std::string("the ") + roomName(room) : std::string("a hallway door");
+        // Between two hallways: near the closest door of a named room on its floor.
+        if (!*roomName(room)) {
+            const float x = float(s32(rd32(d + 8))), y = float(s32(rd32(d + 0xC))), z = float(s32(rd32(d + 0x10)));
+            float best = 1e30f;
+            for (u32 j = 0; j < 128; j++) {
+                const u32 e = doors + j * 0x1C;
+                if (rd8(e) == 0) break;
+                const u32 ea = rd8(e + 0x1A), eb = rd8(e + 0x1B);
+                const char* other = *roomName(ea) ? roomName(ea) : roomName(eb);
+                if (!*other || std::abs(float(s32(rd32(e + 0xC))) - y) > 300.0f) continue;
+                const float dist = std::hypot(float(s32(rd32(e + 8))) - x, float(s32(rd32(e + 0x10))) - z);
+                if (dist < best) {
+                    best = dist;
+                    name = std::string("a hallway door near the ") + other;
+                }
+            }
+            if (name == "a hallway door near the The Twins' Room") name = "a hallway door near the Twins' Room";
+            if (name == "a hallway door near the The Artist's Studio") name = "a hallway door near the Artist's Studio";
+        }
+        if (name == "the The Twins' Room" || name == "the The Artist's Studio") name = name.substr(4);
+        // Doors stand 150 or 275 above their floor: the door's own height gives its floor.
+        const s32 y = s32(rd32(d + 0xC));
+        const char* floor = y < -200 ? "in the basement" : y < 400 ? "on the first floor" : y < 1000 ? "on the second floor" : y < 1600 ? "on the third floor" : "on the roof";
+        std::string line = name + ", " + floor;
+        if (std::find(opens.begin(), opens.end(), line) == opens.end()) opens.push_back(line);
+    }
+    if (opens.empty()) return "";
+    std::string text = opens.size() == 1 ? "Your key opens " : "Your keys open ";
+    for (size_t i = 0; i < opens.size(); i++) text += (i == 0 ? "" : i + 1 == opens.size() ? ", and " : ", ") + opens[i];
+    return text + ".";
+}
+
+// The stairwell between the Rec Room's hallway and the Tea Room (room 18): the Tea Room's door at the
+// top is on fire (eldoor02) until water puts it out. Water: the Courtyard's spirit (jmp/generatorinfo,
+// elwater at -450,245,-5960; the first floor Bathroom has one too, behind a locked door). Said until
+// the Tea Room has been entered.
+constexpr u32 kTeaStairs = 18, kTeaRoom = 47, kElementWater = 3;  // room number; name index
+std::string teaStairsText(u32 luigi) {
+    if (rd32(kCurMap) != kMansionMap || (rd32(luigi + kActRoom) >> 24) != kTeaStairs || roomVisited(kTeaRoom)) return "";
+    return rd32(luigi + kElement) == kElementWater
+               ? "The Tea Room door, at the top of these stairs, is on fire. Spray water at it with the left trigger."
+               : "The Tea Room door, at the top of these stairs, is on fire. Bring water to put it out: the Courtyard has a water spirit, under Elements "
+                 "in the Go to menu there.";
+}
+
 // The hints that fit the room as it is now. A room that clears while Luigi stands in it gets its
 // next hint then, once any scene is over.
 std::atomic<bool> sHintRepeat{false};
@@ -688,6 +771,15 @@ void roomHints(u32 luigi, u32 room) {
         }
         const int left = ghostsInRoom();
         if (!clearNow && left > 0) text += std::string(text.empty() ? "" : " ") + std::to_string(left) + (left == 1 ? " ghost left here." : " ghosts left here.");
+        const std::string stairs = teaStairsText(luigi);
+        if (!stairs.empty()) text += std::string(text.empty() ? "" : " ") + stairs;
+        // In a hallway, or a room with nothing to say: where the keys Luigi holds lead.
+        const bool hallway = room >= std::size(kRoomNames) || !*kRoomNames[room];
+        if (hallway || text.empty()) {
+            const std::string keys = heldKeysText();
+            if (!keys.empty()) text += std::string(text.empty() ? "" : " ") + keys;
+            else if (hallway && text.empty()) text = "No unused keys. Try the doors you have not been through.";
+        }
         say(text.empty() ? "No hint for this room." : text);
     }
     if (!port::settings().accessibility.roomHints || rd32(kEvent + kEventCursor) != 0 || rd32(kMenuOff) != 0) return;
@@ -705,9 +797,19 @@ void roomHints(u32 luigi, u32 room) {
     const bool blackout = gameFlag(kFlagBlackout);
     static std::set<const RoomHint*> sSaid;
     static u32 sRun = 0;
+    static bool sStairsSaid = false;
     if (runCount() != sRun) {  // a new game: every hint again
         sRun = runCount();
         sSaid.clear();
+        sStairsSaid = false;
+    }
+    // The burning Tea Room door, once a run, on the stairs below it.
+    if (!sStairsSaid) {
+        const std::string stairs = teaStairsText(luigi);
+        if (!stairs.empty()) {
+            sStairsSaid = true;
+            say(stairs, false);
+        }
     }
     for (const RoomHint& hint : kRoomHints) {
         if (hint.room != room || sSaid.count(&hint)) continue;
@@ -1211,6 +1313,18 @@ void ghostCaught(u32 type) {
 void pollGame() {
     if (port::usCodeFeature() != port::Avail::Yes) return;
     watchMemory();
+    // Test aid LM_ACCESS_TEST_HINT=<frames>: the hint button, every that many frames.
+    if (const char* v = std::getenv("LM_ACCESS_TEST_HINT")) {
+        static int sCount = 0;
+        if (std::atoi(v) > 0 && ++sCount % std::atoi(v) == 0) requestHintRepeat();
+    }
+    // Test aid LM_ACCESS_TEST_KEY=<key number>: Luigi holds that key (a door table +0 number).
+    if (const char* v = std::getenv("LM_ACCESS_TEST_KEY")) {
+        const u32 luigi = rd32(kActorSlots), key = u32(std::atoi(v));
+        const u32 keys = gu::inMem1(luigi) && rd32(kCurScene) == kSceneMain ? rd32(luigi + 0x7F4) : 0;
+        const u32 bits = gu::inMem1(keys) ? rd32(keys + 4) : 0;
+        if (gu::inMem1(bits)) wr8(bits + key / 8, rd8(bits + key / 8) | (1u << (key % 8)));
+    }
     // Test aid LM_ACCESS_POKE=<frame>:<address>:<value>: one guest word, to open a screen.
     if (const char* v = std::getenv("LM_ACCESS_POKE")) {
         unsigned frame = 0, addr = 0, value = 0;

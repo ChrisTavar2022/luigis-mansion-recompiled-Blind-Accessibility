@@ -383,6 +383,7 @@ struct AccessibilitySettings {
     bool holdObjects = true;  // what the vacuum holds stays until the left trigger
     bool easierBossHits = true;  // a thrown object near a boss is steered into it
     bool shadowPull = true;
+    bool pullObjects = true;  // in fights, a ball in front of the running vacuum drifts into it
     bool searchAim = true;
     bool sprayAim = true;  // spraying water turns the nozzle to the plant, sprout or burning door in front  // the search view turns to the cheese, mouse hole, telescope, crystal ball or mirror in the room  // Bogmire's shadows in front of the running vacuum drift into it
     bool bossLock = true;        // with the vacuum on, the nozzle turns to the boss or its ball, and a throw goes at the boss

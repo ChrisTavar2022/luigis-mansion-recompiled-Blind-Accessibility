@@ -224,6 +224,9 @@ constexpr float kFoodStop = 260.0f;    // Go to stops this far from it: across t
 constexpr float kShadowPull = 650.0f;  // a shadow this near, in front of the running vacuum, drifts to it
 constexpr float kShadowStep = 9.0f;    // units per input read
 constexpr float kShadowCone = 0.5f;    // cosine: about 60 degrees either side
+// Balls and other things to throw drift into the running vacuum the same way, a little slower: the
+// user lost the Nursery's ball off the nozzle and could not find it again.
+constexpr float kObjectPull = 400.0f, kObjectStep = 7.0f;
 u64 sBossHitAt = 0;
 
 // The portrait ghosts, the mansion's mini bosses, by the names ghostWord gives their types. Bosses,
@@ -259,9 +262,17 @@ float rdf(u32 a) { return gu::rdf(a); }
 Vec rdVec(u32 a) { return {rdf(a), rdf(a + 4), rdf(a + 8)}; }
 float flatDistance(const Vec& a, const Vec& b) { return std::hypot(a.x - b.x, a.z - b.z); }
 
-// Spilled coins and bills are not actors: their update hooks report them here.
+// Spilled coins and bills are not actors: their update hooks report them here, by grain. Each is kept
+// for a moment, since a scan can fall between two game frames and find the list empty.
+struct Grain {
+    Vec pos;
+    u32 room;  // the game's room word for it: the room number in the top byte
+    u64 at;    // SDL ticks when last reported
+};
 std::mutex sMoneyM;
-std::vector<Vec> sMoney;
+std::map<u32, Grain> sMoney;
+constexpr u64 kMoneyKeepMs = 300;
+constexpr float kMoneyNear = 350.0f, kMoneyNearY = 150.0f;  // this close, it counts whatever the room says
 
 // The room table (0x30 per room): int min x, y, z at +8 and max at +0x14. box: min x, min z, max x, max z.
 bool roomBox(u32 room, float box[4]) {
@@ -291,7 +302,7 @@ constexpr struct {
 bool flagOn(u32 flag) { return (rd8(kEvent + 0x659 + flag / 8) >> (flag % 8)) & 1; }
 const u32 kMedalChest = 0x4D45;  // Target::type of a chest that holds a medal
 
-constexpr u32 kMapRoomBits = 0x803CDF50;  // + room * 2, u16: bit 0 the room is known to the map
+constexpr u32 kMapRoomBits = 0x803CDF50;  // + name index * 2, u16: bit 0 Luigi has been in the room (access::roomVisited)
 // Rooms Luigi has stood in, this run.
 std::set<u32> sBeenIn;
 void noteRoom(u32 room) {
@@ -309,6 +320,15 @@ constexpr float kSeatSlack = 60.0f;
 constexpr u32 kTypeShivers = 14, kShiversHall = 17, kButlersRoom = 0;  // room number; name index
 constexpr u32 kShiversFlag = 35;  // "resident butler placed", event 08's lab talk once flag 73 is on
 bool sShiversHere = false;
+// The user's rule: nothing about Shivers until his part of the game, once Luigi has been in the
+// Butler's Room, or been in the Laundry Room (whose door leads to it) and left it. Until then no
+// speech, no ghost tone, no Go to entry. Name indices.
+constexpr u32 kLaundryRoom = 5;
+bool shiversRelevant() {
+    const u32 luigi = rd32(kActorSlots), rooms = rd32(kRoomTable);
+    const u32 here = gu::inMem1(luigi) && gu::inMem1(rooms) ? rd8(rooms + (rd32(luigi + kActRoom) >> 24) * 0x30 + 3) : ~0u;
+    return roomVisited(kButlersRoom) || (roomVisited(kLaundryRoom) && here != kLaundryRoom);
+}
 u32 sShiversRoom = 0, sShiversId = 0;
 Vec sShiversPos{};
 
@@ -339,7 +359,7 @@ std::vector<Target> scan(u32 luigi) {
             std::printf("[world] room %u actor type %u %s, its room %u, at %.0f,%.0f,%.0f flags %08X alpha %u ghost %d\n", room, type, ghostWord(type).c_str(), rd32(a + kActRoom) >> 24, p.x, p.y, p.z, rd32(a + kActFlags), rd8(a + kActAlpha), isGhost(type));
         // Wherever he is, once out of the park and placed by the story: flag 35, set in the lab talk after
         // the Boos are let out. His actor can stand outside the park before that, which spoke too early.
-        if (type == kTypeShivers && p.x > -20000.0f && flagOn(kShiversFlag)) {
+        if (type == kTypeShivers && p.x > -20000.0f && flagOn(kShiversFlag) && shiversRelevant()) {
             sShiversHere = true;
             sShiversRoom = rd32(a + kActRoom) >> 24;
             if (sShiversId != a) log("[access] Shivers is out at %.0f,%.0f,%.0f, room %u", p.x, p.y, p.z, rd32(a + kActRoom) >> 24);
@@ -434,6 +454,7 @@ std::vector<Target> scan(u32 luigi) {
             if (sRoomLog && sN++ % 30 == 0) std::printf("[world] chest %08X at %.0f,%.0f,%.0f heading %04X %04X, Luigi at %.0f,%.0f flags %08X\n", a, p.x, p.y, p.z, rd16(a + 0x88), rd16(a + 0x8A), rdf(luigi + kActPos), rdf(luigi + kActPos + 8), rd32(luigi + kActFlags));
         }
         // Shivers fades as he paces, and the player has to follow him down a long hall: his tone stays on.
+        if (type == kTypeShivers && !shiversRelevant()) continue;  // not his part of the game yet
         if (isGhost(type) && !(rd32(a + kActFlags) & kActHidden) && (rd8(a + kActAlpha) != 0 || type == kTypeShivers)) {
             out.push_back({Kind::Ghost, p, a, 0, type});
         } else if (kindOf(type, k)) {
@@ -448,12 +469,31 @@ std::vector<Target> scan(u32 luigi) {
     }
     {
         std::lock_guard lk(sMoneyM);
-        // Spilled money has no room of its own: it counts when it lies inside Luigi's.
+        // Spilled money counts when the game puts it in Luigi's room, when it lies inside his room's box,
+        // or when it is right by him. The box alone missed coins in play (the user: in front of the door
+        // to the left of the Parlor), as rooms are not all rectangles.
         float box[4];
         const bool known = roomBox(room, box);
-        for (const Vec& p : sMoney)
-            if (known && p.x >= box[0] && p.z >= box[1] && p.x <= box[2] && p.z <= box[3]) out.push_back({Kind::Money, p, 0});
-        sMoney.clear();
+        const Vec me = rdVec(luigi + kActPos);
+        const u64 now = SDL_GetTicks();
+        for (auto it = sMoney.begin(); it != sMoney.end();) {
+            const Grain& g = it->second;
+            if (now - g.at > kMoneyKeepMs) {
+                it = sMoney.erase(it);
+                continue;
+            }
+            const Vec& p = g.pos;
+            const bool inRoom = (g.room >> 24) == room && g.room != 0xFFFFFFFFu;
+            const bool inBox = known && p.x >= box[0] && p.z >= box[1] && p.x <= box[2] && p.z <= box[3] && std::abs(p.y - luigiY) < 400.0f;
+            const bool near = flatDistance(p, me) < kMoneyNear && std::abs(p.y - luigiY) < kMoneyNearY;
+            if (inRoom || inBox || near) out.push_back({Kind::Money, p, 0});
+            static u64 sMoneyLogAt = 0;
+            if (sRoomLog && now - sMoneyLogAt > 2000) {
+                sMoneyLogAt = now;
+                std::printf("[world] money at %.0f,%.0f,%.0f: game room %u, Luigi's %u, in room %d box %d near %d\n", p.x, p.y, p.z, g.room >> 24, room, inRoom, inBox, near);
+            }
+            ++it;
+        }
     }
     const u32 map = rd32(kMapTable + 4 * rd32(kCurMap));
     const u32 doors = gu::inMem1(map) ? rd32(map + kMapDoors) : 0;
@@ -1149,6 +1189,28 @@ void auditRooms() {
     nav::audit(int(sDone), std::move(rooms));
 }
 
+// Test aid LM_ACCESS_DOOR_DUMP=<frames>: every that many frames, logs each door record with its lock
+// state and whether Luigi holds its key (doorLock).
+void dumpDoors() {
+    static const int sEvery = std::getenv("LM_ACCESS_DOOR_DUMP") ? std::atoi(std::getenv("LM_ACCESS_DOOR_DUMP")) : 0;
+    static int sCount = 0;
+    if (sEvery <= 0 || ++sCount % sEvery != 0) return;
+    const u32 map = rd32(kMapTable + 4 * rd32(kCurMap));
+    const u32 doors = gu::inMem1(map) ? rd32(map + kMapDoors) : 0;
+    for (u32 i = 0; gu::inMem1(doors) && i < kDoorMax; i++) {
+        const u32 d = doors + i * kDoorSize;
+        if (rd8(d) == 0) break;
+        const DoorLock lock = doorLock(rd8(d + kDoorId));
+        std::printf("[doors] record %u door %u: rooms %u (%s) and %u (%s) at %d,%d,%d, state %08X, key %d%s\n", i, rd8(d + kDoorId), rd8(d + kDoorRoomA),
+                    doorName(rd8(d + kDoorRoomA)).c_str(), rd8(d + kDoorRoomB), doorName(rd8(d + kDoorRoomB)).c_str(), s32(rd32(d + kDoorX)), s32(rd32(d + kDoorY)),
+                    s32(rd32(d + kDoorZ)), lock.state, lock.key, lock.held ? ", held" : "");
+    }
+    std::string bits;
+    for (u32 r = 0; r < kAuditRooms; r++) bits += std::to_string(r) + ":" + std::to_string(rd16(kMapRoomBits + r * 2)) + " ";
+    std::printf("[doors] map words %s\n", bits.c_str());
+    std::fflush(stdout);
+}
+
 // Guest memory for one sound: the game reads the position while it plays and keeps its handle.
 // A channel's pulses play on its own stream, so an item and a door can sound together.
 struct Channel {
@@ -1396,8 +1458,11 @@ void holdObject(u32 luigi, const Vec& l, const Target* boss, const std::vector<T
         if (sLog) std::printf("[world] vacuum let go for the throw\n");
         return;
     }
-    // What it had is gone, or was thrown some other way.
-    sAway = nearest > kLockReach ? sAway + 1 : 0;
+    // What it had is gone, or was thrown some other way. While the game shows something on the
+    // nozzle it is held, wherever the scan places it: aimed up at a boss, a ball can sit above the
+    // height the scan counts, and the lock used to let go of it there.
+    const bool onNozzle = rd32(luigi + 0x10EC) != 0 || rd32(luigi + 0x10F0) != 0 || rd32(luigi + 0x10F4) != 0 || rd32(luigi + 0x10F8) != 0;
+    sAway = nearest > kLockReach && !onNozzle ? sAway + 1 : 0;
     if (sAway > kLockLost) {
         sLocked = false;
         sHeldId = 0;
@@ -1428,7 +1493,12 @@ constexpr int kMaxAutoPresses = 3;  // per object: an opened chest stays where i
 bool solid(Kind k) { return k == Kind::Chest || k == Kind::Door || k == Kind::Toad || k == Kind::Npc; }
 std::map<u32, int> sAutoPresses;
 
-std::set<u32> sReached;  // objects Luigi got to: silent until he changes room
+// Objects Luigi got to: silent while he stays near them. A chest stays silent until he changes room,
+// since an opened chest stays where it is and nothing in it shows it open. Anything else sounds again
+// once he walks kRearm away: the user found doors and items he had only passed silent for the rest of
+// the visit, until he left the room and came back.
+std::set<u32> sReached;
+constexpr float kRearm = 300.0f;
 u32 sLastRoom = ~0u;
 bool sAHeld = false;  // the player's A, before a walk adds its own presses
 
@@ -1704,10 +1774,10 @@ void keepMoney(u32 grain) {
     if (left > 0 && left < kKeepTimer) wr16(grain + kGrainTimer, u32(kKeepTimer));
 }
 
-void noteMoney(float x, float y, float z) {
+void noteMoney(u32 grain, float x, float y, float z, u32 room) {
     if (!active()) return;
     std::lock_guard lk(sMoneyM);
-    if (sMoney.size() < 256) sMoney.push_back({x, y, z});
+    if (sMoney.size() < 512 || sMoney.count(grain)) sMoney[grain] = {{x, y, z}, room, SDL_GetTicks()};
 }
 
 // With the vacuum on in a boss fight, turns the nozzle for the player: at the boss with a ball held or
@@ -1828,6 +1898,46 @@ void pullShadow(u32 luigi, const Vec& l, const std::vector<Target>& targets, u16
     if (std::getenv("LM_ACCESS_WORLD_LOG") && SDL_GetTicks() - sLogAt > 500) {
         sLogAt = SDL_GetTicks();
         std::printf("[world] shadow pull: type %u at %.0f from Luigi\n", best->type, bestD);
+    }
+}
+
+// A ball or other thing to throw, in front of the running vacuum with nothing on it, drifts toward the
+// nozzle so the game's own suction takes it. Where throwing is the way to win: boss fights, Nana's yarn,
+// Slim's billiard balls. Horses cannot be held, and Bogmire's shadows have their own pull.
+void pullObject(u32 luigi, const Vec& l, const std::vector<Target>& targets, u16 button, u8 triggerRight) {
+    if (!port::settings().accessibility.pullObjects) return;
+    if (!(button & PAD_TRIGGER_R) && triggerRight <= kTriggerPressed) return;
+    if (rd32(luigi + kFishedGhost) != 0) return;  // a ghost or boss hooked
+    if (rd32(luigi + 0x10EC) != 0 || rd32(luigi + 0x10F0) != 0 || rd32(luigi + 0x10F4) != 0 || rd32(luigi + 0x10F8) != 0) return;  // one is on
+    const u32 nozzle = rd32(luigi + kNozzle);
+    if (!gu::inMem1(nozzle)) return;
+    float fx = rdf(luigi + kFacing), fz = rdf(luigi + kFacing + 8);
+    const float facing = std::hypot(fx, fz);
+    if (facing < 1e-3f) return;
+    fx /= facing;
+    fz /= facing;
+    const Target* best = nullptr;
+    float bestD = kObjectPull;
+    for (const Target& t : targets) {
+        // Not horses (cannot be held), Bogmire's shadows (their own pull), icicles and ice (they hurt).
+        if (t.kind != Kind::Thrown || t.type == 66 || t.type == 67 || t.type == 211 || t.type == 212 || t.type == 215 || t.type == 216 || t.type == 219) continue;
+        const float dx = t.pos.x - l.x, dz = t.pos.z - l.z, d = std::max(std::hypot(dx, dz), 1.0f);
+        if (d < bestD && (fx * dx + fz * dz) / d > kShadowCone) {
+            bestD = d;
+            best = &t;
+        }
+    }
+    if (!best) return;
+    const Vec n = rdVec(nozzle + kActPos);
+    const float dx = n.x - best->pos.x, dz = n.z - best->pos.z, d = std::hypot(dx, dz);
+    if (d < 20.0f) return;
+    const float step = std::min(kObjectStep, d);
+    gu::wrf(best->id + kActPos, best->pos.x + dx / d * step);
+    gu::wrf(best->id + kActPos + 8, best->pos.z + dz / d * step);
+    static u64 sLogAt = 0;
+    if (std::getenv("LM_ACCESS_WORLD_LOG") && SDL_GetTicks() - sLogAt > 500) {
+        sLogAt = SDL_GetTicks();
+        std::printf("[world] object pull: type %u at %.0f from Luigi\n", best->type, bestD);
     }
 }
 
@@ -2001,6 +2111,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         }
         if (t.kind != Kind::Ghost && t.kind != Kind::Banana && t.kind != Kind::Thrown && t.kind != Kind::Boss) {
             if (t.id && dist < (solid(t.kind) ? kSolidReach : 70.0f)) sReached.insert(t.id);
+            else if (t.id && t.kind != Kind::Chest && dist > kRearm) sReached.erase(t.id);
             if (t.id && sReached.count(t.id)) continue;
         }
         // A portrait ghost has the boss tone while it is far, so it can be found among the others.
@@ -2226,7 +2337,22 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
             static s32 sHp = -1;
             const u32 state = gu::inMem1(strategy) ? rd16(strategy + 0xE) : 0xFFFF;
             const s32 hp = s16(rd16(t.id + kActHealth));
+            // Punching bag hits: his strategy (vtable 0x8036C350) counts them in the byte at +0x1C4, and
+            // he falls with his heart out when it reaches the byte at 0x804D4C61 (3). fn_8010E9CC.
+            constexpr u32 kBiffStrategy = 0x8036C350, kBiffHits = 0x1C4, kBiffHitsNeeded = 0x804D4C61;
+            static u32 sBiff = 0, sHits = 0;
+            if (gu::inMem1(strategy) && rd32(strategy) == kBiffStrategy) {
+                const u32 hits = rd8(strategy + kBiffHits), needed = rd8(kBiffHitsNeeded);
+                if (t.id != sBiff) sBiff = t.id;
+                else if (hits > sHits && set.bossSpeech && needed > 0)
+                    say(hits >= needed ? "Hit " + std::to_string(hits) + " of " + std::to_string(needed) + ", he is down."
+                                       : "Hit " + std::to_string(hits) + " of " + std::to_string(needed) + ". Get clear, he swings at you.",
+                        false);
+                sHits = hits;
+            }
             if (state != sState || hp != sHp) log("[access] Biff Atlas state %X health %d at %.0f,%.0f,%.0f", state, hp, t.pos.x, t.pos.y, t.pos.z);
+            // Test aid LM_ACCESS_BIFF_HITS=<n>: his hit count starts at n.
+            if (const char* v = std::getenv("LM_ACCESS_BIFF_HITS"); v && state == 2 && sState != 2 && gu::inMem1(strategy)) wr8(strategy + 0x1C4, u8(std::atoi(v)));
             sState = state;
             sHp = hp;
         }
@@ -2273,6 +2399,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         }
     }
     auditRooms();
+    dumpDoors();
     const u32 rooms = rd32(kRoomTable);
     nav::publish(objects, l.x, l.y, l.z, rd32(kCurMap), room, gu::inMem1(rooms) ? rd8(rooms + room * 0x30 + 3) : room, box[0], box[1], box[2], box[3]);
     const bool wasPressed = sAHeld;
@@ -2416,10 +2543,16 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
             if (!holding && SDL_GetTicks() - sHookedAt > 1500) sHookedAt = 0;
         }
     }
-    // The moment something is truly on the nozzle, which the game's own slots show.
+    // The moment something is truly on the nozzle, which the game's own slots show. A drop with the
+    // left trigger up is logged with what the vacuum and Luigi were doing, to find why it fell.
     {
         static bool sWasOn = false;
         const bool on = rd32(luigi + 0x10EC) != 0;
+        static u64 sLeftAt = 0;  // a throw leaves the nozzle a frame or two after the left trigger
+        if ((button & PAD_TRIGGER_L) || triggerLeft > kTriggerPressed) sLeftAt = SDL_GetTicks();
+        if (sWasOn && !on && SDL_GetTicks() - sLeftAt > 1000)
+            log("[access] held object dropped: right trigger %u%s, luigi flags %08X, health %d", triggerRight, (button & PAD_TRIGGER_R) ? " (button)" : "",
+                rd32(luigi + kActFlags), int(s16(rd16(luigi + kHealth))));
         if (on && !sWasOn && lockBoss) say("Got it. Left trigger throws at " + std::string(bossWord(lockBoss->type)) + ".");
         sWasOn = on;
     }
@@ -2433,6 +2566,7 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
     const bool foodLock = !lockBoss && foodHere && waiters == 0 && candlesOut == 0 && flatDistance(food.pos, l) < kFoodLock;  // only once he eats and the waiters are caught
     if (!walking) lockAim(luigi, l, foodLock ? &food : lockBoss, open && !foodLock, foodLock ? std::vector<Target>{} : targets, button, triggerRight, stickX, stickY, substickX, substickY);
     pullShadow(luigi, l, targets, button, triggerRight);
+    if (lockBoss || throwRoom) pullObject(luigi, l, targets, button, triggerRight);
     {
         std::vector<Vec> spots;
         for (const auto& s : nav::waterSpots()) spots.push_back({s[0], s[1], s[2]});
@@ -2533,6 +2667,7 @@ bool candlesUnlit() {
     const u32 luigi = rd32(kActorSlots);
     return sCandlesOut && gu::inMem1(luigi) && sCandlesRoom == rd32(luigi + kActRoom) >> 24;
 }
+bool roomCleared(std::uint32_t nameIndex) { return nameLit(nameIndex); }
 void noteBooManager(std::uint32_t manager) { sBooManager = manager; }
 
 }  // namespace recomp::access

@@ -82,8 +82,8 @@ constexpr u32 kHashName = 0x6175C6, kHashAccessName = 0xB64611, kHashCodeName = 
 constexpr float kCheeseSize = 50.0f;
 constexpr const char* kMelodyName = "Melody Pianissima";  // under Bosses, but A starts her quiz as with a person
 constexpr u32 kNoRow = ~0u;  // a listed spot that is not in the furniture table
-constexpr u32 kStorageRoom = 14;  // name index
-constexpr u32 kHashMove = 0x16F7E9F, kHashSheet = 0x6E1C60, kMoveButton = 33;  // furnitureinfo fields
+constexpr u32 kStorageRoom = 14, kMasterBedroom = 33;  // name indices
+constexpr u32 kHashMove = 0x16F7E9F, kHashSheet = 0x6E1C60, kMoveButton = 33, kMoveCloth = 37;  // furnitureinfo fields; 37 sways in the vacuum
 constexpr float kStorageWall = 2850.0f;  // x of its moving wall; the far end lies below this
 constexpr float kThrownMoved = 150.0f;  // plot again when a thrown object has gone this far
 constexpr float kDoorHeight = 275.0f;  // a door's y above its floor, at most
@@ -319,7 +319,13 @@ std::vector<Furniture> readFurniture(const std::string& path) {
         const bool button = bits(kHashMove, row) == kMoveButton;
         // The Butler's Room's and the Hidden Room's mouse holes: no model, 31.5 up the wall.
         const bool mouseHole = name == "(null)" && std::abs(beFloat(row + y) - 31.5f) < 0.1f;
+        // The mansion's front wall (z -1320 to -1340) carries every front room's windows: rows there with
+        // no model that react to the vacuum (move 37) are their curtains, which the size rule called
+        // posters. The Master Bedroom's are how Lydia is beaten (the user asked for them in Go to).
+        const bool curtain = name == "(null)" && bits(kHashMove, row) == kMoveCloth && beFloat(row + z) <= -1310.0f && beFloat(row + z) >= -1350.0f &&
+                             path.find("map2") != std::string::npos;
         const char* word = name != "(null)" ? modelWord(name)
+                           : curtain ? "Window curtain"
                            : mouseHole ? "Mouse hole"
                            : button ? (bits(kHashSheet, row) != 0 ? "Wall button behind the Danger poster" : "Wall button")
                            : thin > kFlat ? "Something to check" : across <= kButtonSize ? "Wall button" : "Poster";
@@ -335,7 +341,8 @@ std::vector<Furniture> readFurniture(const std::string& path) {
         }
         // The Rec Room's punching bags hang from the ceiling: their row is the top. Listed at their foot.
         const float rowY = name.rfind("o_sando", 0) == 0 ? std::max(beFloat(row + y) - float(be32(row + sizeY)), 0.0f) : beFloat(row + y);
-        out.push_back({beFloat(row + x), rowY, beFloat(row + z), float(turned ? deep : wide) * 0.5f, float(turned ? wide : deep) * 0.5f, float(be32(row + sizeY)), be32(row + room), word, hidden, r, {}, modelWhy(be32(row + room), name)});
+        const char* why = curtain && be32(row + room) == kMasterBedroom ? "vacuum it to let in a draft, so Lydia gets up" : modelWhy(be32(row + room), name);
+        out.push_back({beFloat(row + x), rowY, beFloat(row + z), float(turned ? deep : wide) * 0.5f, float(turned ? wide : deep) * 0.5f, float(be32(row + sizeY)), be32(row + room), word, hidden, r, {}, why});
     }
     addCheese(path, out);
     // Several of one word in a room are numbered in table order, so Box 2 stays Box 2 wherever Luigi
@@ -853,7 +860,9 @@ std::vector<Object> furnitureObjects() {
             continue;
         }
         std::string note = sSearched.count(&p) ? "searched" : sVisitedRows.count(p.row) ? "visited" : "";
-        if (p.why) note = note.empty() ? p.why : std::string(p.why) + ", " + note;
+        // Advice only while it applies: Lydia's curtain note goes once her room is lit.
+        const bool stale = p.room == kMasterBedroom && access::roomCleared(kMasterBedroom);
+        if (p.why && !stale) note = note.empty() ? p.why : std::string(p.why) + ", " + note;
         out.push_back({Category::Furniture, p.x, p.y, p.z, 0, reach, p.label, false, note, p.row});
         if (waterMe(p)) out.back().arrive = "Spray water at it with the left trigger until treasure drops: the nozzle turns to it.";
         if (p.hidden && !sSearched.count(&p)) out.push_back({Category::Hidden, p.x, p.y, p.z, 0, reach, std::string(p.hidden) + " in the " + lowerFirst(p.label), false, note, p.row});
@@ -1241,16 +1250,30 @@ bool drive(float rightX, float rightZ, u16& button, s8& stickX, s8& stickY) {
         }
         if (sWalk.pressTimer == 0) {
             if (sWalk.target.category == Category::Doors && sWalk.presses >= 1) {
-                sWalk.doorWait = kDoorWaitReads;
-                sWalk.startRoom = sRoomNumber;
+                sWalk.doorWait = kDoorWaitReads;  // startRoom was taken at the first press
                 return true;
             }
             if (sWalk.presses >= (sWalk.target.category == Category::Toads || sWalk.target.category == Category::People || sWalk.target.name == kMelodyName ? 1 : kMaxPresses)) {  // a second A would skip his words
                 finish("At " + withThe(sWalk.target));
                 return false;
             }
+            // Some doors let Luigi straight through with no scene, before the press is over: the
+            // room he left is the one he pressed in.
+            if (sWalk.presses == 0) sWalk.startRoom = sRoomNumber;
             sWalk.presses++;
             sWalk.pressTimer = 24;
+        }
+        if (sWalk.target.category == Category::Doors && sWalk.presses >= 1 && sRoomNumber != sWalk.startRoom) {
+            finish("Through the door", false);  // after the room's name
+            return false;
+        }
+        // Facing the door: a light push toward it, which the door stops, so a press made at an angle
+        // at the end of the route still lands.
+        if (sWalk.target.category == Category::Doors) {
+            const float fx = sWalk.target.x - luigi.x, fz = sWalk.target.z - luigi.z, flen = std::max(std::hypot(fx, fz), 1.0f);
+            const float forwardX = rightZ, forwardZ = -rightX;
+            stickX = s8(std::clamp((fx * rightX + fz * rightZ) / flen * kChestFaceTilt, -110.0f, 110.0f));
+            stickY = s8(std::clamp((fx * forwardX + fz * forwardZ) / flen * kChestFaceTilt, -110.0f, 110.0f));
         }
         if (sWalk.pressTimer-- > 20) button |= PAD_BUTTON_A;
         return true;

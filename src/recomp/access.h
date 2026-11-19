@@ -55,6 +55,17 @@ std::string plaqueName(int plaque);  // the gallery's plaques, 1 to 23: the ghos
 void galleryPlaque(int plaque);      // a plaque was opened: says the portrait
 void listScreen(std::uint32_t screen);  // the Game Boy Horror's list screen, each update
 std::string doorName(std::uint32_t room);  // "Foyer door", from the room behind it; empty off the mansion
+// A door's lock, by the door number at door record +7: the game's door table (r13+0x2A4, 104 bytes
+// a door; +0 key number, +0xC state, 0x400 locked) and Luigi's key bits ([Luigi+0x7F4]+4).
+struct DoorLock {
+    std::uint32_t state = 0;
+    int key = -1;
+    bool locked = false, held = false;
+};
+DoorLock doorLock(std::uint32_t door);
+// Luigi has been in the room with this name index: the Game Boy Horror map's own record
+// (0x803CDF50 + name index * 2, bit 0), saved with the game.
+bool roomVisited(std::uint32_t nameIndex);
 
 // A menu closed on A or B: the game ignores those until they are released, or the press that closed
 // the menu would also act in the game, such as opening the door Luigi stands at.
@@ -78,14 +89,16 @@ void keyCollected(std::uint32_t room);  // a key just taken in this room: says w
 std::string bossStatus();  // "Chauncey, health 80" during a boss fight, else empty
 void noteBooManager(std::uint32_t manager);  // the game's Boo manager, each time it updates
 bool candlesUnlit();  // candles in Luigi's room wait for fire
+bool roomCleared(std::uint32_t nameIndex);  // the room by name index is lit (not in the blackout)
 bool hasMedal(std::uint32_t element);  // 2 fire, 3 water, 4 ice
 std::string roomWord(std::uint32_t nameIndex);  // a room's name by its name index; empty for a hallway
 // A message to a ghost's AI: 2 the flashlight touches it, 9 the vacuum has hooked it.
 void ghostMessage(std::uint32_t msg);
 // The game looked up a ghost type's stun length: a stun is starting. Guest thread: only notes it.
 void noteLightBind(std::uint32_t type);
-// Spilled coins and bills, from their update hooks.
-void noteMoney(float x, float y, float z);
+// Spilled coins and bills, from their update hooks: the grain, where it is, and the room word the
+// game's own room lookup (fn_80017ADC) left at grain +0x58.
+void noteMoney(std::uint32_t grain, float x, float y, float z, std::uint32_t room);
 // The same hooks, a grain in play: keeps its timer from running out, by the setting.
 void keepMoney(std::uint32_t grain);
 

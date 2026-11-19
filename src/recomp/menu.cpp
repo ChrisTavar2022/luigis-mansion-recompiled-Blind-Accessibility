@@ -809,6 +809,9 @@ void accessibilityTab() {
             sDirty |= ImGui::Checkbox("Pull Bogmire's shadows to the vacuum", &a.shadowPull);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
                 ImGui::SetTooltip("In Bogmire's fight, a shadow in front of you drifts into the vacuum while it runs, so it is easier to catch. Turn this off for the original, harder game.");
+            sDirty |= ImGui::Checkbox("Pull balls to the vacuum", &a.pullObjects);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("In boss fights, and with Nana's yarn and Slim's billiard balls, a ball in front of you drifts into the vacuum while it runs, so it is easier to pick up again if it falls. Turn this off for the original, harder game.");
             static const char* const kStun[] = {"Normal", "Twice as long", "Three times as long", "Four times as long"};
             sDirty |= ImGui::Combo("How long a stunned ghost stays", &a.stunLength, kStun, 4);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
