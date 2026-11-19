@@ -2205,7 +2205,14 @@ void worldFrame(std::uint16_t& button, std::int8_t& stickX, std::int8_t& stickY,
         default: continue;
         }
         if (t.kind == Kind::Door && t.open && nameIndex == kCourtyard && doorName(t.leadsTo).find("Well") != std::string::npos) continue;  // the Well entry climbs down
-        const std::string note = t.kind == Kind::Door && beenIn(t.leadsTo) ? "visited" : "";
+        std::string note = t.kind == Kind::Door && beenIn(t.leadsTo) ? "visited" : "";
+        // Doors the Boos seal (eldoor09 and eldoor10 stand at them): with too few Boos caught, a Boo sends
+        // Luigi back to the Foyer from the Balcony's. Said until he has been through (guides: 20 and 40).
+        if (t.kind == Kind::Door && !t.open && note.empty()) {
+            const std::string behind = doorName(t.leadsTo);
+            if (behind == "Balcony door") note = "sealed by the Boos until you have caught 20";
+            else if (behind == "Secret Altar door") note = "sealed by the Boos until you have caught 40";
+        }
         std::string name = t.kind == Kind::MarioItem ? std::string(marioWord(t.type)) : t.kind == Kind::Chest && t.type == kMedalChest ? "Element medal chest" : t.kind == Kind::Door ? doorName(t.leadsTo) : t.kind == Kind::Npc ? (t.type == kTypeMelody ? "Melody Pianissima" : "Professor") : t.kind == Kind::Thrown ? thrownWord(t.type) : std::string();
         if (t.open) name = name.size() > 5 ? "Way to " + name.substr(0, name.size() - 5) : "Way through";  // "Hallway door"
         objects.push_back({category, t.pos.x, t.pos.y, t.pos.z, t.id, t.open ? 0.0f : t.kind == Kind::Door ? kDoorPress : t.kind == Kind::Chest ? kChestPress : t.kind == Kind::Toad || t.kind == Kind::Npc ? kToadPress : t.kind == Kind::Thrown ? kThrownReach : 0.0f, name, t.open, note});
